@@ -259,3 +259,114 @@ TEST_F(SyncTest, SyncDoneCallback) {
     loopback.connect();
     EXPECT_GE(done_count, 1);
 }
+
+/* --- Batch writes sync -------------------------------------------------- */
+
+TEST_F(SyncTest, BatchLivePush) {
+    /* Connect first (triggers sync with empty state, enters live mode) */
+    loopback.connect();
+
+    /* Batch write on A — should be pushed live to B as BATCH_ENTRY */
+    KomeBatchEntry entries[3];
+    entries[0] = {"test", (const uint8_t*)"bk1", 3, (const uint8_t*)"bv1", 3};
+    entries[1] = {"test", (const uint8_t*)"bk2", 3, (const uint8_t*)"bv2", 3};
+    entries[2] = {"test", (const uint8_t*)"bk3", 3, (const uint8_t*)"bv3", 3};
+
+    KomeEntryMeta metas[3] = {};
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine_a, entries, 3, metas));
+
+    /* B should have all entries */
+    for (int i = 0; i < 3; i++) {
+        std::string key = "bk" + std::to_string(i + 1);
+        KomeEntryMeta meta_b;
+        EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "test",
+            (const uint8_t*)key.data(), key.size(), &meta_b))
+            << "B missing batch key: " << key;
+        EXPECT_EQ(metas[i].seq, meta_b.seq);
+    }
+}
+
+TEST_F(SyncTest, BatchSyncOnConnect) {
+    /* Batch write on A before connecting */
+    KomeBatchEntry entries[2];
+    entries[0] = {"data", (const uint8_t*)"x1", 2, (const uint8_t*)"val1", 4};
+    entries[1] = {"data", (const uint8_t*)"x2", 2, (const uint8_t*)"val2", 4};
+
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine_a, entries, 2, nullptr));
+
+    /* Connect — B should get entries during initial sync */
+    loopback.connect();
+
+    for (int i = 0; i < 2; i++) {
+        std::string key = "x" + std::to_string(i + 1);
+        KomeEntryMeta meta;
+        EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "data",
+            (const uint8_t*)key.data(), key.size(), &meta));
+    }
+}
+
+TEST_F(SyncTest, BatchRemoteChangeCallbackOrder) {
+    struct CallbackData {
+        std::vector<uint64_t> seqs;
+    } cb_data;
+
+    kome_on_remote_change(engine_b,
+        [](void *ud, const char *, const uint8_t *, size_t,
+           const uint8_t *, size_t, const KomeEntryMeta *meta) {
+            auto *d = static_cast<CallbackData*>(ud);
+            d->seqs.push_back(meta->seq);
+        }, &cb_data);
+
+    /* Connect first */
+    loopback.connect();
+
+    /* Batch write on A */
+    KomeBatchEntry entries[3];
+    entries[0] = {"ns", (const uint8_t*)"a", 1, (const uint8_t*)"1", 1};
+    entries[1] = {"ns", (const uint8_t*)"b", 1, (const uint8_t*)"2", 1};
+    entries[2] = {"ns", (const uint8_t*)"c", 1, (const uint8_t*)"3", 1};
+
+    KomeEntryMeta metas[3] = {};
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine_a, entries, 3, metas));
+
+    /* Callbacks should fire once per entry in sequence order */
+    ASSERT_EQ(3u, cb_data.seqs.size());
+    EXPECT_EQ(metas[0].seq, cb_data.seqs[0]);
+    EXPECT_EQ(metas[1].seq, cb_data.seqs[1]);
+    EXPECT_EQ(metas[2].seq, cb_data.seqs[2]);
+}
+
+TEST_F(SyncTest, BatchMixedWithSingleWrites) {
+    loopback.connect();
+
+    /* Single write */
+    uint8_t k1[] = "single";
+    uint8_t v1[] = "val";
+    KomeEntryMeta m1;
+    ASSERT_EQ(KOME_OK, kome_put(engine_a, "mix", k1, 6, v1, 3, &m1));
+
+    /* Batch write */
+    KomeBatchEntry entries[2];
+    entries[0] = {"mix", (const uint8_t*)"bat1", 4, (const uint8_t*)"bv1", 3};
+    entries[1] = {"mix", (const uint8_t*)"bat2", 4, (const uint8_t*)"bv2", 3};
+    KomeEntryMeta metas[2] = {};
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine_a, entries, 2, metas));
+
+    /* Another single write */
+    uint8_t k2[] = "after";
+    uint8_t v2[] = "val";
+    KomeEntryMeta m2;
+    ASSERT_EQ(KOME_OK, kome_put(engine_a, "mix", k2, 5, v2, 3, &m2));
+
+    /* Sequence numbers should be continuous */
+    EXPECT_EQ(1u, m1.seq);
+    EXPECT_EQ(2u, metas[0].seq);
+    EXPECT_EQ(3u, metas[1].seq);
+    EXPECT_EQ(4u, m2.seq);
+
+    /* B should have everything */
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "mix", k1, 6, &m1));
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "mix", (const uint8_t*)"bat1", 4, &m1));
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "mix", (const uint8_t*)"bat2", 4, &m1));
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "mix", k2, 5, &m1));
+}

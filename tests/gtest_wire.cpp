@@ -167,3 +167,94 @@ TEST(WireTest, DecodeTruncatedSyncRequest) {
     SyncRequest req;
     EXPECT_FALSE(decode_sync_request(data, 1, &req));
 }
+
+/* --- BatchEntry round-trip ----------------------------------------------- */
+
+TEST(WireTest, BatchEntryRoundTrip) {
+    std::vector<SyncEntry> entries(3);
+    for (int i = 0; i < 3; i++) {
+        entries[i].ns = "batch_ns";
+        entries[i].key = {(uint8_t)(i + 1)};
+        entries[i].value = {(uint8_t)(i + 10), (uint8_t)(i + 20)};
+        entries[i].timestamp_us = 1000000 + i;
+        std::memset(entries[i].author, 0xAA + i, 32);
+        entries[i].seq = i + 1;
+        std::memset(entries[i].hash, 0xCC + i, 32);
+        entries[i].tombstone = 0;
+    }
+
+    auto encoded = encode_batch_entry(entries);
+    ASSERT_FALSE(encoded.empty());
+    ASSERT_EQ(BATCH_ENTRY, encoded[0]);
+
+    std::vector<SyncEntry> decoded;
+    ASSERT_TRUE(decode_batch_entry(encoded.data(), encoded.size(), &decoded));
+    ASSERT_EQ(3u, decoded.size());
+
+    for (int i = 0; i < 3; i++) {
+        EXPECT_EQ("batch_ns", decoded[i].ns);
+        EXPECT_EQ(entries[i].key, decoded[i].key);
+        EXPECT_EQ(entries[i].value, decoded[i].value);
+        EXPECT_EQ(entries[i].timestamp_us, decoded[i].timestamp_us);
+        EXPECT_EQ(0, std::memcmp(entries[i].author, decoded[i].author, 32));
+        EXPECT_EQ(entries[i].seq, decoded[i].seq);
+        EXPECT_EQ(0, std::memcmp(entries[i].hash, decoded[i].hash, 32));
+        EXPECT_EQ(0, decoded[i].tombstone);
+    }
+}
+
+TEST(WireTest, BatchEntryEmpty) {
+    std::vector<SyncEntry> entries;
+    auto encoded = encode_batch_entry(entries);
+    ASSERT_FALSE(encoded.empty());
+
+    std::vector<SyncEntry> decoded;
+    ASSERT_TRUE(decode_batch_entry(encoded.data(), encoded.size(), &decoded));
+    EXPECT_TRUE(decoded.empty());
+}
+
+TEST(WireTest, BatchEntryWithTombstone) {
+    std::vector<SyncEntry> entries(2);
+    entries[0].ns = "ns";
+    entries[0].key = {1};
+    entries[0].value = {10, 20};
+    entries[0].timestamp_us = 100;
+    std::memset(entries[0].author, 0x11, 32);
+    entries[0].seq = 1;
+    std::memset(entries[0].hash, 0x22, 32);
+    entries[0].tombstone = 0;
+
+    entries[1].ns = "ns";
+    entries[1].key = {2};
+    entries[1].value.clear();
+    entries[1].timestamp_us = 200;
+    std::memset(entries[1].author, 0x11, 32);
+    entries[1].seq = 2;
+    std::memset(entries[1].hash, 0, 32);
+    entries[1].tombstone = 1;
+
+    auto encoded = encode_batch_entry(entries);
+    std::vector<SyncEntry> decoded;
+    ASSERT_TRUE(decode_batch_entry(encoded.data(), encoded.size(), &decoded));
+    ASSERT_EQ(2u, decoded.size());
+    EXPECT_EQ(0, decoded[0].tombstone);
+    EXPECT_EQ(1, decoded[1].tombstone);
+    EXPECT_TRUE(decoded[1].value.empty());
+}
+
+TEST(WireTest, DecodeBatchEntryInvalid) {
+    /* Wrong type byte */
+    uint8_t data[] = {LIVE_ENTRY, 0x00};
+    std::vector<SyncEntry> out;
+    EXPECT_FALSE(decode_batch_entry(data, 2, &out));
+
+    /* Null data */
+    EXPECT_FALSE(decode_batch_entry(nullptr, 0, &out));
+}
+
+TEST(WireTest, MessageTypeBatchEntry) {
+    uint8_t data[] = {BATCH_ENTRY};
+    WireMessageType t;
+    ASSERT_TRUE(decode_message_type(data, 1, &t));
+    EXPECT_EQ(BATCH_ENTRY, t);
+}

@@ -15,7 +15,8 @@ enum WireMessageType : uint8_t {
     SYNC_ENTRY   = 0x02,
     SYNC_DONE    = 0x03,
     SYNC_ACK     = 0x04,
-    LIVE_ENTRY   = 0x05
+    LIVE_ENTRY   = 0x05,
+    BATCH_ENTRY  = 0x06
 };
 
 struct SyncRequest {
@@ -47,6 +48,7 @@ std::vector<uint8_t> encode_sync_entry(const SyncEntry &entry);
 std::vector<uint8_t> encode_sync_done();
 std::vector<uint8_t> encode_sync_ack(const SyncAck &ack);
 std::vector<uint8_t> encode_live_entry(const SyncEntry &entry);
+std::vector<uint8_t> encode_batch_entry(const std::vector<SyncEntry> &entries);
 
 /* Decode functions — return false on malformed input */
 bool decode_message_type(const uint8_t *data, size_t len, WireMessageType *type_out);
@@ -55,6 +57,7 @@ bool decode_sync_entry(const uint8_t *data, size_t len, SyncEntry *out);
 bool decode_sync_done(const uint8_t *data, size_t len);
 bool decode_sync_ack(const uint8_t *data, size_t len, SyncAck *out);
 bool decode_live_entry(const uint8_t *data, size_t len, SyncEntry *out);
+bool decode_batch_entry(const uint8_t *data, size_t len, std::vector<SyncEntry> *out);
 
 } /* namespace kome */
 

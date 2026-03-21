@@ -58,6 +58,7 @@ public:
 
     /* Called when local data is written (for live mode push) */
     void on_local_write(const LogEntry &entry);
+    void on_local_write_batch(const std::vector<LogEntry> &entries);
 
     /* Initiate sync with a specific peer */
     void initiate_sync(const uint8_t *peer_fp);
@@ -78,6 +79,7 @@ private:
     void handle_sync_done(const uint8_t *peer_fp);
     void handle_sync_ack(const uint8_t *peer_fp, const uint8_t *data, size_t len);
     void handle_live_entry(const uint8_t *peer_fp, const uint8_t *data, size_t len);
+    void handle_batch_entry(const uint8_t *peer_fp, const uint8_t *data, size_t len);
 
     void apply_remote_entry(const uint8_t *peer_fp, const SyncEntry &entry);
     void send_to_peer(const uint8_t *peer_fp, const std::vector<uint8_t> &data);
