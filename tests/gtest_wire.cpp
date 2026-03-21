@@ -14,8 +14,6 @@ TEST(WireTest, SyncRequestRoundTrip) {
     std::memset(author2, 0x22, 32);
     req.vv[std::string((const char*)author1, 32)] = 42;
     req.vv[std::string((const char*)author2, 32)] = 100;
-    req.ns_filter.push_back("contacts");
-    req.ns_filter.push_back("calendar");
 
     auto encoded = encode_sync_request(req);
     ASSERT_FALSE(encoded.empty());
@@ -27,9 +25,6 @@ TEST(WireTest, SyncRequestRoundTrip) {
     EXPECT_EQ(2u, decoded.vv.size());
     EXPECT_EQ(42u, decoded.vv[std::string((const char*)author1, 32)]);
     EXPECT_EQ(100u, decoded.vv[std::string((const char*)author2, 32)]);
-    EXPECT_EQ(2u, decoded.ns_filter.size());
-    EXPECT_EQ("contacts", decoded.ns_filter[0]);
-    EXPECT_EQ("calendar", decoded.ns_filter[1]);
 }
 
 TEST(WireTest, SyncRequestEmpty) {
@@ -38,7 +33,6 @@ TEST(WireTest, SyncRequestEmpty) {
     SyncRequest decoded;
     ASSERT_TRUE(decode_sync_request(encoded.data(), encoded.size(), &decoded));
     EXPECT_TRUE(decoded.vv.empty());
-    EXPECT_TRUE(decoded.ns_filter.empty());
 }
 
 /* --- SyncEntry round-trip ------------------------------------------------ */
@@ -257,4 +251,34 @@ TEST(WireTest, MessageTypeBatchEntry) {
     WireMessageType t;
     ASSERT_TRUE(decode_message_type(data, 1, &t));
     EXPECT_EQ(BATCH_ENTRY, t);
+}
+
+/* --- NamespaceACLSync round-trip ---------------------------------------- */
+
+TEST(WireTest, NamespaceACLSyncRoundTrip) {
+    NamespaceACLSync msg;
+    msg.entries.push_back({"contacts", 2});
+    msg.entries.push_back({"calendar", 1});
+
+    auto encoded = encode_namespace_acl_sync(msg);
+    ASSERT_FALSE(encoded.empty());
+    ASSERT_EQ(NAMESPACE_ACL_SYNC, encoded[0]);
+
+    NamespaceACLSync decoded;
+    ASSERT_TRUE(decode_namespace_acl_sync(encoded.data(), encoded.size(), &decoded));
+    ASSERT_EQ(2u, decoded.entries.size());
+    EXPECT_EQ("contacts", decoded.entries[0].ns);
+    EXPECT_EQ(2, decoded.entries[0].role);
+    EXPECT_EQ("calendar", decoded.entries[1].ns);
+    EXPECT_EQ(1, decoded.entries[1].role);
+}
+
+TEST(WireTest, NamespaceACLSyncEmpty) {
+    NamespaceACLSync msg;
+    auto encoded = encode_namespace_acl_sync(msg);
+    ASSERT_FALSE(encoded.empty());
+
+    NamespaceACLSync decoded;
+    ASSERT_TRUE(decode_namespace_acl_sync(encoded.data(), encoded.size(), &decoded));
+    EXPECT_TRUE(decoded.entries.empty());
 }

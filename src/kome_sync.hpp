@@ -27,6 +27,7 @@ struct PeerInfo {
     bool          they_sent_done = false;
     uint64_t      entries_expected = 0;
     uint64_t      entries_received = 0;
+    std::map<std::string, int> peer_access;  /* ns → KomeRole for this peer */
 };
 
 /* Convert LogEntry to SyncEntry (eliminates repeated field-by-field copies) */
@@ -80,6 +81,7 @@ private:
     void handle_sync_ack(const uint8_t *peer_fp, const uint8_t *data, size_t len);
     void handle_live_entry(const uint8_t *peer_fp, const uint8_t *data, size_t len);
     void handle_batch_entry(const uint8_t *peer_fp, const uint8_t *data, size_t len);
+    void handle_namespace_acl_sync(const uint8_t *peer_fp, const uint8_t *data, size_t len);
 
     void apply_remote_entry(const uint8_t *peer_fp, const SyncEntry &entry);
     void send_to_peer(const uint8_t *peer_fp, const std::vector<uint8_t> &data);

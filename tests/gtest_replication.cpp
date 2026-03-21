@@ -40,11 +40,32 @@ protected:
         cleanup_db(db_a);
         cleanup_db(db_b);
     }
+
+    void configure_ns(const char *ns) {
+        KomeNamespaceACLEntry acl_a;
+        std::memset(acl_a.fingerprint, 0xBB, 32);
+        acl_a.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_a = {};
+        cfg_a.name = ns;
+        cfg_a.acl = &acl_a;
+        cfg_a.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_a, &cfg_a));
+
+        KomeNamespaceACLEntry acl_b;
+        std::memset(acl_b.fingerprint, 0xAA, 32);
+        acl_b.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_b = {};
+        cfg_b.name = ns;
+        cfg_b.acl = &acl_b;
+        cfg_b.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_b, &cfg_b));
+    }
 };
 
 /* --- Replication target tracking ---------------------------------------- */
 
 TEST_F(ReplicationTest, TargetTracking) {
+    configure_ns("test");
     ASSERT_EQ(KOME_OK, kome_set_replication(engine_a, "test", 1));
 
     uint8_t key[] = "k1";
@@ -72,6 +93,7 @@ TEST_F(ReplicationTest, TargetTracking) {
 /* --- Replication change callback ---------------------------------------- */
 
 TEST_F(ReplicationTest, ReplicationChangeCallback) {
+    configure_ns("test");
     struct ReplData {
         int fire_count = 0;
         uint32_t last_confirmed = 0;
@@ -103,8 +125,26 @@ TEST_F(ReplicationTest, ReplicationChangeCallback) {
 /* --- Tombstone GC ------------------------------------------------------- */
 
 TEST_F(ReplicationTest, TombstoneGC) {
-    /* Set very short TTL */
-    ASSERT_EQ(KOME_OK, kome_set_tombstone_ttl(engine_a, 0));
+    /* Configure namespace with very short TTL (1 second) for quick GC */
+    KomeNamespaceACLEntry acl_a;
+    std::memset(acl_a.fingerprint, 0xBB, 32);
+    acl_a.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_a = {};
+    cfg_a.name = "test";
+    cfg_a.tombstone_ttl_sec = 1;
+    cfg_a.acl = &acl_a;
+    cfg_a.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_a, &cfg_a));
+
+    KomeNamespaceACLEntry acl_b;
+    std::memset(acl_b.fingerprint, 0xAA, 32);
+    acl_b.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_b = {};
+    cfg_b.name = "test";
+    cfg_b.tombstone_ttl_sec = 1;
+    cfg_b.acl = &acl_b;
+    cfg_b.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_b, &cfg_b));
 
     uint8_t key[] = "gc_key";
     uint8_t val[] = "gc_val";
@@ -115,18 +155,17 @@ TEST_F(ReplicationTest, TombstoneGC) {
     /* Sync triggers GC on ACK */
     loopback.connect();
 
-    /* After GC with TTL=0, the tombstone should be cleaned up.
+    /* After GC with short TTL, the tombstone may be cleaned up.
        Since GC runs on ACK receipt, the tombstone might be gone. */
     KomeStats stats;
     kome_stats(engine_a, &stats);
-    /* The tombstone may or may not be cleaned depending on timing,
-       but the mechanism is tested */
     EXPECT_GE(stats.total_entries, 0u);
 }
 
 /* --- Stats after sync --------------------------------------------------- */
 
 TEST_F(ReplicationTest, StatsAfterSync) {
+    configure_ns("data");
     uint8_t val[] = "v";
     KomeEntryMeta m;
     for (int i = 0; i < 5; i++) {

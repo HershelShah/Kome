@@ -82,6 +82,22 @@ class KomeStats(ctypes.Structure):
     ]
 
 
+class KomeNamespaceACLEntry(ctypes.Structure):
+    _fields_ = [
+        ("fingerprint", ctypes.c_uint8 * 32),
+        ("role", ctypes.c_int),
+    ]
+
+
+class KomeNamespaceConfig(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("tombstone_ttl_sec", ctypes.c_uint64),
+        ("acl", ctypes.POINTER(KomeNamespaceACLEntry)),
+        ("acl_count", ctypes.c_size_t),
+    ]
+
+
 # Transport callback types
 SEND_FN = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8),
                             ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t)
@@ -207,8 +223,18 @@ _lib.kome_free_keys.restype = None
 _lib.kome_on_remote_change.argtypes = [ctypes.c_void_p, REMOTE_CHANGE_CB, ctypes.c_void_p]
 _lib.kome_on_remote_change.restype = None
 
-_lib.kome_set_tombstone_ttl.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
-_lib.kome_set_tombstone_ttl.restype = ctypes.c_int
+_lib.kome_configure_namespace.argtypes = [ctypes.c_void_p, ctypes.POINTER(KomeNamespaceConfig)]
+_lib.kome_configure_namespace.restype = ctypes.c_int
+
+_lib.kome_get_namespace_config.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                            ctypes.POINTER(KomeNamespaceConfig)]
+_lib.kome_get_namespace_config.restype = ctypes.c_int
+
+_lib.kome_remove_namespace.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+_lib.kome_remove_namespace.restype = ctypes.c_int
+
+_lib.kome_free_namespace_config.argtypes = [ctypes.POINTER(KomeNamespaceConfig)]
+_lib.kome_free_namespace_config.restype = None
 
 _lib.kome_set_log_level.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _lib.kome_set_log_level.restype = None

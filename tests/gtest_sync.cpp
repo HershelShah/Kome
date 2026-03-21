@@ -46,6 +46,27 @@ protected:
         cleanup_db(db_b);
     }
 
+    /* Configure a namespace for bidirectional WRITE between A and B */
+    void configure_ns(const char *ns) {
+        KomeNamespaceACLEntry acl_a;
+        std::memset(acl_a.fingerprint, 0xBB, 32);
+        acl_a.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_a = {};
+        cfg_a.name = ns;
+        cfg_a.acl = &acl_a;
+        cfg_a.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_a, &cfg_a));
+
+        KomeNamespaceACLEntry acl_b;
+        std::memset(acl_b.fingerprint, 0xAA, 32);
+        acl_b.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_b = {};
+        cfg_b.name = ns;
+        cfg_b.acl = &acl_b;
+        cfg_b.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(engine_b, &cfg_b));
+    }
+
     void replicate_n(KomeEngine *e, const char *ns, int n) {
         for (int i = 0; i < n; i++) {
             std::string key = "key_" + std::to_string(i);
@@ -61,6 +82,7 @@ protected:
 /* --- Basic sync: A writes, B connects, B gets everything ---------------- */
 
 TEST_F(SyncTest, BasicSync) {
+    configure_ns("test");
     replicate_n(engine_a, "test", 10);
 
     /* Connect — triggers sync */
@@ -79,6 +101,7 @@ TEST_F(SyncTest, BasicSync) {
 /* --- Bidirectional sync: A has 0-4, B has 5-9, both get all ------------- */
 
 TEST_F(SyncTest, BidirectionalSync) {
+    configure_ns("test");
     /* A writes keys 0-4 */
     for (int i = 0; i < 5; i++) {
         std::string key = "key_" + std::to_string(i);
@@ -118,6 +141,7 @@ TEST_F(SyncTest, BidirectionalSync) {
 /* --- Incremental sync: sync, write more, sync again --------------------- */
 
 TEST_F(SyncTest, IncrementalSync) {
+    configure_ns("test");
     replicate_n(engine_a, "test", 5);
     loopback.connect();
 
@@ -157,6 +181,7 @@ TEST_F(SyncTest, IncrementalSync) {
 /* --- Tombstone propagation ---------------------------------------------- */
 
 TEST_F(SyncTest, TombstoneSync) {
+    configure_ns("test");
     /* A writes and deletes */
     uint8_t key[] = "del_key";
     uint8_t val[] = "some_value";
@@ -176,6 +201,7 @@ TEST_F(SyncTest, TombstoneSync) {
 /* --- Live mode: real-time push after sync ------------------------------- */
 
 TEST_F(SyncTest, LiveModePush) {
+    configure_ns("test");
     /* Connect first (triggers sync with empty state) */
     loopback.connect();
 
@@ -193,6 +219,7 @@ TEST_F(SyncTest, LiveModePush) {
 /* --- Conflict during sync (LWW) ---------------------------------------- */
 
 TEST_F(SyncTest, ConflictDuringSync) {
+    configure_ns("test");
     /* Both write the same key with different values */
     uint8_t key[] = "conflict_key";
     uint8_t val_a[] = "value_a";
@@ -228,6 +255,7 @@ TEST_F(SyncTest, ConflictDuringSync) {
 /* --- on_remote_change callback ------------------------------------------ */
 
 TEST_F(SyncTest, RemoteChangeCallback) {
+    configure_ns("events");
     struct CallbackData {
         int count = 0;
         std::string last_ns;
@@ -251,6 +279,7 @@ TEST_F(SyncTest, RemoteChangeCallback) {
 /* --- on_sync_done callback ---------------------------------------------- */
 
 TEST_F(SyncTest, SyncDoneCallback) {
+    configure_ns("dummy");  /* Need at least one configured ns for sync to proceed */
     int done_count = 0;
     kome_on_sync_done(engine_b, [](void *ud, const uint8_t *) {
         (*static_cast<int*>(ud))++;
@@ -263,6 +292,7 @@ TEST_F(SyncTest, SyncDoneCallback) {
 /* --- Batch writes sync -------------------------------------------------- */
 
 TEST_F(SyncTest, BatchLivePush) {
+    configure_ns("test");
     /* Connect first (triggers sync with empty state, enters live mode) */
     loopback.connect();
 
@@ -287,6 +317,7 @@ TEST_F(SyncTest, BatchLivePush) {
 }
 
 TEST_F(SyncTest, BatchSyncOnConnect) {
+    configure_ns("data");
     /* Batch write on A before connecting */
     KomeBatchEntry entries[2];
     entries[0] = {"data", (const uint8_t*)"x1", 2, (const uint8_t*)"val1", 4};
@@ -306,6 +337,7 @@ TEST_F(SyncTest, BatchSyncOnConnect) {
 }
 
 TEST_F(SyncTest, BatchRemoteChangeCallbackOrder) {
+    configure_ns("ns");
     struct CallbackData {
         std::vector<uint64_t> seqs;
     } cb_data;
@@ -337,6 +369,7 @@ TEST_F(SyncTest, BatchRemoteChangeCallbackOrder) {
 }
 
 TEST_F(SyncTest, BatchMixedWithSingleWrites) {
+    configure_ns("mix");
     loopback.connect();
 
     /* Single write */

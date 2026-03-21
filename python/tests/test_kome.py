@@ -152,6 +152,10 @@ class TestSync:
                 ea.set_identity(b"aaaa" * 8)
                 eb.set_identity(b"bbbb" * 8)
 
+                # Configure namespace for sync (transport fps: A=0xAA*32, B=0xBB*32)
+                ea.configure_namespace("test", acl=[(b"\xBB" * 32, 2)])
+                eb.configure_namespace("test", acl=[(b"\xAA" * 32, 2)])
+
                 ea.put("test", b"key1", b"value1")
                 ea.put("test", b"key2", b"value2")
 
