@@ -398,3 +398,129 @@ TEST_F(EngineTest, CallbackCanCallApi) {
     kome_close(e2);
     cleanup_db(db2);
 }
+
+/* --- Batch writes ------------------------------------------------------- */
+
+TEST_F(EngineTest, BatchPutBasic) {
+    set_test_identity();
+
+    KomeBatchEntry entries[3];
+    entries[0] = {"ns", (const uint8_t*)"k1", 2, (const uint8_t*)"v1", 2};
+    entries[1] = {"ns", (const uint8_t*)"k2", 2, (const uint8_t*)"v2", 2};
+    entries[2] = {"ns", (const uint8_t*)"k3", 2, (const uint8_t*)"v3", 2};
+
+    KomeEntryMeta metas[3] = {};
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine, entries, 3, metas));
+
+    /* Consecutive sequence numbers */
+    EXPECT_EQ(1u, metas[0].seq);
+    EXPECT_EQ(2u, metas[1].seq);
+    EXPECT_EQ(3u, metas[2].seq);
+
+    /* Same timestamp for all entries */
+    EXPECT_EQ(metas[0].timestamp_us, metas[1].timestamp_us);
+    EXPECT_EQ(metas[1].timestamp_us, metas[2].timestamp_us);
+
+    /* All entries readable */
+    for (int i = 0; i < 3; i++) {
+        std::string key = "k" + std::to_string(i + 1);
+        uint8_t *out = nullptr;
+        size_t out_len = 0;
+        ASSERT_EQ(KOME_OK, kome_get(engine, "ns",
+            (const uint8_t*)key.data(), key.size(), &out, &out_len, nullptr));
+        ASSERT_NE(nullptr, out);
+        EXPECT_EQ(2u, out_len);
+        kome_free_value(out);
+    }
+}
+
+TEST_F(EngineTest, BatchPutNullMetas) {
+    set_test_identity();
+
+    KomeBatchEntry entries[2];
+    entries[0] = {"ns", (const uint8_t*)"a", 1, (const uint8_t*)"x", 1};
+    entries[1] = {"ns", (const uint8_t*)"b", 1, (const uint8_t*)"y", 1};
+
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine, entries, 2, nullptr));
+
+    /* Still readable */
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    ASSERT_EQ(KOME_OK, kome_get(engine, "ns", (const uint8_t*)"a", 1,
+        &out, &out_len, nullptr));
+    kome_free_value(out);
+}
+
+TEST_F(EngineTest, BatchPutSequenceContinuity) {
+    set_test_identity();
+
+    /* Single put first */
+    uint8_t k[] = "before";
+    uint8_t v[] = "val";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k, 6, v, 3, &m));
+    EXPECT_EQ(1u, m.seq);
+
+    /* Batch put should continue from seq 2 */
+    KomeBatchEntry entries[2];
+    entries[0] = {"ns", (const uint8_t*)"b1", 2, (const uint8_t*)"v1", 2};
+    entries[1] = {"ns", (const uint8_t*)"b2", 2, (const uint8_t*)"v2", 2};
+
+    KomeEntryMeta metas[2] = {};
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine, entries, 2, metas));
+    EXPECT_EQ(2u, metas[0].seq);
+    EXPECT_EQ(3u, metas[1].seq);
+}
+
+TEST_F(EngineTest, BatchPutValidation) {
+    set_test_identity();
+
+    /* Empty count */
+    KomeBatchEntry e = {"ns", (const uint8_t*)"k", 1, (const uint8_t*)"v", 1};
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_put_batch(engine, &e, 0, nullptr));
+
+    /* Null entries */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_put_batch(engine, nullptr, 1, nullptr));
+
+    /* Too-large namespace in batch */
+    std::string long_ns(256, 'x');
+    KomeBatchEntry bad[2];
+    bad[0] = {"ns", (const uint8_t*)"k", 1, (const uint8_t*)"v", 1};
+    bad[1] = {long_ns.c_str(), (const uint8_t*)"k", 1, (const uint8_t*)"v", 1};
+    EXPECT_EQ(KOME_ERR_TOO_LARGE, kome_put_batch(engine, bad, 2, nullptr));
+
+    /* Verify first entry was NOT written (atomic failure) */
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get(engine, "ns",
+        (const uint8_t*)"k", 1, &out, &out_len, nullptr));
+}
+
+TEST_F(EngineTest, BatchPutWithoutIdentity) {
+    KomeBatchEntry e = {"ns", (const uint8_t*)"k", 1, (const uint8_t*)"v", 1};
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_put_batch(engine, &e, 1, nullptr));
+}
+
+TEST_F(EngineTest, BatchPutExceedsMaxCount) {
+    set_test_identity();
+    KomeBatchEntry e = {"ns", (const uint8_t*)"k", 1, (const uint8_t*)"v", 1};
+    EXPECT_EQ(KOME_ERR_TOO_LARGE,
+        kome_put_batch(engine, &e, KOME_MAX_BATCH_COUNT + 1, nullptr));
+}
+
+TEST_F(EngineTest, BatchPutMultipleNamespaces) {
+    set_test_identity();
+
+    KomeBatchEntry entries[3];
+    entries[0] = {"alpha", (const uint8_t*)"k1", 2, (const uint8_t*)"v1", 2};
+    entries[1] = {"beta",  (const uint8_t*)"k2", 2, (const uint8_t*)"v2", 2};
+    entries[2] = {"alpha", (const uint8_t*)"k3", 2, (const uint8_t*)"v3", 2};
+
+    ASSERT_EQ(KOME_OK, kome_put_batch(engine, entries, 3, nullptr));
+
+    /* Both namespaces have data */
+    KomeEntryMeta m;
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine, "alpha", (const uint8_t*)"k1", 2, &m));
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine, "beta", (const uint8_t*)"k2", 2, &m));
+    EXPECT_EQ(KOME_OK, kome_get_meta(engine, "alpha", (const uint8_t*)"k3", 2, &m));
+}

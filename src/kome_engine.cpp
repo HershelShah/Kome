@@ -113,6 +113,97 @@ KOME_API KomeError kome_put(KomeEngine *engine,
     return KOME_OK;
 }
 
+KOME_API KomeError kome_put_batch(KomeEngine *engine,
+    const KomeBatchEntry *entries, size_t count,
+    KomeEntryMeta *metas_out)
+{
+    if (!engine || !entries || count == 0) return KOME_ERR_MISUSE;
+    if (count > KOME_MAX_BATCH_COUNT) return KOME_ERR_TOO_LARGE;
+
+    /* Validate all entries before acquiring the lock */
+    for (size_t i = 0; i < count; i++) {
+        if (!entries[i].ns || !entries[i].key || !entries[i].value)
+            return KOME_ERR_MISUSE;
+        size_t ns_len = std::strlen(entries[i].ns);
+        if (ns_len == 0 || ns_len > KOME_MAX_NS_LEN) return KOME_ERR_TOO_LARGE;
+        if (entries[i].key_len == 0 || entries[i].key_len > KOME_MAX_KEY_LEN)
+            return KOME_ERR_TOO_LARGE;
+        if (entries[i].value_len > KOME_MAX_VALUE_LEN) return KOME_ERR_TOO_LARGE;
+    }
+
+    std::vector<KomeEntryMeta> metas(count);
+    kome::KomeSyncManager *sync = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(engine->mu);
+        if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+        if (!engine->identity_set) return KOME_ERR_MISUSE;
+
+        KomeError err = engine->log->begin_transaction();
+        if (err != KOME_OK) return err;
+
+        uint64_t base_ts = kome::timestamp_us();
+        for (size_t i = 0; i < count; i++) {
+            auto &e = entries[i];
+            auto &meta = metas[i];
+
+            meta.timestamp_us = base_ts;
+            std::memcpy(meta.author, engine->identity, 32);
+            meta.seq = engine->next_seq++;
+            kome::sha256(e.value, e.value_len, meta.hash);
+            meta.value_len = (uint32_t)e.value_len;
+            meta.tombstone = 0;
+
+            err = engine->log->put_entry(e.ns, e.key, e.key_len,
+                                          e.value, e.value_len, &meta);
+            if (err != KOME_OK) {
+                engine->log->rollback_transaction();
+                engine->next_seq -= (i + 1);
+                return err;
+            }
+
+            err = engine->log->update_version_vector(meta.author, meta.seq);
+            if (err != KOME_OK) {
+                engine->log->rollback_transaction();
+                engine->next_seq -= (i + 1);
+                return err;
+            }
+        }
+
+        err = engine->log->commit_transaction();
+        if (err != KOME_OK) {
+            engine->log->rollback_transaction();
+            engine->next_seq -= count;
+            return err;
+        }
+
+        if (metas_out) {
+            for (size_t i = 0; i < count; i++)
+                metas_out[i] = metas[i];
+        }
+        sync = engine->sync_mgr.get();
+    }
+
+    if (sync) {
+        std::vector<kome::LogEntry> log_entries;
+        log_entries.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            kome::LogEntry le;
+            le.ns = entries[i].ns;
+            le.key.assign(entries[i].key, entries[i].key + entries[i].key_len);
+            le.value.assign(entries[i].value, entries[i].value + entries[i].value_len);
+            le.timestamp_us = metas[i].timestamp_us;
+            std::memcpy(le.author, metas[i].author, 32);
+            le.seq = metas[i].seq;
+            std::memcpy(le.hash, metas[i].hash, 32);
+            le.tombstone = 0;
+            log_entries.push_back(std::move(le));
+        }
+        sync->on_local_write_batch(log_entries);
+    }
+
+    return KOME_OK;
+}
+
 KOME_API KomeError kome_delete(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     KomeEntryMeta *meta_out)

@@ -356,6 +356,29 @@ KomeError KomeLog::gc_values() {
     return (rc == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
 }
 
+/* --- Transactions -------------------------------------------------------- */
+
+KomeError KomeLog::begin_transaction() {
+    char *err = nullptr;
+    int rc = sqlite3_exec(db_, "BEGIN", nullptr, nullptr, &err);
+    sqlite3_free(err);
+    return (rc == SQLITE_OK) ? KOME_OK : KOME_ERR_STORAGE;
+}
+
+KomeError KomeLog::commit_transaction() {
+    char *err = nullptr;
+    int rc = sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &err);
+    sqlite3_free(err);
+    return (rc == SQLITE_OK) ? KOME_OK : KOME_ERR_STORAGE;
+}
+
+KomeError KomeLog::rollback_transaction() {
+    char *err = nullptr;
+    int rc = sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, &err);
+    sqlite3_free(err);
+    return (rc == SQLITE_OK) ? KOME_OK : KOME_ERR_STORAGE;
+}
+
 /* --- Stats --------------------------------------------------------------- */
 
 KomeError KomeLog::get_stats(KomeStats *out) {

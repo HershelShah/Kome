@@ -45,6 +45,7 @@ extern "C" {
 #define KOME_MAX_NS_LEN      255
 #define KOME_MAX_KEY_LEN      512
 #define KOME_MAX_VALUE_LEN    (16 * 1024 * 1024)  /* 16 MiB */
+#define KOME_MAX_BATCH_COUNT  1000
 
 /* --- Error codes -------------------------------------------------------- */
 
@@ -96,6 +97,16 @@ typedef struct {
     uint64_t namespace_count;
     uint64_t db_size_bytes;
 } KomeStats;
+
+/* --- Batch writes ------------------------------------------------------- */
+
+typedef struct {
+    const char    *ns;
+    const uint8_t *key;
+    size_t         key_len;
+    const uint8_t *value;
+    size_t         value_len;
+} KomeBatchEntry;
 
 /* --- Transport interface ------------------------------------------------ */
 
@@ -178,6 +189,14 @@ KOME_API KomeError kome_put(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     const uint8_t *value, size_t value_len,
     KomeEntryMeta *meta_out);
+
+/* Write multiple key-value pairs atomically. Syncs as a single batch.
+ * All entries share one timestamp and receive consecutive sequence numbers.
+ * count must be <= KOME_MAX_BATCH_COUNT.
+ * If any entry fails validation the entire batch is rejected. */
+KOME_API KomeError kome_put_batch(KomeEngine *engine,
+    const KomeBatchEntry *entries, size_t count,
+    KomeEntryMeta *metas_out);
 
 /* Delete a key (writes a tombstone). */
 KOME_API KomeError kome_delete(KomeEngine *engine,

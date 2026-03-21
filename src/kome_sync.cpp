@@ -59,6 +59,7 @@ void KomeSyncManager::on_recv(const uint8_t *peer_fp, const uint8_t *data, size_
         case SYNC_DONE:    handle_sync_done(peer_fp);                break;
         case SYNC_ACK:     handle_sync_ack(peer_fp, data, len);     break;
         case LIVE_ENTRY:   handle_live_entry(peer_fp, data, len);   break;
+        case BATCH_ENTRY:  handle_batch_entry(peer_fp, data, len);  break;
     }
 }
 
@@ -395,6 +396,265 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
         transport_->send(peer_fp, ack_msg.data(), ack_msg.size());
 
     if (merge_value) std::free(merge_value);
+}
+
+void KomeSyncManager::on_local_write_batch(const std::vector<LogEntry> &entries) {
+    if (entries.empty()) return;
+
+    std::vector<std::string> live_peers;
+    {
+        std::lock_guard<std::mutex> lock(peers_mu_);
+        for (auto &[key, info] : peers_) {
+            if (info.state == PeerSyncState::LIVE)
+                live_peers.push_back(key);
+        }
+    }
+    if (live_peers.empty()) return;
+
+    std::vector<SyncEntry> se_vec;
+    se_vec.reserve(entries.size());
+    for (auto &e : entries)
+        se_vec.push_back(log_to_sync(e));
+
+    auto msg = encode_batch_entry(se_vec);
+    for (auto &fp : live_peers)
+        send_to_peer((const uint8_t*)fp.data(), msg);
+}
+
+void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
+                                           const uint8_t *data, size_t len) {
+    std::vector<SyncEntry> entries;
+    if (!decode_batch_entry(data, len, &entries)) return;
+    if (entries.empty() || entries.size() > KOME_MAX_BATCH_COUNT) return;
+
+    /* Validate all entries first — reject the entire batch on any failure */
+    for (auto &entry : entries) {
+        if (entry.ns.size() > KOME_MAX_NS_LEN || entry.ns.empty()) return;
+        if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
+        if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
+        if (!entry.tombstone) {
+            uint8_t computed_hash[32];
+            sha256(entry.value.data(), entry.value.size(), computed_hash);
+            if (std::memcmp(computed_hash, entry.hash, 32) != 0)
+                return;
+        }
+    }
+
+    /* Phase 1: Read local state + snapshot callbacks under engine lock */
+    struct EntryCtx {
+        bool have_local = false;
+        uint64_t local_seq_snapshot = 0;
+        KomeEntryMeta local_meta{};
+        std::vector<uint8_t> local_value_copy;
+        KomeEntryMeta remote_meta{};
+        bool should_store = false;
+        std::vector<uint8_t> store_value_buf;
+        uint8_t *merge_value = nullptr;
+        size_t merge_value_len = 0;
+    };
+    std::vector<EntryCtx> ctxs(entries.size());
+
+    KomeConflictCallback conflict_cb = nullptr;
+    void *conflict_ud = nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        conflict_cb = engine_->on_conflict_cb;
+        conflict_ud = engine_->on_conflict_ud;
+
+        for (size_t i = 0; i < entries.size(); i++) {
+            auto &entry = entries[i];
+            auto &ctx = ctxs[i];
+
+            ctx.remote_meta.timestamp_us = entry.timestamp_us;
+            std::memcpy(ctx.remote_meta.author, entry.author, 32);
+            ctx.remote_meta.seq = entry.seq;
+            std::memcpy(ctx.remote_meta.hash, entry.hash, 32);
+            ctx.remote_meta.value_len = (uint32_t)entry.value.size();
+            ctx.remote_meta.tombstone = entry.tombstone;
+
+            LogEntry local;
+            KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
+                                                     entry.key.size(), &local);
+            if (err == KOME_OK) {
+                ctx.have_local = true;
+                ctx.local_seq_snapshot = local.seq;
+                ctx.local_meta.timestamp_us = local.timestamp_us;
+                std::memcpy(ctx.local_meta.author, local.author, 32);
+                ctx.local_meta.seq = local.seq;
+                std::memcpy(ctx.local_meta.hash, local.hash, 32);
+                ctx.local_meta.value_len = (uint32_t)local.value.size();
+                ctx.local_meta.tombstone = local.tombstone;
+                ctx.local_value_copy = std::move(local.value);
+            }
+        }
+    }
+
+    /* Phase 2: Conflict resolution outside all locks */
+    for (size_t i = 0; i < entries.size(); i++) {
+        auto &entry = entries[i];
+        auto &ctx = ctxs[i];
+
+        ctx.store_value_buf = entry.value;
+
+        if (!ctx.have_local) {
+            ctx.should_store = true;
+        } else {
+            KomeConflictChoice choice = resolve_conflict(
+                entry.ns.c_str(), entry.key.data(), entry.key.size(),
+                &ctx.local_meta, ctx.local_value_copy.data(),
+                &ctx.remote_meta, entry.value.data(),
+                conflict_cb, conflict_ud,
+                &ctx.merge_value, &ctx.merge_value_len);
+
+            if (choice == KOME_KEEP_REMOTE) {
+                ctx.should_store = true;
+            } else if (choice == KOME_MERGE) {
+                ctx.should_store = true;
+                ctx.store_value_buf.assign(ctx.merge_value,
+                                           ctx.merge_value + ctx.merge_value_len);
+            }
+        }
+    }
+
+    /* Phase 3: Write all entries atomically under engine lock */
+    KomeRemoteChangeCallback change_cb = nullptr;
+    void *change_ud = nullptr;
+
+    struct StoredEntry {
+        std::string ns;
+        std::vector<uint8_t> key;
+        std::vector<uint8_t> value_copy;
+        KomeEntryMeta meta;
+    };
+    std::vector<StoredEntry> stored;
+    bool txn_ok = true;
+
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        change_cb = engine_->on_remote_change_cb;
+        change_ud = engine_->on_remote_change_ud;
+
+        if (engine_->log->begin_transaction() != KOME_OK) {
+            txn_ok = false;
+        }
+
+        for (size_t i = 0; i < entries.size() && txn_ok; i++) {
+            auto &entry = entries[i];
+            auto &ctx = ctxs[i];
+
+            if (!ctx.should_store) continue;
+
+            KomeEntryMeta store_meta = ctx.remote_meta;
+            if (ctx.merge_value) {
+                sha256(ctx.store_value_buf.data(), ctx.store_value_buf.size(),
+                       store_meta.hash);
+                store_meta.value_len = (uint32_t)ctx.store_value_buf.size();
+                store_meta.tombstone = 0;
+            }
+
+            /* TOCTOU guard */
+            if (ctx.have_local) {
+                LogEntry current;
+                KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
+                                                         entry.key.size(), &current);
+                if (err == KOME_OK && current.seq != ctx.local_seq_snapshot) {
+                    KomeEntryMeta cur_meta;
+                    cur_meta.timestamp_us = current.timestamp_us;
+                    std::memcpy(cur_meta.author, current.author, 32);
+                    cur_meta.seq = current.seq;
+                    if (!lww_remote_wins(&cur_meta, &store_meta)) {
+                        continue;
+                    }
+                }
+            }
+
+            KomeError err = engine_->log->put_entry(entry.ns.c_str(), entry.key.data(),
+                                                     entry.key.size(),
+                                                     ctx.store_value_buf.data(),
+                                                     ctx.store_value_buf.size(),
+                                                     &store_meta);
+            if (err != KOME_OK) {
+                engine_->log->rollback_transaction();
+                txn_ok = false;
+                break;
+            }
+
+            err = engine_->log->update_version_vector(store_meta.author, store_meta.seq);
+            if (err != KOME_OK) {
+                engine_->log->rollback_transaction();
+                txn_ok = false;
+                break;
+            }
+
+            StoredEntry se;
+            se.ns = entry.ns;
+            se.key = entry.key;
+            se.meta = store_meta;
+            se.value_copy = std::move(ctx.store_value_buf);
+            stored.push_back(std::move(se));
+        }
+
+        if (txn_ok)
+            engine_->log->commit_transaction();
+    }
+
+    for (auto &ctx : ctxs) {
+        if (ctx.merge_value) std::free(ctx.merge_value);
+    }
+
+    if (!txn_ok) return;
+
+    /* Phase 4: Fire callbacks outside all locks — once per entry in order */
+    if (change_cb) {
+        for (auto &se : stored) {
+            change_cb(change_ud,
+                      se.ns.c_str(), se.key.data(), se.key.size(),
+                      se.value_copy.data(), se.value_copy.size(), &se.meta);
+        }
+    }
+
+    /* Phase 5: Gossip relay — forward only stored entries to other live peers */
+    if (!stored.empty()) {
+        std::string sender_key = fp_key(peer_fp);
+        std::vector<std::string> relay_peers;
+        {
+            std::lock_guard<std::mutex> lock(peers_mu_);
+            for (auto &[key, info] : peers_) {
+                if (info.state == PeerSyncState::LIVE && key != sender_key)
+                    relay_peers.push_back(key);
+            }
+        }
+        if (!relay_peers.empty()) {
+            std::vector<SyncEntry> relay_entries;
+            relay_entries.reserve(stored.size());
+            for (auto &se : stored) {
+                SyncEntry re;
+                re.ns = se.ns;
+                re.key = se.key;
+                re.value = se.value_copy;
+                re.timestamp_us = se.meta.timestamp_us;
+                std::memcpy(re.author, se.meta.author, 32);
+                re.seq = se.meta.seq;
+                std::memcpy(re.hash, se.meta.hash, 32);
+                re.tombstone = se.meta.tombstone;
+                relay_entries.push_back(std::move(re));
+            }
+            auto msg = encode_batch_entry(relay_entries);
+            for (auto &fp : relay_peers)
+                send_to_peer((const uint8_t*)fp.data(), msg);
+        }
+    }
+
+    /* ACK each entry */
+    for (auto &entry : entries) {
+        SyncAck ack;
+        std::memcpy(ack.author, entry.author, 32);
+        ack.seq = entry.seq;
+        auto ack_msg = encode_sync_ack(ack);
+        if (transport_)
+            transport_->send(peer_fp, ack_msg.data(), ack_msg.size());
+    }
 }
 
 void KomeSyncManager::send_to_peer(const uint8_t *peer_fp,

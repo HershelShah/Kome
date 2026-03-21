@@ -127,7 +127,7 @@ std::vector<uint8_t> encode_live_entry(const SyncEntry &entry) {
 bool decode_message_type(const uint8_t *data, size_t len, WireMessageType *type_out) {
     if (!data || len < 1) return false;
     uint8_t t = data[0];
-    if (t < SYNC_REQUEST || t > LIVE_ENTRY) return false;
+    if (t < SYNC_REQUEST || t > BATCH_ENTRY) return false;
     *type_out = static_cast<WireMessageType>(t);
     return true;
 }
@@ -310,6 +310,79 @@ bool decode_live_entry(const uint8_t *data, size_t len, SyncEntry *out) {
     cw_unpack_context uc;
     cw_unpack_context_init(&uc, data + 1, (unsigned long)(len - 1), nullptr);
     return decode_entry_from_map(&uc, out);
+}
+
+std::vector<uint8_t> encode_batch_entry(const std::vector<SyncEntry> &entries) {
+    /* Estimate buffer size */
+    size_t buf_size = 64;
+    for (auto &e : entries)
+        buf_size += 512 + e.ns.size() + e.key.size() + e.value.size();
+    std::vector<uint8_t> buf(buf_size);
+
+    cw_pack_context pc;
+    cw_pack_context_init(&pc, buf.data() + 1, buf_size - 1, nullptr);
+    buf[0] = BATCH_ENTRY;
+
+    cw_pack_map_size(&pc, 2);
+
+    cw_pack_str(&pc, "n", 1);
+    cw_pack_unsigned(&pc, (uint64_t)entries.size());
+
+    cw_pack_str(&pc, "e", 1);
+    cw_pack_array_size(&pc, (unsigned)entries.size());
+    for (auto &e : entries)
+        pack_entry_fields(&pc, e);
+
+    if (pc.return_code != CWP_RC_OK) return {};
+
+    size_t total = 1 + (size_t)(pc.current - (buf.data() + 1));
+    buf.resize(total);
+    return buf;
+}
+
+bool decode_batch_entry(const uint8_t *data, size_t len, std::vector<SyncEntry> *out) {
+    if (!data || len < 2 || data[0] != BATCH_ENTRY || !out) return false;
+
+    cw_unpack_context uc;
+    cw_unpack_context_init(&uc, data + 1, (unsigned long)(len - 1), nullptr);
+
+    cw_unpack_next(&uc);
+    if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_MAP) return false;
+    unsigned map_size = uc.item.as.map.size;
+
+    uint32_t count = UINT32_MAX;  /* sentinel: not yet seen */
+    out->clear();
+
+    for (unsigned i = 0; i < map_size; i++) {
+        cw_unpack_next(&uc);
+        if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_STR) return false;
+        std::string field((const char*)uc.item.as.str.start, uc.item.as.str.length);
+
+        if (field == "n") {
+            cw_unpack_next(&uc);
+            if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_POSITIVE_INTEGER)
+                return false;
+            count = (uint32_t)uc.item.as.u64;
+            if (count > KOME_MAX_BATCH_COUNT) return false;
+        } else if (field == "e") {
+            cw_unpack_next(&uc);
+            if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_ARRAY) return false;
+            unsigned arr_size = uc.item.as.array.size;
+            if (arr_size > KOME_MAX_BATCH_COUNT) return false;
+            out->reserve(arr_size);
+            for (unsigned j = 0; j < arr_size; j++) {
+                SyncEntry entry;
+                if (!decode_entry_from_map(&uc, &entry)) return false;
+                out->push_back(std::move(entry));
+            }
+        } else {
+            cw_unpack_next(&uc);
+        }
+    }
+
+    /* Cross-check: count must have been present and must match entries */
+    if (count == UINT32_MAX) return false;
+    return out->size() == count;
 }
 
 } /* namespace kome */

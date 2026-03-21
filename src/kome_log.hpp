@@ -60,6 +60,10 @@ public:
     KomeError gc_tombstones(uint64_t ttl_seconds);
     KomeError gc_values();
 
+    KomeError begin_transaction();
+    KomeError commit_transaction();
+    KomeError rollback_transaction();
+
     KomeError get_stats(KomeStats *out);
     KomeError list_namespaces(std::vector<std::string> &out);
     KomeError list_keys(const char *ns, std::vector<std::vector<uint8_t>> &out);
