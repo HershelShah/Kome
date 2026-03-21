@@ -103,6 +103,7 @@ kome_add_test(test_conflict tests/gtest_conflict.cpp)
 kome_add_test(test_sync     tests/gtest_sync.cpp)
 kome_add_test(test_replication tests/gtest_replication.cpp)
 kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
+kome_add_test(test_namespace_config tests/gtest_namespace_config.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)

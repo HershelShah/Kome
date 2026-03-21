@@ -344,12 +344,6 @@ TEST_F(EngineTest, SetLogLevel) {
     kome_set_log_level(engine, KOME_LOG_DEBUG);
 }
 
-/* --- Tombstone TTL ------------------------------------------------------- */
-
-TEST_F(EngineTest, SetTombstoneTtl) {
-    ASSERT_EQ(KOME_OK, kome_set_tombstone_ttl(engine, 86400));
-}
-
 /* --- Callback from on_remote_change can call kome API ------------------- */
 
 TEST_F(EngineTest, CallbackCanCallApi) {
@@ -386,6 +380,25 @@ TEST_F(EngineTest, CallbackCanCallApi) {
     uint8_t v[] = "cb_val";
     KomeEntryMeta m;
     kome_put(e2, "test", k, 6, v, 6, &m);
+
+    /* Configure namespace for sync */
+    KomeNamespaceACLEntry acl1;
+    std::memset(acl1.fingerprint, 0xBB, 32);  /* B's loopback fp */
+    acl1.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig nscfg1 = {};
+    nscfg1.name = "test";
+    nscfg1.acl = &acl1;
+    nscfg1.acl_count = 1;
+    kome_configure_namespace(engine, &nscfg1);
+
+    KomeNamespaceACLEntry acl2;
+    std::memset(acl2.fingerprint, 0xAA, 32);  /* A's loopback fp */
+    acl2.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig nscfg2 = {};
+    nscfg2.name = "test";
+    nscfg2.acl = &acl2;
+    nscfg2.acl_count = 1;
+    kome_configure_namespace(e2, &nscfg2);
 
     /* Connect via loopback */
     LoopbackPair lb;

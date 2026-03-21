@@ -57,12 +57,23 @@ public:
     KomeError increment_replication_peer(const char *ns, const uint8_t *key,
                                           size_t key_len, const uint8_t peer_fp[32]);
 
-    KomeError gc_tombstones(uint64_t ttl_seconds);
+    KomeError gc_tombstones(uint64_t default_ttl_seconds);
     KomeError gc_values();
 
     KomeError begin_transaction();
     KomeError commit_transaction();
     KomeError rollback_transaction();
+
+    /* Namespace configuration */
+    KomeError put_namespace_config(const char *ns, uint64_t tombstone_ttl_sec,
+                                    const KomeNamespaceACLEntry *acl, size_t acl_count);
+    KomeError get_namespace_config(const char *ns, uint64_t *tombstone_ttl_sec,
+                                    std::vector<std::pair<std::string, int>> &acl);
+    bool has_namespace_config(const char *ns);
+    KomeError remove_namespace_config(const char *ns);
+    int get_peer_role(const char *ns, const uint8_t peer_fp[32]);
+    KomeError get_peer_namespace_access(const uint8_t peer_fp[32],
+                                         std::map<std::string, int> &out);
 
     KomeError get_stats(KomeStats *out);
     KomeError list_namespaces(std::vector<std::string> &out);
@@ -86,6 +97,17 @@ private:
     sqlite3_stmt *stmt_gc_tomb_      = nullptr;
     sqlite3_stmt *stmt_list_ns_      = nullptr;
     sqlite3_stmt *stmt_list_keys_    = nullptr;
+
+    /* Namespace configuration statements */
+    sqlite3_stmt *stmt_put_ns_settings_  = nullptr;
+    sqlite3_stmt *stmt_del_ns_settings_  = nullptr;
+    sqlite3_stmt *stmt_del_ns_acl_by_ns_ = nullptr;
+    sqlite3_stmt *stmt_put_ns_acl_       = nullptr;
+    sqlite3_stmt *stmt_get_ns_settings_  = nullptr;
+    sqlite3_stmt *stmt_get_ns_acl_       = nullptr;
+    sqlite3_stmt *stmt_has_ns_           = nullptr;
+    sqlite3_stmt *stmt_get_peer_role_    = nullptr;
+    sqlite3_stmt *stmt_get_peer_access_  = nullptr;
 
     KomeError create_tables();
     void finalize_stmts();
