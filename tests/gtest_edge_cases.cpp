@@ -242,10 +242,31 @@ protected:
         kome_close(ea); kome_close(eb);
         cleanup_db(dba); cleanup_db(dbb);
     }
+
+    void configure_ns(const char *ns) {
+        KomeNamespaceACLEntry acl_a;
+        std::memset(acl_a.fingerprint, 0xBB, 32);
+        acl_a.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_a = {};
+        cfg_a.name = ns;
+        cfg_a.acl = &acl_a;
+        cfg_a.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(ea, &cfg_a));
+
+        KomeNamespaceACLEntry acl_b;
+        std::memset(acl_b.fingerprint, 0xAA, 32);
+        acl_b.role = KOME_ROLE_WRITE;
+        KomeNamespaceConfig cfg_b = {};
+        cfg_b.name = ns;
+        cfg_b.acl = &acl_b;
+        cfg_b.acl_count = 1;
+        ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_b));
+    }
 };
 
 /* Sync with empty databases — nothing should crash */
 TEST_F(EdgeSyncTest, EmptySync) {
+    configure_ns("ns");
     loopback.connect();
     /* Both engines should still work after empty sync */
     KomeStats sa, sb;
@@ -257,6 +278,7 @@ TEST_F(EdgeSyncTest, EmptySync) {
 
 /* Sync propagates values, not just metadata */
 TEST_F(EdgeSyncTest, SyncedValuesReadable) {
+    configure_ns("ns");
     uint8_t key[] = "k";
     uint8_t val[] = "hello_from_a";
     KomeEntryMeta m;
@@ -275,6 +297,7 @@ TEST_F(EdgeSyncTest, SyncedValuesReadable) {
 
 /* Disconnect then reconnect — incremental sync still works */
 TEST_F(EdgeSyncTest, DisconnectReconnect) {
+    configure_ns("ns");
     uint8_t val[] = "v";
     KomeEntryMeta m;
 
@@ -306,6 +329,7 @@ TEST_F(EdgeSyncTest, DisconnectReconnect) {
 
 /* Delete on A syncs to B, then re-create on A syncs the new value */
 TEST_F(EdgeSyncTest, DeleteThenRecreate) {
+    configure_ns("ns");
     uint8_t key[] = "k";
     uint8_t v1[] = "original";
     uint8_t v2[] = "recreated";
@@ -335,6 +359,7 @@ TEST_F(EdgeSyncTest, DeleteThenRecreate) {
 
 /* Live mode: delete propagates in real-time */
 TEST_F(EdgeSyncTest, LiveDeletePush) {
+    configure_ns("ns");
     loopback.connect(); /* sync with empty state → both go LIVE */
 
     uint8_t key[] = "lk";
@@ -357,6 +382,7 @@ TEST_F(EdgeSyncTest, LiveDeletePush) {
 
 /* Both sides write then delete the same key — convergence */
 TEST_F(EdgeSyncTest, BothDeleteSameKey) {
+    configure_ns("ns");
     uint8_t key[] = "shared";
     uint8_t va[] = "a_val";
     uint8_t vb[] = "b_val";
@@ -383,6 +409,7 @@ TEST_F(EdgeSyncTest, BothDeleteSameKey) {
 
 /* Conflict callback can call kome_get to inspect data */
 TEST_F(EdgeSyncTest, ConflictCallbackCallsApi) {
+    configure_ns("ns");
     struct Ctx {
         KomeEngine *eng;
         bool called = false;
@@ -417,6 +444,8 @@ TEST_F(EdgeSyncTest, ConflictCallbackCallsApi) {
 
 /* Three-peer convergence via relay: A→B→C */
 TEST_F(EdgeSyncTest, ThreePeerRelay) {
+    configure_ns("ns");
+
     /* Create a third engine C */
     std::string dbc = temp_db_path("edge_sync_c");
     cleanup_db(dbc);
@@ -438,6 +467,25 @@ TEST_F(EdgeSyncTest, ThreePeerRelay) {
     /* B should have it */
     KomeEntryMeta rm;
     ASSERT_EQ(KOME_OK, kome_get_meta(eb, "ns", key, 5, &rm));
+
+    /* Configure ns on B and C for B↔C sync (lb_bc: B=side a fp=0xAA, C=side b fp=0xBB) */
+    KomeNamespaceACLEntry acl_b_for_c;
+    std::memset(acl_b_for_c.fingerprint, 0xBB, 32);  /* C's transport fp in lb_bc */
+    acl_b_for_c.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_bc = {};
+    cfg_bc.name = "ns";
+    cfg_bc.acl = &acl_b_for_c;
+    cfg_bc.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_bc));
+
+    KomeNamespaceACLEntry acl_c_for_b;
+    std::memset(acl_c_for_b.fingerprint, 0xAA, 32);  /* B's transport fp in lb_bc */
+    acl_c_for_b.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_cb = {};
+    cfg_cb.name = "ns";
+    cfg_cb.acl = &acl_c_for_b;
+    cfg_cb.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(ec, &cfg_cb));
 
     /* Now B syncs with C using a separate loopback */
     LoopbackPair lb_bc;
@@ -598,6 +646,7 @@ TEST_F(EdgeEngineTest, VersionVectorNeverRegresses) {
  * ======================================================================== */
 
 TEST_F(EdgeSyncTest, ReplicationDedup) {
+    configure_ns("ns");
     ASSERT_EQ(KOME_OK, kome_set_replication(ea, "ns", 2));
 
     uint8_t key[] = "k";
@@ -627,6 +676,7 @@ TEST_F(EdgeSyncTest, ReplicationDedup) {
  * ======================================================================== */
 
 TEST_F(EdgeSyncTest, ForgedHashRejected) {
+    configure_ns("ns");
     /* A writes a value, we intercept the loopback and corrupt the hash,
        B should reject the entry. Since we can't easily intercept the loopback,
        we test via a dropped-transport approach: write on A, connect,
@@ -650,6 +700,7 @@ TEST_F(EdgeSyncTest, ForgedHashRejected) {
  * ======================================================================== */
 
 TEST_F(EdgeSyncTest, ReattachTransport) {
+    configure_ns("ns");
     /* Write data, sync with first transport */
     uint8_t key[] = "k1";
     uint8_t val[] = "v1";
@@ -752,6 +803,7 @@ TEST_F(EdgeEngineTest, ListKeysMisuse) {
  * ======================================================================== */
 
 TEST_F(EdgeSyncTest, GossipRelayViaSync) {
+    configure_ns("ns");
     /* Test gossip relay: A writes data, syncs with B.
        B then syncs with C (separate transport). C gets A's data through B.
        This tests the existing relay-via-sync path. */
@@ -774,6 +826,25 @@ TEST_F(EdgeSyncTest, GossipRelayViaSync) {
     uint8_t kc[32]; std::memset(kc, 0xCC, 32);
     ASSERT_EQ(KOME_OK, kome_set_identity(ec, kc, 32));
 
+    /* Configure ns for B↔C sync */
+    KomeNamespaceACLEntry acl_b_c;
+    std::memset(acl_b_c.fingerprint, 0xBB, 32);
+    acl_b_c.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_bc = {};
+    cfg_bc.name = "ns";
+    cfg_bc.acl = &acl_b_c;
+    cfg_bc.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_bc));
+
+    KomeNamespaceACLEntry acl_c_b;
+    std::memset(acl_c_b.fingerprint, 0xAA, 32);
+    acl_c_b.role = KOME_ROLE_WRITE;
+    KomeNamespaceConfig cfg_cb = {};
+    cfg_cb.name = "ns";
+    cfg_cb.acl = &acl_c_b;
+    cfg_cb.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(ec, &cfg_cb));
+
     LoopbackPair lb_bc;
     ASSERT_EQ(KOME_OK, kome_attach_transport(eb, &lb_bc.a.transport));
     ASSERT_EQ(KOME_OK, kome_attach_transport(ec, &lb_bc.b.transport));
@@ -793,6 +864,7 @@ TEST_F(EdgeSyncTest, GossipRelayViaSync) {
 }
 
 TEST_F(EdgeSyncTest, GossipRelayDoesNotEcho) {
+    configure_ns("ns");
     /* A writes, syncs to B. B should NOT relay back to A. */
     loopback.connect();
 

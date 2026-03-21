@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, List, Tuple
 
 from ._ffi import (
     _lib, KomeConfig, KomeEntryMeta, KomeVersionEntry, KomeStats,
-    KomeTransport, REMOTE_CHANGE_CB,
+    KomeTransport, REMOTE_CHANGE_CB, KomeNamespaceConfig, KomeNamespaceACLEntry,
 )
 from .transport import Transport
 
@@ -187,8 +187,31 @@ class Engine:
         self._callbacks.append(_cb)
         _lib.kome_on_remote_change(self._handle, _cb, None)
 
-    def set_tombstone_ttl(self, seconds: int):
-        _check(_lib.kome_set_tombstone_ttl(self._handle, seconds))
+    def configure_namespace(self, name: str, tombstone_ttl_sec: int = 0,
+                             acl: Optional[list] = None):
+        """Configure a namespace with ACL and tombstone TTL.
+
+        acl is a list of (fingerprint_bytes, role_int) tuples.
+        role: 0=NONE, 1=READ, 2=WRITE.
+        """
+        cfg = KomeNamespaceConfig()
+        cfg.name = name.encode()
+        cfg.tombstone_ttl_sec = tombstone_ttl_sec
+        if acl:
+            arr = (KomeNamespaceACLEntry * len(acl))()
+            for i, (fp, role) in enumerate(acl):
+                fp_bytes = fp if isinstance(fp, bytes) else bytes(fp)
+                ctypes.memmove(arr[i].fingerprint, fp_bytes, min(len(fp_bytes), 32))
+                arr[i].role = role
+            cfg.acl = arr
+            cfg.acl_count = len(acl)
+        else:
+            cfg.acl = None
+            cfg.acl_count = 0
+        _check(_lib.kome_configure_namespace(self._handle, ctypes.byref(cfg)))
+
+    def remove_namespace(self, name: str):
+        _check(_lib.kome_remove_namespace(self._handle, name.encode()))
 
     def set_log_level(self, level: int):
         _lib.kome_set_log_level(self._handle, level)

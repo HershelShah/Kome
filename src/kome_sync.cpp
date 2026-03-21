@@ -34,12 +34,26 @@ void KomeSyncManager::set_transport(KomeTransportAdapter *transport) {
 
 void KomeSyncManager::on_peer_connected(const uint8_t *peer_fp) {
     std::string key = fp_key(peer_fp);
+
+    /* Build the access map: what namespaces this peer can access on us */
+    std::map<std::string, int> access;
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        engine_->log->get_peer_namespace_access(peer_fp, access);
+    }
+
+    /* Send NAMESPACE_ACL_SYNC to the peer */
+    NamespaceACLSync acl_msg;
+    for (auto &[ns, role] : access)
+        acl_msg.entries.push_back({ns, role});
+    send_to_peer(peer_fp, encode_namespace_acl_sync(acl_msg));
+
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
-        auto it = peers_.find(key);
-        if (it == peers_.end()) {
-            peers_[key] = PeerInfo{PeerSyncState::SYNCING, false, false, 0, 0};
-        }
+        auto &info = peers_[key];
+        if (info.state == PeerSyncState::IDLE)
+            info.state = PeerSyncState::SYNCING;
+        info.peer_access = std::move(access);
     }
     initiate_sync(peer_fp);
 }
@@ -57,9 +71,10 @@ void KomeSyncManager::on_recv(const uint8_t *peer_fp, const uint8_t *data, size_
         case SYNC_REQUEST: handle_sync_request(peer_fp, data, len); break;
         case SYNC_ENTRY:   handle_sync_entry(peer_fp, data, len);   break;
         case SYNC_DONE:    handle_sync_done(peer_fp);                break;
-        case SYNC_ACK:     handle_sync_ack(peer_fp, data, len);     break;
-        case LIVE_ENTRY:   handle_live_entry(peer_fp, data, len);   break;
-        case BATCH_ENTRY:  handle_batch_entry(peer_fp, data, len);  break;
+        case SYNC_ACK:            handle_sync_ack(peer_fp, data, len);              break;
+        case LIVE_ENTRY:          handle_live_entry(peer_fp, data, len);            break;
+        case BATCH_ENTRY:         handle_batch_entry(peer_fp, data, len);           break;
+        case NAMESPACE_ACL_SYNC:  handle_namespace_acl_sync(peer_fp, data, len);   break;
     }
 }
 
@@ -70,8 +85,12 @@ void KomeSyncManager::on_local_write(const LogEntry &entry) {
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         for (auto &[key, info] : peers_) {
-            if (info.state == PeerSyncState::LIVE)
-                live_peers.push_back(key);
+            if (info.state != PeerSyncState::LIVE) continue;
+            /* Only push to peers with READ or WRITE access to this namespace */
+            auto it = info.peer_access.find(entry.ns);
+            if (it == info.peer_access.end() || it->second < KOME_ROLE_READ)
+                continue;
+            live_peers.push_back(key);
         }
     }
     if (live_peers.empty()) return;
@@ -97,6 +116,20 @@ void KomeSyncManager::handle_sync_request(const uint8_t *peer_fp,
     SyncRequest req;
     if (!decode_sync_request(data, len, &req)) return;
 
+    /* Snapshot peer access for filtering.
+       If the peer hasn't connected yet (synchronous transport), fall back to DB. */
+    std::map<std::string, int> peer_access;
+    {
+        std::lock_guard<std::mutex> lock(peers_mu_);
+        auto it = peers_.find(fp_key(peer_fp));
+        if (it != peers_.end())
+            peer_access = it->second.peer_access;
+    }
+    if (peer_access.empty()) {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        engine_->log->get_peer_namespace_access(peer_fp, peer_access);
+    }
+
     std::vector<LogEntry> missing;
     {
         std::lock_guard<std::mutex> lock(engine_->mu);
@@ -104,6 +137,10 @@ void KomeSyncManager::handle_sync_request(const uint8_t *peer_fp,
     }
 
     for (auto &entry : missing) {
+        /* Only send entries for namespaces the peer has access to */
+        auto it = peer_access.find(entry.ns);
+        if (it == peer_access.end() || it->second < KOME_ROLE_READ)
+            continue;
         auto msg = encode_sync_entry(log_to_sync(entry));
         send_to_peer(peer_fp, msg);
     }
@@ -244,6 +281,13 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     if (entry.ns.size() > KOME_MAX_NS_LEN || entry.ns.empty()) return;
     if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
     if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
+
+    /* Write authorization: sender must have WRITE access on this namespace */
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        int role = engine_->log->get_peer_role(entry.ns.c_str(), peer_fp);
+        if (role < KOME_ROLE_WRITE) return;  /* silently drop */
+    }
 
     /* Verify hash integrity */
     if (!entry.tombstone) {
@@ -401,24 +445,30 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
 void KomeSyncManager::on_local_write_batch(const std::vector<LogEntry> &entries) {
     if (entries.empty()) return;
 
-    std::vector<std::string> live_peers;
+    /* Per-peer filtering: only send entries for namespaces the peer can access */
+    std::vector<std::pair<std::string, std::map<std::string, int>>> live_peers;
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         for (auto &[key, info] : peers_) {
             if (info.state == PeerSyncState::LIVE)
-                live_peers.push_back(key);
+                live_peers.push_back({key, info.peer_access});
         }
     }
     if (live_peers.empty()) return;
 
-    std::vector<SyncEntry> se_vec;
-    se_vec.reserve(entries.size());
-    for (auto &e : entries)
-        se_vec.push_back(log_to_sync(e));
-
-    auto msg = encode_batch_entry(se_vec);
-    for (auto &fp : live_peers)
+    for (auto &[fp, peer_access] : live_peers) {
+        std::vector<SyncEntry> se_vec;
+        se_vec.reserve(entries.size());
+        for (auto &e : entries) {
+            auto it = peer_access.find(e.ns);
+            if (it == peer_access.end() || it->second < KOME_ROLE_READ)
+                continue;
+            se_vec.push_back(log_to_sync(e));
+        }
+        if (se_vec.empty()) continue;
+        auto msg = encode_batch_entry(se_vec);
         send_to_peer((const uint8_t*)fp.data(), msg);
+    }
 }
 
 void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
@@ -426,6 +476,20 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
     std::vector<SyncEntry> entries;
     if (!decode_batch_entry(data, len, &entries)) return;
     if (entries.empty() || entries.size() > KOME_MAX_BATCH_COUNT) return;
+
+    /* Write authorization: drop entries where sender lacks WRITE access */
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        std::vector<SyncEntry> authorized;
+        authorized.reserve(entries.size());
+        for (auto &entry : entries) {
+            int role = engine_->log->get_peer_role(entry.ns.c_str(), peer_fp);
+            if (role >= KOME_ROLE_WRITE)
+                authorized.push_back(std::move(entry));
+        }
+        entries = std::move(authorized);
+    }
+    if (entries.empty()) return;
 
     /* Validate all entries first — reject the entire batch on any failure */
     for (auto &entry : entries) {
@@ -655,6 +719,14 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         if (transport_)
             transport_->send(peer_fp, ack_msg.data(), ack_msg.size());
     }
+}
+
+void KomeSyncManager::handle_namespace_acl_sync(const uint8_t * /*peer_fp*/,
+                                                  const uint8_t *data, size_t len) {
+    NamespaceACLSync acl_sync;
+    if (!decode_namespace_acl_sync(data, len, &acl_sync)) return;
+    /* Informational — the remote peer is telling us what we can access on them.
+       Enforcement happens on each side independently using local configs. */
 }
 
 void KomeSyncManager::send_to_peer(const uint8_t *peer_fp,

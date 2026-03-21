@@ -90,6 +90,10 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         KomeError err = engine->log->put_entry(ns, key, key_len, value, value_len, &meta);
         if (err != KOME_OK) return err;
 
+        /* Auto-create namespace config if not configured (owner-only) */
+        if (!engine->log->has_namespace_config(ns))
+            engine->log->put_namespace_config(ns, engine->tombstone_ttl_sec, nullptr, 0);
+
         err = engine->log->update_version_vector(meta.author, meta.seq);
         if (err != KOME_OK) return err;
 
@@ -161,6 +165,10 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
                 return err;
             }
 
+            /* Auto-create namespace config if not configured (owner-only) */
+            if (!engine->log->has_namespace_config(e.ns))
+                engine->log->put_namespace_config(e.ns, engine->tombstone_ttl_sec, nullptr, 0);
+
             err = engine->log->update_version_vector(meta.author, meta.seq);
             if (err != KOME_OK) {
                 engine->log->rollback_transaction();
@@ -230,6 +238,10 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
 
         KomeError err = engine->log->delete_entry(ns, key, key_len, &meta);
         if (err != KOME_OK) return err;
+
+        /* Auto-create namespace config if not configured (owner-only) */
+        if (!engine->log->has_namespace_config(ns))
+            engine->log->put_namespace_config(ns, engine->tombstone_ttl_sec, nullptr, 0);
 
         err = engine->log->update_version_vector(meta.author, meta.seq);
         if (err != KOME_OK) return err;
@@ -527,11 +539,77 @@ KOME_API void kome_on_replication_change(KomeEngine *engine, KomeReplicationChan
     engine->on_repl_change_ud = ud;
 }
 
-KOME_API KomeError kome_set_tombstone_ttl(KomeEngine *engine, uint64_t ttl_seconds) {
-    if (!engine) return KOME_ERR_MISUSE;
+KOME_API KomeError kome_configure_namespace(KomeEngine *engine,
+    const KomeNamespaceConfig *config)
+{
+    if (!engine || !config || !config->name) return KOME_ERR_MISUSE;
+
+    size_t ns_len = std::strlen(config->name);
+    if (ns_len == 0 || ns_len > KOME_MAX_NS_LEN) return KOME_ERR_TOO_LARGE;
+    if (config->acl_count > 0 && !config->acl) return KOME_ERR_MISUSE;
+
     std::lock_guard<std::mutex> lock(engine->mu);
-    engine->tombstone_ttl_sec = ttl_seconds;
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+
+    return engine->log->put_namespace_config(
+        config->name, config->tombstone_ttl_sec,
+        config->acl, config->acl_count);
+}
+
+KOME_API KomeError kome_get_namespace_config(KomeEngine *engine,
+    const char *ns, KomeNamespaceConfig *out)
+{
+    if (!engine || !ns || !out) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+
+    uint64_t ttl = 0;
+    std::vector<std::pair<std::string, int>> acl;
+    KomeError err = engine->log->get_namespace_config(ns, &ttl, acl);
+    if (err != KOME_OK) return err;
+
+    out->name = strdup(ns);
+    if (!out->name) return KOME_ERR_INTERNAL;
+
+    out->tombstone_ttl_sec = ttl;
+    out->acl_count = acl.size();
+
+    if (acl.empty()) {
+        out->acl = nullptr;
+    } else {
+        out->acl = (KomeNamespaceACLEntry*)std::malloc(
+            acl.size() * sizeof(KomeNamespaceACLEntry));
+        if (!out->acl) {
+            std::free((void*)out->name);
+            out->name = nullptr;
+            return KOME_ERR_INTERNAL;
+        }
+        for (size_t i = 0; i < acl.size(); i++) {
+            std::memcpy(out->acl[i].fingerprint, acl[i].first.data(), 32);
+            out->acl[i].role = (KomeRole)acl[i].second;
+        }
+    }
+
     return KOME_OK;
+}
+
+KOME_API KomeError kome_remove_namespace(KomeEngine *engine, const char *ns) {
+    if (!engine || !ns) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+
+    return engine->log->remove_namespace_config(ns);
+}
+
+KOME_API void kome_free_namespace_config(KomeNamespaceConfig *config) {
+    if (!config) return;
+    std::free((void*)config->name);
+    std::free(config->acl);
+    config->name = nullptr;
+    config->acl = nullptr;
+    config->acl_count = 0;
 }
 
 KOME_API void kome_set_log_level(KomeEngine *engine, KomeLogLevel level) {

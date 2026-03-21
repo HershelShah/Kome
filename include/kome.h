@@ -41,7 +41,7 @@ extern "C" {
 
 /* --- Constants ---------------------------------------------------------- */
 
-#define KOME_PROTOCOL_VERSION  1
+#define KOME_PROTOCOL_VERSION  2
 #define KOME_MAX_NS_LEN      255
 #define KOME_MAX_KEY_LEN      512
 #define KOME_MAX_VALUE_LEN    (16 * 1024 * 1024)  /* 16 MiB */
@@ -107,6 +107,26 @@ typedef struct {
     const uint8_t *value;
     size_t         value_len;
 } KomeBatchEntry;
+
+/* --- Namespace configuration -------------------------------------------- */
+
+typedef enum {
+    KOME_ROLE_NONE  = 0,
+    KOME_ROLE_READ  = 1,
+    KOME_ROLE_WRITE = 2
+} KomeRole;
+
+typedef struct {
+    uint8_t  fingerprint[32];
+    KomeRole role;
+} KomeNamespaceACLEntry;
+
+typedef struct {
+    const char            *name;
+    uint64_t               tombstone_ttl_sec;  /* 0 = never GC tombstones   */
+    KomeNamespaceACLEntry *acl;                /* peer access control list   */
+    size_t                 acl_count;          /* 0 = owner-only (no repl)   */
+} KomeNamespaceConfig;
 
 /* --- Transport interface ------------------------------------------------ */
 
@@ -242,6 +262,14 @@ KOME_API KomeError kome_replication_status(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     uint32_t *confirmed_out, uint32_t *target_out);
 
+/* Namespace configuration */
+KOME_API KomeError kome_configure_namespace(KomeEngine *engine,
+    const KomeNamespaceConfig *config);
+KOME_API KomeError kome_get_namespace_config(KomeEngine *engine,
+    const char *ns, KomeNamespaceConfig *out);
+KOME_API KomeError kome_remove_namespace(KomeEngine *engine, const char *ns);
+KOME_API void      kome_free_namespace_config(KomeNamespaceConfig *config);
+
 /* Namespace and key listing */
 KOME_API KomeError kome_list_namespaces(KomeEngine *engine,
     char ***ns_out, size_t *count_out);
@@ -264,7 +292,6 @@ KOME_API void kome_on_replication_change(KomeEngine *engine,
     KomeReplicationChangeCallback cb, void *ud);
 
 /* Tuning */
-KOME_API KomeError kome_set_tombstone_ttl(KomeEngine *engine, uint64_t ttl_seconds);
 KOME_API void      kome_set_log_level(KomeEngine *engine, KomeLogLevel level);
 
 /* Info */
