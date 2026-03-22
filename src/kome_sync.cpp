@@ -367,6 +367,8 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     KomeEntryMeta store_meta = remote_meta;
     KomeRemoteChangeCallback change_cb = nullptr;
     void *change_ud = nullptr;
+    KomeRemoteChangeCallback ns_change_cb = nullptr;
+    void *ns_change_ud = nullptr;
     std::vector<uint8_t> store_value_copy;
 
     if (should_store) {
@@ -404,16 +406,27 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
             change_cb = engine_->on_remote_change_cb;
             change_ud = engine_->on_remote_change_ud;
 
-            if (change_cb && store_value_len > 0)
+            auto ns_it = engine_->ns_change_cbs.find(entry.ns);
+            if (ns_it != engine_->ns_change_cbs.end()) {
+                ns_change_cb = ns_it->second.first;
+                ns_change_ud = ns_it->second.second;
+            }
+
+            if ((change_cb || ns_change_cb) && store_value_len > 0)
                 store_value_copy.assign(store_value, store_value + store_value_len);
         }
     }
 
-    /* Phase 4: fire callback outside all locks */
+    /* Phase 4: fire callbacks outside all locks */
     if (should_store && change_cb) {
         change_cb(change_ud,
                   entry.ns.c_str(), entry.key.data(), entry.key.size(),
                   store_value_copy.data(), store_value_copy.size(), &store_meta);
+    }
+    if (should_store && ns_change_cb) {
+        ns_change_cb(ns_change_ud,
+                     entry.ns.c_str(), entry.key.data(), entry.key.size(),
+                     store_value_copy.data(), store_value_copy.size(), &store_meta);
     }
 
     /* Phase 5: gossip relay — forward to other live peers, excluding sender */
@@ -595,6 +608,8 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         std::vector<uint8_t> key;
         std::vector<uint8_t> value_copy;
         KomeEntryMeta meta;
+        KomeRemoteChangeCallback ns_cb = nullptr;
+        void *ns_ud = nullptr;
     };
     std::vector<StoredEntry> stored;
     bool txn_ok = true;
@@ -661,6 +676,13 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             se.key = entry.key;
             se.meta = store_meta;
             se.value_copy = std::move(ctx.store_value_buf);
+
+            auto ns_it = engine_->ns_change_cbs.find(entry.ns);
+            if (ns_it != engine_->ns_change_cbs.end()) {
+                se.ns_cb = ns_it->second.first;
+                se.ns_ud = ns_it->second.second;
+            }
+
             stored.push_back(std::move(se));
         }
 
@@ -675,11 +697,16 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
     if (!txn_ok) return;
 
     /* Phase 4: Fire callbacks outside all locks — once per entry in order */
-    if (change_cb) {
-        for (auto &se : stored) {
+    for (auto &se : stored) {
+        if (change_cb) {
             change_cb(change_ud,
                       se.ns.c_str(), se.key.data(), se.key.size(),
                       se.value_copy.data(), se.value_copy.size(), &se.meta);
+        }
+        if (se.ns_cb) {
+            se.ns_cb(se.ns_ud,
+                     se.ns.c_str(), se.key.data(), se.key.size(),
+                     se.value_copy.data(), se.value_copy.size(), &se.meta);
         }
     }
 
