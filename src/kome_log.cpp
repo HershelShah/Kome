@@ -132,7 +132,13 @@ KomeError KomeLog::prepare_stmts() {
           "))",
           &stmt_gc_tomb_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT DISTINCT ns FROM change_log ORDER BY ns",
+    if (p("SELECT DISTINCT ns FROM ("
+          "SELECT DISTINCT ns FROM change_log "
+          "UNION "
+          "SELECT DISTINCT ns FROM namespace_settings "
+          "UNION "
+          "SELECT DISTINCT ns FROM namespace_acl"
+          ") ORDER BY ns",
           &stmt_list_ns_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
     if (p("SELECT key FROM change_log WHERE ns=?1 ORDER BY key",
@@ -549,7 +555,13 @@ KomeError KomeLog::get_stats(KomeStats *out) {
     };
     out->total_entries   = query_count("SELECT COUNT(*) FROM change_log");
     out->tombstone_count = query_count("SELECT COUNT(*) FROM change_log WHERE tombstone=1");
-    out->namespace_count = query_count("SELECT COUNT(DISTINCT ns) FROM change_log");
+    out->namespace_count = query_count(
+        "SELECT COUNT(*) FROM ("
+        "SELECT DISTINCT ns FROM change_log "
+        "UNION "
+        "SELECT DISTINCT ns FROM namespace_settings "
+        "UNION "
+        "SELECT DISTINCT ns FROM namespace_acl)");
 
     /* db size */
     uint64_t pages = query_count("PRAGMA page_count");
