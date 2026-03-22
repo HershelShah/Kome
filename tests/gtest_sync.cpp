@@ -688,3 +688,87 @@ TEST_F(SyncTest, AcceptCurrentTimestamp) {
         << "Entry with current timestamp should be accepted";
     EXPECT_EQ(now, meta.timestamp_us);
 }
+
+/* --- Rate limiting tests ------------------------------------------------ */
+
+TEST_F(SyncTest, RateLimitDropsExcessEntries) {
+    configure_ns("test");
+
+    /* Set very low entry limit on B (receiver): 3 entries/min, generous byte limit */
+    ASSERT_EQ(KOME_OK, kome_set_peer_limits(engine_b, 50ULL * 1024 * 1024, 3));
+
+    /* Write 10 entries on A before connecting */
+    replicate_n(engine_a, "test", 10);
+
+    /* Connect — sync will push entries from A to B */
+    loopback.connect();
+
+    /* B should have at most 3 entries (rate limit) */
+    int found = 0;
+    for (int i = 0; i < 10; i++) {
+        std::string key = "key_" + std::to_string(i);
+        KomeEntryMeta meta;
+        if (kome_get_meta(engine_b, "test",
+                (const uint8_t*)key.data(), key.size(), &meta) == KOME_OK)
+            found++;
+    }
+    EXPECT_EQ(3, found) << "Expected exactly 3 entries to pass rate limit, got " << found;
+}
+
+TEST_F(SyncTest, RateLimitDropsExcessBytes) {
+    configure_ns("test");
+
+    /* Set very low byte limit on B: 100 bytes/min, generous entry limit */
+    ASSERT_EQ(KOME_OK, kome_set_peer_limits(engine_b, 100, 10000));
+
+    /* Write entries with ~50 bytes each — only ~2 should fit in 100 bytes */
+    for (int i = 0; i < 10; i++) {
+        std::string key = "key_" + std::to_string(i);
+        std::string val(50, 'x');  /* 50-byte value */
+        KomeEntryMeta m;
+        ASSERT_EQ(KOME_OK, kome_put(engine_a, "test",
+            (const uint8_t*)key.data(), key.size(),
+            (const uint8_t*)val.data(), val.size(), &m));
+    }
+
+    /* Connect */
+    loopback.connect();
+
+    /* Count how many made it through */
+    int found = 0;
+    for (int i = 0; i < 10; i++) {
+        std::string key = "key_" + std::to_string(i);
+        KomeEntryMeta meta;
+        if (kome_get_meta(engine_b, "test",
+                (const uint8_t*)key.data(), key.size(), &meta) == KOME_OK)
+            found++;
+    }
+    /* With 50 bytes per entry and 100 byte limit, exactly 2 should pass */
+    EXPECT_EQ(2, found) << "Expected 2 entries to pass byte rate limit, got " << found;
+}
+
+TEST_F(SyncTest, DefaultLimitsAreGenerous) {
+    configure_ns("test");
+
+    /* Use default limits (50 MiB/min, 1000 entries/min) — 100 entries should be fine */
+    replicate_n(engine_a, "test", 100);
+
+    /* Connect */
+    loopback.connect();
+
+    /* All 100 entries should make it through */
+    int found = 0;
+    for (int i = 0; i < 100; i++) {
+        std::string key = "key_" + std::to_string(i);
+        KomeEntryMeta meta;
+        if (kome_get_meta(engine_b, "test",
+                (const uint8_t*)key.data(), key.size(), &meta) == KOME_OK)
+            found++;
+    }
+    EXPECT_EQ(100, found);
+}
+
+TEST_F(SyncTest, RateLimitNullEngine) {
+    /* Calling with null engine should return KOME_ERR_MISUSE */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_set_peer_limits(nullptr, 100, 100));
+}

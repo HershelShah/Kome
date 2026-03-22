@@ -15,6 +15,37 @@ namespace kome {
 
 KomeSyncManager::KomeSyncManager(KomeEngine *engine) : engine_(engine) {}
 
+void KomeSyncManager::set_peer_limits(uint64_t max_bytes, uint64_t max_entries) {
+    std::lock_guard<std::mutex> lock(peers_mu_);
+    max_bytes_per_minute_ = max_bytes;
+    max_entries_per_minute_ = max_entries;
+}
+
+bool KomeSyncManager::check_rate_limit(const uint8_t *peer_fp, uint64_t entry_bytes,
+                                        uint64_t entry_count) {
+    /* Must be called under peers_mu_ */
+    std::string key(reinterpret_cast<const char*>(peer_fp), 32);
+    auto &state = peer_rates_[key];
+
+    uint64_t now = timestamp_us();
+    if (now - state.window_start_us > 60000000ULL) {
+        /* Reset window */
+        state.window_start_us = now;
+        state.bytes_in_window = 0;
+        state.entries_in_window = 0;
+    }
+
+    state.bytes_in_window += entry_bytes;
+    state.entries_in_window += entry_count;
+
+    if (state.bytes_in_window > max_bytes_per_minute_ ||
+        state.entries_in_window > max_entries_per_minute_) {
+        return false;  /* rate limited */
+    }
+
+    return true;  /* allowed */
+}
+
 void KomeSyncManager::set_transport(KomeTransportAdapter *transport) {
     transport_ = transport;
 
@@ -292,6 +323,12 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     /* Clock sanity: reject entries with timestamps too far in the future */
     if (entry.timestamp_us > timestamp_us() + KOME_MAX_CLOCK_DRIFT_US) return;
 
+    /* Per-peer rate limiting */
+    {
+        std::lock_guard<std::mutex> lock(peers_mu_);
+        if (!check_rate_limit(peer_fp, entry.value.size())) return;
+    }
+
     /* Write authorization: sender must have WRITE access on this namespace */
     {
         std::lock_guard<std::mutex> lock(engine_->mu);
@@ -527,6 +564,16 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             if (std::memcmp(computed_hash, entry.hash, 32) != 0)
                 return;
         }
+    }
+
+    /* Per-peer rate limiting: check total batch size against limits */
+    {
+        uint64_t total_bytes = 0;
+        for (auto &entry : entries)
+            total_bytes += entry.value.size();
+
+        std::lock_guard<std::mutex> lock(peers_mu_);
+        if (!check_rate_limit(peer_fp, total_bytes, entries.size())) return;
     }
 
     /* Phase 1: Read local state + snapshot callbacks under engine lock */

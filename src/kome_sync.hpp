@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <mutex>
 
@@ -28,6 +29,12 @@ struct PeerInfo {
     uint64_t      entries_expected = 0;
     uint64_t      entries_received = 0;
     std::map<std::string, int> peer_access;  /* ns → KomeRole for this peer */
+};
+
+struct PeerRateState {
+    uint64_t window_start_us = 0;   /* start of current 60-second window */
+    uint64_t bytes_in_window = 0;
+    uint64_t entries_in_window = 0;
 };
 
 /* Convert LogEntry to SyncEntry (eliminates repeated field-by-field copies) */
@@ -67,12 +74,21 @@ public:
     /* Returns true if the peer is idle (not currently syncing or live) */
     bool is_peer_idle(const uint8_t *peer_fp);
 
+    /* Per-peer rate limiting */
+    void set_peer_limits(uint64_t max_bytes, uint64_t max_entries);
+
 private:
     KomeEngine            *engine_;
     KomeTransportAdapter  *transport_ = nullptr;
 
     std::mutex             peers_mu_;
     std::map<std::string, PeerInfo> peers_; /* key = 32-byte fingerprint */
+
+    /* Per-peer rate limiting */
+    std::unordered_map<std::string, PeerRateState> peer_rates_;  /* key = 32-byte fingerprint */
+    uint64_t max_bytes_per_minute_   = 50ULL * 1024 * 1024;  /* 50 MiB default */
+    uint64_t max_entries_per_minute_  = 1000;                  /* 1000 entries default */
+    bool check_rate_limit(const uint8_t *peer_fp, uint64_t entry_bytes, uint64_t entry_count = 1);
 
     static std::string fp_key(const uint8_t *fp) {
         return std::string((const char*)fp, 32);
