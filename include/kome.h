@@ -224,11 +224,20 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     KomeEntryMeta *meta_out);
 
-/* Read a value. Caller must kome_free_value() the returned buffer. */
+/* Read a value. Caller must kome_free_value() the returned buffer.
+ * Returns KOME_ERR_NOT_FOUND for tombstoned (deleted) entries. */
 KOME_API KomeError kome_get(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     uint8_t **value_out, size_t *value_len_out,
     KomeEntryMeta *meta_out);
+
+/* Like kome_get but returns KOME_OK even for tombstoned entries.
+ * Use this when you need to inspect tombstone metadata. */
+KOME_API KomeError kome_get_with_tombstones(KomeEngine *engine,
+    const char *ns, const uint8_t *key, size_t key_len,
+    uint8_t **value_out, size_t *value_len_out,
+    KomeEntryMeta *meta_out);
+
 KOME_API void      kome_free_value(uint8_t *value);
 
 /* React to writes from other peers */
