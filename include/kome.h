@@ -296,6 +296,16 @@ KOME_API KomeError kome_list_keys(KomeEngine *engine, const char *ns,
     uint8_t ***keys_out, size_t **key_lens_out, size_t *count_out);
 KOME_API void      kome_free_keys(uint8_t **keys, size_t *key_lens, size_t count);
 
+/* Read all key-value pairs in a namespace in one call.
+   Tombstoned entries are excluded. Caller must kome_free_entries() the result. */
+KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
+    uint8_t ***keys_out, size_t **key_lens_out,
+    uint8_t ***values_out, size_t **value_lens_out,
+    KomeEntryMeta **metas_out, size_t *count_out);
+KOME_API void      kome_free_entries(uint8_t **keys, size_t *key_lens,
+    uint8_t **values, size_t *value_lens,
+    KomeEntryMeta *metas, size_t count);
+
 /* Additional callbacks */
 KOME_API void kome_on_conflict(KomeEngine *engine,
     KomeConflictCallback cb, void *ud);

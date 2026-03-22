@@ -539,6 +539,137 @@ TEST_F(EngineTest, BatchPutExceedsMaxCount) {
         kome_put_batch(engine, &e, KOME_MAX_BATCH_COUNT + 1, nullptr));
 }
 
+/* --- kome_get_all: bulk reads ------------------------------------------- */
+
+TEST_F(EngineTest, GetAllBasic) {
+    set_test_identity();
+
+    uint8_t k1[] = "alpha";
+    uint8_t v1[] = "val_a";
+    uint8_t k2[] = "beta";
+    uint8_t v2[] = "val_b";
+    uint8_t k3[] = "gamma";
+    uint8_t v3[] = "val_g";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k1, 5, v1, 5, &m));
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k2, 4, v2, 5, &m));
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k3, 5, v3, 5, &m));
+
+    uint8_t **keys = nullptr;
+    size_t *key_lens = nullptr;
+    uint8_t **values = nullptr;
+    size_t *value_lens = nullptr;
+    KomeEntryMeta *metas = nullptr;
+    size_t count = 0;
+
+    ASSERT_EQ(KOME_OK, kome_get_all(engine, "ns",
+        &keys, &key_lens, &values, &value_lens, &metas, &count));
+
+    ASSERT_EQ(3u, count);
+
+    /* Results are ordered by key: alpha, beta, gamma */
+    EXPECT_EQ(5u, key_lens[0]);
+    EXPECT_EQ(0, std::memcmp(keys[0], "alpha", 5));
+    EXPECT_EQ(5u, value_lens[0]);
+    EXPECT_EQ(0, std::memcmp(values[0], "val_a", 5));
+    EXPECT_EQ(0, metas[0].tombstone);
+    EXPECT_GT(metas[0].timestamp_us, 0u);
+    EXPECT_GT(metas[0].seq, 0u);
+
+    EXPECT_EQ(4u, key_lens[1]);
+    EXPECT_EQ(0, std::memcmp(keys[1], "beta", 4));
+    EXPECT_EQ(5u, value_lens[1]);
+    EXPECT_EQ(0, std::memcmp(values[1], "val_b", 5));
+
+    EXPECT_EQ(5u, key_lens[2]);
+    EXPECT_EQ(0, std::memcmp(keys[2], "gamma", 5));
+    EXPECT_EQ(5u, value_lens[2]);
+    EXPECT_EQ(0, std::memcmp(values[2], "val_g", 5));
+
+    kome_free_entries(keys, key_lens, values, value_lens, metas, count);
+}
+
+TEST_F(EngineTest, GetAllExcludesTombstones) {
+    set_test_identity();
+
+    uint8_t k1[] = "a";
+    uint8_t v1[] = "1";
+    uint8_t k2[] = "b";
+    uint8_t v2[] = "2";
+    uint8_t k3[] = "c";
+    uint8_t v3[] = "3";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k1, 1, v1, 1, &m));
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k2, 1, v2, 1, &m));
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k3, 1, v3, 1, &m));
+
+    /* Delete key "b" */
+    ASSERT_EQ(KOME_OK, kome_delete(engine, "ns", k2, 1, &m));
+
+    uint8_t **keys = nullptr;
+    size_t *key_lens = nullptr;
+    uint8_t **values = nullptr;
+    size_t *value_lens = nullptr;
+    KomeEntryMeta *metas = nullptr;
+    size_t count = 0;
+
+    ASSERT_EQ(KOME_OK, kome_get_all(engine, "ns",
+        &keys, &key_lens, &values, &value_lens, &metas, &count));
+
+    ASSERT_EQ(2u, count);
+    EXPECT_EQ(1u, key_lens[0]);
+    EXPECT_EQ(0, std::memcmp(keys[0], "a", 1));
+    EXPECT_EQ(1u, key_lens[1]);
+    EXPECT_EQ(0, std::memcmp(keys[1], "c", 1));
+
+    kome_free_entries(keys, key_lens, values, value_lens, metas, count);
+}
+
+TEST_F(EngineTest, GetAllEmptyNamespace) {
+    uint8_t **keys = nullptr;
+    size_t *key_lens = nullptr;
+    uint8_t **values = nullptr;
+    size_t *value_lens = nullptr;
+    KomeEntryMeta *metas = nullptr;
+    size_t count = 99;
+
+    ASSERT_EQ(KOME_OK, kome_get_all(engine, "empty_ns",
+        &keys, &key_lens, &values, &value_lens, &metas, &count));
+
+    EXPECT_EQ(0u, count);
+    EXPECT_EQ(nullptr, keys);
+    EXPECT_EQ(nullptr, key_lens);
+    EXPECT_EQ(nullptr, values);
+    EXPECT_EQ(nullptr, value_lens);
+    EXPECT_EQ(nullptr, metas);
+}
+
+TEST_F(EngineTest, GetAllFreeEntries) {
+    set_test_identity();
+
+    /* Test free on valid data */
+    uint8_t k[] = "k";
+    uint8_t v[] = "v";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns", k, 1, v, 1, &m));
+
+    uint8_t **keys = nullptr;
+    size_t *key_lens = nullptr;
+    uint8_t **values = nullptr;
+    size_t *value_lens = nullptr;
+    KomeEntryMeta *metas = nullptr;
+    size_t count = 0;
+
+    ASSERT_EQ(KOME_OK, kome_get_all(engine, "ns",
+        &keys, &key_lens, &values, &value_lens, &metas, &count));
+    ASSERT_EQ(1u, count);
+
+    kome_free_entries(keys, key_lens, values, value_lens, metas, count);
+
+    /* Test free on nulls — should not crash */
+    kome_free_entries(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+}
+
 TEST_F(EngineTest, BatchPutMultipleNamespaces) {
     set_test_identity();
 
