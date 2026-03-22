@@ -73,7 +73,8 @@ void KomeLog::finalize_stmts() {
         &stmt_put_ns_settings_, &stmt_del_ns_settings_, &stmt_del_ns_acl_by_ns_,
         &stmt_put_ns_acl_, &stmt_get_ns_settings_, &stmt_get_ns_acl_,
         &stmt_get_all_,
-        &stmt_has_ns_, &stmt_get_peer_role_, &stmt_get_peer_access_
+        &stmt_has_ns_, &stmt_get_peer_role_, &stmt_get_peer_access_,
+        &stmt_rotate_acl_fp_
     };
     for (auto *sp : all) { sqlite3_finalize(*sp); *sp = nullptr; }
 }
@@ -177,6 +178,9 @@ KomeError KomeLog::prepare_stmts() {
         return KOME_ERR_STORAGE;
     if (p("SELECT ns, role FROM namespace_acl WHERE fingerprint=?1",
           &stmt_get_peer_access_) != SQLITE_OK)
+        return KOME_ERR_STORAGE;
+    if (p("UPDATE namespace_acl SET fingerprint=?2 WHERE fingerprint=?1",
+          &stmt_rotate_acl_fp_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
 
     return KOME_OK;
@@ -542,6 +546,13 @@ KomeError KomeLog::get_peer_namespace_access(const uint8_t peer_fp[32],
         if (ns) out[ns] = role;
     }
     return KOME_OK;
+}
+
+KomeError KomeLog::rotate_acl_fingerprint(const uint8_t old_fp[32], const uint8_t new_fp[32]) {
+    sqlite3_reset(stmt_rotate_acl_fp_);
+    sqlite3_bind_blob(stmt_rotate_acl_fp_, 1, old_fp, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt_rotate_acl_fp_, 2, new_fp, 32, SQLITE_TRANSIENT);
+    return (sqlite3_step(stmt_rotate_acl_fp_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
 }
 
 /* --- Stats --------------------------------------------------------------- */

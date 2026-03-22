@@ -61,6 +61,25 @@ KOME_API KomeError kome_set_identity(KomeEngine *engine, const uint8_t *key_mate
     return KOME_OK;
 }
 
+KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
+    const uint8_t *new_key_material, size_t new_key_len)
+{
+    if (!engine || !new_key_material || new_key_len == 0) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+    if (!engine->identity_set) return KOME_ERR_MISUSE;
+
+    uint8_t new_fp[32];
+    kome::sha256(new_key_material, new_key_len, new_fp);
+
+    KomeError err = engine->log->rotate_acl_fingerprint(engine->identity, new_fp);
+    if (err != KOME_OK) return err;
+
+    std::memcpy(engine->identity, new_fp, 32);
+    return KOME_OK;
+}
+
 KOME_API KomeError kome_put(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     const uint8_t *value, size_t value_len,

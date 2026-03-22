@@ -205,6 +205,11 @@ KOME_API void      kome_close(KomeEngine *engine);
 KOME_API KomeError kome_set_identity(KomeEngine *engine,
                                       const uint8_t *key_material, size_t len);
 
+/* Rotate identity to new key material. Migrates all ACL entries from old
+ * fingerprint to new fingerprint. Identity must already be set. */
+KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
+    const uint8_t *new_key_material, size_t new_key_len);
+
 /* Write a key-value pair. Syncs automatically to connected peers. */
 KOME_API KomeError kome_put(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,

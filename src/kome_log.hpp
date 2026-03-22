@@ -74,6 +74,7 @@ public:
     int get_peer_role(const char *ns, const uint8_t peer_fp[32]);
     KomeError get_peer_namespace_access(const uint8_t peer_fp[32],
                                          std::map<std::string, int> &out);
+    KomeError rotate_acl_fingerprint(const uint8_t old_fp[32], const uint8_t new_fp[32]);
 
     KomeError get_stats(KomeStats *out);
     KomeError list_namespaces(std::vector<std::string> &out);
@@ -110,6 +111,7 @@ private:
     sqlite3_stmt *stmt_has_ns_           = nullptr;
     sqlite3_stmt *stmt_get_peer_role_    = nullptr;
     sqlite3_stmt *stmt_get_peer_access_  = nullptr;
+    sqlite3_stmt *stmt_rotate_acl_fp_   = nullptr;
 
     KomeError create_tables();
     void finalize_stmts();
