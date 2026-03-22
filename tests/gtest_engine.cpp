@@ -203,7 +203,7 @@ TEST_F(EngineTest, GetValueNotFound) {
     EXPECT_EQ(nullptr, out);
 }
 
-TEST_F(EngineTest, GetDeletedValueReturnsTombstone) {
+TEST_F(EngineTest, GetDeletedValueReturnsNotFound) {
     set_test_identity();
 
     uint8_t key[] = "dkey";
@@ -215,7 +215,25 @@ TEST_F(EngineTest, GetDeletedValueReturnsTombstone) {
     uint8_t *out = nullptr;
     size_t out_len = 0;
     KomeEntryMeta read_meta = {};
-    ASSERT_EQ(KOME_OK, kome_get(engine, "test", key, 4, &out, &out_len, &read_meta));
+    ASSERT_EQ(KOME_ERR_NOT_FOUND, kome_get(engine, "test", key, 4, &out, &out_len, &read_meta));
+    EXPECT_EQ(nullptr, out);
+    EXPECT_EQ(0u, out_len);
+    EXPECT_EQ(1, read_meta.tombstone);
+}
+
+TEST_F(EngineTest, GetWithTombstonesReturnsOkForDeleted) {
+    set_test_identity();
+
+    uint8_t key[] = "dkey2";
+    uint8_t value[] = "data";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "test", key, 5, value, 4, &m));
+    ASSERT_EQ(KOME_OK, kome_delete(engine, "test", key, 5, &m));
+
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    KomeEntryMeta read_meta = {};
+    ASSERT_EQ(KOME_OK, kome_get_with_tombstones(engine, "test", key, 5, &out, &out_len, &read_meta));
     EXPECT_EQ(nullptr, out);
     EXPECT_EQ(0u, out_len);
     EXPECT_EQ(1, read_meta.tombstone);

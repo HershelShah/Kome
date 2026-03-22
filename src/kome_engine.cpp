@@ -279,6 +279,57 @@ KOME_API KomeError kome_get(KomeEngine *engine,
     KomeError err = engine->log->get_entry(ns, key, key_len, &entry);
     if (err != KOME_OK) return err;
 
+    if (entry.tombstone) {
+        *value_out = nullptr;
+        *value_len_out = 0;
+        if (meta_out) {
+            meta_out->timestamp_us = entry.timestamp_us;
+            std::memcpy(meta_out->author, entry.author, 32);
+            meta_out->seq = entry.seq;
+            std::memcpy(meta_out->hash, entry.hash, 32);
+            meta_out->value_len = 0;
+            meta_out->tombstone = 1;
+        }
+        return KOME_ERR_NOT_FOUND;
+    }
+
+    if (meta_out) {
+        meta_out->timestamp_us = entry.timestamp_us;
+        std::memcpy(meta_out->author, entry.author, 32);
+        meta_out->seq = entry.seq;
+        std::memcpy(meta_out->hash, entry.hash, 32);
+        meta_out->value_len = (uint32_t)entry.value.size();
+        meta_out->tombstone = 0;
+    }
+
+    if (entry.value.empty()) {
+        *value_out = nullptr;
+        *value_len_out = 0;
+    } else {
+        auto *buf = (uint8_t*)std::malloc(entry.value.size());
+        if (!buf) return KOME_ERR_INTERNAL;
+        std::memcpy(buf, entry.value.data(), entry.value.size());
+        *value_out = buf;
+        *value_len_out = entry.value.size();
+    }
+
+    return KOME_OK;
+}
+
+KOME_API KomeError kome_get_with_tombstones(KomeEngine *engine,
+    const char *ns, const uint8_t *key, size_t key_len,
+    uint8_t **value_out, size_t *value_len_out,
+    KomeEntryMeta *meta_out)
+{
+    if (!engine || !ns || !key || !value_out || !value_len_out) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+
+    kome::LogEntry entry;
+    KomeError err = engine->log->get_entry(ns, key, key_len, &entry);
+    if (err != KOME_OK) return err;
+
     if (meta_out) {
         meta_out->timestamp_us = entry.timestamp_us;
         std::memcpy(meta_out->author, entry.author, 32);
