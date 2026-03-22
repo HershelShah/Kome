@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Options ---------------------------------------------------------------
 option(KOME_SANITIZER "Enable sanitizer (address, thread, undefined)" "")
+option(KOME_USE_SQLCIPHER "Use SQLCipher instead of vendored SQLite for encrypted database support" OFF)
 
 # --- Compiler flags --------------------------------------------------------
 add_compile_options(-Wall -Wextra -Wpedantic -fstack-protector-strong)
@@ -24,17 +25,26 @@ if(KOME_SANITIZER)
     add_link_options(-fsanitize=${KOME_SANITIZER})
 endif()
 
-# --- Vendored SQLite -------------------------------------------------------
-add_library(sqlite3 STATIC vendor/sqlite3.c)
-set_target_properties(sqlite3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(sqlite3 PUBLIC vendor)
-target_compile_definitions(sqlite3 PRIVATE
-    SQLITE_THREADSAFE=1
-    SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
-    SQLITE_OMIT_LOAD_EXTENSION
-)
-# Suppress warnings in vendored code
-target_compile_options(sqlite3 PRIVATE -w)
+# --- SQLite backend --------------------------------------------------------
+if(KOME_USE_SQLCIPHER)
+    # Use system SQLCipher (drop-in SQLite replacement with encryption).
+    # Requires libsqlcipher to be installed (e.g. apt install libsqlcipher-dev).
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SQLCIPHER REQUIRED IMPORTED_TARGET sqlcipher)
+    add_library(sqlite3 ALIAS PkgConfig::SQLCIPHER)
+else()
+    # Vendored plain SQLite — PRAGMA key is a no-op (no encryption).
+    add_library(sqlite3 STATIC vendor/sqlite3.c)
+    set_target_properties(sqlite3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(sqlite3 PUBLIC vendor)
+    target_compile_definitions(sqlite3 PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
+        SQLITE_OMIT_LOAD_EXTENSION
+    )
+    # Suppress warnings in vendored code
+    target_compile_options(sqlite3 PRIVATE -w)
+endif()
 
 # --- Vendored CWPack -------------------------------------------------------
 add_library(cwpack STATIC vendor/cwpack.c)
@@ -110,6 +120,7 @@ kome_add_test(test_sync     tests/gtest_sync.cpp)
 kome_add_test(test_replication tests/gtest_replication.cpp)
 kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
 kome_add_test(test_namespace_config tests/gtest_namespace_config.cpp)
+kome_add_test(test_encryption tests/gtest_encryption.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)

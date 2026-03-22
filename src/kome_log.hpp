@@ -28,7 +28,9 @@ public:
     KomeLog();
     ~KomeLog();
 
-    KomeError open(const char *path, int enable_wal, int busy_timeout_ms);
+    KomeError open(const char *path, int enable_wal, int busy_timeout_ms,
+                   const uint8_t *encryption_key = nullptr,
+                   size_t encryption_key_len = 0);
     void close();
 
     KomeError put_entry(const char *ns, const uint8_t *key, size_t key_len,

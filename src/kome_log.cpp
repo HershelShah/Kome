@@ -1,6 +1,7 @@
 #include "kome_log.hpp"
 #include "kome_util.hpp"
 #include "sqlite3.h"
+#include <cstdio>
 #include <cstring>
 
 namespace kome {
@@ -8,10 +9,28 @@ namespace kome {
 KomeLog::KomeLog() = default;
 KomeLog::~KomeLog() { close(); }
 
-KomeError KomeLog::open(const char *path, int enable_wal, int busy_timeout_ms) {
+KomeError KomeLog::open(const char *path, int enable_wal, int busy_timeout_ms,
+                         const uint8_t *encryption_key, size_t encryption_key_len) {
     int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
     if (sqlite3_open_v2(path, &db_, flags, nullptr) != SQLITE_OK)
         return KOME_ERR_STORAGE;
+
+    /*
+     * Apply encryption key BEFORE any other operations.
+     * With SQLCipher this enables database encryption.
+     * With plain SQLite the PRAGMA key is silently ignored (no-op).
+     */
+    if (encryption_key && encryption_key_len == 32) {
+        char hex_key[65];
+        for (int i = 0; i < 32; i++)
+            std::snprintf(hex_key + i * 2, 3, "%02x", encryption_key[i]);
+        hex_key[64] = '\0';
+        char pragma[128];
+        std::snprintf(pragma, sizeof(pragma), "PRAGMA key = \"x'%s'\";", hex_key);
+        char *err = nullptr;
+        sqlite3_exec(db_, pragma, nullptr, nullptr, &err);
+        sqlite3_free(err);
+    }
 
     sqlite3_busy_timeout(db_, busy_timeout_ms > 0 ? busy_timeout_ms : 5000);
 

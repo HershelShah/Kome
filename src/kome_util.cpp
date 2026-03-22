@@ -93,6 +93,19 @@ void sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
         store32be(out + i * 4, h[i]);
 }
 
+void derive_db_key(const uint8_t *key_material, size_t key_len, uint8_t out[32]) {
+    /* SHA-256("kome-db-key" || key_material) */
+    static const char prefix[] = "kome-db-key";
+    static const size_t prefix_len = sizeof(prefix) - 1; /* exclude NUL */
+
+    std::vector<uint8_t> buf(prefix_len + key_len);
+    std::memcpy(buf.data(), prefix, prefix_len);
+    if (key_material && key_len > 0)
+        std::memcpy(buf.data() + prefix_len, key_material, key_len);
+
+    sha256(buf.data(), buf.size(), out);
+}
+
 uint64_t timestamp_us() {
     auto now = std::chrono::system_clock::now();
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(

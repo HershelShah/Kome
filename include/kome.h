@@ -85,6 +85,17 @@ typedef struct {
     const char *path;           /* SQLite database path (required)            */
     int         disable_wal;    /* 1 = disable WAL (default: 0 = WAL on)     */
     int         busy_timeout_ms;/* SQLite busy timeout (default: 5000, 0=def) */
+
+    /*
+     * Optional encryption key for database-at-rest encryption via SQLCipher.
+     * Set to a 32-byte key to enable; NULL (or zero length) to disable.
+     *
+     * With plain SQLite (not SQLCipher), PRAGMA key is silently ignored —
+     * no encryption is performed. To get actual encryption, build with
+     * -DKOME_USE_SQLCIPHER=ON and ensure libsqlcipher is installed.
+     */
+    const uint8_t *encryption_key;      /* 32-byte key, or NULL for none     */
+    size_t         encryption_key_len;   /* must be 32 if key is provided     */
 } KomeConfig;
 
 typedef struct {

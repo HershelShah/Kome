@@ -17,7 +17,9 @@ KOME_API KomeError kome_open(const KomeConfig *config, KomeEngine **out) {
     int use_wal = config->disable_wal ? 0 : 1;
     int timeout = config->busy_timeout_ms > 0 ? config->busy_timeout_ms : 5000;
 
-    KomeError err = engine->log->open(config->path, use_wal, timeout);
+    KomeError err = engine->log->open(config->path, use_wal, timeout,
+                                       config->encryption_key,
+                                       config->encryption_key_len);
     if (err != KOME_OK) {
         delete engine;
         return err;
