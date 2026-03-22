@@ -72,6 +72,7 @@ void KomeLog::finalize_stmts() {
         &stmt_inc_repl_, &stmt_gc_tomb_, &stmt_list_ns_, &stmt_list_keys_,
         &stmt_put_ns_settings_, &stmt_del_ns_settings_, &stmt_del_ns_acl_by_ns_,
         &stmt_put_ns_acl_, &stmt_get_ns_settings_, &stmt_get_ns_acl_,
+        &stmt_get_all_,
         &stmt_has_ns_, &stmt_get_peer_role_, &stmt_get_peer_access_
     };
     for (auto *sp : all) { sqlite3_finalize(*sp); *sp = nullptr; }
@@ -143,6 +144,10 @@ KomeError KomeLog::prepare_stmts() {
         return KOME_ERR_STORAGE;
     if (p("SELECT key FROM change_log WHERE ns=?1 ORDER BY key",
           &stmt_list_keys_) != SQLITE_OK)
+        return KOME_ERR_STORAGE;
+    if (p("SELECT key, value, timestamp_us, author, seq, hash, value_len, tombstone "
+          "FROM change_log WHERE ns=?1 AND tombstone=0 ORDER BY key",
+          &stmt_get_all_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
 
     /* Namespace configuration */
@@ -577,6 +582,38 @@ KomeError KomeLog::list_namespaces(std::vector<std::string> &out) {
     while (sqlite3_step(stmt_list_ns_) == SQLITE_ROW) {
         const char *ns_ptr = (const char*)sqlite3_column_text(stmt_list_ns_, 0);
         if (ns_ptr) out.emplace_back(ns_ptr);
+    }
+    return KOME_OK;
+}
+
+KomeError KomeLog::get_all_entries(const char *ns, std::vector<LogEntry> &out) {
+    out.clear();
+    sqlite3_reset(stmt_get_all_);
+    sqlite3_bind_text(stmt_get_all_, 1, ns, -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt_get_all_) == SQLITE_ROW) {
+        LogEntry e;
+        e.ns = ns;
+
+        const void *k = sqlite3_column_blob(stmt_get_all_, 0);
+        int klen = sqlite3_column_bytes(stmt_get_all_, 0);
+        if (k && klen > 0)
+            e.key.assign((const uint8_t*)k, (const uint8_t*)k + klen);
+
+        const void *v = sqlite3_column_blob(stmt_get_all_, 1);
+        int vlen = sqlite3_column_bytes(stmt_get_all_, 1);
+        if (v && vlen > 0)
+            e.value.assign((const uint8_t*)v, (const uint8_t*)v + vlen);
+
+        e.timestamp_us = (uint64_t)sqlite3_column_int64(stmt_get_all_, 2);
+        const void *a = sqlite3_column_blob(stmt_get_all_, 3);
+        if (a) std::memcpy(e.author, a, 32);
+        e.seq = (uint64_t)sqlite3_column_int64(stmt_get_all_, 4);
+        const void *h = sqlite3_column_blob(stmt_get_all_, 5);
+        if (h) std::memcpy(e.hash, h, 32);
+        e.tombstone = (uint8_t)sqlite3_column_int(stmt_get_all_, 7);
+
+        out.push_back(std::move(e));
     }
     return KOME_OK;
 }
