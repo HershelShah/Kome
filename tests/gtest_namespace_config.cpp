@@ -235,6 +235,55 @@ TEST_F(NamespaceConfigTest, AutoCreateOnDelete) {
     kome_free_namespace_config(&out);
 }
 
+/* kome_list_namespaces should include namespaces that are configured but have
+   no data, and should not produce duplicates when data is later written. */
+TEST_F(NamespaceConfigTest, ListNamespacesIncludesConfiguredEmpty) {
+    set_test_identity();
+
+    /* Configure a namespace with an ACL but do NOT write any data */
+    KomeNamespaceACLEntry acl;
+    std::memset(acl.fingerprint, 0xCC, 32);
+    acl.role = KOME_ROLE_READ;
+
+    KomeNamespaceConfig cfg = {};
+    cfg.name = "configured_only";
+    cfg.tombstone_ttl_sec = 0;
+    cfg.acl = &acl;
+    cfg.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine, &cfg));
+
+    /* List namespaces — configured_only must appear even though it has no data */
+    char **ns_list = nullptr;
+    size_t ns_count = 0;
+    ASSERT_EQ(KOME_OK, kome_list_namespaces(engine, &ns_list, &ns_count));
+
+    bool found = false;
+    for (size_t i = 0; i < ns_count; i++) {
+        if (std::string(ns_list[i]) == "configured_only") found = true;
+    }
+    EXPECT_TRUE(found) << "configured_only should appear in list_namespaces";
+    kome_free_namespaces(ns_list, ns_count);
+
+    /* Now write data to the namespace */
+    uint8_t key[] = "k1";
+    uint8_t val[] = "v1";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "configured_only", key, 2, val, 2, &m));
+
+    /* List again — configured_only must appear exactly once (no duplicates) */
+    ns_list = nullptr;
+    ns_count = 0;
+    ASSERT_EQ(KOME_OK, kome_list_namespaces(engine, &ns_list, &ns_count));
+
+    int count_configured = 0;
+    for (size_t i = 0; i < ns_count; i++) {
+        if (std::string(ns_list[i]) == "configured_only") count_configured++;
+    }
+    EXPECT_EQ(1, count_configured)
+        << "configured_only should appear exactly once after writing data";
+    kome_free_namespaces(ns_list, ns_count);
+}
+
 /* ========================================================================
  * NamespaceSyncTest — two-engine ACL-based sync filtering
  * ======================================================================== */
