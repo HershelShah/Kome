@@ -130,6 +130,13 @@ void KomeSyncManager::on_local_write(const LogEntry &entry) {
         send_to_peer((const uint8_t*)fp.data(), msg);
 }
 
+bool KomeSyncManager::is_peer_idle(const uint8_t *peer_fp) {
+    std::lock_guard<std::mutex> lock(peers_mu_);
+    auto it = peers_.find(fp_key(peer_fp));
+    if (it == peers_.end()) return true;  /* unknown peer treated as idle */
+    return it->second.state == PeerSyncState::IDLE;
+}
+
 void KomeSyncManager::initiate_sync(const uint8_t *peer_fp) {
     SyncRequest req;
     req.protocol_version = KOME_PROTOCOL_VERSION;
