@@ -244,6 +244,11 @@ KOME_API void      kome_free_value(uint8_t *value);
 KOME_API void kome_on_remote_change(KomeEngine *engine,
     KomeRemoteChangeCallback cb, void *ud);
 
+/* React to writes from other peers in a specific namespace.
+ * Pass cb = NULL to unregister. */
+KOME_API void kome_on_remote_change_ns(KomeEngine *engine, const char *ns,
+    KomeRemoteChangeCallback cb, void *ud);
+
 /* ========================================================================
    Transport — attach a networking layer
    ======================================================================== */

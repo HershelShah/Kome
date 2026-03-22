@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <memory>
 
@@ -30,6 +31,7 @@ struct KomeEngine {
     /* Callbacks — guarded by mu */
     KomeRemoteChangeCallback            on_remote_change_cb   = nullptr;
     void                               *on_remote_change_ud   = nullptr;
+    std::unordered_map<std::string, std::pair<KomeRemoteChangeCallback, void*>> ns_change_cbs;
     KomeConflictCallback                on_conflict_cb        = nullptr;
     void                               *on_conflict_ud        = nullptr;
     KomeSyncDoneCallback                on_sync_done_cb       = nullptr;

@@ -563,6 +563,17 @@ KOME_API void kome_on_remote_change(KomeEngine *engine, KomeRemoteChangeCallback
     engine->on_remote_change_ud = ud;
 }
 
+KOME_API void kome_on_remote_change_ns(KomeEngine *engine, const char *ns,
+    KomeRemoteChangeCallback cb, void *ud) {
+    if (!engine || !ns) return;
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (cb) {
+        engine->ns_change_cbs[ns] = {cb, ud};
+    } else {
+        engine->ns_change_cbs.erase(ns);
+    }
+}
+
 KOME_API void kome_on_conflict(KomeEngine *engine, KomeConflictCallback cb, void *ud) {
     if (!engine) return;
     std::lock_guard<std::mutex> lock(engine->mu);
