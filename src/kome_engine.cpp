@@ -496,6 +496,111 @@ KOME_API KomeError kome_list_keys(KomeEngine *engine, const char *ns,
     return KOME_OK;
 }
 
+KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
+    uint8_t ***keys_out, size_t **key_lens_out,
+    uint8_t ***values_out, size_t **value_lens_out,
+    KomeEntryMeta **metas_out, size_t *count_out)
+{
+    if (!engine || !ns || !keys_out || !key_lens_out ||
+        !values_out || !value_lens_out || !metas_out || !count_out)
+        return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+
+    std::vector<kome::LogEntry> entries;
+    KomeError err = engine->log->get_all_entries(ns, entries);
+    if (err != KOME_OK) return err;
+
+    size_t count = entries.size();
+    if (count == 0) {
+        *keys_out = nullptr;
+        *key_lens_out = nullptr;
+        *values_out = nullptr;
+        *value_lens_out = nullptr;
+        *metas_out = nullptr;
+        *count_out = 0;
+        return KOME_OK;
+    }
+
+    auto **kptrs = (uint8_t**)std::malloc(count * sizeof(uint8_t*));
+    auto *klens  = (size_t*)std::malloc(count * sizeof(size_t));
+    auto **vptrs = (uint8_t**)std::malloc(count * sizeof(uint8_t*));
+    auto *vlens  = (size_t*)std::malloc(count * sizeof(size_t));
+    auto *metas  = (KomeEntryMeta*)std::malloc(count * sizeof(KomeEntryMeta));
+    if (!kptrs || !klens || !vptrs || !vlens || !metas) {
+        std::free(kptrs);
+        std::free(klens);
+        std::free(vptrs);
+        std::free(vlens);
+        std::free(metas);
+        return KOME_ERR_INTERNAL;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        auto &e = entries[i];
+
+        klens[i] = e.key.size();
+        kptrs[i] = (uint8_t*)std::malloc(klens[i]);
+        if (!kptrs[i]) {
+            for (size_t j = 0; j < i; j++) { std::free(kptrs[j]); std::free(vptrs[j]); }
+            std::free(kptrs); std::free(klens);
+            std::free(vptrs); std::free(vlens);
+            std::free(metas);
+            return KOME_ERR_INTERNAL;
+        }
+        std::memcpy(kptrs[i], e.key.data(), klens[i]);
+
+        vlens[i] = e.value.size();
+        if (vlens[i] > 0) {
+            vptrs[i] = (uint8_t*)std::malloc(vlens[i]);
+            if (!vptrs[i]) {
+                std::free(kptrs[i]);
+                for (size_t j = 0; j < i; j++) { std::free(kptrs[j]); std::free(vptrs[j]); }
+                std::free(kptrs); std::free(klens);
+                std::free(vptrs); std::free(vlens);
+                std::free(metas);
+                return KOME_ERR_INTERNAL;
+            }
+            std::memcpy(vptrs[i], e.value.data(), vlens[i]);
+        } else {
+            vptrs[i] = nullptr;
+        }
+
+        metas[i].timestamp_us = e.timestamp_us;
+        std::memcpy(metas[i].author, e.author, 32);
+        metas[i].seq = e.seq;
+        std::memcpy(metas[i].hash, e.hash, 32);
+        metas[i].value_len = (uint32_t)e.value.size();
+        metas[i].tombstone = e.tombstone;
+    }
+
+    *keys_out = kptrs;
+    *key_lens_out = klens;
+    *values_out = vptrs;
+    *value_lens_out = vlens;
+    *metas_out = metas;
+    *count_out = count;
+    return KOME_OK;
+}
+
+KOME_API void kome_free_entries(uint8_t **keys, size_t *key_lens,
+    uint8_t **values, size_t *value_lens,
+    KomeEntryMeta *metas, size_t count)
+{
+    if (keys) {
+        for (size_t i = 0; i < count; i++) std::free(keys[i]);
+        std::free(keys);
+    }
+    std::free(key_lens);
+    if (values) {
+        for (size_t i = 0; i < count; i++) std::free(values[i]);
+        std::free(values);
+    }
+    std::free(value_lens);
+    std::free(metas);
+}
+
 KOME_API void kome_free_keys(uint8_t **keys, size_t *key_lens, size_t count) {
     if (keys) {
         for (size_t i = 0; i < count; i++) std::free(keys[i]);

@@ -78,6 +78,7 @@ public:
     KomeError get_stats(KomeStats *out);
     KomeError list_namespaces(std::vector<std::string> &out);
     KomeError list_keys(const char *ns, std::vector<std::vector<uint8_t>> &out);
+    KomeError get_all_entries(const char *ns, std::vector<LogEntry> &out);
 
 private:
     sqlite3 *db_ = nullptr;
@@ -97,6 +98,7 @@ private:
     sqlite3_stmt *stmt_gc_tomb_      = nullptr;
     sqlite3_stmt *stmt_list_ns_      = nullptr;
     sqlite3_stmt *stmt_list_keys_    = nullptr;
+    sqlite3_stmt *stmt_get_all_      = nullptr;
 
     /* Namespace configuration statements */
     sqlite3_stmt *stmt_put_ns_settings_  = nullptr;
