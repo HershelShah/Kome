@@ -159,6 +159,14 @@ _lib.kome_get.argtypes = [
 ]
 _lib.kome_get.restype = ctypes.c_int
 
+_lib.kome_get_with_tombstones.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t),
+    ctypes.POINTER(KomeEntryMeta)
+]
+_lib.kome_get_with_tombstones.restype = ctypes.c_int
+
 _lib.kome_free_value.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
 _lib.kome_free_value.restype = None
 

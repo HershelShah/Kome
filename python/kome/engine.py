@@ -89,12 +89,31 @@ class Engine:
 
     def get(self, ns: str, key: bytes) -> Tuple[Optional[bytes], KomeEntryMeta]:
         """Read a value and its metadata. Returns (value_bytes, meta).
-        value_bytes is None for tombstones or GC'd values."""
+        Raises KomeError (NOT_FOUND) for deleted/tombstoned entries."""
         meta = KomeEntryMeta()
         key_arr = (ctypes.c_uint8 * len(key))(*key)
         value_ptr = ctypes.POINTER(ctypes.c_uint8)()
         value_len = ctypes.c_size_t(0)
         _check(_lib.kome_get(
+            self._handle, ns.encode(),
+            ctypes.cast(key_arr, ctypes.POINTER(ctypes.c_uint8)), len(key),
+            ctypes.byref(value_ptr), ctypes.byref(value_len),
+            ctypes.byref(meta)))
+        if value_ptr and value_len.value > 0:
+            result = bytes(value_ptr[:value_len.value])
+            _lib.kome_free_value(value_ptr)
+        else:
+            result = None
+        return result, meta
+
+    def get_with_tombstones(self, ns: str, key: bytes) -> Tuple[Optional[bytes], KomeEntryMeta]:
+        """Read a value and its metadata, including tombstoned entries.
+        Returns (value_bytes, meta). value_bytes is None for tombstones."""
+        meta = KomeEntryMeta()
+        key_arr = (ctypes.c_uint8 * len(key))(*key)
+        value_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        value_len = ctypes.c_size_t(0)
+        _check(_lib.kome_get_with_tombstones(
             self._handle, ns.encode(),
             ctypes.cast(key_arr, ctypes.POINTER(ctypes.c_uint8)), len(key),
             ctypes.byref(value_ptr), ctypes.byref(value_len),
