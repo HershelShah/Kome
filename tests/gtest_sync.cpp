@@ -368,6 +368,101 @@ TEST_F(SyncTest, BatchRemoteChangeCallbackOrder) {
     EXPECT_EQ(metas[2].seq, cb_data.seqs[2]);
 }
 
+/* --- Per-namespace change callback -------------------------------------- */
+
+TEST_F(SyncTest, PerNamespaceChangeCallback) {
+    configure_ns("ns_a");
+    configure_ns("ns_b");
+
+    struct CallbackData {
+        int count = 0;
+        std::string last_ns;
+    } cb_data;
+
+    kome_on_remote_change_ns(engine_b, "ns_a",
+        [](void *ud, const char *ns, const uint8_t *, size_t,
+           const uint8_t *, size_t, const KomeEntryMeta *) {
+            auto *d = static_cast<CallbackData*>(ud);
+            d->count++;
+            d->last_ns = ns;
+        }, &cb_data);
+
+    /* Write to both namespaces on A */
+    replicate_n(engine_a, "ns_a", 3);
+    replicate_n(engine_a, "ns_b", 2);
+
+    loopback.connect();
+
+    /* The per-namespace callback should only fire for ns_a */
+    EXPECT_EQ(3, cb_data.count);
+    EXPECT_EQ("ns_a", cb_data.last_ns);
+}
+
+TEST_F(SyncTest, PerNamespaceAndGlobalCallback) {
+    configure_ns("ns_a");
+    configure_ns("ns_b");
+
+    struct GlobalData {
+        int count = 0;
+    } global_data;
+
+    struct NsData {
+        int count = 0;
+        std::string last_ns;
+    } ns_data;
+
+    kome_on_remote_change(engine_b,
+        [](void *ud, const char *, const uint8_t *, size_t,
+           const uint8_t *, size_t, const KomeEntryMeta *) {
+            auto *d = static_cast<GlobalData*>(ud);
+            d->count++;
+        }, &global_data);
+
+    kome_on_remote_change_ns(engine_b, "ns_a",
+        [](void *ud, const char *ns, const uint8_t *, size_t,
+           const uint8_t *, size_t, const KomeEntryMeta *) {
+            auto *d = static_cast<NsData*>(ud);
+            d->count++;
+            d->last_ns = ns;
+        }, &ns_data);
+
+    replicate_n(engine_a, "ns_a", 2);
+    replicate_n(engine_a, "ns_b", 3);
+
+    loopback.connect();
+
+    /* Global callback fires for all 5 writes */
+    EXPECT_EQ(5, global_data.count);
+    /* Per-namespace callback fires only for ns_a (2 writes) */
+    EXPECT_EQ(2, ns_data.count);
+    EXPECT_EQ("ns_a", ns_data.last_ns);
+}
+
+TEST_F(SyncTest, UnregisterPerNamespaceCallback) {
+    configure_ns("ns_a");
+
+    struct CallbackData {
+        int count = 0;
+    } cb_data;
+
+    kome_on_remote_change_ns(engine_b, "ns_a",
+        [](void *ud, const char *, const uint8_t *, size_t,
+           const uint8_t *, size_t, const KomeEntryMeta *) {
+            auto *d = static_cast<CallbackData*>(ud);
+            d->count++;
+        }, &cb_data);
+
+    /* Unregister by passing NULL callback */
+    kome_on_remote_change_ns(engine_b, "ns_a", nullptr, nullptr);
+
+    replicate_n(engine_a, "ns_a", 3);
+
+    loopback.connect();
+
+    /* Callback should not have fired */
+    EXPECT_EQ(0, cb_data.count);
+}
+
 TEST_F(SyncTest, BatchMixedWithSingleWrites) {
     configure_ns("mix");
     loopback.connect();
