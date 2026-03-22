@@ -40,6 +40,10 @@ struct KomeEngine {
     void                               *on_repl_change_ud     = nullptr;
 
     uint32_t                            ack_since_gc          = 0;
+
+    /* Per-peer rate limits (persisted across sync_mgr recreations) */
+    uint64_t                            rate_limit_bytes      = 50ULL * 1024 * 1024;
+    uint64_t                            rate_limit_entries    = 1000;
 };
 
 #endif /* KOME_ENGINE_HPP */
