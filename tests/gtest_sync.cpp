@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "kome.h"
 #include "kome_test_helpers.hpp"
+#include "kome_wire.hpp"
+#include "kome_util.hpp"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -613,3 +615,76 @@ TEST_F(SyncTest, SyncWithNoTransport) {
     cleanup_db(db_c);
 }
 
+/* --- Far-future timestamp rejection ------------------------------------ */
+
+/* Helper: build a SyncEntry and inject it as a LIVE_ENTRY from A to B */
+static void inject_live_entry(LoopbackPair &loopback,
+                              const char *ns, const char *key_str,
+                              const char *val_str, uint64_t ts_us) {
+    using namespace kome;
+    SyncEntry se;
+    se.ns = ns;
+    se.key.assign((const uint8_t*)key_str,
+                  (const uint8_t*)key_str + std::strlen(key_str));
+    se.value.assign((const uint8_t*)val_str,
+                    (const uint8_t*)val_str + std::strlen(val_str));
+    se.timestamp_us = ts_us;
+    std::memset(se.author, 0xAA, 32);  /* A's fingerprint */
+    se.seq = ts_us;                     /* unique-enough sequence number */
+    sha256(se.value.data(), se.value.size(), se.hash);
+    se.tombstone = 0;
+
+    auto wire = encode_live_entry(se);
+    ASSERT_FALSE(wire.empty());
+
+    /* Deliver to B's recv callback as if A sent it */
+    loopback.b.recv_cb(loopback.b.recv_ud, loopback.a.fingerprint,
+                       wire.data(), wire.size());
+}
+
+TEST_F(SyncTest, RejectFarFutureTimestamp) {
+    configure_ns("ts");
+    loopback.connect();
+
+    /* 48 hours in the future — should be rejected */
+    uint64_t far_future = kome::timestamp_us() + 48ULL * 3600 * 1000000;
+    inject_live_entry(loopback, "ts", "future_key", "evil", far_future);
+
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_ERR_NOT_FOUND,
+              kome_get_meta(engine_b, "ts",
+                            (const uint8_t*)"future_key", 10, &meta))
+        << "Entry 48h in future should be rejected";
+}
+
+TEST_F(SyncTest, AcceptNearFutureTimestamp) {
+    configure_ns("ts");
+    loopback.connect();
+
+    /* 12 hours in the future — within 24h tolerance, should be accepted */
+    uint64_t near_future = kome::timestamp_us() + 12ULL * 3600 * 1000000;
+    inject_live_entry(loopback, "ts", "near_key", "ok", near_future);
+
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_OK,
+              kome_get_meta(engine_b, "ts",
+                            (const uint8_t*)"near_key", 8, &meta))
+        << "Entry 12h in future should be accepted";
+    EXPECT_EQ(near_future, meta.timestamp_us);
+}
+
+TEST_F(SyncTest, AcceptCurrentTimestamp) {
+    configure_ns("ts");
+    loopback.connect();
+
+    /* Current timestamp — should be accepted */
+    uint64_t now = kome::timestamp_us();
+    inject_live_entry(loopback, "ts", "now_key", "val", now);
+
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_OK,
+              kome_get_meta(engine_b, "ts",
+                            (const uint8_t*)"now_key", 7, &meta))
+        << "Entry with current timestamp should be accepted";
+    EXPECT_EQ(now, meta.timestamp_us);
+}

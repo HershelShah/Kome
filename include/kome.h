@@ -46,6 +46,7 @@ extern "C" {
 #define KOME_MAX_KEY_LEN      512
 #define KOME_MAX_VALUE_LEN    (16 * 1024 * 1024)  /* 16 MiB */
 #define KOME_MAX_BATCH_COUNT  1000
+#define KOME_MAX_CLOCK_DRIFT_US (24ULL * 3600 * 1000000)  /* 24 h in microseconds */
 
 /* --- Error codes -------------------------------------------------------- */
 

@@ -289,6 +289,9 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
     if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
 
+    /* Clock sanity: reject entries with timestamps too far in the future */
+    if (entry.timestamp_us > timestamp_us() + KOME_MAX_CLOCK_DRIFT_US) return;
+
     /* Write authorization: sender must have WRITE access on this namespace */
     {
         std::lock_guard<std::mutex> lock(engine_->mu);
@@ -512,10 +515,12 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
     if (entries.empty()) return;
 
     /* Validate all entries first — reject the entire batch on any failure */
+    uint64_t now_us = timestamp_us();
     for (auto &entry : entries) {
         if (entry.ns.size() > KOME_MAX_NS_LEN || entry.ns.empty()) return;
         if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
         if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
+        if (entry.timestamp_us > now_us + KOME_MAX_CLOCK_DRIFT_US) return;
         if (!entry.tombstone) {
             uint8_t computed_hash[32];
             sha256(entry.value.data(), entry.value.size(), computed_hash);
