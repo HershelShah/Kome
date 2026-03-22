@@ -304,6 +304,15 @@ KOME_API void kome_on_replication_change(KomeEngine *engine,
 /* Tuning */
 KOME_API void      kome_set_log_level(KomeEngine *engine, KomeLogLevel level);
 
+/* Per-peer write rate limiting.
+ * Limits incoming writes from any single peer within a 60-second window.
+ * Default: 50 MiB/min bytes, 1000 entries/min.
+ * When a peer exceeds either limit, subsequent entries are dropped until
+ * the window resets. */
+KOME_API KomeError kome_set_peer_limits(KomeEngine *engine,
+    uint64_t max_bytes_per_minute,
+    uint64_t max_entries_per_minute);
+
 /* Info */
 KOME_API KomeError    kome_stats(KomeEngine *engine, KomeStats *out);
 KOME_API const char  *kome_errstr(KomeError err);

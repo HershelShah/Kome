@@ -392,6 +392,7 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
 
     engine->transport_adapter = std::make_unique<kome::KomeGenericTransport>(transport);
     engine->sync_mgr = std::make_unique<kome::KomeSyncManager>(engine);
+    engine->sync_mgr->set_peer_limits(engine->rate_limit_bytes, engine->rate_limit_entries);
     engine->sync_mgr->set_transport(engine->transport_adapter.get());
 
     return KOME_OK;
@@ -666,6 +667,18 @@ KOME_API void kome_free_namespace_config(KomeNamespaceConfig *config) {
 KOME_API void kome_set_log_level(KomeEngine *engine, KomeLogLevel level) {
     if (!engine) return;
     engine->log_level.store(level, std::memory_order_relaxed);
+}
+
+KOME_API KomeError kome_set_peer_limits(KomeEngine *engine,
+    uint64_t max_bytes_per_minute, uint64_t max_entries_per_minute) {
+    if (!engine) return KOME_ERR_MISUSE;
+    std::lock_guard<std::mutex> lock(engine->mu);
+    if (engine->sync_mgr)
+        engine->sync_mgr->set_peer_limits(max_bytes_per_minute, max_entries_per_minute);
+    /* Store on engine so limits persist across sync_mgr recreations */
+    engine->rate_limit_bytes = max_bytes_per_minute;
+    engine->rate_limit_entries = max_entries_per_minute;
+    return KOME_OK;
 }
 
 KOME_API KomeError kome_stats(KomeEngine *engine, KomeStats *out) {
