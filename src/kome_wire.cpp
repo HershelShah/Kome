@@ -41,6 +41,7 @@ static void pack_entry_fields(cw_pack_context *pc, const SyncEntry &e) {
 }
 
 std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
+    if (msg.vv.size() > SIZE_MAX / 48 - 256) return {};
     size_t buf_size = 256 + msg.vv.size() * 48;
     std::vector<uint8_t> buf(buf_size);
 
@@ -71,6 +72,7 @@ std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
 
 std::vector<uint8_t> encode_sync_entry(const SyncEntry &entry) {
     size_t buf_size = 512 + entry.ns.size() + entry.key.size() + entry.value.size();
+    if (buf_size < 512) return {};  /* overflow */
     std::vector<uint8_t> buf(buf_size);
     cw_pack_context pc;
     cw_pack_context_init(&pc, buf.data() + 1, buf_size - 1, nullptr);
@@ -245,6 +247,9 @@ bool decode_sync_request(const uint8_t *data, size_t len, SyncRequest *out) {
             cw_unpack_next(&uc);
             if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_MAP) return false;
             unsigned vv_size = uc.item.as.map.size;
+            /* Bound version vector size to prevent DoS via memory exhaustion.
+               A practical deployment has at most a few thousand peers. */
+            if (vv_size > 10000) return false;
             for (unsigned j = 0; j < vv_size; j++) {
                 cw_unpack_next(&uc);
                 if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_BIN
@@ -329,10 +334,13 @@ bool decode_live_entry(const uint8_t *data, size_t len, SyncEntry *out) {
 }
 
 std::vector<uint8_t> encode_batch_entry(const std::vector<SyncEntry> &entries) {
-    /* Estimate buffer size */
+    /* Estimate buffer size with overflow checks */
     size_t buf_size = 64;
-    for (auto &e : entries)
-        buf_size += 512 + e.ns.size() + e.key.size() + e.value.size();
+    for (auto &e : entries) {
+        size_t entry_size = 512 + e.ns.size() + e.key.size() + e.value.size();
+        if (entry_size < 512 || buf_size + entry_size < buf_size) return {};  /* overflow */
+        buf_size += entry_size;
+    }
     std::vector<uint8_t> buf(buf_size);
 
     cw_pack_context pc;

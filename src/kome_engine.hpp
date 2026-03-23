@@ -16,7 +16,7 @@
 struct KomeEngine {
     std::mutex                          mu;
     std::unique_ptr<kome::KomeLog>      log;
-    std::unique_ptr<kome::KomeSyncManager> sync_mgr;
+    std::shared_ptr<kome::KomeSyncManager> sync_mgr;
     std::unique_ptr<kome::KomeTransportAdapter> transport_adapter;
 
     uint8_t                             identity[32] = {};

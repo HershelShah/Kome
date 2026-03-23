@@ -408,6 +408,11 @@ KomeError KomeLog::gc_values() {
     sqlite3_finalize(sc);
     if (count == 0) return KOME_OK;
 
+    /* Wrap the UPDATE in a SAVEPOINT for atomicity */
+    char *sp_err = nullptr;
+    sqlite3_exec(db_, "SAVEPOINT gc_values", nullptr, nullptr, &sp_err);
+    sqlite3_free(sp_err);
+
     const char *sql =
         "UPDATE change_log SET value = NULL "
         "WHERE tombstone = 0 AND value IS NOT NULL "
@@ -415,11 +420,20 @@ KomeError KomeLog::gc_values() {
         "  SELECT 1 FROM peer_state ps "
         "  WHERE ps.author = change_log.author AND ps.seq < change_log.seq)";
     sqlite3_stmt *s = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &s, nullptr) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db_, sql, -1, &s, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK TO gc_values", nullptr, nullptr, nullptr);
+        sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
         return KOME_ERR_STORAGE;
+    }
     rc = sqlite3_step(s);
     sqlite3_finalize(s);
-    return (rc == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
+    if (rc != SQLITE_DONE) {
+        sqlite3_exec(db_, "ROLLBACK TO gc_values", nullptr, nullptr, nullptr);
+        sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
+        return KOME_ERR_STORAGE;
+    }
+    sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
+    return KOME_OK;
 }
 
 /* --- Transactions -------------------------------------------------------- */

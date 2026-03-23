@@ -28,7 +28,10 @@ bool KomeSyncManager::check_rate_limit(const uint8_t *peer_fp, uint64_t entry_by
     auto &state = peer_rates_[key];
 
     uint64_t now = timestamp_us();
-    if (now - state.window_start_us > 60000000ULL) {
+    /* Guard against unsigned underflow when clock goes backward */
+    if (now >= state.window_start_us
+        ? (now - state.window_start_us > 60000000ULL)
+        : true) {
         /* Reset window */
         state.window_start_us = now;
         state.bytes_in_window = 0;
@@ -320,8 +323,11 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
     if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
 
-    /* Clock sanity: reject entries with timestamps too far in the future */
-    if (entry.timestamp_us > timestamp_us() + KOME_MAX_CLOCK_DRIFT_US) return;
+    /* Clock sanity: reject entries with timestamps too far in the future or past */
+    uint64_t now = timestamp_us();
+    if (entry.timestamp_us > now + KOME_MAX_CLOCK_DRIFT_US) return;
+    if (now > KOME_MAX_CLOCK_DRIFT_US && entry.timestamp_us < now - KOME_MAX_CLOCK_DRIFT_US)
+        return;
 
     /* Per-peer rate limiting */
     {
@@ -558,6 +564,8 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
         if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
         if (entry.timestamp_us > now_us + KOME_MAX_CLOCK_DRIFT_US) return;
+        if (now_us > KOME_MAX_CLOCK_DRIFT_US && entry.timestamp_us < now_us - KOME_MAX_CLOCK_DRIFT_US)
+            return;
         if (!entry.tombstone) {
             uint8_t computed_hash[32];
             sha256(entry.value.data(), entry.value.size(), computed_hash);

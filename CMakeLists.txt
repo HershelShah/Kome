@@ -12,6 +12,12 @@ option(KOME_SANITIZER "Enable sanitizer (address, thread, undefined)" "")
 
 # --- Compiler flags --------------------------------------------------------
 add_compile_options(-Wall -Wextra -Wpedantic -fstack-protector-strong)
+add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+
+# Linker hardening (non-Apple Unix)
+if(UNIX AND NOT APPLE)
+    add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+endif()
 
 if(KOME_SANITIZER)
     add_compile_options(-fsanitize=${KOME_SANITIZER} -fno-omit-frame-pointer)
