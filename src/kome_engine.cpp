@@ -93,7 +93,7 @@ KOME_API KomeError kome_put(KomeEngine *engine,
     if (value_len > KOME_MAX_VALUE_LEN) return KOME_ERR_TOO_LARGE;
 
     KomeEntryMeta meta;
-    kome::KomeSyncManager *sync = nullptr;
+    std::shared_ptr<kome::KomeSyncManager> sync;
     {
         std::lock_guard<std::mutex> lock(engine->mu);
         if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
@@ -117,7 +117,7 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         if (err != KOME_OK) return err;
 
         if (meta_out) *meta_out = meta;
-        sync = engine->sync_mgr.get();
+        sync = engine->sync_mgr;
     }
 
     if (sync) {
@@ -155,7 +155,7 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
     }
 
     std::vector<KomeEntryMeta> metas(count);
-    kome::KomeSyncManager *sync = nullptr;
+    std::shared_ptr<kome::KomeSyncManager> sync;
     {
         std::lock_guard<std::mutex> lock(engine->mu);
         if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
@@ -207,7 +207,7 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
             for (size_t i = 0; i < count; i++)
                 metas_out[i] = metas[i];
         }
-        sync = engine->sync_mgr.get();
+        sync = engine->sync_mgr;
     }
 
     if (sync) {
@@ -242,7 +242,7 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
     if (key_len == 0 || key_len > KOME_MAX_KEY_LEN) return KOME_ERR_TOO_LARGE;
 
     KomeEntryMeta meta;
-    kome::KomeSyncManager *sync = nullptr;
+    std::shared_ptr<kome::KomeSyncManager> sync;
     {
         std::lock_guard<std::mutex> lock(engine->mu);
         if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
@@ -266,7 +266,7 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
         if (err != KOME_OK) return err;
 
         if (meta_out) *meta_out = meta;
-        sync = engine->sync_mgr.get();
+        sync = engine->sync_mgr;
     }
 
     if (sync) {
@@ -410,7 +410,7 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
     engine->transport_adapter.reset();
 
     engine->transport_adapter = std::make_unique<kome::KomeGenericTransport>(transport);
-    engine->sync_mgr = std::make_unique<kome::KomeSyncManager>(engine);
+    engine->sync_mgr = std::make_shared<kome::KomeSyncManager>(engine);
     engine->sync_mgr->set_peer_limits(engine->rate_limit_bytes, engine->rate_limit_entries);
     engine->sync_mgr->set_transport(engine->transport_adapter.get());
 
@@ -420,10 +420,17 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
 KOME_API KomeError kome_sync_with(KomeEngine *engine, const uint8_t *peer_fp) {
     if (!engine || !peer_fp) return KOME_ERR_MISUSE;
     if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-    if (!engine->sync_mgr) return KOME_ERR_MISUSE;
+
+    std::shared_ptr<kome::KomeSyncManager> sync;
+    {
+        std::lock_guard<std::mutex> lock(engine->mu);
+        if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
+        sync = engine->sync_mgr;
+    }
+    if (!sync) return KOME_ERR_MISUSE;
     /* No-op if peer is already syncing or in live mode */
-    if (!engine->sync_mgr->is_peer_idle(peer_fp)) return KOME_OK;
-    engine->sync_mgr->initiate_sync(peer_fp);
+    if (!sync->is_peer_idle(peer_fp)) return KOME_OK;
+    sync->initiate_sync(peer_fp);
     return KOME_OK;
 }
 
@@ -445,12 +452,18 @@ KOME_API KomeError kome_version_vector(KomeEngine *engine,
         return KOME_OK;
     }
 
+    if (count > SIZE_MAX / sizeof(KomeVersionEntry)) return KOME_ERR_INTERNAL;
     auto *entries = (KomeVersionEntry*)std::malloc(count * sizeof(KomeVersionEntry));
     if (!entries) return KOME_ERR_INTERNAL;
 
     size_t i = 0;
     for (auto &[author, seq] : vv) {
-        std::memcpy(entries[i].author, author.data(), 32);
+        if (author.size() >= 32) {
+            std::memcpy(entries[i].author, author.data(), 32);
+        } else {
+            std::memset(entries[i].author, 0, 32);
+            std::memcpy(entries[i].author, author.data(), author.size());
+        }
         entries[i].seq = seq;
         i++;
     }
@@ -499,6 +512,7 @@ KOME_API KomeError kome_list_namespaces(KomeEngine *engine,
         return KOME_OK;
     }
 
+    if (count > SIZE_MAX / sizeof(char*)) return KOME_ERR_INTERNAL;
     auto **list = (char**)std::malloc(count * sizeof(char*));
     if (!list) return KOME_ERR_INTERNAL;
 
@@ -544,6 +558,7 @@ KOME_API KomeError kome_list_keys(KomeEngine *engine, const char *ns,
         return KOME_OK;
     }
 
+    if (count > SIZE_MAX / sizeof(uint8_t*)) return KOME_ERR_INTERNAL;
     auto **kptrs = (uint8_t**)std::malloc(count * sizeof(uint8_t*));
     auto *klens  = (size_t*)std::malloc(count * sizeof(size_t));
     if (!kptrs || !klens) {
@@ -554,14 +569,16 @@ KOME_API KomeError kome_list_keys(KomeEngine *engine, const char *ns,
 
     for (size_t i = 0; i < count; i++) {
         klens[i] = keys[i].size();
-        kptrs[i] = (uint8_t*)std::malloc(klens[i]);
+        /* Allocate at least 1 byte to avoid implementation-defined malloc(0) */
+        kptrs[i] = (uint8_t*)std::malloc(klens[i] > 0 ? klens[i] : 1);
         if (!kptrs[i]) {
             for (size_t j = 0; j < i; j++) std::free(kptrs[j]);
             std::free(kptrs);
             std::free(klens);
             return KOME_ERR_INTERNAL;
         }
-        std::memcpy(kptrs[i], keys[i].data(), klens[i]);
+        if (klens[i] > 0)
+            std::memcpy(kptrs[i], keys[i].data(), klens[i]);
     }
 
     *keys_out = kptrs;
@@ -597,6 +614,7 @@ KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
         return KOME_OK;
     }
 
+    if (count > SIZE_MAX / sizeof(KomeEntryMeta)) return KOME_ERR_INTERNAL;
     auto **kptrs = (uint8_t**)std::malloc(count * sizeof(uint8_t*));
     auto *klens  = (size_t*)std::malloc(count * sizeof(size_t));
     auto **vptrs = (uint8_t**)std::malloc(count * sizeof(uint8_t*));
@@ -615,7 +633,7 @@ KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
         auto &e = entries[i];
 
         klens[i] = e.key.size();
-        kptrs[i] = (uint8_t*)std::malloc(klens[i]);
+        kptrs[i] = (uint8_t*)std::malloc(klens[i] > 0 ? klens[i] : 1);
         if (!kptrs[i]) {
             for (size_t j = 0; j < i; j++) { std::free(kptrs[j]); std::free(vptrs[j]); }
             std::free(kptrs); std::free(klens);
@@ -623,7 +641,8 @@ KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
             std::free(metas);
             return KOME_ERR_INTERNAL;
         }
-        std::memcpy(kptrs[i], e.key.data(), klens[i]);
+        if (klens[i] > 0)
+            std::memcpy(kptrs[i], e.key.data(), klens[i]);
 
         vlens[i] = e.value.size();
         if (vlens[i] > 0) {
