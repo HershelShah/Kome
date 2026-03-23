@@ -643,6 +643,196 @@ TEST_F(NamespaceSyncTest, LiveModePushFiltered) {
         << "B should have received open_ns entry via live push";
 }
 
+/* ========================================================================
+ * IdentityRotationTest — kome_rotate_identity tests
+ * ======================================================================== */
+
+class IdentityRotationTest : public ::testing::Test {
+protected:
+    KomeEngine *engine = nullptr;
+    std::string db_path;
+
+    void SetUp() override {
+        db_path = temp_db_path("id_rotation");
+        cleanup_db(db_path);
+
+        KomeConfig cfg = {};
+        cfg.path = db_path.c_str();
+        ASSERT_EQ(KOME_OK, kome_open(&cfg, &engine));
+    }
+
+    void TearDown() override {
+        kome_close(engine);
+        cleanup_db(db_path);
+    }
+};
+
+/* Rotation fails if identity is not set */
+TEST_F(IdentityRotationTest, FailsWithoutIdentity) {
+    uint8_t new_key[32] = {0xFF};
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_rotate_identity(engine, new_key, sizeof(new_key)));
+}
+
+/* After rotation, new fingerprint has the same role in all namespaces */
+TEST_F(IdentityRotationTest, ACLMigratedToNewFingerprint) {
+    uint8_t old_key[32];
+    std::memset(old_key, 0x11, 32);
+    ASSERT_EQ(KOME_OK, kome_set_identity(engine, old_key, sizeof(old_key)));
+
+    /* Compute old fingerprint the same way the engine does (SHA-256 of key material) */
+    /* We'll use get_namespace_config to verify the ACL contents */
+
+    /* Configure two namespaces with ACL entries for the engine's identity */
+    /* First, read back the identity by writing an entry and checking the author */
+    uint8_t dummy_key[] = "dk";
+    uint8_t dummy_val[] = "dv";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns_a", dummy_key, 2, dummy_val, 2, &m));
+    uint8_t old_fp[32];
+    std::memcpy(old_fp, m.author, 32);
+
+    /* Configure ns_a with ACL granting old fingerprint WRITE */
+    KomeNamespaceACLEntry acl_a;
+    std::memcpy(acl_a.fingerprint, old_fp, 32);
+    acl_a.role = KOME_ROLE_WRITE;
+
+    KomeNamespaceConfig cfg_a = {};
+    cfg_a.name = "ns_a";
+    cfg_a.acl = &acl_a;
+    cfg_a.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine, &cfg_a));
+
+    /* Configure ns_b with ACL granting old fingerprint READ */
+    KomeNamespaceACLEntry acl_b;
+    std::memcpy(acl_b.fingerprint, old_fp, 32);
+    acl_b.role = KOME_ROLE_READ;
+
+    KomeNamespaceConfig cfg_b = {};
+    cfg_b.name = "ns_b";
+    cfg_b.acl = &acl_b;
+    cfg_b.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine, &cfg_b));
+
+    /* Rotate identity */
+    uint8_t new_key[32];
+    std::memset(new_key, 0x22, 32);
+    ASSERT_EQ(KOME_OK, kome_rotate_identity(engine, new_key, sizeof(new_key)));
+
+    /* Read new fingerprint by writing a new entry */
+    uint8_t dk2[] = "dk2";
+    uint8_t dv2[] = "dv2";
+    KomeEntryMeta m2;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "ns_a", dk2, 3, dv2, 3, &m2));
+    uint8_t new_fp[32];
+    std::memcpy(new_fp, m2.author, 32);
+
+    /* The new fingerprint should be different from old */
+    EXPECT_NE(0, std::memcmp(old_fp, new_fp, 32));
+
+    /* ns_a ACL should now have new fingerprint with WRITE */
+    KomeNamespaceConfig out_a = {};
+    ASSERT_EQ(KOME_OK, kome_get_namespace_config(engine, "ns_a", &out_a));
+    ASSERT_EQ(1u, out_a.acl_count);
+    EXPECT_EQ(0, std::memcmp(out_a.acl[0].fingerprint, new_fp, 32));
+    EXPECT_EQ(KOME_ROLE_WRITE, out_a.acl[0].role);
+    kome_free_namespace_config(&out_a);
+
+    /* ns_b ACL should now have new fingerprint with READ */
+    KomeNamespaceConfig out_b = {};
+    ASSERT_EQ(KOME_OK, kome_get_namespace_config(engine, "ns_b", &out_b));
+    ASSERT_EQ(1u, out_b.acl_count);
+    EXPECT_EQ(0, std::memcmp(out_b.acl[0].fingerprint, new_fp, 32));
+    EXPECT_EQ(KOME_ROLE_READ, out_b.acl[0].role);
+    kome_free_namespace_config(&out_b);
+}
+
+/* After rotation, old fingerprint no longer appears in any ACL */
+TEST_F(IdentityRotationTest, OldFingerprintRemovedFromACLs) {
+    uint8_t old_key[32];
+    std::memset(old_key, 0x33, 32);
+    ASSERT_EQ(KOME_OK, kome_set_identity(engine, old_key, sizeof(old_key)));
+
+    /* Get old fingerprint */
+    uint8_t dk[] = "k";
+    uint8_t dv[] = "v";
+    KomeEntryMeta m;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "test_ns", dk, 1, dv, 1, &m));
+    uint8_t old_fp[32];
+    std::memcpy(old_fp, m.author, 32);
+
+    /* Configure namespace with old fingerprint */
+    KomeNamespaceACLEntry acl;
+    std::memcpy(acl.fingerprint, old_fp, 32);
+    acl.role = KOME_ROLE_WRITE;
+
+    KomeNamespaceConfig cfg = {};
+    cfg.name = "test_ns";
+    cfg.acl = &acl;
+    cfg.acl_count = 1;
+    ASSERT_EQ(KOME_OK, kome_configure_namespace(engine, &cfg));
+
+    /* Rotate */
+    uint8_t new_key[32];
+    std::memset(new_key, 0x44, 32);
+    ASSERT_EQ(KOME_OK, kome_rotate_identity(engine, new_key, sizeof(new_key)));
+
+    /* Verify old fingerprint has no role in the namespace */
+    KomeNamespaceConfig out = {};
+    ASSERT_EQ(KOME_OK, kome_get_namespace_config(engine, "test_ns", &out));
+    for (size_t i = 0; i < out.acl_count; i++) {
+        EXPECT_NE(0, std::memcmp(out.acl[i].fingerprint, old_fp, 32))
+            << "Old fingerprint should not appear in ACL after rotation";
+    }
+    kome_free_namespace_config(&out);
+}
+
+/* Writes after rotation use the new fingerprint as author */
+TEST_F(IdentityRotationTest, WritesUseNewFingerprint) {
+    uint8_t old_key[32];
+    std::memset(old_key, 0x55, 32);
+    ASSERT_EQ(KOME_OK, kome_set_identity(engine, old_key, sizeof(old_key)));
+
+    /* Write before rotation */
+    uint8_t k1[] = "before";
+    uint8_t v1[] = "val1";
+    KomeEntryMeta m1;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "wns", k1, 6, v1, 4, &m1));
+    uint8_t old_fp[32];
+    std::memcpy(old_fp, m1.author, 32);
+
+    /* Rotate */
+    uint8_t new_key[32];
+    std::memset(new_key, 0x66, 32);
+    ASSERT_EQ(KOME_OK, kome_rotate_identity(engine, new_key, sizeof(new_key)));
+
+    /* Write after rotation */
+    uint8_t k2[] = "after";
+    uint8_t v2[] = "val2";
+    KomeEntryMeta m2;
+    ASSERT_EQ(KOME_OK, kome_put(engine, "wns", k2, 5, v2, 4, &m2));
+
+    /* Author should be different from old fingerprint */
+    EXPECT_NE(0, std::memcmp(m2.author, old_fp, 32));
+
+    /* Read back the entry and confirm author matches */
+    KomeEntryMeta m3;
+    ASSERT_EQ(KOME_OK, kome_get_meta(engine, "wns", k2, 5, &m3));
+    EXPECT_EQ(0, std::memcmp(m3.author, m2.author, 32));
+}
+
+/* Null/invalid args return MISUSE */
+TEST_F(IdentityRotationTest, MisuseArgs) {
+    uint8_t key[32] = {1};
+    ASSERT_EQ(KOME_OK, kome_set_identity(engine, key, sizeof(key)));
+
+    /* Null engine */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_rotate_identity(nullptr, key, sizeof(key)));
+    /* Null key material */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_rotate_identity(engine, nullptr, 32));
+    /* Zero length */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_rotate_identity(engine, key, 0));
+}
+
 /* Two namespaces: ns1 grants B WRITE, ns2 is owner-only.
    A writes to both. Connect. B only gets ns1 entries. */
 TEST_F(NamespaceSyncTest, MultipleNamespacesIndependent) {
