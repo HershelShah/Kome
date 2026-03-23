@@ -71,6 +71,9 @@ public:
     /* Initiate sync with a specific peer */
     void initiate_sync(const uint8_t *peer_fp);
 
+    /* Returns true if the peer is idle (not currently syncing or live) */
+    bool is_peer_idle(const uint8_t *peer_fp);
+
     /* Per-peer rate limiting */
     void set_peer_limits(uint64_t max_bytes, uint64_t max_entries);
 

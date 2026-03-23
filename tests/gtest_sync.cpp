@@ -658,3 +658,117 @@ TEST_F(SyncTest, RateLimitNullEngine) {
     /* Calling with null engine should return KOME_ERR_MISUSE */
     EXPECT_EQ(KOME_ERR_MISUSE, kome_set_peer_limits(nullptr, 100, 100));
 }
+
+/* --- Non-blocking kome_sync_with tests (issue #10) ---------------------- */
+
+TEST_F(SyncTest, SyncWithReturnsImmediately) {
+    configure_ns("test");
+    replicate_n(engine_a, "test", 5);
+
+    /* Connect peers so transport is wired up */
+    loopback.connect();
+
+    /* kome_sync_with should return KOME_OK without blocking.
+       Since connect() already initiated sync, this is a no-op on
+       an already-syncing/live peer, which still must return KOME_OK. */
+    uint8_t peer_b_fp[32];
+    std::memset(peer_b_fp, 0xBB, 32);
+    auto start = std::chrono::steady_clock::now();
+    KomeError err = kome_sync_with(engine_a, peer_b_fp);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_EQ(KOME_OK, err);
+    /* Must return in well under 1 second — synchronous loopback is instant */
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST_F(SyncTest, SyncWithFiresSyncDoneCallback) {
+    configure_ns("test");
+    replicate_n(engine_a, "test", 3);
+
+    /* Register on_sync_done on both engines */
+    int done_count_a = 0;
+    int done_count_b = 0;
+    kome_on_sync_done(engine_a, [](void *ud, const uint8_t *) {
+        (*static_cast<int*>(ud))++;
+    }, &done_count_a);
+    kome_on_sync_done(engine_b, [](void *ud, const uint8_t *) {
+        (*static_cast<int*>(ud))++;
+    }, &done_count_b);
+
+    /* Connect — this triggers bidirectional sync via on_peer_connected
+       which calls initiate_sync internally.  The loopback transport is
+       synchronous so sync completes inside connect(). */
+    loopback.connect();
+
+    /* Both sides should have received on_sync_done at least once */
+    EXPECT_GE(done_count_a, 1) << "Engine A should fire on_sync_done";
+    EXPECT_GE(done_count_b, 1) << "Engine B should fire on_sync_done";
+
+    /* Verify data actually arrived */
+    for (int i = 0; i < 3; i++) {
+        std::string key = "key_" + std::to_string(i);
+        KomeEntryMeta meta;
+        EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "test",
+            (const uint8_t*)key.data(), key.size(), &meta));
+    }
+}
+
+TEST_F(SyncTest, SyncWithAlreadySyncingPeerIsNoop) {
+    configure_ns("test");
+    replicate_n(engine_a, "test", 5);
+
+    /* Connect — triggers sync and enters live mode */
+    loopback.connect();
+
+    /* Verify the first sync completed */
+    for (int i = 0; i < 5; i++) {
+        std::string key = "key_" + std::to_string(i);
+        KomeEntryMeta meta;
+        EXPECT_EQ(KOME_OK, kome_get_meta(engine_b, "test",
+            (const uint8_t*)key.data(), key.size(), &meta));
+    }
+
+    /* Register a fresh callback counter */
+    int done_count = 0;
+    kome_on_sync_done(engine_a, [](void *ud, const uint8_t *) {
+        (*static_cast<int*>(ud))++;
+    }, &done_count);
+
+    /* Call kome_sync_with on a peer that is already in live mode — should be a no-op */
+    uint8_t peer_b_fp[32];
+    std::memset(peer_b_fp, 0xBB, 32);
+    EXPECT_EQ(KOME_OK, kome_sync_with(engine_a, peer_b_fp));
+
+    /* The callback should NOT fire again since it was a no-op */
+    EXPECT_EQ(0, done_count) << "Duplicate sync_with on a live peer should not re-trigger sync";
+}
+
+TEST_F(SyncTest, SyncWithNullArgs) {
+    /* NULL engine */
+    uint8_t fp[32] = {};
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_sync_with(nullptr, fp));
+    /* NULL peer_fp */
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_sync_with(engine_a, nullptr));
+}
+
+TEST_F(SyncTest, SyncWithNoTransport) {
+    /* Create a bare engine without transport attached */
+    std::string db_c = temp_db_path("sync_c");
+    cleanup_db(db_c);
+
+    KomeConfig cfg = {};
+    cfg.path = db_c.c_str();
+    KomeEngine *engine_c = nullptr;
+    ASSERT_EQ(KOME_OK, kome_open(&cfg, &engine_c));
+
+    uint8_t key_c[32]; std::memset(key_c, 0xCC, 32);
+    ASSERT_EQ(KOME_OK, kome_set_identity(engine_c, key_c, 32));
+
+    /* No transport attached — sync_with should return KOME_ERR_MISUSE */
+    uint8_t fp[32] = {};
+    EXPECT_EQ(KOME_ERR_MISUSE, kome_sync_with(engine_c, fp));
+
+    kome_close(engine_c);
+    cleanup_db(db_c);
+}
