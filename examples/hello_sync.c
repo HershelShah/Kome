@@ -18,7 +18,6 @@ int main(void) {
     /* Open engine */
     KomeConfig cfg = {0};
     cfg.path = "hello.db";
-    cfg.enable_wal = 1;
     cfg.busy_timeout_ms = 5000;
 
     KomeEngine *engine = NULL;
