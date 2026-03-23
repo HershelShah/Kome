@@ -348,7 +348,10 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
 
 KOME_API KomeError kome_sync_with(KomeEngine *engine, const uint8_t *peer_fp) {
     if (!engine || !peer_fp) return KOME_ERR_MISUSE;
+    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
     if (!engine->sync_mgr) return KOME_ERR_MISUSE;
+    /* No-op if peer is already syncing or in live mode */
+    if (!engine->sync_mgr->is_peer_idle(peer_fp)) return KOME_OK;
     engine->sync_mgr->initiate_sync(peer_fp);
     return KOME_OK;
 }

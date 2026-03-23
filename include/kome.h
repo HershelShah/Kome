@@ -239,6 +239,20 @@ KOME_API void kome_on_remote_change(KomeEngine *engine,
    ======================================================================== */
 
 KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *transport);
+
+/* Initiate a sync handshake with the given peer.
+ *
+ * This function is non-blocking — it sends the initial SYNC_REQUEST message
+ * and returns immediately.  It does NOT wait for the sync to complete.
+ *
+ * When both sides have finished exchanging entries the kome_on_sync_done
+ * callback fires with the peer's fingerprint.
+ *
+ * Calling this on a peer that is already syncing or in live mode is a no-op
+ * and returns KOME_OK.
+ *
+ * Requires: kome_attach_transport() must have been called first.
+ */
 KOME_API KomeError kome_sync_with(KomeEngine *engine, const uint8_t *peer_fp);
 
 /* ========================================================================
