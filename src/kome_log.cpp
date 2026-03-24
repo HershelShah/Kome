@@ -57,6 +57,7 @@ KomeError KomeLog::create_tables() {
         "  timestamp_us INTEGER NOT NULL, author BLOB NOT NULL,"
         "  seq INTEGER NOT NULL, hash BLOB NOT NULL,"
         "  value_len INTEGER NOT NULL, tombstone INTEGER NOT NULL DEFAULT 0,"
+        "  signature BLOB,"
         "  PRIMARY KEY (ns, key));"
         "CREATE INDEX IF NOT EXISTS idx_cl_author_seq ON change_log(author, seq);"
         "CREATE TABLE IF NOT EXISTS version_vector ("
@@ -80,7 +81,17 @@ KomeError KomeLog::create_tables() {
     char *err = nullptr;
     int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &err);
     sqlite3_free(err);
-    return (rc == SQLITE_OK) ? KOME_OK : KOME_ERR_STORAGE;
+    if (rc != SQLITE_OK) return KOME_ERR_STORAGE;
+
+    /* Schema migration: add signature column for existing databases (v2 -> v3).
+     * ALTER TABLE ADD COLUMN is a no-op if the column already exists in SQLite,
+     * so we just attempt it and ignore "duplicate column name" errors. */
+    err = nullptr;
+    sqlite3_exec(db_, "ALTER TABLE change_log ADD COLUMN signature BLOB;",
+                 nullptr, nullptr, &err);
+    sqlite3_free(err);  /* ignore error (column may already exist) */
+
+    return KOME_OK;
 }
 
 void KomeLog::finalize_stmts() {
@@ -104,10 +115,10 @@ KomeError KomeLog::prepare_stmts() {
     };
 
     if (p("INSERT OR REPLACE INTO change_log "
-          "(ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone) "
-          "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", &stmt_put_) != SQLITE_OK)
+          "(ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature) "
+          "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &stmt_put_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT value, timestamp_us, author, seq, hash, value_len, tombstone "
+    if (p("SELECT value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
           "FROM change_log WHERE ns=?1 AND key=?2", &stmt_get_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
     if (p("INSERT INTO version_vector (author, seq) VALUES (?1,?2) "
@@ -120,7 +131,7 @@ KomeError KomeLog::prepare_stmts() {
           "ON CONFLICT(peer_fp, author) DO UPDATE SET seq = MAX(seq, excluded.seq)",
           &stmt_update_ps_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone "
+    if (p("SELECT ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
           "FROM change_log WHERE author=?1 AND seq>?2 ORDER BY seq ASC",
           &stmt_after_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
@@ -165,7 +176,7 @@ KomeError KomeLog::prepare_stmts() {
     if (p("SELECT key FROM change_log WHERE ns=?1 ORDER BY key",
           &stmt_list_keys_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT key, value, timestamp_us, author, seq, hash, value_len, tombstone "
+    if (p("SELECT key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
           "FROM change_log WHERE ns=?1 AND tombstone=0 ORDER BY key",
           &stmt_get_all_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
@@ -223,6 +234,7 @@ KomeError KomeLog::put_entry(const char *ns, const uint8_t *key, size_t key_len,
     sqlite3_bind_blob(stmt_put_,  7, meta->hash, 32, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt_put_,   8, (int)meta->value_len);
     sqlite3_bind_int(stmt_put_,   9, meta->tombstone);
+    sqlite3_bind_blob(stmt_put_, 10, meta->signature, 64, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt_put_) != SQLITE_DONE) return KOME_ERR_STORAGE;
 
     /* Reset per-peer replication tracking */
@@ -263,6 +275,11 @@ KomeError KomeLog::get_entry(const char *ns, const uint8_t *key, size_t key_len,
     if (h) std::memcpy(out->hash, h, 32);
     else std::memset(out->hash, 0, 32);
     out->tombstone = (uint8_t)sqlite3_column_int(stmt_get_, 6);
+    const void *sig = sqlite3_column_blob(stmt_get_, 7);
+    if (sig && sqlite3_column_bytes(stmt_get_, 7) == 64)
+        std::memcpy(out->signature, sig, 64);
+    else
+        std::memset(out->signature, 0, 64);
 
     return KOME_OK;
 }
@@ -335,6 +352,11 @@ KomeError KomeLog::get_entries_after(const uint8_t author[32], uint64_t after_se
         const void *h = sqlite3_column_blob(stmt_after_, 6);
         if (h) std::memcpy(e.hash, h, 32);
         e.tombstone = (uint8_t)sqlite3_column_int(stmt_after_, 8);
+        const void *sig = sqlite3_column_blob(stmt_after_, 9);
+        if (sig && sqlite3_column_bytes(stmt_after_, 9) == 64)
+            std::memcpy(e.signature, sig, 64);
+        else
+            std::memset(e.signature, 0, 64);
 
         out.push_back(std::move(e));
     }
@@ -656,6 +678,11 @@ KomeError KomeLog::get_all_entries(const char *ns, std::vector<LogEntry> &out) {
         const void *h = sqlite3_column_blob(stmt_get_all_, 5);
         if (h) std::memcpy(e.hash, h, 32);
         e.tombstone = (uint8_t)sqlite3_column_int(stmt_get_all_, 7);
+        const void *sig = sqlite3_column_blob(stmt_get_all_, 8);
+        if (sig && sqlite3_column_bytes(stmt_get_all_, 8) == 64)
+            std::memcpy(e.signature, sig, 64);
+        else
+            std::memset(e.signature, 0, 64);
 
         out.push_back(std::move(e));
     }

@@ -41,7 +41,7 @@ extern "C" {
 
 /* --- Constants ---------------------------------------------------------- */
 
-#define KOME_PROTOCOL_VERSION  2
+#define KOME_PROTOCOL_VERSION  3
 #define KOME_MAX_NS_LEN      255
 #define KOME_MAX_KEY_LEN      512
 #define KOME_MAX_VALUE_LEN    (16 * 1024 * 1024)  /* 16 MiB */
@@ -74,6 +74,8 @@ typedef struct {
     uint8_t  hash[32];        /* SHA-256 of value content                  */
     uint32_t value_len;       /* Length of value in bytes                   */
     uint8_t  tombstone;       /* 1 = deleted                               */
+    uint8_t  signature[64];   /* Entry signature (placeholder: SHA-256 MAC;
+                                 will be replaced by Ed25519 in the future) */
 } KomeEntryMeta;
 
 /*

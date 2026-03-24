@@ -1,5 +1,6 @@
 #include "kome_engine.hpp"
 #include "kome_util.hpp"
+#include "kome_sign.hpp"
 #include <cstring>
 #include <cstdlib>
 
@@ -53,6 +54,11 @@ KOME_API KomeError kome_set_identity(KomeEngine *engine, const uint8_t *key_mate
     kome::sha256(key_material, len, engine->identity);
     engine->identity_set = true;
 
+    /* Store the raw key material for signing (up to 64 bytes) */
+    size_t store_len = len > 64 ? 64 : len;
+    std::memcpy(engine->identity_key, key_material, store_len);
+    engine->identity_key_len = store_len;
+
     std::map<std::string, uint64_t> vv;
     engine->log->get_version_vector(vv);
     std::string id_key((const char*)engine->identity, 32);
@@ -79,6 +85,12 @@ KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
     if (err != KOME_OK) return err;
 
     std::memcpy(engine->identity, new_fp, 32);
+
+    /* Update stored key material for signing */
+    size_t store_len = new_key_len > 64 ? 64 : new_key_len;
+    std::memcpy(engine->identity_key, new_key_material, store_len);
+    engine->identity_key_len = store_len;
+
     return KOME_OK;
 }
 
@@ -108,6 +120,12 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         meta.value_len = (uint32_t)value_len;
         meta.tombstone = 0;
 
+        /* Sign the entry */
+        kome::sign_entry(engine->identity_key, engine->identity_key_len,
+                         ns, key, key_len, meta.hash,
+                         meta.timestamp_us, meta.seq, meta.author,
+                         meta.signature);
+
         KomeError err = engine->log->put_entry(ns, key, key_len, value, value_len, &meta);
         if (err != KOME_OK) return err;
 
@@ -132,6 +150,7 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         le.seq = meta.seq;
         std::memcpy(le.hash, meta.hash, 32);
         le.tombstone = 0;
+        std::memcpy(le.signature, meta.signature, 64);
         sync->on_local_write(le);
     }
 
@@ -177,6 +196,12 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
             kome::sha256(e.value, e.value_len, meta.hash);
             meta.value_len = (uint32_t)e.value_len;
             meta.tombstone = 0;
+
+            /* Sign the entry */
+            kome::sign_entry(engine->identity_key, engine->identity_key_len,
+                             e.ns, e.key, e.key_len, meta.hash,
+                             meta.timestamp_us, meta.seq, meta.author,
+                             meta.signature);
 
             err = engine->log->put_entry(e.ns, e.key, e.key_len,
                                           e.value, e.value_len, &meta);
@@ -225,6 +250,7 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
             le.seq = metas[i].seq;
             std::memcpy(le.hash, metas[i].hash, 32);
             le.tombstone = 0;
+            std::memcpy(le.signature, metas[i].signature, 64);
             log_entries.push_back(std::move(le));
         }
         sync->on_local_write_batch(log_entries);
@@ -257,6 +283,12 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
         meta.value_len = 0;
         meta.tombstone = 1;
 
+        /* Sign the tombstone entry */
+        kome::sign_entry(engine->identity_key, engine->identity_key_len,
+                         ns, key, key_len, meta.hash,
+                         meta.timestamp_us, meta.seq, meta.author,
+                         meta.signature);
+
         KomeError err = engine->log->delete_entry(ns, key, key_len, &meta);
         if (err != KOME_OK) return err;
 
@@ -280,6 +312,7 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
         le.seq = meta.seq;
         std::memcpy(le.hash, meta.hash, 32);
         le.tombstone = 1;
+        std::memcpy(le.signature, meta.signature, 64);
         sync->on_local_write(le);
     }
 
@@ -310,6 +343,7 @@ KOME_API KomeError kome_get(KomeEngine *engine,
             std::memcpy(meta_out->hash, entry.hash, 32);
             meta_out->value_len = 0;
             meta_out->tombstone = 1;
+            std::memcpy(meta_out->signature, entry.signature, 64);
         }
         return KOME_ERR_NOT_FOUND;
     }
@@ -321,6 +355,7 @@ KOME_API KomeError kome_get(KomeEngine *engine,
         std::memcpy(meta_out->hash, entry.hash, 32);
         meta_out->value_len = (uint32_t)entry.value.size();
         meta_out->tombstone = 0;
+        std::memcpy(meta_out->signature, entry.signature, 64);
     }
 
     if (entry.value.empty()) {
@@ -358,6 +393,7 @@ KOME_API KomeError kome_get_with_tombstones(KomeEngine *engine,
         std::memcpy(meta_out->hash, entry.hash, 32);
         meta_out->value_len = (uint32_t)entry.value.size();
         meta_out->tombstone = entry.tombstone;
+        std::memcpy(meta_out->signature, entry.signature, 64);
     }
 
     if (entry.tombstone || entry.value.empty()) {
@@ -397,6 +433,7 @@ KOME_API KomeError kome_get_meta(KomeEngine *engine,
     std::memcpy(meta_out->hash, entry.hash, 32);
     meta_out->value_len = (uint32_t)entry.value.size();
     meta_out->tombstone = entry.tombstone;
+    std::memcpy(meta_out->signature, entry.signature, 64);
 
     return KOME_OK;
 }
@@ -668,6 +705,7 @@ KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
         std::memcpy(metas[i].hash, e.hash, 32);
         metas[i].value_len = (uint32_t)e.value.size();
         metas[i].tombstone = e.tombstone;
+        std::memcpy(metas[i].signature, e.signature, 64);
     }
 
     *keys_out = kptrs;

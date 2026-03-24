@@ -1,6 +1,7 @@
 #include "kome_sync.hpp"
 #include "kome_engine.hpp"
 #include "kome_conflict.hpp"
+#include "kome_sign.hpp"
 #include "kome_util.hpp"
 #include <cstring>
 
@@ -350,6 +351,13 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
             return;
     }
 
+    /* Signature check: verify the entry was signed (non-zero signature).
+     * PLACEHOLDER: Full cryptographic verification requires the peer's public
+     * key, which is not yet distributed. When Ed25519 replaces the current
+     * MAC scheme, this will perform proper signature verification.
+     * For now we only reject entries with an all-zero signature. */
+    if (!kome::signature_is_nonzero(entry.signature)) return;
+
     KomeEntryMeta remote_meta;
     remote_meta.timestamp_us = entry.timestamp_us;
     std::memcpy(remote_meta.author, entry.author, 32);
@@ -357,6 +365,7 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
     std::memcpy(remote_meta.hash, entry.hash, 32);
     remote_meta.value_len = (uint32_t)entry.value.size();
     remote_meta.tombstone = entry.tombstone;
+    std::memcpy(remote_meta.signature, entry.signature, 64);
 
     /* Phase 1: read local + snapshot conflict callback under engine lock */
     bool have_local = false;
@@ -383,6 +392,7 @@ void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry
             std::memcpy(local_meta.hash, local.hash, 32);
             local_meta.value_len = (uint32_t)local.value.size();
             local_meta.tombstone = local.tombstone;
+            std::memcpy(local_meta.signature, local.signature, 64);
             local_value_copy = std::move(local.value);
         }
     }
@@ -572,6 +582,8 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             if (std::memcmp(computed_hash, entry.hash, 32) != 0)
                 return;
         }
+        /* Signature check: reject entries with all-zero signature */
+        if (!signature_is_nonzero(entry.signature)) return;
     }
 
     /* Per-peer rate limiting: check total batch size against limits */
@@ -616,6 +628,7 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             std::memcpy(ctx.remote_meta.hash, entry.hash, 32);
             ctx.remote_meta.value_len = (uint32_t)entry.value.size();
             ctx.remote_meta.tombstone = entry.tombstone;
+            std::memcpy(ctx.remote_meta.signature, entry.signature, 64);
 
             LogEntry local;
             KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
@@ -629,6 +642,7 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
                 std::memcpy(ctx.local_meta.hash, local.hash, 32);
                 ctx.local_meta.value_len = (uint32_t)local.value.size();
                 ctx.local_meta.tombstone = local.tombstone;
+                std::memcpy(ctx.local_meta.signature, local.signature, 64);
                 ctx.local_value_copy = std::move(local.value);
             }
         }
@@ -796,6 +810,7 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
                 re.seq = se.meta.seq;
                 std::memcpy(re.hash, se.meta.hash, 32);
                 re.tombstone = se.meta.tombstone;
+                std::memcpy(re.signature, se.meta.signature, 64);
                 relay_entries.push_back(std::move(re));
             }
             auto msg = encode_batch_entry(relay_entries);
