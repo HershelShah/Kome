@@ -60,6 +60,8 @@ set(KOME_SOURCES
     src/kome_wire.cpp
     src/kome_conflict.cpp
     src/kome_sync.cpp
+    src/kome_relay_transport.cpp
+    src/kome_easy.cpp
 )
 
 add_library(kome SHARED ${KOME_SOURCES})
@@ -121,6 +123,7 @@ kome_add_test(test_replication tests/gtest_replication.cpp)
 kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
 kome_add_test(test_namespace_config tests/gtest_namespace_config.cpp)
 kome_add_test(test_encryption tests/gtest_encryption.cpp)
+kome_add_test(test_easy_and_relay tests/gtest_easy_and_relay.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)
@@ -135,7 +138,11 @@ install(TARGETS kome
 install(TARGETS kome_static
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(FILES include/kome.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES
+    include/kome.h
+    src/kome_easy.h
+    src/kome_relay_transport.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # pkg-config
 configure_file(kome.pc.in kome.pc @ONLY)
