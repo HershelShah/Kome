@@ -21,6 +21,8 @@ struct KomeEngine {
 
     uint8_t                             identity[32] = {};
     bool                                identity_set = false;
+    uint8_t                             identity_key[64] = {};  /* raw key material for signing */
+    size_t                              identity_key_len = 0;
     uint64_t                            next_seq     = 1;
     uint64_t                            tombstone_ttl_sec = 30 * 24 * 3600;
     std::atomic<KomeLogLevel>           log_level{KOME_LOG_WARN};

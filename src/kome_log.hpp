@@ -21,6 +21,7 @@ struct LogEntry {
     uint64_t                seq = 0;
     uint8_t                 hash[32] = {};
     uint8_t                 tombstone = 0;
+    uint8_t                 signature[64] = {};  /* Entry signature (placeholder: SHA-256 MAC) */
 };
 
 class KomeLog {

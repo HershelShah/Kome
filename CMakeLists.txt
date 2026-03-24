@@ -62,6 +62,7 @@ set(KOME_SOURCES
     src/kome_sync.cpp
     src/kome_relay_transport.cpp
     src/kome_easy.cpp
+    src/kome_sign.cpp
 )
 
 add_library(kome SHARED ${KOME_SOURCES})
@@ -124,6 +125,7 @@ kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
 kome_add_test(test_namespace_config tests/gtest_namespace_config.cpp)
 kome_add_test(test_encryption tests/gtest_encryption.cpp)
 kome_add_test(test_easy_and_relay tests/gtest_easy_and_relay.cpp)
+kome_add_test(test_signing    tests/gtest_signing.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)

@@ -48,6 +48,7 @@ inline SyncEntry log_to_sync(const LogEntry &e) {
     se.seq = e.seq;
     std::memcpy(se.hash, e.hash, 32);
     se.tombstone = e.tombstone;
+    std::memcpy(se.signature, e.signature, 64);
     return se;
 }
 

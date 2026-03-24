@@ -633,6 +633,9 @@ static void inject_live_entry(LoopbackPair &loopback,
     se.seq = ts_us;                     /* unique-enough sequence number */
     sha256(se.value.data(), se.value.size(), se.hash);
     se.tombstone = 0;
+    /* Set a non-zero placeholder signature so the entry passes the
+       signature_is_nonzero check in apply_remote_entry. */
+    std::memset(se.signature, 0xDD, 64);
 
     auto wire = encode_live_entry(se);
     ASSERT_FALSE(wire.empty());

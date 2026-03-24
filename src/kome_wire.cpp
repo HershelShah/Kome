@@ -9,7 +9,7 @@ namespace kome {
 /* --- Encode helpers ------------------------------------------------------ */
 
 static void pack_entry_fields(cw_pack_context *pc, const SyncEntry &e) {
-    cw_pack_map_size(pc, 8);
+    cw_pack_map_size(pc, 9);
 
     cw_pack_str(pc, "ns", 2);
     cw_pack_str(pc, e.ns.data(), (unsigned)e.ns.size());
@@ -38,6 +38,10 @@ static void pack_entry_fields(cw_pack_context *pc, const SyncEntry &e) {
 
     cw_pack_str(pc, "t", 1);
     cw_pack_unsigned(pc, e.tombstone);
+
+    /* Signature — 64-byte entry signature (placeholder: SHA-256 MAC) */
+    cw_pack_str(pc, "sig", 3);
+    cw_pack_bin(pc, e.signature, 64);
 }
 
 std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
@@ -71,8 +75,8 @@ std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
 }
 
 std::vector<uint8_t> encode_sync_entry(const SyncEntry &entry) {
-    size_t buf_size = 512 + entry.ns.size() + entry.key.size() + entry.value.size();
-    if (buf_size < 512) return {};  /* overflow */
+    size_t buf_size = 576 + entry.ns.size() + entry.key.size() + entry.value.size();
+    if (buf_size < 576) return {};  /* overflow */
     std::vector<uint8_t> buf(buf_size);
     cw_pack_context pc;
     cw_pack_context_init(&pc, buf.data() + 1, buf_size - 1, nullptr);
@@ -158,6 +162,7 @@ static bool decode_entry_from_map(cw_unpack_context *uc, SyncEntry *out) {
 
     std::memset(out->author, 0, 32);
     std::memset(out->hash, 0, 32);
+    std::memset(out->signature, 0, 64);
     out->tombstone = 0;
     out->timestamp_us = 0;
     out->seq = 0;
@@ -214,6 +219,9 @@ static bool decode_entry_from_map(cw_unpack_context *uc, SyncEntry *out) {
             } else {
                 return false;
             }
+        } else if (field == "sig") {
+            if (uc->item.type != CWP_ITEM_BIN || uc->item.as.bin.length != 64) return false;
+            std::memcpy(out->signature, uc->item.as.bin.start, 64);
         }
         /* skip unknown fields */
     }
@@ -337,8 +345,8 @@ std::vector<uint8_t> encode_batch_entry(const std::vector<SyncEntry> &entries) {
     /* Estimate buffer size with overflow checks */
     size_t buf_size = 64;
     for (auto &e : entries) {
-        size_t entry_size = 512 + e.ns.size() + e.key.size() + e.value.size();
-        if (entry_size < 512 || buf_size + entry_size < buf_size) return {};  /* overflow */
+        size_t entry_size = 576 + e.ns.size() + e.key.size() + e.value.size();
+        if (entry_size < 576 || buf_size + entry_size < buf_size) return {};  /* overflow */
         buf_size += entry_size;
     }
     std::vector<uint8_t> buf(buf_size);

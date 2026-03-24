@@ -34,6 +34,7 @@ struct SyncEntry {
     uint64_t             seq;
     uint8_t              hash[32];
     uint8_t              tombstone;
+    uint8_t              signature[64] = {};  /* Entry signature (placeholder: SHA-256 MAC) */
 };
 
 struct SyncAck {
