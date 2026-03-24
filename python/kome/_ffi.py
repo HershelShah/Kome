@@ -55,6 +55,7 @@ class KomeEntryMeta(ctypes.Structure):
         ("hash", ctypes.c_uint8 * 32),
         ("value_len", ctypes.c_uint32),
         ("tombstone", ctypes.c_uint8),
+        ("signature", ctypes.c_uint8 * 64),
     ]
 
 
@@ -63,6 +64,8 @@ class KomeConfig(ctypes.Structure):
         ("path", ctypes.c_char_p),
         ("disable_wal", ctypes.c_int),
         ("busy_timeout_ms", ctypes.c_int),
+        ("encryption_key", ctypes.POINTER(ctypes.c_uint8)),
+        ("encryption_key_len", ctypes.c_size_t),
     ]
 
 
