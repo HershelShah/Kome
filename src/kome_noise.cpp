@@ -420,21 +420,24 @@ KomeNoiseTransport::KomeNoiseTransport(KomeTransportAdapter *inner,
 void KomeNoiseTransport::send(const uint8_t *peer_fp,
                                const uint8_t *data, size_t len)
 {
-    std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
-    std::string key = make_fp_key(peer_fp);
+    std::vector<uint8_t> wire;
+    {
+        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+        std::string key = make_fp_key(peer_fp);
 
-    auto it = sessions_.find(key);
-    if (it != sessions_.end() && it->second.state() == NoiseSession::ESTABLISHED) {
-        /* Encrypt and send */
-        auto ct = it->second.encrypt(data, len);
-        std::vector<uint8_t> wire(1 + ct.size());
-        wire[0] = NOISE_TRANSPORT_TAG;
-        std::memcpy(wire.data() + 1, ct.data(), ct.size());
-        inner_->send(peer_fp, wire.data(), wire.size());
-    } else {
-        /* Session not established yet — queue the message */
-        pending_[key].push_back(std::vector<uint8_t>(data, data + len));
+        auto it = sessions_.find(key);
+        if (it != sessions_.end() && it->second.state() == NoiseSession::ESTABLISHED) {
+            auto ct = it->second.encrypt(data, len);
+            wire.resize(1 + ct.size());
+            wire[0] = NOISE_TRANSPORT_TAG;
+            std::memcpy(wire.data() + 1, ct.data(), ct.size());
+        } else {
+            pending_[key].push_back(std::vector<uint8_t>(data, data + len));
+            return;
+        }
     }
+    /* Send outside the lock */
+    inner_->send(peer_fp, wire.data(), wire.size());
 }
 
 void KomeNoiseTransport::on_inner_recv(const uint8_t *peer_fp,
@@ -451,107 +454,106 @@ void KomeNoiseTransport::on_inner_recv(const uint8_t *peer_fp,
         const uint8_t *payload = data + 2;
         size_t payload_len = len - 2;
 
-        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
-        std::string key = make_fp_key(peer_fp);
+        /* Collect actions to perform outside the lock */
+        std::vector<uint8_t> response_wire;
+        bool fire_peer_cb = false;
+        bool do_flush = false;
+        std::string key;
 
-        auto it = sessions_.find(key);
-        if (it == sessions_.end()) {
-            /* No session yet (e.g. we got msg 1 before our peer_cb fired).
-             * Create a responder session on the fly. */
-            if (phase == 1 && payload_len == 32) {
-                NoiseSession session;
-                session.init_responder(static_priv_, static_pub_, fingerprint_);
-                sessions_[key] = session;
-                it = sessions_.find(key);
-            } else {
-                return;
+        {
+            std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+            key = make_fp_key(peer_fp);
+
+            auto it = sessions_.find(key);
+            if (it == sessions_.end()) {
+                if (phase == 1 && payload_len == 32) {
+                    NoiseSession session;
+                    session.init_responder(static_priv_, static_pub_, fingerprint_);
+                    sessions_[key] = session;
+                    it = sessions_.find(key);
+                } else {
+                    return;
+                }
             }
-        }
 
-        NoiseSession &session = it->second;
+            NoiseSession &session = it->second;
 
-        /* Detect simultaneous open: we sent msg 1 (initiator in HANDSHAKE_1_SENT)
-         * and received msg 1 from the peer (phase 1, 32 bytes = ephemeral key).
-         * Resolve: compare our ephemeral key with theirs. Lower key stays
-         * as initiator, the other resets as responder. */
-        if (phase == 1 && payload_len == 32 &&
-            session.state() == NoiseSession::HANDSHAKE_1_SENT &&
-            session.is_initiator()) {
+            /* Detect simultaneous open */
+            if (phase == 1 && payload_len == 32 &&
+                session.state() == NoiseSession::HANDSHAKE_1_SENT &&
+                session.is_initiator()) {
 
-            /* We both sent msg 1. Compare ephemeral public keys. */
-            int cmp = std::memcmp(session.ephemeral_pub(), payload, 32);
-            if (cmp < 0) {
-                /* Our ephemeral key is lower — we stay as initiator.
-                 * The peer will yield. Ignore their msg 1. */
-                return;
+                int cmp = std::memcmp(session.ephemeral_pub(), payload, 32);
+                if (cmp < 0) {
+                    return;
+                } else {
+                    session.init_responder(static_priv_, static_pub_, fingerprint_);
+                    if (!session.read_handshake_msg(payload, payload_len)) {
+                        session = NoiseSession();
+                        return;
+                    }
+                    auto resp = session.write_handshake_msg();
+                    if (!resp.empty()) {
+                        response_wire.resize(2 + resp.size());
+                        response_wire[0] = NOISE_HANDSHAKE_TAG;
+                        response_wire[1] = 2;
+                        std::memcpy(response_wire.data() + 2, resp.data(), resp.size());
+                    }
+                    /* Fall through to send response outside lock */
+                }
             } else {
-                /* Their ephemeral key is lower — they stay as initiator.
-                 * We must reset as responder and process their msg 1. */
-                session.init_responder(static_priv_, static_pub_, fingerprint_);
-
-                /* Now process their msg 1 */
                 if (!session.read_handshake_msg(payload, payload_len)) {
                     session = NoiseSession();
                     return;
                 }
-                /* Write msg 2 as responder */
-                auto resp = session.write_handshake_msg();
-                if (!resp.empty()) {
-                    std::vector<uint8_t> wire(2 + resp.size());
-                    wire[0] = NOISE_HANDSHAKE_TAG;
-                    wire[1] = 2;
-                    std::memcpy(wire.data() + 2, resp.data(), resp.size());
-                    inner_->send(peer_fp, wire.data(), wire.size());
+
+                if (session.state() != NoiseSession::ESTABLISHED &&
+                    session.state() != NoiseSession::FAILED) {
+                    auto resp = session.write_handshake_msg();
+                    if (!resp.empty()) {
+                        uint8_t resp_phase = phase + 1;
+                        response_wire.resize(2 + resp.size());
+                        response_wire[0] = NOISE_HANDSHAKE_TAG;
+                        response_wire[1] = resp_phase;
+                        std::memcpy(response_wire.data() + 2, resp.data(), resp.size());
+                    }
                 }
-                return;
+
+                if (session.state() == NoiseSession::ESTABLISHED) {
+                    fire_peer_cb = true;
+                    do_flush = true;
+                }
             }
         }
-
-        if (!session.read_handshake_msg(payload, payload_len)) {
-            session = NoiseSession();
-            return;
-        }
-
-        /* If session needs to write a response, do it */
-        if (session.state() != NoiseSession::ESTABLISHED &&
-            session.state() != NoiseSession::FAILED) {
-            auto resp = session.write_handshake_msg();
-            if (!resp.empty()) {
-                uint8_t resp_phase = phase + 1;
-                std::vector<uint8_t> wire(2 + resp.size());
-                wire[0] = NOISE_HANDSHAKE_TAG;
-                wire[1] = resp_phase;
-                std::memcpy(wire.data() + 2, resp.data(), resp.size());
-                inner_->send(peer_fp, wire.data(), wire.size());
-            }
-        }
-
-        if (session.state() == NoiseSession::ESTABLISHED) {
-            if (upper_peer_cb_)
-                upper_peer_cb_(peer_fp, 1);
+        /* Lock released — now perform I/O and callbacks */
+        if (!response_wire.empty())
+            inner_->send(peer_fp, response_wire.data(), response_wire.size());
+        if (fire_peer_cb && upper_peer_cb_)
+            upper_peer_cb_(peer_fp, 1);
+        if (do_flush)
             flush_pending(key, peer_fp);
-        }
     }
     else if (tag == NOISE_TRANSPORT_TAG) {
         if (len < 1 + 16) return;
 
-        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
-        std::string key = make_fp_key(peer_fp);
-
-        auto it = sessions_.find(key);
-        if (it == sessions_.end() || it->second.state() != NoiseSession::ESTABLISHED)
-            return;
-
         std::vector<uint8_t> plaintext;
-        if (it->second.decrypt(data + 1, len - 1, plaintext)) {
-            if (upper_recv_cb_)
-                upper_recv_cb_(peer_fp, plaintext.data(), plaintext.size());
+        {
+            std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+            std::string key = make_fp_key(peer_fp);
+
+            auto it = sessions_.find(key);
+            if (it == sessions_.end() || it->second.state() != NoiseSession::ESTABLISHED)
+                return;
+
+            if (!it->second.decrypt(data + 1, len - 1, plaintext))
+                return;
         }
+        /* Callback outside lock */
+        if (upper_recv_cb_)
+            upper_recv_cb_(peer_fp, plaintext.data(), plaintext.size());
     }
     else {
-        /* Non-Noise message (e.g. raw sync protocol 0x01-0x07 injected
-         * directly into the inner transport). Pass through to upper layer
-         * unmodified for backward compatibility and testability. */
+        /* Pass through non-Noise messages */
         if (upper_recv_cb_)
             upper_recv_cb_(peer_fp, data, len);
     }
@@ -560,37 +562,40 @@ void KomeNoiseTransport::on_inner_recv(const uint8_t *peer_fp,
 void KomeNoiseTransport::on_inner_peer(const uint8_t *peer_fp, int connected)
 {
     if (connected) {
-        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
-        std::string key = make_fp_key(peer_fp);
+        bool fire_established_cb = false;
+        bool do_start_handshake = false;
+        std::string key;
 
-        /* If there's already an established (or in-progress) session,
-         * don't reset it. This handles synchronous transports where both
-         * sides' peer callbacks fire in sequence, and the first callback
-         * may complete the entire handshake before the second fires. */
-        auto existing = sessions_.find(key);
-        if (existing != sessions_.end() &&
-            existing->second.state() != NoiseSession::FAILED) {
-            /* Session already exists and is healthy. If already ESTABLISHED,
-             * just fire the upper peer callback. */
-            if (existing->second.state() == NoiseSession::ESTABLISHED) {
-                if (upper_peer_cb_)
-                    upper_peer_cb_(peer_fp, 1);
+        {
+            std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+            key = make_fp_key(peer_fp);
+
+            auto existing = sessions_.find(key);
+            if (existing != sessions_.end() &&
+                existing->second.state() != NoiseSession::FAILED) {
+                if (existing->second.state() == NoiseSession::ESTABLISHED) {
+                    fire_established_cb = true;
+                }
+                /* Session already exists and is healthy — don't reset */
+            } else {
+                NoiseSession session;
+                session.init_initiator(static_priv_, static_pub_, fingerprint_);
+                sessions_[key] = session;
+                do_start_handshake = true;
             }
-            return;
         }
-
-        /* Both sides always start as initiator. Collision is resolved
-         * in on_inner_recv when both msg 1s cross. */
-        NoiseSession session;
-        session.init_initiator(static_priv_, static_pub_, fingerprint_);
-        sessions_[key] = session;
-        start_handshake(key, peer_fp);
+        /* Callbacks and sends outside lock */
+        if (fire_established_cb && upper_peer_cb_)
+            upper_peer_cb_(peer_fp, 1);
+        if (do_start_handshake)
+            start_handshake(key, peer_fp);
     } else {
-        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
-        std::string key = make_fp_key(peer_fp);
-        sessions_.erase(key);
-        pending_.erase(key);
-
+        {
+            std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+            std::string key = make_fp_key(peer_fp);
+            sessions_.erase(key);
+            pending_.erase(key);
+        }
         if (upper_peer_cb_)
             upper_peer_cb_(peer_fp, 0);
     }
@@ -599,36 +604,47 @@ void KomeNoiseTransport::on_inner_peer(const uint8_t *peer_fp, int connected)
 void KomeNoiseTransport::start_handshake(const std::string &fp_key,
                                           const uint8_t *peer_fp)
 {
-    auto it = sessions_.find(fp_key);
-    if (it == sessions_.end()) return;
+    std::vector<uint8_t> wire;
+    {
+        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+        auto it = sessions_.find(fp_key);
+        if (it == sessions_.end()) return;
 
-    auto msg = it->second.write_handshake_msg();
-    if (!msg.empty()) {
-        std::vector<uint8_t> wire(2 + msg.size());
-        wire[0] = NOISE_HANDSHAKE_TAG;
-        wire[1] = 1; /* phase 1 */
-        std::memcpy(wire.data() + 2, msg.data(), msg.size());
-        inner_->send(peer_fp, wire.data(), wire.size());
+        auto msg = it->second.write_handshake_msg();
+        if (!msg.empty()) {
+            wire.resize(2 + msg.size());
+            wire[0] = NOISE_HANDSHAKE_TAG;
+            wire[1] = 1; /* phase 1 */
+            std::memcpy(wire.data() + 2, msg.data(), msg.size());
+        }
     }
+    if (!wire.empty())
+        inner_->send(peer_fp, wire.data(), wire.size());
 }
 
 void KomeNoiseTransport::flush_pending(const std::string &fp_key,
                                         const uint8_t *peer_fp)
 {
-    auto pit = pending_.find(fp_key);
-    if (pit == pending_.end()) return;
+    std::vector<std::vector<uint8_t>> wires;
+    {
+        std::lock_guard<std::recursive_mutex> lock(sessions_mu_);
+        auto pit = pending_.find(fp_key);
+        if (pit == pending_.end()) return;
 
-    auto it = sessions_.find(fp_key);
-    if (it == sessions_.end() || it->second.state() != NoiseSession::ESTABLISHED) return;
+        auto it = sessions_.find(fp_key);
+        if (it == sessions_.end() || it->second.state() != NoiseSession::ESTABLISHED) return;
 
-    for (auto &msg : pit->second) {
-        auto ct = it->second.encrypt(msg.data(), msg.size());
-        std::vector<uint8_t> wire(1 + ct.size());
-        wire[0] = NOISE_TRANSPORT_TAG;
-        std::memcpy(wire.data() + 1, ct.data(), ct.size());
-        inner_->send(peer_fp, wire.data(), wire.size());
+        for (auto &msg : pit->second) {
+            auto ct = it->second.encrypt(msg.data(), msg.size());
+            std::vector<uint8_t> wire(1 + ct.size());
+            wire[0] = NOISE_TRANSPORT_TAG;
+            std::memcpy(wire.data() + 1, ct.data(), ct.size());
+            wires.push_back(std::move(wire));
+        }
+        pending_.erase(pit);
     }
-    pending_.erase(pit);
+    for (auto &wire : wires)
+        inner_->send(peer_fp, wire.data(), wire.size());
 }
 
 } /* namespace kome */
