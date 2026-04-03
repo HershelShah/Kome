@@ -134,6 +134,7 @@ kome_add_test(test_encryption tests/gtest_encryption.cpp)
 kome_add_test(test_easy_and_relay tests/gtest_easy_and_relay.cpp)
 kome_add_test(test_signing    tests/gtest_signing.cpp)
 kome_add_test(test_noise      tests/gtest_noise.cpp)
+kome_add_test(test_integration tests/gtest_integration.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)
