@@ -17,7 +17,10 @@ enum WireMessageType : uint8_t {
     SYNC_ACK           = 0x04,
     LIVE_ENTRY         = 0x05,
     BATCH_ENTRY        = 0x06,
-    NAMESPACE_ACL_SYNC = 0x07
+    NAMESPACE_ACL_SYNC = 0x07,
+    /* Noise protocol (handled by KomeNoiseTransport, not by sync manager) */
+    NOISE_HANDSHAKE    = 0x0F,
+    NOISE_TRANSPORT    = 0x10
 };
 
 struct SyncRequest {

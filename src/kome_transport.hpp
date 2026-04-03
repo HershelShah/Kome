@@ -19,8 +19,8 @@ public:
 
     virtual void send(const uint8_t *peer_fp, const uint8_t *data, size_t len) = 0;
 
-    void set_recv_callback(RecvCallback cb) { recv_cb_ = std::move(cb); }
-    void set_peer_callback(PeerCallback cb) { peer_cb_ = std::move(cb); }
+    virtual void set_recv_callback(RecvCallback cb) { recv_cb_ = std::move(cb); }
+    virtual void set_peer_callback(PeerCallback cb) { peer_cb_ = std::move(cb); }
 
 protected:
     RecvCallback recv_cb_;

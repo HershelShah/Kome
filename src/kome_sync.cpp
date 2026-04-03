@@ -110,6 +110,8 @@ void KomeSyncManager::on_recv(const uint8_t *peer_fp, const uint8_t *data, size_
         case LIVE_ENTRY:          handle_live_entry(peer_fp, data, len);            break;
         case BATCH_ENTRY:         handle_batch_entry(peer_fp, data, len);           break;
         case NAMESPACE_ACL_SYNC:  handle_namespace_acl_sync(peer_fp, data, len);   break;
+        case NOISE_HANDSHAKE:     break; /* Handled by KomeNoiseTransport layer */
+        case NOISE_TRANSPORT:     break; /* Handled by KomeNoiseTransport layer */
     }
 }
 

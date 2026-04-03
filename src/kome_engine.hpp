@@ -5,6 +5,7 @@
 #include "kome_log.hpp"
 #include "kome_transport.hpp"
 #include "kome_sync.hpp"
+#include "kome_noise.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -48,6 +49,14 @@ struct KomeEngine {
     /* Per-peer rate limits (persisted across sync_mgr recreations) */
     uint64_t                            rate_limit_bytes      = 50ULL * 1024 * 1024;
     uint64_t                            rate_limit_entries    = 1000;
+
+    /* Noise protocol keypair (derived from identity key material) */
+    uint8_t                             noise_static_private[32] = {};
+    uint8_t                             noise_static_public[32]  = {};
+    bool                                noise_keys_derived       = false;
+
+    /* Noise transport (wraps generic transport for encrypted wire) */
+    std::shared_ptr<kome::KomeNoiseTransport> noise_transport;
 };
 
 #endif /* KOME_ENGINE_HPP */
