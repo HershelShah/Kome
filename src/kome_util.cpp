@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstring>
 #include <vector>
+#include <cstdio>
 
 namespace kome {
 
@@ -111,6 +112,109 @@ uint64_t timestamp_us() {
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(
         now.time_since_epoch());
     return static_cast<uint64_t>(us.count());
+}
+
+void random_bytes(uint8_t *out, size_t len) {
+    FILE *f = std::fopen("/dev/urandom", "rb");
+    if (!f) {
+        /* Fatal: cannot source randomness */
+        std::memset(out, 0, len);
+        return;
+    }
+    size_t got = std::fread(out, 1, len, f);
+    (void)got; /* In practice /dev/urandom never short-reads */
+    std::fclose(f);
+}
+
+void hmac_sha256(const uint8_t *key, size_t key_len,
+                 const uint8_t *msg, size_t msg_len,
+                 uint8_t out[32])
+{
+    /* RFC 2104 HMAC with SHA-256 (block size = 64) */
+    static const size_t BLOCK_SIZE = 64;
+    uint8_t k_pad[64];
+
+    /* If key > block size, hash it first */
+    uint8_t hashed_key[32];
+    if (key_len > BLOCK_SIZE) {
+        sha256(key, key_len, hashed_key);
+        key = hashed_key;
+        key_len = 32;
+    }
+
+    /* k_pad = key zero-padded to BLOCK_SIZE */
+    std::memset(k_pad, 0, BLOCK_SIZE);
+    std::memcpy(k_pad, key, key_len);
+
+    /* inner = SHA-256((K ^ ipad) || msg) */
+    uint8_t inner_input[64];
+    for (size_t i = 0; i < BLOCK_SIZE; i++)
+        inner_input[i] = k_pad[i] ^ 0x36;
+
+    /* Concatenate inner_input || msg and hash */
+    std::vector<uint8_t> inner_buf(BLOCK_SIZE + msg_len);
+    std::memcpy(inner_buf.data(), inner_input, BLOCK_SIZE);
+    if (msg && msg_len > 0)
+        std::memcpy(inner_buf.data() + BLOCK_SIZE, msg, msg_len);
+
+    uint8_t inner_hash[32];
+    sha256(inner_buf.data(), inner_buf.size(), inner_hash);
+
+    /* outer = SHA-256((K ^ opad) || inner_hash) */
+    uint8_t outer_input[64];
+    for (size_t i = 0; i < BLOCK_SIZE; i++)
+        outer_input[i] = k_pad[i] ^ 0x5c;
+
+    uint8_t outer_buf[64 + 32];
+    std::memcpy(outer_buf, outer_input, BLOCK_SIZE);
+    std::memcpy(outer_buf + BLOCK_SIZE, inner_hash, 32);
+
+    sha256(outer_buf, BLOCK_SIZE + 32, out);
+}
+
+void hkdf_sha256(const uint8_t *salt, size_t salt_len,
+                 const uint8_t *ikm,  size_t ikm_len,
+                 const uint8_t *info, size_t info_len,
+                 uint8_t *out, size_t out_len)
+{
+    /* RFC 5869 HKDF */
+
+    /* Step 1: Extract — PRK = HMAC-SHA256(salt, IKM) */
+    uint8_t default_salt[32];
+    if (!salt || salt_len == 0) {
+        std::memset(default_salt, 0, 32);
+        salt = default_salt;
+        salt_len = 32;
+    }
+
+    uint8_t prk[32];
+    hmac_sha256(salt, salt_len, ikm, ikm_len, prk);
+
+    /* Step 2: Expand — T(i) = HMAC-SHA256(PRK, T(i-1) || info || i) */
+    uint8_t t_prev[32];
+    size_t t_prev_len = 0;
+    size_t offset = 0;
+
+    for (uint8_t i = 1; offset < out_len; i++) {
+        /* Build input: T(i-1) || info || [i] */
+        std::vector<uint8_t> input(t_prev_len + info_len + 1);
+        if (t_prev_len > 0)
+            std::memcpy(input.data(), t_prev, t_prev_len);
+        if (info && info_len > 0)
+            std::memcpy(input.data() + t_prev_len, info, info_len);
+        input[t_prev_len + info_len] = i;
+
+        uint8_t t_cur[32];
+        hmac_sha256(prk, 32, input.data(), input.size(), t_cur);
+
+        size_t copy_len = out_len - offset;
+        if (copy_len > 32) copy_len = 32;
+        std::memcpy(out + offset, t_cur, copy_len);
+
+        std::memcpy(t_prev, t_cur, 32);
+        t_prev_len = 32;
+        offset += copy_len;
+    }
 }
 
 } /* namespace kome */

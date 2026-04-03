@@ -1,6 +1,10 @@
 #include "kome_engine.hpp"
 #include "kome_util.hpp"
 #include "kome_sign.hpp"
+#include "kome_noise.hpp"
+extern "C" {
+#include "monocypher.h"
+}
 #include <cstring>
 #include <cstdlib>
 
@@ -39,6 +43,7 @@ KOME_API void kome_close(KomeEngine *engine) {
     {
         std::lock_guard<std::mutex> lock(engine->mu);
         engine->sync_mgr.reset();
+        engine->noise_transport.reset();
         engine->transport_adapter.reset();
         engine->log->close();
     }
@@ -58,6 +63,26 @@ KOME_API KomeError kome_set_identity(KomeEngine *engine, const uint8_t *key_mate
     size_t store_len = len > 64 ? 64 : len;
     std::memcpy(engine->identity_key, key_material, store_len);
     engine->identity_key_len = store_len;
+
+    /* Derive Noise static keypair:
+     * noise_static_private = SHA-256("kome-noise-static" || key_material), then clamp */
+    {
+        static const char prefix[] = "kome-noise-static";
+        static const size_t prefix_len = sizeof(prefix) - 1;
+        std::vector<uint8_t> buf(prefix_len + len);
+        std::memcpy(buf.data(), prefix, prefix_len);
+        std::memcpy(buf.data() + prefix_len, key_material, len);
+        kome::sha256(buf.data(), buf.size(), engine->noise_static_private);
+
+        /* Clamp for Curve25519 */
+        engine->noise_static_private[0]  &= 248;
+        engine->noise_static_private[31] &= 127;
+        engine->noise_static_private[31] |= 64;
+
+        crypto_x25519_public_key(engine->noise_static_public,
+                                  engine->noise_static_private);
+        engine->noise_keys_derived = true;
+    }
 
     std::map<std::string, uint64_t> vv;
     engine->log->get_version_vector(vv);
@@ -90,6 +115,24 @@ KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
     size_t store_len = new_key_len > 64 ? 64 : new_key_len;
     std::memcpy(engine->identity_key, new_key_material, store_len);
     engine->identity_key_len = store_len;
+
+    /* Re-derive Noise static keypair from new key material */
+    {
+        static const char prefix[] = "kome-noise-static";
+        static const size_t prefix_len = sizeof(prefix) - 1;
+        std::vector<uint8_t> buf(prefix_len + new_key_len);
+        std::memcpy(buf.data(), prefix, prefix_len);
+        std::memcpy(buf.data() + prefix_len, new_key_material, new_key_len);
+        kome::sha256(buf.data(), buf.size(), engine->noise_static_private);
+
+        engine->noise_static_private[0]  &= 248;
+        engine->noise_static_private[31] &= 127;
+        engine->noise_static_private[31] |= 64;
+
+        crypto_x25519_public_key(engine->noise_static_public,
+                                  engine->noise_static_private);
+        engine->noise_keys_derived = true;
+    }
 
     return KOME_OK;
 }
@@ -446,12 +489,26 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
 
     engine->transport = transport;
     engine->sync_mgr.reset();
+    engine->noise_transport.reset();
     engine->transport_adapter.reset();
 
     engine->transport_adapter = std::make_unique<kome::KomeGenericTransport>(transport);
+
+    kome::KomeTransportAdapter *sync_transport = engine->transport_adapter.get();
+
+    /* If Noise keys are derived, wrap with encrypted transport */
+    if (engine->noise_keys_derived) {
+        engine->noise_transport = std::make_shared<kome::KomeNoiseTransport>(
+            engine->transport_adapter.get(),
+            engine->noise_static_private,
+            engine->noise_static_public,
+            engine->identity);
+        sync_transport = engine->noise_transport.get();
+    }
+
     engine->sync_mgr = std::make_shared<kome::KomeSyncManager>(engine);
     engine->sync_mgr->set_peer_limits(engine->rate_limit_bytes, engine->rate_limit_entries);
-    engine->sync_mgr->set_transport(engine->transport_adapter.get());
+    engine->sync_mgr->set_transport(sync_transport);
 
     return KOME_OK;
 }
