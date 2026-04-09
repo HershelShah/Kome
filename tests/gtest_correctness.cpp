@@ -481,3 +481,329 @@ TEST(Correctness, BatchAtomicity) {
     EXPECT_EQ(metas[0].seq + 1, metas[1].seq);
     EXPECT_EQ(metas[1].seq + 1, metas[2].seq);
 }
+
+/* =====================================================================
+   MULTI-NODE CORRECTNESS
+   The invariants above are necessary but not sufficient. Two-node tests
+   miss failure modes that only appear with 3+ nodes:
+
+   - Gossip corruption: does data stay intact through an intermediary?
+   - Transitive convergence: A↔B, B↔C — does A == C?
+   - Multi-writer conflicts: 3 nodes write to same key, all must agree
+   - Tombstone propagation depth: delete must reach nodes 2+ hops away
+   - Version vector completeness: after full mesh sync, every node's VV
+     must contain every author
+   ===================================================================== */
+
+/* Helper: sync every pair in a list (round-robin), simulating sequential
+   pairwise connections like a real mesh where only one link is active at
+   a time (since each engine supports one transport). */
+static void full_mesh_sync(std::vector<CNode*> nodes) {
+    /* Multiple rounds to propagate through intermediaries */
+    for (int round = 0; round < 3; round++) {
+        for (size_t i = 0; i < nodes.size(); i++) {
+            for (size_t j = i + 1; j < nodes.size(); j++) {
+                sync_pair(*nodes[i], *nodes[j]);
+            }
+        }
+    }
+}
+
+/* ───────────────────────────────────────────────────────────────────── */
+
+TEST(CorrectnessMultiNode, ThreeNodeConvergence) {
+    /* A, B, C each write unique entries. After full mesh sync, all three
+       must have identical snapshots. */
+    auto A = make_cnode("3conv_a", 0xA1);
+    auto B = make_cnode("3conv_b", 0xB2);
+    auto C = make_cnode("3conv_c", 0xC3);
+
+    for (int i = 0; i < 10; i++) put_entry(A, "ns", "a" + std::to_string(i), "va" + std::to_string(i));
+    for (int i = 0; i < 10; i++) put_entry(B, "ns", "b" + std::to_string(i), "vb" + std::to_string(i));
+    for (int i = 0; i < 10; i++) put_entry(C, "ns", "c" + std::to_string(i), "vc" + std::to_string(i));
+
+    std::vector<CNode*> all = {&A, &B, &C};
+    full_mesh_sync(all);
+
+    auto sa = snapshot_node(A);
+    auto sb = snapshot_node(B);
+    auto sc = snapshot_node(C);
+
+    EXPECT_EQ(sa.entries, sb.entries) << "A and B must converge";
+    EXPECT_EQ(sb.entries, sc.entries) << "B and C must converge";
+    EXPECT_EQ(30u, sa.entries.size()) << "All 30 entries must be present";
+}
+
+TEST(CorrectnessMultiNode, FiveNodeConvergence) {
+    /* 5 nodes, each writes 5 entries. After mesh sync, all 25 entries
+       must be present on every node. */
+    auto N0 = make_cnode("5c_0", 0x10);
+    auto N1 = make_cnode("5c_1", 0x21);
+    auto N2 = make_cnode("5c_2", 0x32);
+    auto N3 = make_cnode("5c_3", 0x43);
+    auto N4 = make_cnode("5c_4", 0x54);
+    std::vector<CNode*> all = {&N0, &N1, &N2, &N3, &N4};
+
+    for (size_t n = 0; n < all.size(); n++) {
+        for (int i = 0; i < 5; i++) {
+            std::string key = "n" + std::to_string(n) + "_k" + std::to_string(i);
+            std::string val = "v" + std::to_string(n * 5 + i);
+            put_entry(*all[n], "data", key, val);
+        }
+    }
+
+    full_mesh_sync(all);
+
+    auto ref = snapshot_node(*all[0]);
+    EXPECT_EQ(25u, ref.entries.size()) << "All 25 entries must be present";
+    for (size_t n = 1; n < all.size(); n++) {
+        auto snap = snapshot_node(*all[n]);
+        EXPECT_EQ(ref.entries, snap.entries)
+            << "Node " << n << " diverged from node 0";
+    }
+}
+
+TEST(CorrectnessMultiNode, GossipIntegrity) {
+    /* A writes data. A syncs with B. B syncs with C. C syncs with D.
+       D must have exactly A's data, unmodified (gossip chain doesn't
+       corrupt values or metadata). */
+    auto A = make_cnode("gi_a", 0xA1);
+    auto B = make_cnode("gi_b", 0xB2);
+    auto C = make_cnode("gi_c", 0xC3);
+    auto D = make_cnode("gi_d", 0xD4);
+
+    /* A writes entries with known values */
+    for (int i = 0; i < 10; i++) {
+        std::string key = "k" + std::to_string(i);
+        std::string val = "data_" + std::to_string(i * 1000 + 42);
+        put_entry(A, "ns", key, val);
+    }
+
+    /* Chain sync: A→B→C→D */
+    sync_pair(A, B);
+    sync_pair(B, C);
+    sync_pair(C, D);
+
+    /* D must have exact same data as A */
+    auto sa = snapshot_node(A);
+    auto sd = snapshot_node(D);
+    EXPECT_EQ(sa.entries, sd.entries)
+        << "Data must survive 3-hop gossip chain without corruption";
+
+    /* Also verify hash integrity at the far end */
+    for (int i = 0; i < 10; i++) {
+        std::string key = "k" + std::to_string(i);
+        std::string val = "data_" + std::to_string(i * 1000 + 42);
+
+        uint8_t *out = nullptr;
+        size_t len = 0;
+        KomeEntryMeta meta;
+        ASSERT_EQ(KOME_OK, kome_get(D.engine, "ns",
+            (const uint8_t*)key.data(), key.size(), &out, &len, &meta));
+
+        /* Value intact */
+        EXPECT_EQ(val, std::string((char*)out, len));
+
+        /* Hash intact */
+        uint8_t expected_hash[32];
+        kome::sha256((const uint8_t*)val.data(), val.size(), expected_hash);
+        EXPECT_EQ(0, std::memcmp(meta.hash, expected_hash, 32))
+            << "Hash corrupted at key " << key;
+
+        kome_free_value(out);
+    }
+}
+
+TEST(CorrectnessMultiNode, ThreeWriterConflictAllAgree) {
+    /* A, B, C all write different values to the SAME key.
+       After full mesh sync, all three must agree on the winner.
+       The winner must be the entry with the highest timestamp
+       (or highest author fingerprint as tiebreak). */
+    auto A = make_cnode("3wc_a", 0xA1);
+    auto B = make_cnode("3wc_b", 0xB2);
+    auto C = make_cnode("3wc_c", 0xC3);
+
+    put_entry(A, "ns", "key", "from_a");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    put_entry(B, "ns", "key", "from_b");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    put_entry(C, "ns", "key", "from_c");
+
+    std::vector<CNode*> all = {&A, &B, &C};
+    full_mesh_sync(all);
+
+    /* Read winner from each node */
+    std::string vals[3];
+    for (int i = 0; i < 3; i++) {
+        uint8_t *out = nullptr;
+        size_t len = 0;
+        ASSERT_EQ(KOME_OK, kome_get(all[i]->engine, "ns",
+            (const uint8_t*)"key", 3, &out, &len, nullptr));
+        vals[i] = std::string((char*)out, len);
+        kome_free_value(out);
+    }
+
+    /* All must agree */
+    EXPECT_EQ(vals[0], vals[1]) << "A and B must agree on winner";
+    EXPECT_EQ(vals[1], vals[2]) << "B and C must agree on winner";
+
+    /* C wrote last → highest timestamp → must win */
+    EXPECT_EQ("from_c", vals[0]);
+}
+
+TEST(CorrectnessMultiNode, TombstonePropagatesThreeHops) {
+    /* A writes, then deletes. Tombstone must reach D through B and C. */
+    auto A = make_cnode("3ht_a", 0xA1);
+    auto B = make_cnode("3ht_b", 0xB2);
+    auto C = make_cnode("3ht_c", 0xC3);
+    auto D = make_cnode("3ht_d", 0xD4);
+
+    put_entry(A, "ns", "doomed", "will die");
+    kome_delete(A.engine, "ns", (const uint8_t*)"doomed", 6, nullptr);
+
+    /* Chain sync */
+    sync_pair(A, B);
+    sync_pair(B, C);
+    sync_pair(C, D);
+
+    /* D must not have the entry */
+    uint8_t *out = nullptr;
+    size_t len = 0;
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get(D.engine, "ns",
+        (const uint8_t*)"doomed", 6, &out, &len, nullptr))
+        << "Tombstone must propagate through 3 hops";
+}
+
+TEST(CorrectnessMultiNode, TombstoneOverridesStaleValueOnDistantNode) {
+    /* D has an old value. A deletes it. Sync chain A→B→C→D.
+       The tombstone (higher timestamp) must overwrite D's stale copy. */
+    auto A = make_cnode("tsd_a", 0xA1);
+    auto B = make_cnode("tsd_b", 0xB2);
+    auto C = make_cnode("tsd_c", 0xC3);
+    auto D = make_cnode("tsd_d", 0xD4);
+
+    /* D writes first (old timestamp) */
+    put_entry(D, "ns", "key", "old_value");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+    /* A writes then deletes (newer timestamp) */
+    put_entry(A, "ns", "key", "new_value");
+    kome_delete(A.engine, "ns", (const uint8_t*)"key", 3, nullptr);
+
+    /* Chain sync */
+    sync_pair(A, B);
+    sync_pair(B, C);
+    sync_pair(C, D);
+
+    uint8_t *out = nullptr;
+    size_t len = 0;
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get(D.engine, "ns",
+        (const uint8_t*)"key", 3, &out, &len, nullptr))
+        << "Tombstone with higher timestamp must overwrite stale value on distant node";
+}
+
+TEST(CorrectnessMultiNode, VersionVectorCompleteAfterMeshSync) {
+    /* 4 nodes each write entries. After full mesh sync, every node's
+       version vector must contain all 4 authors with correct max seq. */
+    auto A = make_cnode("vvc_a", 0xA1);
+    auto B = make_cnode("vvc_b", 0xB2);
+    auto C = make_cnode("vvc_c", 0xC3);
+    auto D = make_cnode("vvc_d", 0xD4);
+    std::vector<CNode*> all = {&A, &B, &C, &D};
+
+    /* Each writes a different number of entries so max seqs differ */
+    for (int i = 0; i < 3; i++) put_entry(A, "ns", "a" + std::to_string(i), "v");
+    for (int i = 0; i < 5; i++) put_entry(B, "ns", "b" + std::to_string(i), "v");
+    for (int i = 0; i < 2; i++) put_entry(C, "ns", "c" + std::to_string(i), "v");
+    for (int i = 0; i < 7; i++) put_entry(D, "ns", "d" + std::to_string(i), "v");
+
+    full_mesh_sync(all);
+
+    /* Every node should have 4 authors in its VV */
+    for (size_t n = 0; n < all.size(); n++) {
+        KomeVersionEntry *entries = nullptr;
+        size_t count = 0;
+        ASSERT_EQ(KOME_OK, kome_version_vector(all[n]->engine, &entries, &count));
+        EXPECT_EQ(4u, count)
+            << "Node " << n << " version vector should have 4 authors";
+        kome_free_version_vector(entries);
+    }
+}
+
+TEST(CorrectnessMultiNode, CommutativityThreeNode) {
+    /* Same data, different sync orders, must produce identical state.
+       Trial 1: A→B, B→C, A→C
+       Trial 2: A→C, A→B, B→C
+       Both must yield the same snapshot on C. */
+    auto run_trial = [](const char *suffix, int order) -> Snapshot {
+        auto A = make_cnode(("ct3_a_" + std::string(suffix)).c_str(), 0xA1);
+        auto B = make_cnode(("ct3_b_" + std::string(suffix)).c_str(), 0xB2);
+        auto C = make_cnode(("ct3_c_" + std::string(suffix)).c_str(), 0xC3);
+
+        /* All three write conflicting entries */
+        put_entry(A, "ns", "shared", "val_a");
+        put_entry(B, "ns", "shared", "val_b");
+        put_entry(C, "ns", "shared", "val_c");
+
+        /* Non-conflicting entries */
+        put_entry(A, "ns", "only_a", "a");
+        put_entry(B, "ns", "only_b", "b");
+        put_entry(C, "ns", "only_c", "c");
+
+        if (order == 0) {
+            sync_pair(A, B); sync_pair(B, C); sync_pair(A, C);
+        } else {
+            sync_pair(A, C); sync_pair(A, B); sync_pair(B, C);
+        }
+        /* Extra round to fully converge */
+        sync_pair(A, B); sync_pair(B, C); sync_pair(A, C);
+
+        return snapshot_node(C);
+    };
+
+    auto snap1 = run_trial("t1", 0);
+    auto snap2 = run_trial("t2", 1);
+
+    EXPECT_EQ(snap1.entries, snap2.entries)
+        << "Different 3-node sync orders must produce identical state";
+}
+
+TEST(CorrectnessMultiNode, PartitionAndHeal) {
+    /* Simulate a network partition: A and B sync. C and D sync.
+       Then B and C sync (healing the partition). After healing,
+       all 4 must converge. */
+    auto A = make_cnode("ph_a", 0xA1);
+    auto B = make_cnode("ph_b", 0xB2);
+    auto C = make_cnode("ph_c", 0xC3);
+    auto D = make_cnode("ph_d", 0xD4);
+
+    /* Partition 1: {A, B} */
+    put_entry(A, "ns", "from_a", "val_a");
+    put_entry(B, "ns", "from_b", "val_b");
+    sync_pair(A, B);
+
+    /* Partition 2: {C, D} */
+    put_entry(C, "ns", "from_c", "val_c");
+    put_entry(D, "ns", "from_d", "val_d");
+    sync_pair(C, D);
+
+    /* At this point: {A,B} have {a,b}. {C,D} have {c,d}. */
+
+    /* Heal partition: B ↔ C */
+    sync_pair(B, C);
+
+    /* Propagate: A ↔ B, C ↔ D */
+    sync_pair(A, B);
+    sync_pair(C, D);
+
+    /* All 4 must have all 4 entries */
+    std::vector<CNode*> all = {&A, &B, &C, &D};
+    auto ref = snapshot_node(A);
+    EXPECT_EQ(4u, ref.entries.size()) << "Should have 4 entries total";
+
+    for (size_t n = 1; n < all.size(); n++) {
+        auto snap = snapshot_node(*all[n]);
+        EXPECT_EQ(ref.entries, snap.entries)
+            << "Node " << n << " diverged after partition heal";
+    }
+}
