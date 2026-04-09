@@ -49,8 +49,11 @@ struct TcpTestNode {
 
     void stop() {
         running.store(false);
-        if (conn_fd >= 0) { shutdown(conn_fd, SHUT_RDWR); close(conn_fd); conn_fd = -1; }
+        /* shutdown() unblocks the recv thread's blocking recv() call */
+        if (conn_fd >= 0) shutdown(conn_fd, SHUT_RDWR);
         if (recv_thread.joinable()) recv_thread.join();
+        /* Close fd only after the recv thread has exited */
+        if (conn_fd >= 0) { close(conn_fd); conn_fd = -1; }
     }
 
     void start_recv() {

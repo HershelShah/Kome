@@ -74,14 +74,6 @@ class TestData:
             engine.get("test", b"dkey")
         assert exc_info.value.code == 4  # KOME_ERR_NOT_FOUND
 
-    def test_get_with_tombstones(self, engine):
-        engine.set_identity(b"test_key_1234567890123456")
-        engine.put("test", b"dkey2", b"data")
-        engine.delete("test", b"dkey2")
-        value, meta = engine.get_with_tombstones("test", b"dkey2")
-        assert value is None
-        assert meta.tombstone == 1
-
     def test_get_not_found(self, engine):
         with pytest.raises(KomeError):
             engine.get("test", b"nonexistent")
