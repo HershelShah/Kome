@@ -2,7 +2,7 @@
  * End-to-end integration tests.
  *
  * These test the FULL stack: identity → encryption → signing → sync →
- * conflict resolution → ACL enforcement → bulk reads → callbacks.
+ * conflict resolution → bulk reads → callbacks.
  * Written independently from the feature agents to validate behavior.
  */
 #include <gtest/gtest.h>
@@ -55,17 +55,6 @@ protected:
         get_fingerprint(bob, loopback.b.fingerprint);
     }
 
-    void setup_shared_namespace(const char *ns) {
-        /* Get fingerprints */
-        KomeStats alice_stats, bob_stats;
-        kome_stats(alice, &alice_stats);
-        kome_stats(bob, &bob_stats);
-
-        /* Give both WRITE access on both engines */
-        uint8_t alice_fp[32], bob_fp[32];
-        /* We need actual fingerprints - get them via version vector after a write */
-    }
-
     void attach_transports() {
         ASSERT_EQ(KOME_OK, kome_attach_transport(alice, &loopback.a.transport));
         ASSERT_EQ(KOME_OK, kome_attach_transport(bob, &loopback.b.transport));
@@ -86,33 +75,6 @@ TEST_F(IntegrationTest, WriteOnAliceReadOnBob) {
     uint8_t val[] = "hello world";
     KomeEntryMeta meta;
     ASSERT_EQ(KOME_OK, kome_put(alice, "chat", key, 8, val, 11, &meta));
-
-    /* Verify signature is populated */
-    bool has_sig = false;
-    for (int i = 0; i < 64; i++) {
-        if (meta.signature[i] != 0) { has_sig = true; break; }
-    }
-    EXPECT_TRUE(has_sig) << "Entry should be signed";
-
-    /* Configure ACLs so Bob can read Alice's namespace */
-    KomeNamespaceACLEntry acl[2];
-    std::memcpy(acl[0].fingerprint, meta.author, 32);
-    acl[0].role = KOME_ROLE_WRITE;
-
-    /* Get Bob's fingerprint by having him write something */
-    uint8_t bkey[] = "tmp";
-    uint8_t bval[] = "x";
-    KomeEntryMeta bmeta;
-    ASSERT_EQ(KOME_OK, kome_put(bob, "scratch", bkey, 3, bval, 1, &bmeta));
-    std::memcpy(acl[1].fingerprint, bmeta.author, 32);
-    acl[1].role = KOME_ROLE_WRITE;
-
-    KomeNamespaceConfig ns_cfg = {};
-    ns_cfg.name = "chat";
-    ns_cfg.acl = acl;
-    ns_cfg.acl_count = 2;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(alice, &ns_cfg));
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(bob, &ns_cfg));
 
     /* Connect and sync */
     connect_peers();
@@ -146,20 +108,6 @@ TEST_F(IntegrationTest, BidirectionalSync) {
     ASSERT_EQ(KOME_OK, kome_put(alice, "shared", ak, 9, av, 9, &am));
     ASSERT_EQ(KOME_OK, kome_put(bob, "shared", bk, 7, bv, 7, &bm));
 
-    /* Configure ACLs */
-    KomeNamespaceACLEntry acl[2];
-    std::memcpy(acl[0].fingerprint, am.author, 32);
-    acl[0].role = KOME_ROLE_WRITE;
-    std::memcpy(acl[1].fingerprint, bm.author, 32);
-    acl[1].role = KOME_ROLE_WRITE;
-
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "shared";
-    cfg.acl = acl;
-    cfg.acl_count = 2;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(alice, &cfg));
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(bob, &cfg));
-
     connect_peers();
 
     /* Alice should have Bob's key */
@@ -190,9 +138,6 @@ TEST_F(IntegrationTest, DeletedEntriesNotVisible) {
     EXPECT_EQ(nullptr, out);
     EXPECT_EQ(1, out_meta.tombstone);
 
-    /* kome_get_with_tombstones should return OK */
-    EXPECT_EQ(KOME_OK, kome_get_with_tombstones(alice, "ns", key, 9, &out, &out_len, &out_meta));
-    EXPECT_EQ(1, out_meta.tombstone);
 }
 
 /* ===== Test 4: Bulk reads ===== */
@@ -254,29 +199,6 @@ TEST_F(IntegrationTest, PerNamespaceCallbackFilters) {
             (*static_cast<int*>(ud))++;
         }, &other_changes);
 
-    /* Setup ACLs for both namespaces */
-    uint8_t ak[] = "x";
-    KomeEntryMeta am;
-    kome_put(alice, "scratch", ak, 1, ak, 1, &am);
-    uint8_t bk[] = "y";
-    KomeEntryMeta bm;
-    kome_put(bob, "scratch", bk, 1, bk, 1, &bm);
-
-    KomeNamespaceACLEntry acl[2];
-    std::memcpy(acl[0].fingerprint, am.author, 32);
-    acl[0].role = KOME_ROLE_WRITE;
-    std::memcpy(acl[1].fingerprint, bm.author, 32);
-    acl[1].role = KOME_ROLE_WRITE;
-
-    for (const char *ns : {"chat", "other"}) {
-        KomeNamespaceConfig cfg = {};
-        cfg.name = ns;
-        cfg.acl = acl;
-        cfg.acl_count = 2;
-        kome_configure_namespace(alice, &cfg);
-        kome_configure_namespace(bob, &cfg);
-    }
-
     /* Alice writes to chat (3 entries) and other (1 entry) */
     for (int i = 0; i < 3; i++) {
         std::string key = "msg_" + std::to_string(i);
@@ -298,81 +220,7 @@ TEST_F(IntegrationTest, PerNamespaceCallbackFilters) {
     EXPECT_EQ(1, other_changes) << "other callback should fire 1 time";
 }
 
-/* ===== Test 6: ACL enforcement ===== */
-TEST_F(IntegrationTest, ACLBlocksUnauthorizedSync) {
-    set_identities();
-
-    /* Alice writes to a private namespace */
-    uint8_t key[] = "secret";
-    uint8_t val[] = "classified";
-    KomeEntryMeta am;
-    ASSERT_EQ(KOME_OK, kome_put(alice, "private", key, 6, val, 10, &am));
-
-    /* Configure ACL: only Alice has access, Bob does NOT */
-    KomeNamespaceACLEntry acl;
-    std::memcpy(acl.fingerprint, am.author, 32);
-    acl.role = KOME_ROLE_WRITE;
-
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "private";
-    cfg.acl = &acl;
-    cfg.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(alice, &cfg));
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(bob, &cfg));
-
-    connect_peers();
-
-    /* Bob should NOT have the entry */
-    KomeEntryMeta check;
-    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get_meta(bob, "private", key, 6, &check))
-        << "Bob should not receive entries from a namespace he has no access to";
-}
-
-/* ===== Test 7: Identity rotation ===== */
-TEST_F(IntegrationTest, IdentityRotationPreservesAccess) {
-    set_identities();
-
-    /* Write something to establish Alice's fingerprint */
-    uint8_t key[] = "data";
-    uint8_t val[] = "important";
-    KomeEntryMeta meta;
-    ASSERT_EQ(KOME_OK, kome_put(alice, "ns", key, 4, val, 9, &meta));
-
-    uint8_t old_author[32];
-    std::memcpy(old_author, meta.author, 32);
-
-    /* Configure ACL with Alice's current fingerprint */
-    KomeNamespaceACLEntry acl;
-    std::memcpy(acl.fingerprint, meta.author, 32);
-    acl.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "ns";
-    cfg.acl = &acl;
-    cfg.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(alice, &cfg));
-
-    /* Rotate identity */
-    uint8_t new_key[] = "alice_new_key_material_32bytes!";
-    ASSERT_EQ(KOME_OK, kome_rotate_identity(alice, new_key, 31));
-
-    /* Write with new identity */
-    uint8_t key2[] = "data2";
-    uint8_t val2[] = "new stuff";
-    KomeEntryMeta meta2;
-    ASSERT_EQ(KOME_OK, kome_put(alice, "ns", key2, 5, val2, 9, &meta2));
-
-    /* New author should differ from old */
-    EXPECT_NE(0, std::memcmp(meta2.author, old_author, 32))
-        << "Author fingerprint should change after rotation";
-
-    /* Old data should still be readable */
-    uint8_t *out = nullptr;
-    size_t out_len = 0;
-    EXPECT_EQ(KOME_OK, kome_get(alice, "ns", key, 4, &out, &out_len, nullptr));
-    kome_free_value(out);
-}
-
-/* ===== Test 8: Conflict resolution (LWW) ===== */
+/* ===== Test 7: Conflict resolution (LWW) ===== */
 TEST_F(IntegrationTest, LastWriterWins) {
     set_identities();
 
@@ -391,19 +239,6 @@ TEST_F(IntegrationTest, LastWriterWins) {
     /* Bob's timestamp should be higher */
     EXPECT_GT(bm.timestamp_us, am.timestamp_us);
 
-    /* Configure ACLs */
-    KomeNamespaceACLEntry acl[2];
-    std::memcpy(acl[0].fingerprint, am.author, 32);
-    acl[0].role = KOME_ROLE_WRITE;
-    std::memcpy(acl[1].fingerprint, bm.author, 32);
-    acl[1].role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "shared";
-    cfg.acl = acl;
-    cfg.acl_count = 2;
-    kome_configure_namespace(alice, &cfg);
-    kome_configure_namespace(bob, &cfg);
-
     connect_peers();
 
     /* Both should converge to Bob's value (later timestamp) */
@@ -421,32 +256,6 @@ TEST_F(IntegrationTest, LastWriterWins) {
     kome_free_value(out);
 }
 
-/* ===== Test 9: Namespace listing includes empty configured namespaces ===== */
-TEST_F(IntegrationTest, ListNamespacesIncludesEmpty) {
-    set_identities();
-
-    KomeNamespaceACLEntry acl;
-    std::memset(acl.fingerprint, 0xCC, 32);
-    acl.role = KOME_ROLE_READ;
-
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "empty_ns";
-    cfg.acl = &acl;
-    cfg.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(alice, &cfg));
-
-    char **ns_list = nullptr;
-    size_t count = 0;
-    ASSERT_EQ(KOME_OK, kome_list_namespaces(alice, &ns_list, &count));
-
-    bool found = false;
-    for (size_t i = 0; i < count; i++) {
-        if (std::string(ns_list[i]) == "empty_ns") found = true;
-    }
-    EXPECT_TRUE(found) << "Configured-but-empty namespace should appear";
-    kome_free_namespaces(ns_list, count);
-}
-
 /* ===== Test 10: Large value sync ===== */
 TEST_F(IntegrationTest, LargeValueSurvivesSync) {
     set_identities();
@@ -461,23 +270,6 @@ TEST_F(IntegrationTest, LargeValueSurvivesSync) {
     ASSERT_EQ(KOME_OK, kome_put(alice, "data", key, 7,
                                   big_val.data(), big_val.size(), &am));
 
-    /* Setup ACLs */
-    uint8_t bk[] = "x";
-    KomeEntryMeta bm;
-    kome_put(bob, "scratch", bk, 1, bk, 1, &bm);
-
-    KomeNamespaceACLEntry acl[2];
-    std::memcpy(acl[0].fingerprint, am.author, 32);
-    acl[0].role = KOME_ROLE_WRITE;
-    std::memcpy(acl[1].fingerprint, bm.author, 32);
-    acl[1].role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg = {};
-    cfg.name = "data";
-    cfg.acl = acl;
-    cfg.acl_count = 2;
-    kome_configure_namespace(alice, &cfg);
-    kome_configure_namespace(bob, &cfg);
-
     connect_peers();
 
     /* Bob reads the 1 MB value */
@@ -487,4 +279,88 @@ TEST_F(IntegrationTest, LargeValueSurvivesSync) {
     ASSERT_EQ(big_val.size(), out_len);
     EXPECT_EQ(0, std::memcmp(out, big_val.data(), big_val.size()));
     kome_free_value(out);
+}
+
+/* ===== Test: Namespace-scoped sync ===== */
+TEST_F(IntegrationTest, NamespaceScopedSyncFiltersCorrectly) {
+    set_identities();
+
+    /* Alice syncs only "chat", Bob syncs only "chat" and "media" */
+    const char *alice_ns[] = {"chat"};
+    const char *bob_ns[] = {"chat", "media"};
+    ASSERT_EQ(KOME_OK, kome_set_sync_namespaces(alice, alice_ns, 1));
+    ASSERT_EQ(KOME_OK, kome_set_sync_namespaces(bob, bob_ns, 2));
+
+    /* Alice writes to "chat" and "private" */
+    uint8_t ck[] = "msg1";
+    uint8_t cv[] = "hello";
+    uint8_t pk[] = "secret";
+    uint8_t pv[] = "hidden";
+    kome_put(alice, "chat", ck, 4, cv, 5, nullptr);
+    kome_put(alice, "private", pk, 6, pv, 6, nullptr);
+
+    /* Bob writes to "media" */
+    uint8_t mk[] = "photo1";
+    uint8_t mv[] = "jpeg_data";
+    kome_put(bob, "media", mk, 6, mv, 9, nullptr);
+
+    connect_peers();
+
+    /* Bob should have "chat/msg1" (intersection includes chat) */
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_OK, kome_get_meta(bob, "chat", ck, 4, &meta));
+
+    /* Bob should NOT have "private/secret" (not in intersection) */
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get_meta(bob, "private", pk, 6, &meta));
+
+    /* Alice should NOT have "media/photo1" (not in Alice's sync_namespaces) */
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get_meta(alice, "media", mk, 6, &meta));
+}
+
+/* ===== Test: Entry TTL ===== */
+TEST_F(IntegrationTest, EntryTTLRejectsExpiredDuringSync) {
+    set_identities();
+
+    /* Set 1-second TTL on "ephemeral" namespace for Bob */
+    ASSERT_EQ(KOME_OK, kome_set_entry_ttl(bob, "ephemeral", 1));
+
+    /* Alice writes an entry */
+    uint8_t key[] = "msg";
+    uint8_t val[] = "fleeting";
+    kome_put(alice, "ephemeral", key, 3, val, 8, nullptr);
+
+    /* Wait for TTL to expire */
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+    connect_peers();
+
+    /* Bob should NOT have the expired entry */
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_ERR_NOT_FOUND, kome_get_meta(bob, "ephemeral", key, 3, &meta));
+
+    /* Write a fresh entry after connecting */
+    uint8_t key2[] = "msg2";
+    uint8_t val2[] = "current";
+    kome_put(alice, "ephemeral", key2, 4, val2, 7, nullptr);
+
+    /* Bob should have the fresh entry (pushed live) */
+    EXPECT_EQ(KOME_OK, kome_get_meta(bob, "ephemeral", key2, 4, &meta));
+}
+
+/* ===== Test: Sync all namespaces when no filter set ===== */
+TEST_F(IntegrationTest, NoFilterSyncsEverything) {
+    set_identities();
+
+    /* No namespace filter set — default is sync all */
+    uint8_t k1[] = "a";
+    uint8_t k2[] = "b";
+    uint8_t v[] = "x";
+    kome_put(alice, "ns1", k1, 1, v, 1, nullptr);
+    kome_put(alice, "ns2", k2, 1, v, 1, nullptr);
+
+    connect_peers();
+
+    KomeEntryMeta meta;
+    EXPECT_EQ(KOME_OK, kome_get_meta(bob, "ns1", k1, 1, &meta));
+    EXPECT_EQ(KOME_OK, kome_get_meta(bob, "ns2", k2, 1, &meta));
 }

@@ -243,24 +243,8 @@ protected:
         cleanup_db(dba); cleanup_db(dbb);
     }
 
-    void configure_ns(const char *ns) {
-        KomeNamespaceACLEntry acl_a;
-        std::memset(acl_a.fingerprint, 0xBB, 32);
-        acl_a.role = KOME_ROLE_WRITE;
-        KomeNamespaceConfig cfg_a = {};
-        cfg_a.name = ns;
-        cfg_a.acl = &acl_a;
-        cfg_a.acl_count = 1;
-        ASSERT_EQ(KOME_OK, kome_configure_namespace(ea, &cfg_a));
-
-        KomeNamespaceACLEntry acl_b;
-        std::memset(acl_b.fingerprint, 0xAA, 32);
-        acl_b.role = KOME_ROLE_WRITE;
-        KomeNamespaceConfig cfg_b = {};
-        cfg_b.name = ns;
-        cfg_b.acl = &acl_b;
-        cfg_b.acl_count = 1;
-        ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_b));
+    /* No-op: namespace configuration no longer needed after ACL removal */
+    void configure_ns(const char * /*ns*/) {
     }
 };
 
@@ -468,25 +452,6 @@ TEST_F(EdgeSyncTest, ThreePeerRelay) {
     KomeEntryMeta rm;
     ASSERT_EQ(KOME_OK, kome_get_meta(eb, "ns", key, 5, &rm));
 
-    /* Configure ns on B and C for B↔C sync (lb_bc: B=side a fp=0xAA, C=side b fp=0xBB) */
-    KomeNamespaceACLEntry acl_b_for_c;
-    std::memset(acl_b_for_c.fingerprint, 0xBB, 32);  /* C's transport fp in lb_bc */
-    acl_b_for_c.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg_bc = {};
-    cfg_bc.name = "ns";
-    cfg_bc.acl = &acl_b_for_c;
-    cfg_bc.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_bc));
-
-    KomeNamespaceACLEntry acl_c_for_b;
-    std::memset(acl_c_for_b.fingerprint, 0xAA, 32);  /* B's transport fp in lb_bc */
-    acl_c_for_b.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg_cb = {};
-    cfg_cb.name = "ns";
-    cfg_cb.acl = &acl_c_for_b;
-    cfg_cb.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(ec, &cfg_cb));
-
     /* Now B syncs with C using a separate loopback */
     LoopbackPair lb_bc;
     ASSERT_EQ(KOME_OK, kome_attach_transport(eb, &lb_bc.a.transport));
@@ -639,36 +604,6 @@ TEST_F(EdgeEngineTest, VersionVectorNeverRegresses) {
     EXPECT_EQ(1u, count);
     EXPECT_EQ(5u, entries[0].seq);
     kome_free_version_vector(entries);
-}
-
-/* ========================================================================
- * Replication per-peer dedup (same peer ACKing twice doesn't double-count)
- * ======================================================================== */
-
-TEST_F(EdgeSyncTest, ReplicationDedup) {
-    configure_ns("ns");
-    ASSERT_EQ(KOME_OK, kome_set_replication(ea, "ns", 2));
-
-    uint8_t key[] = "k";
-    uint8_t val[] = "v";
-    KomeEntryMeta m;
-    ASSERT_EQ(KOME_OK, kome_put(ea, "ns", key, 1, val, 1, &m));
-
-    /* Sync once */
-    loopback.connect();
-
-    uint32_t confirmed = 0, target = 0;
-    ASSERT_EQ(KOME_OK, kome_replication_status(ea, "ns", key, 1, &confirmed, &target));
-    EXPECT_EQ(1u, confirmed); /* B confirmed once */
-    EXPECT_EQ(2u, target);
-
-    /* Disconnect and reconnect — same peer B syncs again */
-    loopback.disconnect();
-    loopback.connect();
-
-    /* confirmed should still be 1, not 2 (same peer) */
-    ASSERT_EQ(KOME_OK, kome_replication_status(ea, "ns", key, 1, &confirmed, &target));
-    EXPECT_EQ(1u, confirmed);
 }
 
 /* ========================================================================
@@ -825,25 +760,6 @@ TEST_F(EdgeSyncTest, GossipRelayViaSync) {
     ASSERT_EQ(KOME_OK, kome_open(&cc, &ec));
     uint8_t kc[32]; std::memset(kc, 0xCC, 32);
     ASSERT_EQ(KOME_OK, kome_set_identity(ec, kc, 32));
-
-    /* Configure ns for B↔C sync */
-    KomeNamespaceACLEntry acl_b_c;
-    std::memset(acl_b_c.fingerprint, 0xBB, 32);
-    acl_b_c.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg_bc = {};
-    cfg_bc.name = "ns";
-    cfg_bc.acl = &acl_b_c;
-    cfg_bc.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(eb, &cfg_bc));
-
-    KomeNamespaceACLEntry acl_c_b;
-    std::memset(acl_c_b.fingerprint, 0xAA, 32);
-    acl_c_b.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig cfg_cb = {};
-    cfg_cb.name = "ns";
-    cfg_cb.acl = &acl_c_b;
-    cfg_cb.acl_count = 1;
-    ASSERT_EQ(KOME_OK, kome_configure_namespace(ec, &cfg_cb));
 
     LoopbackPair lb_bc;
     ASSERT_EQ(KOME_OK, kome_attach_transport(eb, &lb_bc.a.transport));

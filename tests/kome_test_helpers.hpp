@@ -2,6 +2,7 @@
 #define KOME_TEST_HELPERS_HPP
 
 #include "kome.h"
+#include "kome_util.hpp"
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -86,15 +87,26 @@ struct LoopbackPair {
 };
 
 /* Helper to create a temp database path */
-static std::string temp_db_path(const char *name) {
+inline std::string temp_db_path(const char *name) {
     return std::string("/tmp/kome_test_") + name + ".db";
 }
 
 /* Helper to clean up temp databases */
-static void cleanup_db(const std::string &path) {
+inline void cleanup_db(const std::string &path) {
     std::remove(path.c_str());
     std::remove((path + "-wal").c_str());
     std::remove((path + "-shm").c_str());
+}
+
+/* Derive a 32-byte database encryption key: SHA-256("kome-db-key" || key_material) */
+inline void derive_db_key(const uint8_t *key_material, size_t key_len, uint8_t out[32]) {
+    static const char prefix[] = "kome-db-key";
+    static const size_t prefix_len = sizeof(prefix) - 1;
+    std::vector<uint8_t> buf(prefix_len + key_len);
+    std::memcpy(buf.data(), prefix, prefix_len);
+    if (key_material && key_len > 0)
+        std::memcpy(buf.data() + prefix_len, key_material, key_len);
+    kome::sha256(buf.data(), buf.size(), out);
 }
 
 #endif /* KOME_TEST_HELPERS_HPP */

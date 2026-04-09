@@ -1,11 +1,24 @@
 #ifndef KOME_ENGINE_HPP
 #define KOME_ENGINE_HPP
 
+/**
+ * @file kome_engine.hpp
+ * @brief KomeEngine — the opaque handle behind the C API.
+ *
+ * A KomeEngine owns:
+ *   - A KomeLog (SQLite storage layer)
+ *   - A KomeSyncManager (sync state machine, created on transport attach)
+ *   - Peer identity (32-byte SHA-256 fingerprint)
+ *   - All registered callbacks
+ *   - Namespace sync filters and entry TTL cache
+ *
+ * Thread safety: all fields are guarded by @c mu except @c log_level and
+ * @c closed (atomics). The C API functions acquire @c mu on entry.
+ */
+
 #include "kome.h"
 #include "kome_log.hpp"
-#include "kome_transport.hpp"
 #include "kome_sync.hpp"
-#include "kome_noise.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -15,23 +28,18 @@
 #include <memory>
 
 struct KomeEngine {
-    std::mutex                          mu;
-    std::unique_ptr<kome::KomeLog>      log;
-    std::shared_ptr<kome::KomeSyncManager> sync_mgr;
-    std::unique_ptr<kome::KomeTransportAdapter> transport_adapter;
+    std::mutex                          mu;   ///< Guards all mutable state below
+    std::unique_ptr<kome::KomeLog>      log;  ///< SQLite storage
+    std::shared_ptr<kome::KomeSyncManager> sync_mgr; ///< Sync protocol (null until transport attached)
 
-    uint8_t                             identity[32] = {};
+    uint8_t                             identity[32] = {};   ///< SHA-256 of key material
     bool                                identity_set = false;
-    uint8_t                             identity_key[64] = {};  /* raw key material for signing */
-    size_t                              identity_key_len = 0;
-    uint64_t                            next_seq     = 1;
-    uint64_t                            tombstone_ttl_sec = 30 * 24 * 3600;
-    std::atomic<KomeLogLevel>           log_level{KOME_LOG_WARN};
+    uint64_t                            next_seq     = 1;    ///< Next sequence number for local writes
     std::atomic<bool>                   closed{false};
 
-    KomeTransport                      *transport    = nullptr;
+    KomeTransport                      *transport    = nullptr; ///< Raw transport pointer (app-owned)
 
-    /* Callbacks — guarded by mu */
+    /* Callbacks — all guarded by mu */
     KomeRemoteChangeCallback            on_remote_change_cb   = nullptr;
     void                               *on_remote_change_ud   = nullptr;
     std::unordered_map<std::string, std::pair<KomeRemoteChangeCallback, void*>> ns_change_cbs;
@@ -41,22 +49,13 @@ struct KomeEngine {
     void                               *on_sync_done_ud       = nullptr;
     KomeSyncProgressCallback            on_sync_progress_cb   = nullptr;
     void                               *on_sync_progress_ud   = nullptr;
-    KomeReplicationChangeCallback       on_repl_change_cb     = nullptr;
-    void                               *on_repl_change_ud     = nullptr;
 
-    uint32_t                            ack_since_gc          = 0;
+    /** Namespace filter for sync. Empty = sync all namespaces (default). */
+    std::vector<std::string>            sync_namespaces;
 
-    /* Per-peer rate limits (persisted across sync_mgr recreations) */
-    uint64_t                            rate_limit_bytes      = 50ULL * 1024 * 1024;
-    uint64_t                            rate_limit_entries    = 1000;
-
-    /* Noise protocol keypair (derived from identity key material) */
-    uint8_t                             noise_static_private[32] = {};
-    uint8_t                             noise_static_public[32]  = {};
-    bool                                noise_keys_derived       = false;
-
-    /* Noise transport (wraps generic transport for encrypted wire) */
-    std::shared_ptr<kome::KomeNoiseTransport> noise_transport;
+    /** Per-namespace entry TTL in seconds. Cached in-memory to avoid
+     *  DB lookups on every incoming entry during sync. */
+    std::unordered_map<std::string, uint64_t> entry_ttls;
 };
 
 #endif /* KOME_ENGINE_HPP */

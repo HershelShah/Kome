@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, List, Tuple
 
 from ._ffi import (
     _lib, KomeConfig, KomeEntryMeta, KomeVersionEntry, KomeStats,
-    KomeTransport, REMOTE_CHANGE_CB, KomeNamespaceConfig, KomeNamespaceACLEntry,
+    KomeTransport, REMOTE_CHANGE_CB,
 )
 from .transport import Transport
 
@@ -106,25 +106,6 @@ class Engine:
             result = None
         return result, meta
 
-    def get_with_tombstones(self, ns: str, key: bytes) -> Tuple[Optional[bytes], KomeEntryMeta]:
-        """Read a value and its metadata, including tombstoned entries.
-        Returns (value_bytes, meta). value_bytes is None for tombstones."""
-        meta = KomeEntryMeta()
-        key_arr = (ctypes.c_uint8 * len(key))(*key)
-        value_ptr = ctypes.POINTER(ctypes.c_uint8)()
-        value_len = ctypes.c_size_t(0)
-        _check(_lib.kome_get_with_tombstones(
-            self._handle, ns.encode(),
-            ctypes.cast(key_arr, ctypes.POINTER(ctypes.c_uint8)), len(key),
-            ctypes.byref(value_ptr), ctypes.byref(value_len),
-            ctypes.byref(meta)))
-        if value_ptr and value_len.value > 0:
-            result = bytes(value_ptr[:value_len.value])
-            _lib.kome_free_value(value_ptr)
-        else:
-            result = None
-        return result, meta
-
     def get_meta(self, ns: str, key: bytes) -> KomeEntryMeta:
         meta = KomeEntryMeta()
         key_arr = (ctypes.c_uint8 * len(key))(*key)
@@ -151,19 +132,6 @@ class Engine:
         if entries:
             _lib.kome_free_version_vector(entries)
         return result
-
-    def set_replication(self, ns: str, target_n: int):
-        _check(_lib.kome_set_replication(self._handle, ns.encode(), target_n))
-
-    def replication_status(self, ns: str, key: bytes) -> Tuple[int, int]:
-        confirmed = ctypes.c_uint32(0)
-        target = ctypes.c_uint32(0)
-        key_arr = (ctypes.c_uint8 * len(key))(*key)
-        _check(_lib.kome_replication_status(
-            self._handle, ns.encode(),
-            ctypes.cast(key_arr, ctypes.POINTER(ctypes.c_uint8)), len(key),
-            ctypes.byref(confirmed), ctypes.byref(target)))
-        return confirmed.value, target.value
 
     def list_namespaces(self) -> List[str]:
         ns_out = ctypes.POINTER(ctypes.c_char_p)()
@@ -205,32 +173,6 @@ class Engine:
 
         self._callbacks.append(_cb)
         _lib.kome_on_remote_change(self._handle, _cb, None)
-
-    def configure_namespace(self, name: str, tombstone_ttl_sec: int = 0,
-                             acl: Optional[list] = None):
-        """Configure a namespace with ACL and tombstone TTL.
-
-        acl is a list of (fingerprint_bytes, role_int) tuples.
-        role: 0=NONE, 1=READ, 2=WRITE.
-        """
-        cfg = KomeNamespaceConfig()
-        cfg.name = name.encode()
-        cfg.tombstone_ttl_sec = tombstone_ttl_sec
-        if acl:
-            arr = (KomeNamespaceACLEntry * len(acl))()
-            for i, (fp, role) in enumerate(acl):
-                fp_bytes = fp if isinstance(fp, bytes) else bytes(fp)
-                ctypes.memmove(arr[i].fingerprint, fp_bytes, min(len(fp_bytes), 32))
-                arr[i].role = role
-            cfg.acl = arr
-            cfg.acl_count = len(acl)
-        else:
-            cfg.acl = None
-            cfg.acl_count = 0
-        _check(_lib.kome_configure_namespace(self._handle, ctypes.byref(cfg)))
-
-    def remove_namespace(self, name: str):
-        _check(_lib.kome_remove_namespace(self._handle, name.encode()))
 
     def set_log_level(self, level: int):
         _lib.kome_set_log_level(self._handle, level)

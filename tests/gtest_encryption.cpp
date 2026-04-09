@@ -120,8 +120,8 @@ TEST_F(EncryptionTest, DeriveDbKey) {
     uint8_t material[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
     uint8_t out1[32], out2[32];
 
-    kome::derive_db_key(material, sizeof(material), out1);
-    kome::derive_db_key(material, sizeof(material), out2);
+    derive_db_key(material, sizeof(material), out1);
+    derive_db_key(material, sizeof(material), out2);
 
     /* Same input produces same output */
     EXPECT_EQ(0, std::memcmp(out1, out2, 32));
@@ -140,8 +140,8 @@ TEST_F(EncryptionTest, DeriveDbKeyDifferentInput) {
     uint8_t mat_b[16] = {16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1};
     uint8_t out_a[32], out_b[32];
 
-    kome::derive_db_key(mat_a, sizeof(mat_a), out_a);
-    kome::derive_db_key(mat_b, sizeof(mat_b), out_b);
+    derive_db_key(mat_a, sizeof(mat_a), out_a);
+    derive_db_key(mat_b, sizeof(mat_b), out_b);
 
     EXPECT_NE(0, std::memcmp(out_a, out_b, 32));
 }

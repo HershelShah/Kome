@@ -57,39 +57,18 @@ KomeError KomeLog::create_tables() {
         "  timestamp_us INTEGER NOT NULL, author BLOB NOT NULL,"
         "  seq INTEGER NOT NULL, hash BLOB NOT NULL,"
         "  value_len INTEGER NOT NULL, tombstone INTEGER NOT NULL DEFAULT 0,"
-        "  signature BLOB,"
         "  PRIMARY KEY (ns, key));"
         "CREATE INDEX IF NOT EXISTS idx_cl_author_seq ON change_log(author, seq);"
         "CREATE TABLE IF NOT EXISTS version_vector ("
         "  author BLOB NOT NULL PRIMARY KEY, seq INTEGER NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS peer_state ("
-        "  peer_fp BLOB NOT NULL, author BLOB NOT NULL, seq INTEGER NOT NULL,"
-        "  PRIMARY KEY (peer_fp, author));"
-        "CREATE TABLE IF NOT EXISTS replication_targets ("
-        "  ns TEXT NOT NULL PRIMARY KEY, target_n INTEGER NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS replication_peers ("
-        "  ns TEXT NOT NULL, key BLOB NOT NULL, peer_fp BLOB NOT NULL,"
-        "  PRIMARY KEY (ns, key, peer_fp));"
         "CREATE TABLE IF NOT EXISTS namespace_settings ("
         "  ns TEXT NOT NULL PRIMARY KEY,"
-        "  tombstone_ttl_sec INTEGER NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS namespace_acl ("
-        "  ns TEXT NOT NULL, fingerprint BLOB NOT NULL,"
-        "  role INTEGER NOT NULL,"
-        "  PRIMARY KEY (ns, fingerprint));";
+        "  tombstone_ttl_sec INTEGER NOT NULL);";
 
     char *err = nullptr;
     int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &err);
     sqlite3_free(err);
     if (rc != SQLITE_OK) return KOME_ERR_STORAGE;
-
-    /* Schema migration: add signature column for existing databases (v2 -> v3).
-     * ALTER TABLE ADD COLUMN is a no-op if the column already exists in SQLite,
-     * so we just attempt it and ignore "duplicate column name" errors. */
-    err = nullptr;
-    sqlite3_exec(db_, "ALTER TABLE change_log ADD COLUMN signature BLOB;",
-                 nullptr, nullptr, &err);
-    sqlite3_free(err);  /* ignore error (column may already exist) */
 
     return KOME_OK;
 }
@@ -97,14 +76,9 @@ KomeError KomeLog::create_tables() {
 void KomeLog::finalize_stmts() {
     sqlite3_stmt **all[] = {
         &stmt_put_, &stmt_get_, &stmt_update_vv_, &stmt_get_vv_,
-        &stmt_update_ps_, &stmt_after_, &stmt_del_repl_,
-        &stmt_set_repl_, &stmt_get_repl_, &stmt_count_repl_,
-        &stmt_inc_repl_, &stmt_gc_tomb_, &stmt_list_ns_, &stmt_list_keys_,
-        &stmt_put_ns_settings_, &stmt_del_ns_settings_, &stmt_del_ns_acl_by_ns_,
-        &stmt_put_ns_acl_, &stmt_get_ns_settings_, &stmt_get_ns_acl_,
-        &stmt_get_all_,
-        &stmt_has_ns_, &stmt_get_peer_role_, &stmt_get_peer_access_,
-        &stmt_rotate_acl_fp_
+        &stmt_after_,
+        &stmt_gc_tomb_, &stmt_list_ns_, &stmt_list_keys_,
+        &stmt_get_all_, &stmt_set_ttl_
     };
     for (auto *sp : all) { sqlite3_finalize(*sp); *sp = nullptr; }
 }
@@ -115,10 +89,10 @@ KomeError KomeLog::prepare_stmts() {
     };
 
     if (p("INSERT OR REPLACE INTO change_log "
-          "(ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature) "
-          "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &stmt_put_) != SQLITE_OK)
+          "(ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone) "
+          "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", &stmt_put_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
+    if (p("SELECT value, timestamp_us, author, seq, hash, value_len, tombstone "
           "FROM change_log WHERE ns=?1 AND key=?2", &stmt_get_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
     if (p("INSERT INTO version_vector (author, seq) VALUES (?1,?2) "
@@ -127,28 +101,9 @@ KomeError KomeLog::prepare_stmts() {
         return KOME_ERR_STORAGE;
     if (p("SELECT author, seq FROM version_vector", &stmt_get_vv_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("INSERT INTO peer_state (peer_fp, author, seq) VALUES (?1,?2,?3) "
-          "ON CONFLICT(peer_fp, author) DO UPDATE SET seq = MAX(seq, excluded.seq)",
-          &stmt_update_ps_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
+    if (p("SELECT ns, key, value, timestamp_us, author, seq, hash, value_len, tombstone "
           "FROM change_log WHERE author=?1 AND seq>?2 ORDER BY seq ASC",
           &stmt_after_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("DELETE FROM replication_peers WHERE ns=?1 AND key=?2",
-          &stmt_del_repl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("INSERT OR REPLACE INTO replication_targets (ns, target_n) VALUES (?1,?2)",
-          &stmt_set_repl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT target_n FROM replication_targets WHERE ns=?1",
-          &stmt_get_repl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT COUNT(*) FROM replication_peers WHERE ns=?1 AND key=?2",
-          &stmt_count_repl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("INSERT OR IGNORE INTO replication_peers (ns, key, peer_fp) VALUES (?1,?2,?3)",
-          &stmt_inc_repl_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
     if (p("DELETE FROM change_log WHERE tombstone = 1 AND ("
           "EXISTS ("
@@ -167,50 +122,21 @@ KomeError KomeLog::prepare_stmts() {
     if (p("SELECT DISTINCT ns FROM ("
           "SELECT DISTINCT ns FROM change_log "
           "UNION "
-          "SELECT DISTINCT ns FROM namespace_settings "
-          "UNION "
-          "SELECT DISTINCT ns FROM namespace_acl"
+          "SELECT DISTINCT ns FROM namespace_settings"
           ") ORDER BY ns",
           &stmt_list_ns_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
     if (p("SELECT key FROM change_log WHERE ns=?1 ORDER BY key",
           &stmt_list_keys_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
-    if (p("SELECT key, value, timestamp_us, author, seq, hash, value_len, tombstone, signature "
+    if (p("SELECT key, value, timestamp_us, author, seq, hash, value_len, tombstone "
           "FROM change_log WHERE ns=?1 AND tombstone=0 ORDER BY key",
           &stmt_get_all_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
 
-    /* Namespace configuration */
+    /* Entry TTL */
     if (p("INSERT OR REPLACE INTO namespace_settings (ns, tombstone_ttl_sec) VALUES (?1,?2)",
-          &stmt_put_ns_settings_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("DELETE FROM namespace_settings WHERE ns=?1",
-          &stmt_del_ns_settings_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("DELETE FROM namespace_acl WHERE ns=?1",
-          &stmt_del_ns_acl_by_ns_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("INSERT INTO namespace_acl (ns, fingerprint, role) VALUES (?1,?2,?3)",
-          &stmt_put_ns_acl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT tombstone_ttl_sec FROM namespace_settings WHERE ns=?1",
-          &stmt_get_ns_settings_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT fingerprint, role FROM namespace_acl WHERE ns=?1",
-          &stmt_get_ns_acl_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT 1 FROM namespace_settings WHERE ns=?1 LIMIT 1",
-          &stmt_has_ns_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT role FROM namespace_acl WHERE ns=?1 AND fingerprint=?2",
-          &stmt_get_peer_role_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("SELECT ns, role FROM namespace_acl WHERE fingerprint=?1",
-          &stmt_get_peer_access_) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    if (p("UPDATE namespace_acl SET fingerprint=?2 WHERE fingerprint=?1",
-          &stmt_rotate_acl_fp_) != SQLITE_OK)
+          &stmt_set_ttl_) != SQLITE_OK)
         return KOME_ERR_STORAGE;
 
     return KOME_OK;
@@ -234,14 +160,7 @@ KomeError KomeLog::put_entry(const char *ns, const uint8_t *key, size_t key_len,
     sqlite3_bind_blob(stmt_put_,  7, meta->hash, 32, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt_put_,   8, (int)meta->value_len);
     sqlite3_bind_int(stmt_put_,   9, meta->tombstone);
-    sqlite3_bind_blob(stmt_put_, 10, meta->signature, 64, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt_put_) != SQLITE_DONE) return KOME_ERR_STORAGE;
-
-    /* Reset per-peer replication tracking */
-    sqlite3_reset(stmt_del_repl_);
-    sqlite3_bind_text(stmt_del_repl_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_del_repl_, 2, key, (int)key_len, SQLITE_TRANSIENT);
-    sqlite3_step(stmt_del_repl_);
 
     return KOME_OK;
 }
@@ -275,11 +194,6 @@ KomeError KomeLog::get_entry(const char *ns, const uint8_t *key, size_t key_len,
     if (h) std::memcpy(out->hash, h, 32);
     else std::memset(out->hash, 0, 32);
     out->tombstone = (uint8_t)sqlite3_column_int(stmt_get_, 6);
-    const void *sig = sqlite3_column_blob(stmt_get_, 7);
-    if (sig && sqlite3_column_bytes(stmt_get_, 7) == 64)
-        std::memcpy(out->signature, sig, 64);
-    else
-        std::memset(out->signature, 0, 64);
 
     return KOME_OK;
 }
@@ -309,15 +223,6 @@ KomeError KomeLog::get_version_vector(std::map<std::string, uint64_t> &vv) {
             vv[std::string((const char*)a, 32)] = s;
     }
     return KOME_OK;
-}
-
-KomeError KomeLog::update_peer_state(const uint8_t peer_fp[32],
-                                      const uint8_t author[32], uint64_t seq) {
-    sqlite3_reset(stmt_update_ps_);
-    sqlite3_bind_blob(stmt_update_ps_,  1, peer_fp, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_update_ps_,  2, author, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt_update_ps_, 3, (sqlite3_int64)seq);
-    return (sqlite3_step(stmt_update_ps_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
 }
 
 /* --- Sync queries -------------------------------------------------------- */
@@ -352,11 +257,6 @@ KomeError KomeLog::get_entries_after(const uint8_t author[32], uint64_t after_se
         const void *h = sqlite3_column_blob(stmt_after_, 6);
         if (h) std::memcpy(e.hash, h, 32);
         e.tombstone = (uint8_t)sqlite3_column_int(stmt_after_, 8);
-        const void *sig = sqlite3_column_blob(stmt_after_, 9);
-        if (sig && sqlite3_column_bytes(stmt_after_, 9) == 64)
-            std::memcpy(e.signature, sig, 64);
-        else
-            std::memset(e.signature, 0, 64);
 
         out.push_back(std::move(e));
     }
@@ -383,50 +283,6 @@ KomeError KomeLog::get_missing_entries(const std::map<std::string, uint64_t> &re
     return KOME_OK;
 }
 
-/* --- Replication --------------------------------------------------------- */
-
-KomeError KomeLog::set_replication_target(const char *ns, uint32_t target_n) {
-    sqlite3_reset(stmt_set_repl_);
-    sqlite3_bind_text(stmt_set_repl_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt_set_repl_,  2, (int)target_n);
-    return (sqlite3_step(stmt_set_repl_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
-}
-
-KomeError KomeLog::get_replication_target(const char *ns, uint32_t *target_out) {
-    sqlite3_reset(stmt_get_repl_);
-    sqlite3_bind_text(stmt_get_repl_, 1, ns, -1, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(stmt_get_repl_);
-    if (rc == SQLITE_ROW) {
-        *target_out = (uint32_t)sqlite3_column_int(stmt_get_repl_, 0);
-        return KOME_OK;
-    }
-    *target_out = 0;
-    return KOME_OK;
-}
-
-KomeError KomeLog::get_replication_confirmed(const char *ns, const uint8_t *key,
-                                              size_t key_len, uint32_t *confirmed_out) {
-    sqlite3_reset(stmt_count_repl_);
-    sqlite3_bind_text(stmt_count_repl_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_count_repl_, 2, key, (int)key_len, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(stmt_count_repl_);
-    if (rc == SQLITE_ROW) {
-        *confirmed_out = (uint32_t)sqlite3_column_int(stmt_count_repl_, 0);
-        return KOME_OK;
-    }
-    *confirmed_out = 0;
-    return KOME_OK;
-}
-
-KomeError KomeLog::increment_replication_peer(const char *ns, const uint8_t *key,
-                                                size_t key_len, const uint8_t peer_fp[32]) {
-    sqlite3_reset(stmt_inc_repl_);
-    sqlite3_bind_text(stmt_inc_repl_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_inc_repl_, 2, key, (int)key_len, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_inc_repl_, 3, peer_fp, 32, SQLITE_TRANSIENT);
-    return (sqlite3_step(stmt_inc_repl_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
-}
-
 /* --- GC ------------------------------------------------------------------ */
 
 KomeError KomeLog::gc_tombstones(uint64_t default_ttl_seconds) {
@@ -435,46 +291,6 @@ KomeError KomeLog::gc_tombstones(uint64_t default_ttl_seconds) {
     sqlite3_bind_int64(stmt_gc_tomb_, 1, (sqlite3_int64)now);
     sqlite3_bind_int64(stmt_gc_tomb_, 2, (sqlite3_int64)default_ttl_seconds);
     return (sqlite3_step(stmt_gc_tomb_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
-}
-
-KomeError KomeLog::gc_values() {
-    /* Only run if peers are tracked */
-    const char *check = "SELECT COUNT(*) FROM peer_state";
-    sqlite3_stmt *sc = nullptr;
-    if (sqlite3_prepare_v2(db_, check, -1, &sc, nullptr) != SQLITE_OK)
-        return KOME_ERR_STORAGE;
-    int rc = sqlite3_step(sc);
-    int count = 0;
-    if (rc == SQLITE_ROW) count = sqlite3_column_int(sc, 0);
-    sqlite3_finalize(sc);
-    if (count == 0) return KOME_OK;
-
-    /* Wrap the UPDATE in a SAVEPOINT for atomicity */
-    char *sp_err = nullptr;
-    sqlite3_exec(db_, "SAVEPOINT gc_values", nullptr, nullptr, &sp_err);
-    sqlite3_free(sp_err);
-
-    const char *sql =
-        "UPDATE change_log SET value = NULL "
-        "WHERE tombstone = 0 AND value IS NOT NULL "
-        "AND NOT EXISTS ("
-        "  SELECT 1 FROM peer_state ps "
-        "  WHERE ps.author = change_log.author AND ps.seq < change_log.seq)";
-    sqlite3_stmt *s = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &s, nullptr) != SQLITE_OK) {
-        sqlite3_exec(db_, "ROLLBACK TO gc_values", nullptr, nullptr, nullptr);
-        sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
-        return KOME_ERR_STORAGE;
-    }
-    rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    if (rc != SQLITE_DONE) {
-        sqlite3_exec(db_, "ROLLBACK TO gc_values", nullptr, nullptr, nullptr);
-        sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
-        return KOME_ERR_STORAGE;
-    }
-    sqlite3_exec(db_, "RELEASE gc_values", nullptr, nullptr, nullptr);
-    return KOME_OK;
 }
 
 /* --- Transactions -------------------------------------------------------- */
@@ -500,114 +316,13 @@ KomeError KomeLog::rollback_transaction() {
     return (rc == SQLITE_OK) ? KOME_OK : KOME_ERR_STORAGE;
 }
 
-/* --- Namespace configuration --------------------------------------------- */
+/* --- Entry TTL ----------------------------------------------------------- */
 
-KomeError KomeLog::put_namespace_config(const char *ns, uint64_t tombstone_ttl_sec,
-                                         const KomeNamespaceACLEntry *acl, size_t acl_count) {
-    /* Use SAVEPOINT so this works inside an outer transaction (e.g. kome_put_batch) */
-    char *err = nullptr;
-    sqlite3_exec(db_, "SAVEPOINT ns_cfg", nullptr, nullptr, &err);
-    sqlite3_free(err);
-
-    sqlite3_reset(stmt_put_ns_settings_);
-    sqlite3_bind_text(stmt_put_ns_settings_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt_put_ns_settings_, 2, (sqlite3_int64)tombstone_ttl_sec);
-    if (sqlite3_step(stmt_put_ns_settings_) != SQLITE_DONE) {
-        sqlite3_exec(db_, "ROLLBACK TO ns_cfg", nullptr, nullptr, nullptr);
-        sqlite3_exec(db_, "RELEASE ns_cfg", nullptr, nullptr, nullptr);
-        return KOME_ERR_STORAGE;
-    }
-
-    sqlite3_reset(stmt_del_ns_acl_by_ns_);
-    sqlite3_bind_text(stmt_del_ns_acl_by_ns_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt_del_ns_acl_by_ns_);
-
-    for (size_t i = 0; i < acl_count; i++) {
-        sqlite3_reset(stmt_put_ns_acl_);
-        sqlite3_bind_text(stmt_put_ns_acl_, 1, ns, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt_put_ns_acl_, 2, acl[i].fingerprint, 32, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt_put_ns_acl_, 3, (int)acl[i].role);
-        if (sqlite3_step(stmt_put_ns_acl_) != SQLITE_DONE) {
-            sqlite3_exec(db_, "ROLLBACK TO ns_cfg", nullptr, nullptr, nullptr);
-            sqlite3_exec(db_, "RELEASE ns_cfg", nullptr, nullptr, nullptr);
-            return KOME_ERR_STORAGE;
-        }
-    }
-
-    sqlite3_exec(db_, "RELEASE ns_cfg", nullptr, nullptr, &err);
-    sqlite3_free(err);
-    return KOME_OK;
-}
-
-KomeError KomeLog::get_namespace_config(const char *ns, uint64_t *tombstone_ttl_sec,
-                                         std::vector<std::pair<std::string, int>> &acl) {
-    acl.clear();
-
-    sqlite3_reset(stmt_get_ns_settings_);
-    sqlite3_bind_text(stmt_get_ns_settings_, 1, ns, -1, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(stmt_get_ns_settings_);
-    if (rc == SQLITE_DONE) return KOME_ERR_NOT_FOUND;
-    if (rc != SQLITE_ROW) return KOME_ERR_STORAGE;
-    *tombstone_ttl_sec = (uint64_t)sqlite3_column_int64(stmt_get_ns_settings_, 0);
-
-    sqlite3_reset(stmt_get_ns_acl_);
-    sqlite3_bind_text(stmt_get_ns_acl_, 1, ns, -1, SQLITE_TRANSIENT);
-    while (sqlite3_step(stmt_get_ns_acl_) == SQLITE_ROW) {
-        const void *fp = sqlite3_column_blob(stmt_get_ns_acl_, 0);
-        int fp_len = sqlite3_column_bytes(stmt_get_ns_acl_, 0);
-        int role = sqlite3_column_int(stmt_get_ns_acl_, 1);
-        if (fp && fp_len == 32)
-            acl.emplace_back(std::string((const char*)fp, 32), role);
-    }
-
-    return KOME_OK;
-}
-
-bool KomeLog::has_namespace_config(const char *ns) {
-    sqlite3_reset(stmt_has_ns_);
-    sqlite3_bind_text(stmt_has_ns_, 1, ns, -1, SQLITE_TRANSIENT);
-    return sqlite3_step(stmt_has_ns_) == SQLITE_ROW;
-}
-
-KomeError KomeLog::remove_namespace_config(const char *ns) {
-    sqlite3_reset(stmt_del_ns_settings_);
-    sqlite3_bind_text(stmt_del_ns_settings_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt_del_ns_settings_);
-
-    sqlite3_reset(stmt_del_ns_acl_by_ns_);
-    sqlite3_bind_text(stmt_del_ns_acl_by_ns_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt_del_ns_acl_by_ns_);
-
-    return KOME_OK;
-}
-
-int KomeLog::get_peer_role(const char *ns, const uint8_t peer_fp[32]) {
-    sqlite3_reset(stmt_get_peer_role_);
-    sqlite3_bind_text(stmt_get_peer_role_, 1, ns, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_get_peer_role_, 2, peer_fp, 32, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt_get_peer_role_) == SQLITE_ROW)
-        return sqlite3_column_int(stmt_get_peer_role_, 0);
-    return KOME_ROLE_NONE;
-}
-
-KomeError KomeLog::get_peer_namespace_access(const uint8_t peer_fp[32],
-                                              std::map<std::string, int> &out) {
-    out.clear();
-    sqlite3_reset(stmt_get_peer_access_);
-    sqlite3_bind_blob(stmt_get_peer_access_, 1, peer_fp, 32, SQLITE_TRANSIENT);
-    while (sqlite3_step(stmt_get_peer_access_) == SQLITE_ROW) {
-        const char *ns = (const char*)sqlite3_column_text(stmt_get_peer_access_, 0);
-        int role = sqlite3_column_int(stmt_get_peer_access_, 1);
-        if (ns) out[ns] = role;
-    }
-    return KOME_OK;
-}
-
-KomeError KomeLog::rotate_acl_fingerprint(const uint8_t old_fp[32], const uint8_t new_fp[32]) {
-    sqlite3_reset(stmt_rotate_acl_fp_);
-    sqlite3_bind_blob(stmt_rotate_acl_fp_, 1, old_fp, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt_rotate_acl_fp_, 2, new_fp, 32, SQLITE_TRANSIENT);
-    return (sqlite3_step(stmt_rotate_acl_fp_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
+KomeError KomeLog::set_entry_ttl(const char *ns, uint64_t ttl_sec) {
+    sqlite3_reset(stmt_set_ttl_);
+    sqlite3_bind_text(stmt_set_ttl_, 1, ns, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt_set_ttl_, 2, (sqlite3_int64)ttl_sec);
+    return (sqlite3_step(stmt_set_ttl_) == SQLITE_DONE) ? KOME_OK : KOME_ERR_STORAGE;
 }
 
 /* --- Stats --------------------------------------------------------------- */
@@ -630,9 +345,7 @@ KomeError KomeLog::get_stats(KomeStats *out) {
         "SELECT COUNT(*) FROM ("
         "SELECT DISTINCT ns FROM change_log "
         "UNION "
-        "SELECT DISTINCT ns FROM namespace_settings "
-        "UNION "
-        "SELECT DISTINCT ns FROM namespace_acl)");
+        "SELECT DISTINCT ns FROM namespace_settings)");
 
     /* db size */
     uint64_t pages = query_count("PRAGMA page_count");
@@ -678,11 +391,6 @@ KomeError KomeLog::get_all_entries(const char *ns, std::vector<LogEntry> &out) {
         const void *h = sqlite3_column_blob(stmt_get_all_, 5);
         if (h) std::memcpy(e.hash, h, 32);
         e.tombstone = (uint8_t)sqlite3_column_int(stmt_get_all_, 7);
-        const void *sig = sqlite3_column_blob(stmt_get_all_, 8);
-        if (sig && sqlite3_column_bytes(stmt_get_all_, 8) == 64)
-            std::memcpy(e.signature, sig, 64);
-        else
-            std::memset(e.signature, 0, 64);
 
         out.push_back(std::move(e));
     }

@@ -1,7 +1,6 @@
 #include "kome_sync.hpp"
 #include "kome_engine.hpp"
 #include "kome_conflict.hpp"
-#include "kome_sign.hpp"
 #include "kome_util.hpp"
 #include <cstring>
 
@@ -11,84 +10,59 @@
  */
 
 static const uint32_t GC_ACK_INTERVAL = 100;
+static const uint64_t DEFAULT_TOMBSTONE_TTL_SEC = 30 * 24 * 3600; /* 30 days */
+
+/* Compute namespace intersection: if either side has empty list, result is empty
+   (meaning "all namespaces"). Otherwise, return the common namespaces. */
+static std::vector<std::string> ns_intersect(
+    const std::vector<std::string> &ours,
+    const std::vector<std::string> &theirs)
+{
+    if (ours.empty() || theirs.empty()) return {};  /* empty = all */
+    std::vector<std::string> result;
+    for (auto &ns : ours) {
+        for (auto &tns : theirs) {
+            if (ns == tns) { result.push_back(ns); break; }
+        }
+    }
+    return result;
+}
+
+static bool ns_allowed(const std::vector<std::string> &agreed, const std::string &ns) {
+    if (agreed.empty()) return true;  /* empty = all */
+    for (auto &a : agreed)
+        if (a == ns) return true;
+    return false;
+}
 
 namespace kome {
 
 KomeSyncManager::KomeSyncManager(KomeEngine *engine) : engine_(engine) {}
 
-void KomeSyncManager::set_peer_limits(uint64_t max_bytes, uint64_t max_entries) {
-    std::lock_guard<std::mutex> lock(peers_mu_);
-    max_bytes_per_minute_ = max_bytes;
-    max_entries_per_minute_ = max_entries;
-}
-
-bool KomeSyncManager::check_rate_limit(const uint8_t *peer_fp, uint64_t entry_bytes,
-                                        uint64_t entry_count) {
-    /* Must be called under peers_mu_ */
-    std::string key(reinterpret_cast<const char*>(peer_fp), 32);
-    auto &state = peer_rates_[key];
-
-    uint64_t now = timestamp_us();
-    /* Guard against unsigned underflow when clock goes backward */
-    if (now >= state.window_start_us
-        ? (now - state.window_start_us > 60000000ULL)
-        : true) {
-        /* Reset window */
-        state.window_start_us = now;
-        state.bytes_in_window = 0;
-        state.entries_in_window = 0;
-    }
-
-    state.bytes_in_window += entry_bytes;
-    state.entries_in_window += entry_count;
-
-    if (state.bytes_in_window > max_bytes_per_minute_ ||
-        state.entries_in_window > max_entries_per_minute_) {
-        return false;  /* rate limited */
-    }
-
-    return true;  /* allowed */
-}
-
-void KomeSyncManager::set_transport(KomeTransportAdapter *transport) {
+void KomeSyncManager::set_transport(KomeTransport *transport) {
     transport_ = transport;
 
-    transport_->set_recv_callback(
-        [this](const uint8_t *peer_fp, const uint8_t *data, size_t len) {
-            on_recv(peer_fp, data, len);
-        });
+    transport_->set_recv_callback(transport_,
+        [](void *ud, const uint8_t *peer_fp, const uint8_t *data, size_t len) {
+            static_cast<KomeSyncManager*>(ud)->on_recv(peer_fp, data, len);
+        }, this);
 
-    transport_->set_peer_callback(
-        [this](const uint8_t *peer_fp, int connected) {
+    transport_->set_peer_callback(transport_,
+        [](void *ud, const uint8_t *peer_fp, int connected) {
+            auto *self = static_cast<KomeSyncManager*>(ud);
             if (connected)
-                on_peer_connected(peer_fp);
+                self->on_peer_connected(peer_fp);
             else
-                on_peer_disconnected(peer_fp);
-        });
+                self->on_peer_disconnected(peer_fp);
+        }, this);
 }
 
 void KomeSyncManager::on_peer_connected(const uint8_t *peer_fp) {
-    std::string key = fp_key(peer_fp);
-
-    /* Build the access map: what namespaces this peer can access on us */
-    std::map<std::string, int> access;
-    {
-        std::lock_guard<std::mutex> lock(engine_->mu);
-        engine_->log->get_peer_namespace_access(peer_fp, access);
-    }
-
-    /* Send NAMESPACE_ACL_SYNC to the peer */
-    NamespaceACLSync acl_msg;
-    for (auto &[ns, role] : access)
-        acl_msg.entries.push_back({ns, role});
-    send_to_peer(peer_fp, encode_namespace_acl_sync(acl_msg));
-
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
-        auto &info = peers_[key];
+        auto &info = peers_[fp_key(peer_fp)];
         if (info.state == PeerSyncState::IDLE)
             info.state = PeerSyncState::SYNCING;
-        info.peer_access = std::move(access);
     }
     initiate_sync(peer_fp);
 }
@@ -109,29 +83,22 @@ void KomeSyncManager::on_recv(const uint8_t *peer_fp, const uint8_t *data, size_
         case SYNC_ACK:            handle_sync_ack(peer_fp, data, len);              break;
         case LIVE_ENTRY:          handle_live_entry(peer_fp, data, len);            break;
         case BATCH_ENTRY:         handle_batch_entry(peer_fp, data, len);           break;
-        case NAMESPACE_ACL_SYNC:  handle_namespace_acl_sync(peer_fp, data, len);   break;
-        case NOISE_HANDSHAKE:     break; /* Handled by KomeNoiseTransport layer */
-        case NOISE_TRANSPORT:     break; /* Handled by KomeNoiseTransport layer */
     }
 }
 
 void KomeSyncManager::on_local_write(const LogEntry &entry) {
-    /* Snapshot live peers under lock, then send outside lock.
-       This prevents a slow transport::send from blocking all peer operations. */
+    /* Snapshot live peers under lock, then send outside lock. */
     std::vector<std::string> live_peers;
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         for (auto &[key, info] : peers_) {
             if (info.state != PeerSyncState::LIVE) continue;
-            /* Only push to peers with READ or WRITE access to this namespace */
-            auto it = info.peer_access.find(entry.ns);
-            if (it == info.peer_access.end() || it->second < KOME_ROLE_READ)
-                continue;
+            if (!ns_allowed(info.agreed_namespaces, entry.ns)) continue;
             live_peers.push_back(key);
         }
     }
     if (live_peers.empty()) return;
-    auto msg = encode_live_entry(log_to_sync(entry));
+    auto msg = encode_live_entry(entry);
     for (auto &fp : live_peers)
         send_to_peer((const uint8_t*)fp.data(), msg);
 }
@@ -149,6 +116,7 @@ void KomeSyncManager::initiate_sync(const uint8_t *peer_fp) {
     {
         std::lock_guard<std::mutex> lock(engine_->mu);
         engine_->log->get_version_vector(req.vv);
+        req.namespaces = engine_->sync_namespaces;
     }
 
     auto msg = encode_sync_request(req);
@@ -160,18 +128,18 @@ void KomeSyncManager::handle_sync_request(const uint8_t *peer_fp,
     SyncRequest req;
     if (!decode_sync_request(data, len, &req)) return;
 
-    /* Snapshot peer access for filtering.
-       If the peer hasn't connected yet (synchronous transport), fall back to DB. */
-    std::map<std::string, int> peer_access;
+    /* Compute namespace intersection */
+    std::vector<std::string> our_ns;
+    {
+        std::lock_guard<std::mutex> lock(engine_->mu);
+        our_ns = engine_->sync_namespaces;
+    }
+    auto agreed = ns_intersect(our_ns, req.namespaces);
+
+    /* Store agreed namespaces for this peer */
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
-        auto it = peers_.find(fp_key(peer_fp));
-        if (it != peers_.end())
-            peer_access = it->second.peer_access;
-    }
-    if (peer_access.empty()) {
-        std::lock_guard<std::mutex> lock(engine_->mu);
-        engine_->log->get_peer_namespace_access(peer_fp, peer_access);
+        peers_[fp_key(peer_fp)].agreed_namespaces = agreed;
     }
 
     std::vector<LogEntry> missing;
@@ -181,11 +149,8 @@ void KomeSyncManager::handle_sync_request(const uint8_t *peer_fp,
     }
 
     for (auto &entry : missing) {
-        /* Only send entries for namespaces the peer has access to */
-        auto it = peer_access.find(entry.ns);
-        if (it == peer_access.end() || it->second < KOME_ROLE_READ)
-            continue;
-        auto msg = encode_sync_entry(log_to_sync(entry));
+        if (!ns_allowed(agreed, entry.ns)) continue;
+        auto msg = encode_sync_entry(entry);
         send_to_peer(peer_fp, msg);
     }
 
@@ -205,11 +170,11 @@ void KomeSyncManager::handle_sync_request(const uint8_t *peer_fp,
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         auto &info = peers_[fp_key(peer_fp)];
-        if (info.state == PeerSyncState::IDLE) info.state = PeerSyncState::SYNCING;
-        info.we_sent_done = true;
-        if (info.we_sent_done && info.they_sent_done) {
+        if (info.state == PeerSyncState::THEY_DONE) {
             info.state = PeerSyncState::LIVE;
             fire = true;
+        } else if (info.state == PeerSyncState::SYNCING || info.state == PeerSyncState::IDLE) {
+            info.state = PeerSyncState::WE_DONE;
         }
     }
     if (fire && done_cb) done_cb(done_ud, peer_fp);
@@ -220,17 +185,17 @@ void KomeSyncManager::handle_sync_entry(const uint8_t *peer_fp,
     SyncEntry entry;
     if (!decode_sync_entry(data, len, &entry)) return;
 
-    apply_remote_entry(peer_fp, entry);
+    std::vector<SyncEntry> batch{std::move(entry)};
+    process_remote_entries(peer_fp, batch);
 
-    /* Track progress — each lock taken independently, never nested */
-    uint64_t received = 0, expected = 0;
+    /* Track progress */
+    uint64_t received = 0;
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         auto it = peers_.find(fp_key(peer_fp));
         if (it != peers_.end()) {
             it->second.entries_received++;
             received = it->second.entries_received;
-            expected = it->second.entries_expected;
         }
     }
 
@@ -241,7 +206,7 @@ void KomeSyncManager::handle_sync_entry(const uint8_t *peer_fp,
         progress_cb = engine_->on_sync_progress_cb;
         progress_ud = engine_->on_sync_progress_ud;
     }
-    if (progress_cb) progress_cb(progress_ud, peer_fp, received, expected);
+    if (progress_cb) progress_cb(progress_ud, peer_fp, received, 0);
 }
 
 void KomeSyncManager::handle_sync_done(const uint8_t *peer_fp) {
@@ -258,58 +223,27 @@ void KomeSyncManager::handle_sync_done(const uint8_t *peer_fp) {
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         auto &info = peers_[fp_key(peer_fp)];
-        if (info.state == PeerSyncState::IDLE) info.state = PeerSyncState::SYNCING;
-        info.they_sent_done = true;
-        info.entries_expected = info.entries_received;
-        if (info.we_sent_done && info.they_sent_done) {
+        if (info.state == PeerSyncState::WE_DONE) {
             info.state = PeerSyncState::LIVE;
             fire = true;
+        } else if (info.state == PeerSyncState::SYNCING || info.state == PeerSyncState::IDLE) {
+            info.state = PeerSyncState::THEY_DONE;
         }
     }
     if (fire && done_cb) done_cb(done_ud, peer_fp);
 }
 
-void KomeSyncManager::handle_sync_ack(const uint8_t *peer_fp,
+void KomeSyncManager::handle_sync_ack(const uint8_t * /*peer_fp*/,
                                         const uint8_t *data, size_t len) {
     SyncAck ack;
     if (!decode_sync_ack(data, len, &ack)) return;
 
-    KomeReplicationChangeCallback repl_cb = nullptr;
-    void *repl_ud = nullptr;
-    std::string fire_ns;
-    std::vector<uint8_t> fire_key;
-    uint32_t fire_confirmed = 0, fire_target = 0;
-
-    {
+    /* Periodically GC expired tombstones (cheap — just a single DELETE) */
+    static thread_local uint32_t ack_count = 0;
+    if (++ack_count >= GC_ACK_INTERVAL) {
+        ack_count = 0;
         std::lock_guard<std::mutex> lock(engine_->mu);
-        engine_->log->update_peer_state(peer_fp, ack.author, ack.seq);
-
-        std::vector<LogEntry> entries;
-        engine_->log->get_entries_after(ack.author, ack.seq - 1, entries);
-        for (auto &e : entries) {
-            if (e.seq == ack.seq) {
-                engine_->log->increment_replication_peer(
-                    e.ns.c_str(), e.key.data(), e.key.size(), peer_fp);
-                engine_->log->get_replication_confirmed(
-                    e.ns.c_str(), e.key.data(), e.key.size(), &fire_confirmed);
-                engine_->log->get_replication_target(e.ns.c_str(), &fire_target);
-                fire_ns = e.ns;
-                fire_key = e.key;
-                repl_cb = engine_->on_repl_change_cb;
-                repl_ud = engine_->on_repl_change_ud;
-                break;
-            }
-        }
-
-        if (++engine_->ack_since_gc >= GC_ACK_INTERVAL) {
-            engine_->ack_since_gc = 0;
-            engine_->log->gc_tombstones(engine_->tombstone_ttl_sec);
-            engine_->log->gc_values();
-        }
-    }
-    if (repl_cb && !fire_ns.empty()) {
-        repl_cb(repl_ud, fire_ns.c_str(), fire_key.data(), fire_key.size(),
-                fire_confirmed, fire_target);
+        engine_->log->gc_tombstones(DEFAULT_TOMBSTONE_TTL_SEC);
     }
 }
 
@@ -317,234 +251,33 @@ void KomeSyncManager::handle_live_entry(const uint8_t *peer_fp,
                                           const uint8_t *data, size_t len) {
     SyncEntry entry;
     if (!decode_live_entry(data, len, &entry)) return;
-    apply_remote_entry(peer_fp, entry);
-}
 
-void KomeSyncManager::apply_remote_entry(const uint8_t *peer_fp, const SyncEntry &entry) {
-    /* Validate received entry sizes — don't trust the peer */
-    if (entry.ns.size() > KOME_MAX_NS_LEN || entry.ns.empty()) return;
-    if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
-    if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
-
-    /* Clock sanity: reject entries with timestamps too far in the future or past */
-    uint64_t now = timestamp_us();
-    if (entry.timestamp_us > now + KOME_MAX_CLOCK_DRIFT_US) return;
-    if (now > KOME_MAX_CLOCK_DRIFT_US && entry.timestamp_us < now - KOME_MAX_CLOCK_DRIFT_US)
-        return;
-
-    /* Per-peer rate limiting */
-    {
-        std::lock_guard<std::mutex> lock(peers_mu_);
-        if (!check_rate_limit(peer_fp, entry.value.size())) return;
-    }
-
-    /* Write authorization: sender must have WRITE access on this namespace */
-    {
-        std::lock_guard<std::mutex> lock(engine_->mu);
-        int role = engine_->log->get_peer_role(entry.ns.c_str(), peer_fp);
-        if (role < KOME_ROLE_WRITE) return;  /* silently drop */
-    }
-
-    /* Verify hash integrity */
-    if (!entry.tombstone) {
-        uint8_t computed_hash[32];
-        sha256(entry.value.data(), entry.value.size(), computed_hash);
-        if (std::memcmp(computed_hash, entry.hash, 32) != 0)
-            return;
-    }
-
-    /* Signature check: verify the entry was signed (non-zero signature).
-     * PLACEHOLDER: Full cryptographic verification requires the peer's public
-     * key, which is not yet distributed. When Ed25519 replaces the current
-     * MAC scheme, this will perform proper signature verification.
-     * For now we only reject entries with an all-zero signature. */
-    if (!kome::signature_is_nonzero(entry.signature)) return;
-
-    KomeEntryMeta remote_meta;
-    remote_meta.timestamp_us = entry.timestamp_us;
-    std::memcpy(remote_meta.author, entry.author, 32);
-    remote_meta.seq = entry.seq;
-    std::memcpy(remote_meta.hash, entry.hash, 32);
-    remote_meta.value_len = (uint32_t)entry.value.size();
-    remote_meta.tombstone = entry.tombstone;
-    std::memcpy(remote_meta.signature, entry.signature, 64);
-
-    /* Phase 1: read local + snapshot conflict callback under engine lock */
-    bool have_local = false;
-    uint64_t local_seq_snapshot = 0;
-    KomeEntryMeta local_meta{};
-    std::vector<uint8_t> local_value_copy;
-    KomeConflictCallback conflict_cb = nullptr;
-    void *conflict_ud = nullptr;
-
-    {
-        std::lock_guard<std::mutex> lock(engine_->mu);
-        conflict_cb = engine_->on_conflict_cb;
-        conflict_ud = engine_->on_conflict_ud;
-
-        LogEntry local;
-        KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
-                                                 entry.key.size(), &local);
-        if (err == KOME_OK) {
-            have_local = true;
-            local_seq_snapshot = local.seq;
-            local_meta.timestamp_us = local.timestamp_us;
-            std::memcpy(local_meta.author, local.author, 32);
-            local_meta.seq = local.seq;
-            std::memcpy(local_meta.hash, local.hash, 32);
-            local_meta.value_len = (uint32_t)local.value.size();
-            local_meta.tombstone = local.tombstone;
-            std::memcpy(local_meta.signature, local.signature, 64);
-            local_value_copy = std::move(local.value);
-        }
-    }
-
-    /* Phase 2: conflict resolution outside all locks */
-    bool should_store = false;
-    uint8_t *merge_value = nullptr;
-    size_t merge_value_len = 0;
-    const uint8_t *store_value = entry.value.data();
-    size_t store_value_len = entry.value.size();
-
-    if (!have_local) {
-        should_store = true;
-    } else {
-        KomeConflictChoice choice = resolve_conflict(
-            entry.ns.c_str(), entry.key.data(), entry.key.size(),
-            &local_meta, local_value_copy.data(),
-            &remote_meta, entry.value.data(),
-            conflict_cb, conflict_ud,
-            &merge_value, &merge_value_len);
-
-        if (choice == KOME_KEEP_REMOTE) {
-            should_store = true;
-        } else if (choice == KOME_MERGE) {
-            should_store = true;
-            store_value = merge_value;
-            store_value_len = merge_value_len;
-        }
-    }
-
-    /* Phase 3: write under engine lock with TOCTOU guard */
-    KomeEntryMeta store_meta = remote_meta;
-    KomeRemoteChangeCallback change_cb = nullptr;
-    void *change_ud = nullptr;
-    KomeRemoteChangeCallback ns_change_cb = nullptr;
-    void *ns_change_ud = nullptr;
-    std::vector<uint8_t> store_value_copy;
-
-    if (should_store) {
-        if (merge_value) {
-            sha256(store_value, store_value_len, store_meta.hash);
-            store_meta.value_len = (uint32_t)store_value_len;
-            store_meta.tombstone = 0;
-        }
-
-        std::lock_guard<std::mutex> lock(engine_->mu);
-
-        /* TOCTOU guard: if the local entry changed since Phase 1,
-           another thread wrote concurrently. Re-read and re-resolve
-           using default LWW (fast path — no callback, just compare). */
-        if (have_local) {
-            LogEntry current;
-            KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
-                                                     entry.key.size(), &current);
-            if (err == KOME_OK && current.seq != local_seq_snapshot) {
-                /* Local entry changed — re-evaluate with LWW only */
-                KomeEntryMeta cur_meta;
-                cur_meta.timestamp_us = current.timestamp_us;
-                std::memcpy(cur_meta.author, current.author, 32);
-                cur_meta.seq = current.seq;
-                if (!lww_remote_wins(&cur_meta, &store_meta)) {
-                    should_store = false; /* local is now newer, skip */
-                }
-            }
-        }
-
-        if (should_store) {
-            engine_->log->put_entry(entry.ns.c_str(), entry.key.data(), entry.key.size(),
-                                     store_value, store_value_len, &store_meta);
-            engine_->log->update_version_vector(store_meta.author, store_meta.seq);
-            change_cb = engine_->on_remote_change_cb;
-            change_ud = engine_->on_remote_change_ud;
-
-            auto ns_it = engine_->ns_change_cbs.find(entry.ns);
-            if (ns_it != engine_->ns_change_cbs.end()) {
-                ns_change_cb = ns_it->second.first;
-                ns_change_ud = ns_it->second.second;
-            }
-
-            if ((change_cb || ns_change_cb) && store_value_len > 0)
-                store_value_copy.assign(store_value, store_value + store_value_len);
-        }
-    }
-
-    /* Phase 4: fire callbacks outside all locks */
-    if (should_store && change_cb) {
-        change_cb(change_ud,
-                  entry.ns.c_str(), entry.key.data(), entry.key.size(),
-                  store_value_copy.data(), store_value_copy.size(), &store_meta);
-    }
-    if (should_store && ns_change_cb) {
-        ns_change_cb(ns_change_ud,
-                     entry.ns.c_str(), entry.key.data(), entry.key.size(),
-                     store_value_copy.data(), store_value_copy.size(), &store_meta);
-    }
-
-    /* Phase 5: gossip relay — forward to other live peers, excluding sender */
-    if (should_store) {
-        std::string sender_key = fp_key(peer_fp);
-        std::vector<std::string> relay_peers;
-        {
-            std::lock_guard<std::mutex> lock(peers_mu_);
-            for (auto &[key, info] : peers_) {
-                if (info.state == PeerSyncState::LIVE && key != sender_key)
-                    relay_peers.push_back(key);
-            }
-        }
-        if (!relay_peers.empty()) {
-            auto msg = encode_live_entry(entry);
-            for (auto &fp : relay_peers)
-                send_to_peer((const uint8_t*)fp.data(), msg);
-        }
-    }
-
-    /* ACK */
-    SyncAck ack;
-    std::memcpy(ack.author, entry.author, 32);
-    ack.seq = entry.seq;
-    auto ack_msg = encode_sync_ack(ack);
-    if (transport_)
-        transport_->send(peer_fp, ack_msg.data(), ack_msg.size());
-
-    if (merge_value) std::free(merge_value);
+    std::vector<SyncEntry> batch{std::move(entry)};
+    process_remote_entries(peer_fp, batch);
 }
 
 void KomeSyncManager::on_local_write_batch(const std::vector<LogEntry> &entries) {
     if (entries.empty()) return;
 
-    /* Per-peer filtering: only send entries for namespaces the peer can access */
-    std::vector<std::pair<std::string, std::map<std::string, int>>> live_peers;
+    /* Snapshot live peers and their namespace filters */
+    std::vector<std::pair<std::string, std::vector<std::string>>> live_peers;
     {
         std::lock_guard<std::mutex> lock(peers_mu_);
         for (auto &[key, info] : peers_) {
             if (info.state == PeerSyncState::LIVE)
-                live_peers.push_back({key, info.peer_access});
+                live_peers.push_back({key, info.agreed_namespaces});
         }
     }
     if (live_peers.empty()) return;
 
-    for (auto &[fp, peer_access] : live_peers) {
-        std::vector<SyncEntry> se_vec;
-        se_vec.reserve(entries.size());
+    for (auto &[fp, agreed] : live_peers) {
+        std::vector<SyncEntry> filtered;
         for (auto &e : entries) {
-            auto it = peer_access.find(e.ns);
-            if (it == peer_access.end() || it->second < KOME_ROLE_READ)
-                continue;
-            se_vec.push_back(log_to_sync(e));
+            if (ns_allowed(agreed, e.ns))
+                filtered.push_back(e);
         }
-        if (se_vec.empty()) continue;
-        auto msg = encode_batch_entry(se_vec);
+        if (filtered.empty()) continue;
+        auto msg = encode_batch_entry(filtered);
         send_to_peer((const uint8_t*)fp.data(), msg);
     }
 }
@@ -554,49 +287,57 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
     std::vector<SyncEntry> entries;
     if (!decode_batch_entry(data, len, &entries)) return;
     if (entries.empty() || entries.size() > KOME_MAX_BATCH_COUNT) return;
+    process_remote_entries(peer_fp, entries);
+}
 
-    /* Write authorization: drop entries where sender lacks WRITE access */
+/*
+ * Unified remote entry processing — handles both single entries and batches.
+ *
+ * 5-phase design (lock ordering: engine_->mu before peers_mu_):
+ *   Phase 1: Validate, filter by namespace/TTL, snapshot local state (engine lock)
+ *   Phase 2: Conflict resolution (no locks — callback may call kome API)
+ *   Phase 3: Write entries atomically with TOCTOU guard (engine lock)
+ *   Phase 4: Fire change callbacks (no locks)
+ *   Phase 5: Gossip relay + ACK (peers lock, then no locks)
+ */
+void KomeSyncManager::process_remote_entries(const uint8_t *peer_fp,
+                                              std::vector<SyncEntry> &entries) {
+    uint64_t now_us = timestamp_us();
+
+    /* Filter by namespace scope, TTL, and validate */
     {
         std::lock_guard<std::mutex> lock(engine_->mu);
-        std::vector<SyncEntry> authorized;
-        authorized.reserve(entries.size());
+        std::vector<SyncEntry> accepted;
+        accepted.reserve(entries.size());
         for (auto &entry : entries) {
-            int role = engine_->log->get_peer_role(entry.ns.c_str(), peer_fp);
-            if (role >= KOME_ROLE_WRITE)
-                authorized.push_back(std::move(entry));
+            if (entry.ns.empty() || entry.ns.size() > KOME_MAX_NS_LEN) continue;
+            if (entry.key.empty() || entry.key.size() > KOME_MAX_KEY_LEN) continue;
+            if (entry.value.size() > KOME_MAX_VALUE_LEN) continue;
+            if (!engine_->sync_namespaces.empty() &&
+                !ns_allowed(engine_->sync_namespaces, entry.ns))
+                continue;
+            if (entry.timestamp_us > now_us + KOME_MAX_CLOCK_DRIFT_US) continue;
+            if (now_us > KOME_MAX_CLOCK_DRIFT_US &&
+                entry.timestamp_us < now_us - KOME_MAX_CLOCK_DRIFT_US)
+                continue;
+            auto ttl_it = engine_->entry_ttls.find(entry.ns);
+            if (ttl_it != engine_->entry_ttls.end() && ttl_it->second > 0) {
+                uint64_t max_age_us = ttl_it->second * 1000000ULL;
+                if (now_us > entry.timestamp_us &&
+                    (now_us - entry.timestamp_us) > max_age_us)
+                    continue;
+            }
+            if (!entry.tombstone) {
+                uint8_t computed_hash[32];
+                sha256(entry.value.data(), entry.value.size(), computed_hash);
+                if (std::memcmp(computed_hash, entry.hash, 32) != 0)
+                    continue;
+            }
+            accepted.push_back(std::move(entry));
         }
-        entries = std::move(authorized);
+        entries = std::move(accepted);
     }
     if (entries.empty()) return;
-
-    /* Validate all entries first — reject the entire batch on any failure */
-    uint64_t now_us = timestamp_us();
-    for (auto &entry : entries) {
-        if (entry.ns.size() > KOME_MAX_NS_LEN || entry.ns.empty()) return;
-        if (entry.key.size() > KOME_MAX_KEY_LEN || entry.key.empty()) return;
-        if (entry.value.size() > KOME_MAX_VALUE_LEN) return;
-        if (entry.timestamp_us > now_us + KOME_MAX_CLOCK_DRIFT_US) return;
-        if (now_us > KOME_MAX_CLOCK_DRIFT_US && entry.timestamp_us < now_us - KOME_MAX_CLOCK_DRIFT_US)
-            return;
-        if (!entry.tombstone) {
-            uint8_t computed_hash[32];
-            sha256(entry.value.data(), entry.value.size(), computed_hash);
-            if (std::memcmp(computed_hash, entry.hash, 32) != 0)
-                return;
-        }
-        /* Signature check: reject entries with all-zero signature */
-        if (!signature_is_nonzero(entry.signature)) return;
-    }
-
-    /* Per-peer rate limiting: check total batch size against limits */
-    {
-        uint64_t total_bytes = 0;
-        for (auto &entry : entries)
-            total_bytes += entry.value.size();
-
-        std::lock_guard<std::mutex> lock(peers_mu_);
-        if (!check_rate_limit(peer_fp, total_bytes, entries.size())) return;
-    }
 
     /* Phase 1: Read local state + snapshot callbacks under engine lock */
     struct EntryCtx {
@@ -624,13 +365,7 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             auto &entry = entries[i];
             auto &ctx = ctxs[i];
 
-            ctx.remote_meta.timestamp_us = entry.timestamp_us;
-            std::memcpy(ctx.remote_meta.author, entry.author, 32);
-            ctx.remote_meta.seq = entry.seq;
-            std::memcpy(ctx.remote_meta.hash, entry.hash, 32);
-            ctx.remote_meta.value_len = (uint32_t)entry.value.size();
-            ctx.remote_meta.tombstone = entry.tombstone;
-            std::memcpy(ctx.remote_meta.signature, entry.signature, 64);
+            entry.to_meta(&ctx.remote_meta);
 
             LogEntry local;
             KomeError err = engine_->log->get_entry(entry.ns.c_str(), entry.key.data(),
@@ -638,13 +373,7 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             if (err == KOME_OK) {
                 ctx.have_local = true;
                 ctx.local_seq_snapshot = local.seq;
-                ctx.local_meta.timestamp_us = local.timestamp_us;
-                std::memcpy(ctx.local_meta.author, local.author, 32);
-                ctx.local_meta.seq = local.seq;
-                std::memcpy(ctx.local_meta.hash, local.hash, 32);
-                ctx.local_meta.value_len = (uint32_t)local.value.size();
-                ctx.local_meta.tombstone = local.tombstone;
-                std::memcpy(ctx.local_meta.signature, local.signature, 64);
+                local.to_meta(&ctx.local_meta);
                 ctx.local_value_copy = std::move(local.value);
             }
         }
@@ -678,9 +407,6 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
     }
 
     /* Phase 3: Write all entries atomically under engine lock */
-    KomeRemoteChangeCallback change_cb = nullptr;
-    void *change_ud = nullptr;
-
     struct StoredEntry {
         std::string ns;
         std::vector<uint8_t> key;
@@ -690,6 +416,8 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         void *ns_ud = nullptr;
     };
     std::vector<StoredEntry> stored;
+    KomeRemoteChangeCallback change_cb = nullptr;
+    void *change_ud = nullptr;
     bool txn_ok = true;
 
     {
@@ -697,14 +425,12 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         change_cb = engine_->on_remote_change_cb;
         change_ud = engine_->on_remote_change_ud;
 
-        if (engine_->log->begin_transaction() != KOME_OK) {
+        if (engine_->log->begin_transaction() != KOME_OK)
             txn_ok = false;
-        }
 
         for (size_t i = 0; i < entries.size() && txn_ok; i++) {
             auto &entry = entries[i];
             auto &ctx = ctxs[i];
-
             if (!ctx.should_store) continue;
 
             KomeEntryMeta store_meta = ctx.remote_meta;
@@ -722,12 +448,9 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
                                                          entry.key.size(), &current);
                 if (err == KOME_OK && current.seq != ctx.local_seq_snapshot) {
                     KomeEntryMeta cur_meta;
-                    cur_meta.timestamp_us = current.timestamp_us;
-                    std::memcpy(cur_meta.author, current.author, 32);
-                    cur_meta.seq = current.seq;
-                    if (!lww_remote_wins(&cur_meta, &store_meta)) {
+                    current.to_meta(&cur_meta);
+                    if (!lww_remote_wins(&cur_meta, &store_meta))
                         continue;
-                    }
                 }
             }
 
@@ -741,26 +464,18 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
                 txn_ok = false;
                 break;
             }
-
-            err = engine_->log->update_version_vector(store_meta.author, store_meta.seq);
-            if (err != KOME_OK) {
-                engine_->log->rollback_transaction();
-                txn_ok = false;
-                break;
-            }
+            engine_->log->update_version_vector(store_meta.author, store_meta.seq);
 
             StoredEntry se;
             se.ns = entry.ns;
             se.key = entry.key;
             se.meta = store_meta;
             se.value_copy = std::move(ctx.store_value_buf);
-
             auto ns_it = engine_->ns_change_cbs.find(entry.ns);
             if (ns_it != engine_->ns_change_cbs.end()) {
                 se.ns_cb = ns_it->second.first;
                 se.ns_ud = ns_it->second.second;
             }
-
             stored.push_back(std::move(se));
         }
 
@@ -768,27 +483,21 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
             engine_->log->commit_transaction();
     }
 
-    for (auto &ctx : ctxs) {
+    for (auto &ctx : ctxs)
         if (ctx.merge_value) std::free(ctx.merge_value);
-    }
-
     if (!txn_ok) return;
 
-    /* Phase 4: Fire callbacks outside all locks — once per entry in order */
+    /* Phase 4: Fire callbacks outside all locks */
     for (auto &se : stored) {
-        if (change_cb) {
-            change_cb(change_ud,
-                      se.ns.c_str(), se.key.data(), se.key.size(),
+        if (change_cb)
+            change_cb(change_ud, se.ns.c_str(), se.key.data(), se.key.size(),
                       se.value_copy.data(), se.value_copy.size(), &se.meta);
-        }
-        if (se.ns_cb) {
-            se.ns_cb(se.ns_ud,
-                     se.ns.c_str(), se.key.data(), se.key.size(),
+        if (se.ns_cb)
+            se.ns_cb(se.ns_ud, se.ns.c_str(), se.key.data(), se.key.size(),
                      se.value_copy.data(), se.value_copy.size(), &se.meta);
-        }
     }
 
-    /* Phase 5: Gossip relay — forward only stored entries to other live peers */
+    /* Phase 5: Gossip relay + ACK */
     if (!stored.empty()) {
         std::string sender_key = fp_key(peer_fp);
         std::vector<std::string> relay_peers;
@@ -802,48 +511,30 @@ void KomeSyncManager::handle_batch_entry(const uint8_t *peer_fp,
         if (!relay_peers.empty()) {
             std::vector<SyncEntry> relay_entries;
             relay_entries.reserve(stored.size());
-            for (auto &se : stored) {
-                SyncEntry re;
-                re.ns = se.ns;
-                re.key = se.key;
-                re.value = se.value_copy;
-                re.timestamp_us = se.meta.timestamp_us;
-                std::memcpy(re.author, se.meta.author, 32);
-                re.seq = se.meta.seq;
-                std::memcpy(re.hash, se.meta.hash, 32);
-                re.tombstone = se.meta.tombstone;
-                std::memcpy(re.signature, se.meta.signature, 64);
-                relay_entries.push_back(std::move(re));
-            }
+            for (auto &se : stored)
+                relay_entries.push_back(Entry::from_meta(
+                    se.meta, se.ns.c_str(),
+                    se.key.data(), se.key.size(),
+                    se.value_copy.data(), se.value_copy.size()));
             auto msg = encode_batch_entry(relay_entries);
             for (auto &fp : relay_peers)
                 send_to_peer((const uint8_t*)fp.data(), msg);
         }
     }
 
-    /* ACK each entry */
     for (auto &entry : entries) {
         SyncAck ack;
         std::memcpy(ack.author, entry.author, 32);
         ack.seq = entry.seq;
         auto ack_msg = encode_sync_ack(ack);
-        if (transport_)
-            transport_->send(peer_fp, ack_msg.data(), ack_msg.size());
+        send_to_peer(peer_fp, ack_msg);
     }
-}
-
-void KomeSyncManager::handle_namespace_acl_sync(const uint8_t * /*peer_fp*/,
-                                                  const uint8_t *data, size_t len) {
-    NamespaceACLSync acl_sync;
-    if (!decode_namespace_acl_sync(data, len, &acl_sync)) return;
-    /* Informational — the remote peer is telling us what we can access on them.
-       Enforcement happens on each side independently using local configs. */
 }
 
 void KomeSyncManager::send_to_peer(const uint8_t *peer_fp,
                                      const std::vector<uint8_t> &data) {
-    if (transport_)
-        transport_->send(peer_fp, data.data(), data.size());
+    if (transport_ && transport_->send)
+        transport_->send(transport_, peer_fp, data.data(), data.size());
 }
 
 } /* namespace kome */

@@ -9,7 +9,7 @@ namespace kome {
 /* --- Encode helpers ------------------------------------------------------ */
 
 static void pack_entry_fields(cw_pack_context *pc, const SyncEntry &e) {
-    cw_pack_map_size(pc, 9);
+    cw_pack_map_size(pc, 8);
 
     cw_pack_str(pc, "ns", 2);
     cw_pack_str(pc, e.ns.data(), (unsigned)e.ns.size());
@@ -38,22 +38,21 @@ static void pack_entry_fields(cw_pack_context *pc, const SyncEntry &e) {
 
     cw_pack_str(pc, "t", 1);
     cw_pack_unsigned(pc, e.tombstone);
-
-    /* Signature — 64-byte entry signature (placeholder: SHA-256 MAC) */
-    cw_pack_str(pc, "sig", 3);
-    cw_pack_bin(pc, e.signature, 64);
 }
 
 std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
     if (msg.vv.size() > SIZE_MAX / 48 - 256) return {};
-    size_t buf_size = 256 + msg.vv.size() * 48;
+    size_t ns_bytes = 0;
+    for (auto &ns : msg.namespaces) ns_bytes += ns.size() + 8;
+    size_t buf_size = 256 + msg.vv.size() * 48 + ns_bytes;
     std::vector<uint8_t> buf(buf_size);
 
     cw_pack_context pc;
     cw_pack_context_init(&pc, buf.data() + 1, buf_size - 1, nullptr);
     buf[0] = SYNC_REQUEST;
 
-    cw_pack_map_size(&pc, 2);
+    unsigned map_fields = msg.namespaces.empty() ? 2 : 3;
+    cw_pack_map_size(&pc, map_fields);
 
     /* protocol version */
     cw_pack_str(&pc, "pv", 2);
@@ -65,6 +64,14 @@ std::vector<uint8_t> encode_sync_request(const SyncRequest &msg) {
     for (auto &[author, seq] : msg.vv) {
         cw_pack_bin(&pc, author.data(), 32);
         cw_pack_unsigned(&pc, seq);
+    }
+
+    /* namespace filter (only sent if non-empty) */
+    if (!msg.namespaces.empty()) {
+        cw_pack_str(&pc, "nf", 2);
+        cw_pack_array_size(&pc, (unsigned)msg.namespaces.size());
+        for (auto &ns : msg.namespaces)
+            cw_pack_str(&pc, ns.data(), (unsigned)ns.size());
     }
 
     if (pc.return_code != CWP_RC_OK) return {};
@@ -119,37 +126,12 @@ std::vector<uint8_t> encode_live_entry(const SyncEntry &entry) {
     return buf;
 }
 
-std::vector<uint8_t> encode_namespace_acl_sync(const NamespaceACLSync &msg) {
-    size_t buf_size = 64;
-    for (auto &e : msg.entries) buf_size += e.ns.size() + 16;
-    std::vector<uint8_t> buf(buf_size);
-
-    cw_pack_context pc;
-    cw_pack_context_init(&pc, buf.data() + 1, buf_size - 1, nullptr);
-    buf[0] = NAMESPACE_ACL_SYNC;
-
-    cw_pack_array_size(&pc, (unsigned)msg.entries.size());
-    for (auto &e : msg.entries) {
-        cw_pack_map_size(&pc, 2);
-        cw_pack_str(&pc, "ns", 2);
-        cw_pack_str(&pc, e.ns.data(), (unsigned)e.ns.size());
-        cw_pack_str(&pc, "r", 1);
-        cw_pack_unsigned(&pc, (uint64_t)e.role);
-    }
-
-    if (pc.return_code != CWP_RC_OK) return {};
-
-    size_t total = 1 + (size_t)(pc.current - (buf.data() + 1));
-    buf.resize(total);
-    return buf;
-}
-
 /* --- Decode helpers ------------------------------------------------------ */
 
 bool decode_message_type(const uint8_t *data, size_t len, WireMessageType *type_out) {
     if (!data || len < 1) return false;
     uint8_t t = data[0];
-    if (t < SYNC_REQUEST || t > NAMESPACE_ACL_SYNC) return false;
+    if (t < SYNC_REQUEST || t > BATCH_ENTRY) return false;
     *type_out = static_cast<WireMessageType>(t);
     return true;
 }
@@ -162,7 +144,6 @@ static bool decode_entry_from_map(cw_unpack_context *uc, SyncEntry *out) {
 
     std::memset(out->author, 0, 32);
     std::memset(out->hash, 0, 32);
-    std::memset(out->signature, 0, 64);
     out->tombstone = 0;
     out->timestamp_us = 0;
     out->seq = 0;
@@ -219,9 +200,6 @@ static bool decode_entry_from_map(cw_unpack_context *uc, SyncEntry *out) {
             } else {
                 return false;
             }
-        } else if (field == "sig") {
-            if (uc->item.type != CWP_ITEM_BIN || uc->item.as.bin.length != 64) return false;
-            std::memcpy(out->signature, uc->item.as.bin.start, 64);
         }
         /* skip unknown fields */
     }
@@ -240,6 +218,7 @@ bool decode_sync_request(const uint8_t *data, size_t len, SyncRequest *out) {
 
     out->protocol_version = 0;
     out->vv.clear();
+    out->namespaces.clear();
 
     for (unsigned i = 0; i < map_size; i++) {
         cw_unpack_next(&uc);
@@ -270,16 +249,17 @@ bool decode_sync_request(const uint8_t *data, size_t len, SyncRequest *out) {
                     return false;
                 out->vv[author] = uc.item.as.u64;
             }
-        } else if (field == "ns") {
-            /* Legacy field — skip the array */
+        } else if (field == "nf") {
+            /* Namespace filter */
             cw_unpack_next(&uc);
-            if (uc.return_code != CWP_RC_OK) return false;
-            if (uc.item.type == CWP_ITEM_ARRAY) {
-                unsigned arr_size = uc.item.as.array.size;
-                for (unsigned j = 0; j < arr_size; j++) {
-                    cw_unpack_next(&uc);
-                    if (uc.return_code != CWP_RC_OK) return false;
-                }
+            if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_ARRAY) return false;
+            unsigned nf_size = uc.item.as.array.size;
+            if (nf_size > 1000) return false;  /* sanity bound */
+            for (unsigned j = 0; j < nf_size; j++) {
+                cw_unpack_next(&uc);
+                if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_STR) return false;
+                out->namespaces.emplace_back(
+                    (const char*)uc.item.as.str.start, uc.item.as.str.length);
             }
         } else {
             /* skip unknown value */
@@ -415,46 +395,6 @@ bool decode_batch_entry(const uint8_t *data, size_t len, std::vector<SyncEntry> 
     /* Cross-check: count must have been present and must match entries */
     if (count == UINT32_MAX) return false;
     return out->size() == count;
-}
-
-bool decode_namespace_acl_sync(const uint8_t *data, size_t len, NamespaceACLSync *out) {
-    if (!data || len < 2 || data[0] != NAMESPACE_ACL_SYNC) return false;
-
-    cw_unpack_context uc;
-    cw_unpack_context_init(&uc, data + 1, (unsigned long)(len - 1), nullptr);
-
-    cw_unpack_next(&uc);
-    if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_ARRAY) return false;
-    unsigned arr_size = uc.item.as.array.size;
-
-    out->entries.clear();
-    for (unsigned i = 0; i < arr_size; i++) {
-        cw_unpack_next(&uc);
-        if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_MAP) return false;
-        unsigned map_size = uc.item.as.map.size;
-
-        NamespaceACLSyncEntry entry;
-        entry.role = 0;
-
-        for (unsigned j = 0; j < map_size; j++) {
-            cw_unpack_next(&uc);
-            if (uc.return_code != CWP_RC_OK || uc.item.type != CWP_ITEM_STR) return false;
-            std::string field((const char*)uc.item.as.str.start, uc.item.as.str.length);
-
-            cw_unpack_next(&uc);
-            if (uc.return_code != CWP_RC_OK) return false;
-
-            if (field == "ns") {
-                if (uc.item.type != CWP_ITEM_STR) return false;
-                entry.ns.assign((const char*)uc.item.as.str.start, uc.item.as.str.length);
-            } else if (field == "r") {
-                if (uc.item.type != CWP_ITEM_POSITIVE_INTEGER) return false;
-                entry.role = (int)uc.item.as.u64;
-            }
-        }
-        out->entries.push_back(std::move(entry));
-    }
-    return true;
 }
 
 } /* namespace kome */
