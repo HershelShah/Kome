@@ -174,9 +174,6 @@ class Engine:
         self._callbacks.append(_cb)
         _lib.kome_on_remote_change(self._handle, _cb, None)
 
-    def set_log_level(self, level: int):
-        _lib.kome_set_log_level(self._handle, level)
-
     def stats(self) -> KomeStats:
         s = KomeStats()
         _check(_lib.kome_stats(self._handle, ctypes.byref(s)))

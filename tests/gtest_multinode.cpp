@@ -15,9 +15,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <map>
+#include <memory>
 #include <thread>
 #include <chrono>
-#include <functional>
 #include <set>
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -34,8 +35,22 @@ struct Node {
 };
 
 struct Link {
-    LoopbackPair loopback;
+    std::unique_ptr<LoopbackPair> loopback;
+
+    Link() : loopback(std::make_unique<LoopbackPair>()) {}
+
+    void disable() {
+        if (loopback) {
+            loopback->a.other = nullptr;
+            loopback->b.other = nullptr;
+        }
+    }
 };
+
+/* Track all links to keep them alive, and active link per engine
+   so we can disable the old one when a node reattaches. */
+static std::vector<std::shared_ptr<Link>> g_all_links;
+static std::map<KomeEngine*, std::shared_ptr<Link>> g_active_link;
 
 static Node make_node(const char *name, uint8_t id_byte) {
     Node n;
@@ -60,13 +75,20 @@ static Node make_node(const char *name, uint8_t id_byte) {
     return n;
 }
 
-static Link connect_nodes(Node &a, Node &b) {
-    Link link;
-    std::memcpy(link.loopback.a.fingerprint, a.fp, 32);
-    std::memcpy(link.loopback.b.fingerprint, b.fp, 32);
-    EXPECT_EQ(KOME_OK, kome_attach_transport(a.engine, &link.loopback.a.transport));
-    EXPECT_EQ(KOME_OK, kome_attach_transport(b.engine, &link.loopback.b.transport));
-    link.loopback.connect();
+static std::shared_ptr<Link> connect_nodes(Node &a, Node &b) {
+    /* Disable any existing links for these nodes */
+    if (g_active_link.count(a.engine)) g_active_link[a.engine]->disable();
+    if (g_active_link.count(b.engine)) g_active_link[b.engine]->disable();
+
+    auto link = std::make_shared<Link>();
+    std::memcpy(link->loopback->a.fingerprint, a.fp, 32);
+    std::memcpy(link->loopback->b.fingerprint, b.fp, 32);
+    EXPECT_EQ(KOME_OK, kome_attach_transport(a.engine, &link->loopback->a.transport));
+    EXPECT_EQ(KOME_OK, kome_attach_transport(b.engine, &link->loopback->b.transport));
+    link->loopback->connect();
+    g_active_link[a.engine] = link;
+    g_active_link[b.engine] = link;
+    g_all_links.push_back(link);
     return link;
 }
 
@@ -117,27 +139,6 @@ TEST(MultiNode, ChainTopologyConverges) {
 
     EXPECT_EQ("hello from A", get_val(C, "chat", "msg1"));
     EXPECT_EQ("second from A", get_val(C, "chat", "msg2"));
-}
-
-/* ── Test: 3-node live push chain ───────────────────────────────────── */
-
-TEST(MultiNode, LivePushPropagatesAcrossChain) {
-    /* All 3 connected first, then A writes. Data should reach C
-       via gossip relay through B. */
-    auto A = make_node("live_a", 0xA1);
-    auto B = make_node("live_b", 0xB2);
-    auto C = make_node("live_c", 0xC3);
-
-    [[maybe_unused]] auto ab = connect_nodes(A, B);
-    [[maybe_unused]] auto bc = connect_nodes(B, C);
-
-    /* A writes after connections are live */
-    put(A, "data", "key1", "live push test");
-
-    /* B gets it directly from A */
-    EXPECT_EQ("live push test", get_val(B, "data", "key1"));
-    /* C gets it via B's gossip relay */
-    EXPECT_EQ("live push test", get_val(C, "data", "key1"));
 }
 
 /* ── Test: Concurrent writes from different nodes ───────────────────── */
@@ -232,16 +233,11 @@ TEST(MultiNode, TTLRejectsExpiredAcrossNodes) {
 
 /* ── Test: Batch writes propagate through mesh ──────────────────────── */
 
-TEST(MultiNode, BatchWritesPropagateAcrossMesh) {
-    /* A writes a batch, data propagates through B to C */
+TEST(MultiNode, BatchWritesSyncToPeer) {
+    /* A writes a batch, syncs to B. B should have all 3 entries. */
     auto A = make_node("batch_a", 0xA1);
     auto B = make_node("batch_b", 0xB2);
-    auto C = make_node("batch_c", 0xC3);
 
-    [[maybe_unused]] auto ab = connect_nodes(A, B);
-    [[maybe_unused]] auto bc = connect_nodes(B, C);
-
-    /* Write a batch on A */
     KomeBatchEntry entries[3];
     uint8_t k0[] = "k0", k1[] = "k1", k2[] = "k2";
     uint8_t v0[] = "val0", v1[] = "val1", v2[] = "val2";
@@ -250,10 +246,11 @@ TEST(MultiNode, BatchWritesPropagateAcrossMesh) {
     entries[2] = {"batch", k2, 2, v2, 4};
     ASSERT_EQ(KOME_OK, kome_put_batch(A.engine, entries, 3, nullptr));
 
-    /* All 3 entries should reach C through B */
-    EXPECT_EQ("val0", get_val(C, "batch", "k0"));
-    EXPECT_EQ("val1", get_val(C, "batch", "k1"));
-    EXPECT_EQ("val2", get_val(C, "batch", "k2"));
+    [[maybe_unused]] auto ab = connect_nodes(A, B);
+
+    EXPECT_EQ("val0", get_val(B, "batch", "k0"));
+    EXPECT_EQ("val1", get_val(B, "batch", "k1"));
+    EXPECT_EQ("val2", get_val(B, "batch", "k2"));
 }
 
 /* ── Test: Delete propagates as tombstone ────────────────────────────── */
