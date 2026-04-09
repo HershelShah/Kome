@@ -121,6 +121,7 @@ kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
 kome_add_test(test_encryption tests/gtest_encryption.cpp)
 kome_add_test(test_integration tests/gtest_integration.cpp)
 kome_add_test(test_multinode  tests/gtest_multinode.cpp)
+kome_add_test(test_tcp_sync  tests/gtest_tcp_sync.cpp)
 
 # --- Install rules ---------------------------------------------------------
 include(GNUInstallDirs)
