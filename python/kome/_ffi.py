@@ -200,9 +200,6 @@ _lib.kome_free_keys.restype = None
 _lib.kome_on_remote_change.argtypes = [ctypes.c_void_p, REMOTE_CHANGE_CB, ctypes.c_void_p]
 _lib.kome_on_remote_change.restype = None
 
-_lib.kome_set_log_level.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.kome_set_log_level.restype = None
-
 _lib.kome_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(KomeStats)]
 _lib.kome_stats.restype = ctypes.c_int
 

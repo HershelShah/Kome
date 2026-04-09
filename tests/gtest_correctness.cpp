@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <set>
 #include <map>
+#include <memory>
 #include <thread>
 #include <chrono>
 
@@ -53,8 +54,14 @@ static CNode make_cnode(const char *name, uint8_t id_byte) {
     return n;
 }
 
+/* Heap-allocated loopback that outlives the sync_pair call.
+   ASan detects stack-use-after-return if the loopback is on the stack,
+   because kome_attach_transport stores the transport pointer. Although
+   the pointer is replaced on the next attach call, ASan flags it. */
+static std::vector<std::unique_ptr<LoopbackPair>> g_loopbacks;
+
 static void sync_pair(CNode &a, CNode &b) {
-    LoopbackPair lp;
+    auto lp = std::make_unique<LoopbackPair>();
     /* Get fingerprints by writing a probe entry */
     KomeEntryMeta ma, mb;
     uint8_t pk[] = "__p__"; uint8_t pv[] = "x";
@@ -63,12 +70,20 @@ static void sync_pair(CNode &a, CNode &b) {
     kome_delete(a.engine, "__s", pk, 5, nullptr);
     kome_delete(b.engine, "__s", pk, 5, nullptr);
 
-    std::memcpy(lp.a.fingerprint, ma.author, 32);
-    std::memcpy(lp.b.fingerprint, mb.author, 32);
+    std::memcpy(lp->a.fingerprint, ma.author, 32);
+    std::memcpy(lp->b.fingerprint, mb.author, 32);
 
-    ASSERT_EQ(KOME_OK, kome_attach_transport(a.engine, &lp.a.transport));
-    ASSERT_EQ(KOME_OK, kome_attach_transport(b.engine, &lp.b.transport));
-    lp.connect();
+    ASSERT_EQ(KOME_OK, kome_attach_transport(a.engine, &lp->a.transport));
+    ASSERT_EQ(KOME_OK, kome_attach_transport(b.engine, &lp->b.transport));
+    lp->connect();
+
+    /* Disconnect so old callbacks don't fire into a destroyed sync_mgr
+       when the next sync_pair replaces the transport. */
+    lp->disconnect();
+    /* Null out cross-pointers so stale sends are no-ops */
+    lp->a.other = nullptr;
+    lp->b.other = nullptr;
+    g_loopbacks.push_back(std::move(lp));
 }
 
 struct Snapshot {

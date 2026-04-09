@@ -71,7 +71,22 @@ protected:
         ASSERT_EQ(KOME_OK, kome_attach_transport(eb, &node_b.transport));
         tcp_fire_connected(node_a, node_b);
         /* Give recv threads time to process the handshake */
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    /* Wait until a key appears on a node (for async operations).
+       Returns true if found within timeout, false otherwise. */
+    bool wait_for_key(KomeEngine *e, const char *ns, const uint8_t *key,
+                      size_t key_len, int timeout_ms = 2000) {
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            KomeEntryMeta m;
+            if (kome_get_meta(e, ns, key, key_len, &m) == KOME_OK)
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
     }
 };
 
@@ -117,8 +132,7 @@ TEST_F(TcpSyncTest, LivePush) {
     uint8_t val[] = "pushed";
     ASSERT_EQ(KOME_OK, kome_put(ea, "ns", key, 8, val, 6, nullptr));
 
-    /* Give the push time to propagate */
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(wait_for_key(eb, "ns", key, 8));
 
     uint8_t *out = nullptr;
     size_t len = 0;
@@ -142,7 +156,11 @@ TEST_F(TcpSyncTest, BulkSync) {
 
     connect_tcp();
 
-    /* B should have all 100 */
+    /* Wait for the last entry to arrive, then check all */
+    std::string last_key = "k99";
+    ASSERT_TRUE(wait_for_key(eb, "bulk",
+        (const uint8_t*)last_key.data(), last_key.size()));
+
     for (int i = 0; i < 100; i++) {
         std::string key = "k" + std::to_string(i);
         KomeEntryMeta m;
@@ -186,9 +204,17 @@ TEST_F(TcpSyncTest, DeletePropagation) {
     KomeEntryMeta dm;
     EXPECT_EQ(KOME_OK, kome_get_meta(eb, "ns", key, 6, &dm));
 
-    /* Delete on A, wait for push */
+    /* Delete on A, wait for tombstone to propagate */
     kome_delete(ea, "ns", key, 6, nullptr);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    /* Poll until B sees the delete */
+    {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            KomeEntryMeta m;
+            if (kome_get_meta(eb, "ns", key, 6, &m) == KOME_ERR_NOT_FOUND) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
 
     /* B should see NOT_FOUND */
     uint8_t *out = nullptr;
@@ -226,7 +252,7 @@ TEST_F(TcpSyncTest, BatchWritePush) {
     entries[2] = {"batch", k2, 2, v2, 2};
     ASSERT_EQ(KOME_OK, kome_put_batch(ea, entries, 3, nullptr));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(wait_for_key(eb, "batch", k2, 2));
 
     for (int i = 0; i < 3; i++) {
         std::string key = "k" + std::to_string(i);
