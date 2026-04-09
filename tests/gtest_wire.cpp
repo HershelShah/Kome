@@ -253,32 +253,3 @@ TEST(WireTest, MessageTypeBatchEntry) {
     EXPECT_EQ(BATCH_ENTRY, t);
 }
 
-/* --- NamespaceACLSync round-trip ---------------------------------------- */
-
-TEST(WireTest, NamespaceACLSyncRoundTrip) {
-    NamespaceACLSync msg;
-    msg.entries.push_back({"contacts", 2});
-    msg.entries.push_back({"calendar", 1});
-
-    auto encoded = encode_namespace_acl_sync(msg);
-    ASSERT_FALSE(encoded.empty());
-    ASSERT_EQ(NAMESPACE_ACL_SYNC, encoded[0]);
-
-    NamespaceACLSync decoded;
-    ASSERT_TRUE(decode_namespace_acl_sync(encoded.data(), encoded.size(), &decoded));
-    ASSERT_EQ(2u, decoded.entries.size());
-    EXPECT_EQ("contacts", decoded.entries[0].ns);
-    EXPECT_EQ(2, decoded.entries[0].role);
-    EXPECT_EQ("calendar", decoded.entries[1].ns);
-    EXPECT_EQ(1, decoded.entries[1].role);
-}
-
-TEST(WireTest, NamespaceACLSyncEmpty) {
-    NamespaceACLSync msg;
-    auto encoded = encode_namespace_acl_sync(msg);
-    ASSERT_FALSE(encoded.empty());
-
-    NamespaceACLSync decoded;
-    ASSERT_TRUE(decode_namespace_acl_sync(encoded.data(), encoded.size(), &decoded));
-    EXPECT_TRUE(decoded.entries.empty());
-}

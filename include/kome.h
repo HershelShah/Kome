@@ -41,7 +41,7 @@ extern "C" {
 
 /* --- Constants ---------------------------------------------------------- */
 
-#define KOME_PROTOCOL_VERSION  3
+#define KOME_PROTOCOL_VERSION  1
 #define KOME_MAX_NS_LEN      255
 #define KOME_MAX_KEY_LEN      512
 #define KOME_MAX_VALUE_LEN    (16 * 1024 * 1024)  /* 16 MiB */
@@ -74,8 +74,6 @@ typedef struct {
     uint8_t  hash[32];        /* SHA-256 of value content                  */
     uint32_t value_len;       /* Length of value in bytes                   */
     uint8_t  tombstone;       /* 1 = deleted                               */
-    uint8_t  signature[64];   /* Entry signature (placeholder: SHA-256 MAC;
-                                 will be replaced by Ed25519 in the future) */
 } KomeEntryMeta;
 
 /*
@@ -121,26 +119,6 @@ typedef struct {
     const uint8_t *value;
     size_t         value_len;
 } KomeBatchEntry;
-
-/* --- Namespace configuration -------------------------------------------- */
-
-typedef enum {
-    KOME_ROLE_NONE  = 0,
-    KOME_ROLE_READ  = 1,
-    KOME_ROLE_WRITE = 2
-} KomeRole;
-
-typedef struct {
-    uint8_t  fingerprint[32];
-    KomeRole role;
-} KomeNamespaceACLEntry;
-
-typedef struct {
-    const char            *name;
-    uint64_t               tombstone_ttl_sec;  /* 0 = never GC tombstones   */
-    KomeNamespaceACLEntry *acl;                /* peer access control list   */
-    size_t                 acl_count;          /* 0 = owner-only (no repl)   */
-} KomeNamespaceConfig;
 
 /* --- Transport interface ------------------------------------------------ */
 
@@ -192,19 +170,6 @@ typedef void (*KomeSyncDoneCallback)(void *ud, const uint8_t *peer_fp);
 typedef void (*KomeSyncProgressCallback)(
     void *ud, const uint8_t *peer_fp,
     uint64_t entries_received, uint64_t entries_total);
-typedef void (*KomeReplicationChangeCallback)(
-    void *ud, const char *ns, const uint8_t *key, size_t key_len,
-    uint32_t confirmed_peers, uint32_t target_peers);
-
-/* --- Log levels --------------------------------------------------------- */
-
-typedef enum {
-    KOME_LOG_NONE  = 0,
-    KOME_LOG_ERROR = 1,
-    KOME_LOG_WARN  = 2,
-    KOME_LOG_INFO  = 3,
-    KOME_LOG_DEBUG = 4
-} KomeLogLevel;
 
 /* ========================================================================
    Core API — the 8 functions most apps need
@@ -217,11 +182,6 @@ KOME_API void      kome_close(KomeEngine *engine);
 /* Identity — call once after open, before any put/delete */
 KOME_API KomeError kome_set_identity(KomeEngine *engine,
                                       const uint8_t *key_material, size_t len);
-
-/* Rotate identity to new key material. Migrates all ACL entries from old
- * fingerprint to new fingerprint. Identity must already be set. */
-KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
-    const uint8_t *new_key_material, size_t new_key_len);
 
 /* Write a key-value pair. Syncs automatically to connected peers. */
 KOME_API KomeError kome_put(KomeEngine *engine,
@@ -245,13 +205,6 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
 /* Read a value. Caller must kome_free_value() the returned buffer.
  * Returns KOME_ERR_NOT_FOUND for tombstoned (deleted) entries. */
 KOME_API KomeError kome_get(KomeEngine *engine,
-    const char *ns, const uint8_t *key, size_t key_len,
-    uint8_t **value_out, size_t *value_len_out,
-    KomeEntryMeta *meta_out);
-
-/* Like kome_get but returns KOME_OK even for tombstoned entries.
- * Use this when you need to inspect tombstone metadata. */
-KOME_API KomeError kome_get_with_tombstones(KomeEngine *engine,
     const char *ns, const uint8_t *key, size_t key_len,
     uint8_t **value_out, size_t *value_len_out,
     KomeEntryMeta *meta_out);
@@ -288,8 +241,20 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
  */
 KOME_API KomeError kome_sync_with(KomeEngine *engine, const uint8_t *peer_fp);
 
+/* Declare which namespaces this engine wants to sync.
+ * Only entries in these namespaces are sent/received during sync.
+ * Pass NULL/0 to sync all namespaces (default behavior). */
+KOME_API KomeError kome_set_sync_namespaces(KomeEngine *engine,
+    const char **namespaces, size_t count);
+
+/* Set a time-to-live for entries in a namespace.
+ * Entries older than ttl_sec are automatically garbage-collected
+ * and rejected during sync. 0 = no expiry (default). */
+KOME_API KomeError kome_set_entry_ttl(KomeEngine *engine,
+    const char *ns, uint64_t ttl_sec);
+
 /* ========================================================================
-   Advanced API — replication, introspection, tuning
+   Advanced API — introspection, tuning
    ======================================================================== */
 
 /* Metadata-only read (no value copy) */
@@ -301,21 +266,6 @@ KOME_API KomeError kome_get_meta(KomeEngine *engine,
 KOME_API KomeError kome_version_vector(KomeEngine *engine,
     KomeVersionEntry **entries_out, size_t *count_out);
 KOME_API void      kome_free_version_vector(KomeVersionEntry *entries);
-
-/* Replication targets */
-KOME_API KomeError kome_set_replication(KomeEngine *engine,
-    const char *ns, uint32_t target_n);
-KOME_API KomeError kome_replication_status(KomeEngine *engine,
-    const char *ns, const uint8_t *key, size_t key_len,
-    uint32_t *confirmed_out, uint32_t *target_out);
-
-/* Namespace configuration */
-KOME_API KomeError kome_configure_namespace(KomeEngine *engine,
-    const KomeNamespaceConfig *config);
-KOME_API KomeError kome_get_namespace_config(KomeEngine *engine,
-    const char *ns, KomeNamespaceConfig *out);
-KOME_API KomeError kome_remove_namespace(KomeEngine *engine, const char *ns);
-KOME_API void      kome_free_namespace_config(KomeNamespaceConfig *config);
 
 /* Namespace and key listing */
 KOME_API KomeError kome_list_namespaces(KomeEngine *engine,
@@ -345,20 +295,6 @@ KOME_API void kome_on_sync_done(KomeEngine *engine,
     KomeSyncDoneCallback cb, void *ud);
 KOME_API void kome_on_sync_progress(KomeEngine *engine,
     KomeSyncProgressCallback cb, void *ud);
-KOME_API void kome_on_replication_change(KomeEngine *engine,
-    KomeReplicationChangeCallback cb, void *ud);
-
-/* Tuning */
-KOME_API void      kome_set_log_level(KomeEngine *engine, KomeLogLevel level);
-
-/* Per-peer write rate limiting.
- * Limits incoming writes from any single peer within a 60-second window.
- * Default: 50 MiB/min bytes, 1000 entries/min.
- * When a peer exceeds either limit, subsequent entries are dropped until
- * the window resets. */
-KOME_API KomeError kome_set_peer_limits(KomeEngine *engine,
-    uint64_t max_bytes_per_minute,
-    uint64_t max_entries_per_minute);
 
 /* Info */
 KOME_API KomeError    kome_stats(KomeEngine *engine, KomeStats *out);

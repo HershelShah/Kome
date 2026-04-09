@@ -1,10 +1,5 @@
 #include "kome_engine.hpp"
 #include "kome_util.hpp"
-#include "kome_sign.hpp"
-#include "kome_noise.hpp"
-extern "C" {
-#include "monocypher.h"
-}
 #include <cstring>
 #include <cstdlib>
 
@@ -43,8 +38,6 @@ KOME_API void kome_close(KomeEngine *engine) {
     {
         std::lock_guard<std::mutex> lock(engine->mu);
         engine->sync_mgr.reset();
-        engine->noise_transport.reset();
-        engine->transport_adapter.reset();
         engine->log->close();
     }
     delete engine;
@@ -59,80 +52,12 @@ KOME_API KomeError kome_set_identity(KomeEngine *engine, const uint8_t *key_mate
     kome::sha256(key_material, len, engine->identity);
     engine->identity_set = true;
 
-    /* Store the raw key material for signing (up to 64 bytes) */
-    size_t store_len = len > 64 ? 64 : len;
-    std::memcpy(engine->identity_key, key_material, store_len);
-    engine->identity_key_len = store_len;
-
-    /* Derive Noise static keypair:
-     * noise_static_private = SHA-256("kome-noise-static" || key_material), then clamp */
-    {
-        static const char prefix[] = "kome-noise-static";
-        static const size_t prefix_len = sizeof(prefix) - 1;
-        std::vector<uint8_t> buf(prefix_len + len);
-        std::memcpy(buf.data(), prefix, prefix_len);
-        std::memcpy(buf.data() + prefix_len, key_material, len);
-        kome::sha256(buf.data(), buf.size(), engine->noise_static_private);
-
-        /* Clamp for Curve25519 */
-        engine->noise_static_private[0]  &= 248;
-        engine->noise_static_private[31] &= 127;
-        engine->noise_static_private[31] |= 64;
-
-        crypto_x25519_public_key(engine->noise_static_public,
-                                  engine->noise_static_private);
-        engine->noise_keys_derived = true;
-    }
-
     std::map<std::string, uint64_t> vv;
     engine->log->get_version_vector(vv);
     std::string id_key((const char*)engine->identity, 32);
     auto it = vv.find(id_key);
     if (it != vv.end())
         engine->next_seq = it->second + 1;
-
-    return KOME_OK;
-}
-
-KOME_API KomeError kome_rotate_identity(KomeEngine *engine,
-    const uint8_t *new_key_material, size_t new_key_len)
-{
-    if (!engine || !new_key_material || new_key_len == 0) return KOME_ERR_MISUSE;
-
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-    if (!engine->identity_set) return KOME_ERR_MISUSE;
-
-    uint8_t new_fp[32];
-    kome::sha256(new_key_material, new_key_len, new_fp);
-
-    KomeError err = engine->log->rotate_acl_fingerprint(engine->identity, new_fp);
-    if (err != KOME_OK) return err;
-
-    std::memcpy(engine->identity, new_fp, 32);
-
-    /* Update stored key material for signing */
-    size_t store_len = new_key_len > 64 ? 64 : new_key_len;
-    std::memcpy(engine->identity_key, new_key_material, store_len);
-    engine->identity_key_len = store_len;
-
-    /* Re-derive Noise static keypair from new key material */
-    {
-        static const char prefix[] = "kome-noise-static";
-        static const size_t prefix_len = sizeof(prefix) - 1;
-        std::vector<uint8_t> buf(prefix_len + new_key_len);
-        std::memcpy(buf.data(), prefix, prefix_len);
-        std::memcpy(buf.data() + prefix_len, new_key_material, new_key_len);
-        kome::sha256(buf.data(), buf.size(), engine->noise_static_private);
-
-        engine->noise_static_private[0]  &= 248;
-        engine->noise_static_private[31] &= 127;
-        engine->noise_static_private[31] |= 64;
-
-        crypto_x25519_public_key(engine->noise_static_public,
-                                  engine->noise_static_private);
-        engine->noise_keys_derived = true;
-    }
 
     return KOME_OK;
 }
@@ -163,18 +88,8 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         meta.value_len = (uint32_t)value_len;
         meta.tombstone = 0;
 
-        /* Sign the entry */
-        kome::sign_entry(engine->identity_key, engine->identity_key_len,
-                         ns, key, key_len, meta.hash,
-                         meta.timestamp_us, meta.seq, meta.author,
-                         meta.signature);
-
         KomeError err = engine->log->put_entry(ns, key, key_len, value, value_len, &meta);
         if (err != KOME_OK) return err;
-
-        /* Auto-create namespace config if not configured (owner-only) */
-        if (!engine->log->has_namespace_config(ns))
-            engine->log->put_namespace_config(ns, engine->tombstone_ttl_sec, nullptr, 0);
 
         err = engine->log->update_version_vector(meta.author, meta.seq);
         if (err != KOME_OK) return err;
@@ -183,19 +98,8 @@ KOME_API KomeError kome_put(KomeEngine *engine,
         sync = engine->sync_mgr;
     }
 
-    if (sync) {
-        kome::LogEntry le;
-        le.ns = ns;
-        le.key.assign(key, key + key_len);
-        le.value.assign(value, value + value_len);
-        le.timestamp_us = meta.timestamp_us;
-        std::memcpy(le.author, meta.author, 32);
-        le.seq = meta.seq;
-        std::memcpy(le.hash, meta.hash, 32);
-        le.tombstone = 0;
-        std::memcpy(le.signature, meta.signature, 64);
-        sync->on_local_write(le);
-    }
+    if (sync)
+        sync->on_local_write(kome::Entry::from_meta(meta, ns, key, key_len, value, value_len));
 
     return KOME_OK;
 }
@@ -240,12 +144,6 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
             meta.value_len = (uint32_t)e.value_len;
             meta.tombstone = 0;
 
-            /* Sign the entry */
-            kome::sign_entry(engine->identity_key, engine->identity_key_len,
-                             e.ns, e.key, e.key_len, meta.hash,
-                             meta.timestamp_us, meta.seq, meta.author,
-                             meta.signature);
-
             err = engine->log->put_entry(e.ns, e.key, e.key_len,
                                           e.value, e.value_len, &meta);
             if (err != KOME_OK) {
@@ -253,10 +151,6 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
                 engine->next_seq -= (i + 1);
                 return err;
             }
-
-            /* Auto-create namespace config if not configured (owner-only) */
-            if (!engine->log->has_namespace_config(e.ns))
-                engine->log->put_namespace_config(e.ns, engine->tombstone_ttl_sec, nullptr, 0);
 
             err = engine->log->update_version_vector(meta.author, meta.seq);
             if (err != KOME_OK) {
@@ -284,17 +178,10 @@ KOME_API KomeError kome_put_batch(KomeEngine *engine,
         std::vector<kome::LogEntry> log_entries;
         log_entries.reserve(count);
         for (size_t i = 0; i < count; i++) {
-            kome::LogEntry le;
-            le.ns = entries[i].ns;
-            le.key.assign(entries[i].key, entries[i].key + entries[i].key_len);
-            le.value.assign(entries[i].value, entries[i].value + entries[i].value_len);
-            le.timestamp_us = metas[i].timestamp_us;
-            std::memcpy(le.author, metas[i].author, 32);
-            le.seq = metas[i].seq;
-            std::memcpy(le.hash, metas[i].hash, 32);
-            le.tombstone = 0;
-            std::memcpy(le.signature, metas[i].signature, 64);
-            log_entries.push_back(std::move(le));
+            log_entries.push_back(kome::Entry::from_meta(
+                metas[i], entries[i].ns,
+                entries[i].key, entries[i].key_len,
+                entries[i].value, entries[i].value_len));
         }
         sync->on_local_write_batch(log_entries);
     }
@@ -326,18 +213,8 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
         meta.value_len = 0;
         meta.tombstone = 1;
 
-        /* Sign the tombstone entry */
-        kome::sign_entry(engine->identity_key, engine->identity_key_len,
-                         ns, key, key_len, meta.hash,
-                         meta.timestamp_us, meta.seq, meta.author,
-                         meta.signature);
-
         KomeError err = engine->log->delete_entry(ns, key, key_len, &meta);
         if (err != KOME_OK) return err;
-
-        /* Auto-create namespace config if not configured (owner-only) */
-        if (!engine->log->has_namespace_config(ns))
-            engine->log->put_namespace_config(ns, engine->tombstone_ttl_sec, nullptr, 0);
 
         err = engine->log->update_version_vector(meta.author, meta.seq);
         if (err != KOME_OK) return err;
@@ -346,18 +223,8 @@ KOME_API KomeError kome_delete(KomeEngine *engine,
         sync = engine->sync_mgr;
     }
 
-    if (sync) {
-        kome::LogEntry le;
-        le.ns = ns;
-        le.key.assign(key, key + key_len);
-        le.timestamp_us = meta.timestamp_us;
-        std::memcpy(le.author, meta.author, 32);
-        le.seq = meta.seq;
-        std::memcpy(le.hash, meta.hash, 32);
-        le.tombstone = 1;
-        std::memcpy(le.signature, meta.signature, 64);
-        sync->on_local_write(le);
-    }
+    if (sync)
+        sync->on_local_write(kome::Entry::from_meta(meta, ns, key, key_len, nullptr, 0));
 
     return KOME_OK;
 }
@@ -379,67 +246,13 @@ KOME_API KomeError kome_get(KomeEngine *engine,
     if (entry.tombstone) {
         *value_out = nullptr;
         *value_len_out = 0;
-        if (meta_out) {
-            meta_out->timestamp_us = entry.timestamp_us;
-            std::memcpy(meta_out->author, entry.author, 32);
-            meta_out->seq = entry.seq;
-            std::memcpy(meta_out->hash, entry.hash, 32);
-            meta_out->value_len = 0;
-            meta_out->tombstone = 1;
-            std::memcpy(meta_out->signature, entry.signature, 64);
-        }
+        if (meta_out) entry.to_meta(meta_out);
         return KOME_ERR_NOT_FOUND;
     }
 
-    if (meta_out) {
-        meta_out->timestamp_us = entry.timestamp_us;
-        std::memcpy(meta_out->author, entry.author, 32);
-        meta_out->seq = entry.seq;
-        std::memcpy(meta_out->hash, entry.hash, 32);
-        meta_out->value_len = (uint32_t)entry.value.size();
-        meta_out->tombstone = 0;
-        std::memcpy(meta_out->signature, entry.signature, 64);
-    }
+    if (meta_out) entry.to_meta(meta_out);
 
     if (entry.value.empty()) {
-        *value_out = nullptr;
-        *value_len_out = 0;
-    } else {
-        auto *buf = (uint8_t*)std::malloc(entry.value.size());
-        if (!buf) return KOME_ERR_INTERNAL;
-        std::memcpy(buf, entry.value.data(), entry.value.size());
-        *value_out = buf;
-        *value_len_out = entry.value.size();
-    }
-
-    return KOME_OK;
-}
-
-KOME_API KomeError kome_get_with_tombstones(KomeEngine *engine,
-    const char *ns, const uint8_t *key, size_t key_len,
-    uint8_t **value_out, size_t *value_len_out,
-    KomeEntryMeta *meta_out)
-{
-    if (!engine || !ns || !key || !value_out || !value_len_out) return KOME_ERR_MISUSE;
-
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-
-    kome::LogEntry entry;
-    KomeError err = engine->log->get_entry(ns, key, key_len, &entry);
-    if (err != KOME_OK) return err;
-
-    if (meta_out) {
-        meta_out->timestamp_us = entry.timestamp_us;
-        std::memcpy(meta_out->author, entry.author, 32);
-        meta_out->seq = entry.seq;
-        std::memcpy(meta_out->hash, entry.hash, 32);
-        meta_out->value_len = (uint32_t)entry.value.size();
-        meta_out->tombstone = entry.tombstone;
-        std::memcpy(meta_out->signature, entry.signature, 64);
-    }
-
-    if (entry.tombstone || entry.value.empty()) {
         *value_out = nullptr;
         *value_len_out = 0;
     } else {
@@ -470,13 +283,7 @@ KOME_API KomeError kome_get_meta(KomeEngine *engine,
     KomeError err = engine->log->get_entry(ns, key, key_len, &entry);
     if (err != KOME_OK) return err;
 
-    meta_out->timestamp_us = entry.timestamp_us;
-    std::memcpy(meta_out->author, entry.author, 32);
-    meta_out->seq = entry.seq;
-    std::memcpy(meta_out->hash, entry.hash, 32);
-    meta_out->value_len = (uint32_t)entry.value.size();
-    meta_out->tombstone = entry.tombstone;
-    std::memcpy(meta_out->signature, entry.signature, 64);
+    entry.to_meta(meta_out);
 
     return KOME_OK;
 }
@@ -489,26 +296,9 @@ KOME_API KomeError kome_attach_transport(KomeEngine *engine, KomeTransport *tran
 
     engine->transport = transport;
     engine->sync_mgr.reset();
-    engine->noise_transport.reset();
-    engine->transport_adapter.reset();
-
-    engine->transport_adapter = std::make_unique<kome::KomeGenericTransport>(transport);
-
-    kome::KomeTransportAdapter *sync_transport = engine->transport_adapter.get();
-
-    /* If Noise keys are derived, wrap with encrypted transport */
-    if (engine->noise_keys_derived) {
-        engine->noise_transport = std::make_shared<kome::KomeNoiseTransport>(
-            engine->transport_adapter.get(),
-            engine->noise_static_private,
-            engine->noise_static_public,
-            engine->identity);
-        sync_transport = engine->noise_transport.get();
-    }
 
     engine->sync_mgr = std::make_shared<kome::KomeSyncManager>(engine);
-    engine->sync_mgr->set_peer_limits(engine->rate_limit_bytes, engine->rate_limit_entries);
-    engine->sync_mgr->set_transport(sync_transport);
+    engine->sync_mgr->set_transport(transport);
 
     return KOME_OK;
 }
@@ -527,6 +317,37 @@ KOME_API KomeError kome_sync_with(KomeEngine *engine, const uint8_t *peer_fp) {
     /* No-op if peer is already syncing or in live mode */
     if (!sync->is_peer_idle(peer_fp)) return KOME_OK;
     sync->initiate_sync(peer_fp);
+    return KOME_OK;
+}
+
+KOME_API KomeError kome_set_sync_namespaces(KomeEngine *engine,
+    const char **namespaces, size_t count)
+{
+    if (!engine) return KOME_ERR_MISUSE;
+    if (count > 0 && !namespaces) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    engine->sync_namespaces.clear();
+    for (size_t i = 0; i < count; i++) {
+        if (!namespaces[i]) return KOME_ERR_MISUSE;
+        engine->sync_namespaces.emplace_back(namespaces[i]);
+    }
+    return KOME_OK;
+}
+
+KOME_API KomeError kome_set_entry_ttl(KomeEngine *engine,
+    const char *ns, uint64_t ttl_sec)
+{
+    if (!engine || !ns) return KOME_ERR_MISUSE;
+
+    std::lock_guard<std::mutex> lock(engine->mu);
+    KomeError err = engine->log->set_entry_ttl(ns, ttl_sec);
+    if (err != KOME_OK) return err;
+
+    if (ttl_sec > 0)
+        engine->entry_ttls[ns] = ttl_sec;
+    else
+        engine->entry_ttls.erase(ns);
     return KOME_OK;
 }
 
@@ -571,23 +392,6 @@ KOME_API KomeError kome_version_vector(KomeEngine *engine,
 
 KOME_API void kome_free_version_vector(KomeVersionEntry *entries) {
     std::free(entries);
-}
-
-KOME_API KomeError kome_set_replication(KomeEngine *engine, const char *ns, uint32_t target_n) {
-    if (!engine || !ns) return KOME_ERR_MISUSE;
-    std::lock_guard<std::mutex> lock(engine->mu);
-    return engine->log->set_replication_target(ns, target_n);
-}
-
-KOME_API KomeError kome_replication_status(KomeEngine *engine,
-    const char *ns, const uint8_t *key, size_t key_len,
-    uint32_t *confirmed_out, uint32_t *target_out)
-{
-    if (!engine || !ns || !key) return KOME_ERR_MISUSE;
-    std::lock_guard<std::mutex> lock(engine->mu);
-    KomeError err = engine->log->get_replication_confirmed(ns, key, key_len, confirmed_out);
-    if (err != KOME_OK) return err;
-    return engine->log->get_replication_target(ns, target_out);
 }
 
 KOME_API KomeError kome_list_namespaces(KomeEngine *engine,
@@ -756,13 +560,7 @@ KOME_API KomeError kome_get_all(KomeEngine *engine, const char *ns,
             vptrs[i] = nullptr;
         }
 
-        metas[i].timestamp_us = e.timestamp_us;
-        std::memcpy(metas[i].author, e.author, 32);
-        metas[i].seq = e.seq;
-        std::memcpy(metas[i].hash, e.hash, 32);
-        metas[i].value_len = (uint32_t)e.value.size();
-        metas[i].tombstone = e.tombstone;
-        std::memcpy(metas[i].signature, e.signature, 64);
+        e.to_meta(&metas[i]);
     }
 
     *keys_out = kptrs;
@@ -836,103 +634,6 @@ KOME_API void kome_on_sync_progress(KomeEngine *engine, KomeSyncProgressCallback
     std::lock_guard<std::mutex> lock(engine->mu);
     engine->on_sync_progress_cb = cb;
     engine->on_sync_progress_ud = ud;
-}
-
-KOME_API void kome_on_replication_change(KomeEngine *engine, KomeReplicationChangeCallback cb, void *ud) {
-    if (!engine) return;
-    std::lock_guard<std::mutex> lock(engine->mu);
-    engine->on_repl_change_cb = cb;
-    engine->on_repl_change_ud = ud;
-}
-
-KOME_API KomeError kome_configure_namespace(KomeEngine *engine,
-    const KomeNamespaceConfig *config)
-{
-    if (!engine || !config || !config->name) return KOME_ERR_MISUSE;
-
-    size_t ns_len = std::strlen(config->name);
-    if (ns_len == 0 || ns_len > KOME_MAX_NS_LEN) return KOME_ERR_TOO_LARGE;
-    if (config->acl_count > 0 && !config->acl) return KOME_ERR_MISUSE;
-
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-
-    return engine->log->put_namespace_config(
-        config->name, config->tombstone_ttl_sec,
-        config->acl, config->acl_count);
-}
-
-KOME_API KomeError kome_get_namespace_config(KomeEngine *engine,
-    const char *ns, KomeNamespaceConfig *out)
-{
-    if (!engine || !ns || !out) return KOME_ERR_MISUSE;
-
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-
-    uint64_t ttl = 0;
-    std::vector<std::pair<std::string, int>> acl;
-    KomeError err = engine->log->get_namespace_config(ns, &ttl, acl);
-    if (err != KOME_OK) return err;
-
-    out->name = strdup(ns);
-    if (!out->name) return KOME_ERR_INTERNAL;
-
-    out->tombstone_ttl_sec = ttl;
-    out->acl_count = acl.size();
-
-    if (acl.empty()) {
-        out->acl = nullptr;
-    } else {
-        out->acl = (KomeNamespaceACLEntry*)std::malloc(
-            acl.size() * sizeof(KomeNamespaceACLEntry));
-        if (!out->acl) {
-            std::free((void*)out->name);
-            out->name = nullptr;
-            return KOME_ERR_INTERNAL;
-        }
-        for (size_t i = 0; i < acl.size(); i++) {
-            std::memcpy(out->acl[i].fingerprint, acl[i].first.data(), 32);
-            out->acl[i].role = (KomeRole)acl[i].second;
-        }
-    }
-
-    return KOME_OK;
-}
-
-KOME_API KomeError kome_remove_namespace(KomeEngine *engine, const char *ns) {
-    if (!engine || !ns) return KOME_ERR_MISUSE;
-
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->closed.load(std::memory_order_acquire)) return KOME_ERR_MISUSE;
-
-    return engine->log->remove_namespace_config(ns);
-}
-
-KOME_API void kome_free_namespace_config(KomeNamespaceConfig *config) {
-    if (!config) return;
-    std::free((void*)config->name);
-    std::free(config->acl);
-    config->name = nullptr;
-    config->acl = nullptr;
-    config->acl_count = 0;
-}
-
-KOME_API void kome_set_log_level(KomeEngine *engine, KomeLogLevel level) {
-    if (!engine) return;
-    engine->log_level.store(level, std::memory_order_relaxed);
-}
-
-KOME_API KomeError kome_set_peer_limits(KomeEngine *engine,
-    uint64_t max_bytes_per_minute, uint64_t max_entries_per_minute) {
-    if (!engine) return KOME_ERR_MISUSE;
-    std::lock_guard<std::mutex> lock(engine->mu);
-    if (engine->sync_mgr)
-        engine->sync_mgr->set_peer_limits(max_bytes_per_minute, max_entries_per_minute);
-    /* Store on engine so limits persist across sync_mgr recreations */
-    engine->rate_limit_bytes = max_bytes_per_minute;
-    engine->rate_limit_entries = max_entries_per_minute;
-    return KOME_OK;
 }
 
 KOME_API KomeError kome_stats(KomeEngine *engine, KomeStats *out) {

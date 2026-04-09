@@ -1,10 +1,30 @@
 #ifndef KOME_LOG_HPP
 #define KOME_LOG_HPP
 
-#include "kome.h"
-#include <cstdint>
-#include <string>
-#include <vector>
+/**
+ * @file kome_log.hpp
+ * @brief SQLite storage layer.
+ *
+ * KomeLog manages all persistent state: entries, version vectors,
+ * namespace TTL settings, and tombstone garbage collection.
+ *
+ * ## Schema
+ *
+ * ```
+ * change_log       (ns, key) → (value, timestamp_us, author, seq, hash, value_len, tombstone)
+ * version_vector   (author)  → (seq)      -- highest seq seen per author
+ * namespace_settings (ns)    → (tombstone_ttl_sec)  -- per-ns entry TTL
+ * ```
+ *
+ * ## Thread safety
+ *
+ * KomeLog is NOT thread-safe on its own. All access is serialized by
+ * the engine lock (KomeEngine::mu). The SQLite handle is opened with
+ * SQLITE_OPEN_FULLMUTEX for defense-in-depth but the engine lock is
+ * the primary concurrency mechanism.
+ */
+
+#include "kome_entry.hpp"
 #include <map>
 
 struct sqlite3;
@@ -12,17 +32,8 @@ struct sqlite3_stmt;
 
 namespace kome {
 
-struct LogEntry {
-    std::string             ns;
-    std::vector<uint8_t>    key;
-    std::vector<uint8_t>    value;
-    uint64_t                timestamp_us = 0;
-    uint8_t                 author[32] = {};
-    uint64_t                seq = 0;
-    uint8_t                 hash[32] = {};
-    uint8_t                 tombstone = 0;
-    uint8_t                 signature[64] = {};  /* Entry signature (placeholder: SHA-256 MAC) */
-};
+/// Alias — LogEntry and Entry are the same type
+using LogEntry = Entry;
 
 class KomeLog {
 public:
@@ -34,6 +45,7 @@ public:
                    size_t encryption_key_len = 0);
     void close();
 
+    /** Insert or replace an entry. Tombstones are stored with NULL value. */
     KomeError put_entry(const char *ns, const uint8_t *key, size_t key_len,
                         const uint8_t *value, size_t value_len,
                         const KomeEntryMeta *meta);
@@ -42,42 +54,26 @@ public:
     KomeError delete_entry(const char *ns, const uint8_t *key, size_t key_len,
                            const KomeEntryMeta *meta);
 
+    /** Update the version vector: set author's seq to max(current, new). */
     KomeError update_version_vector(const uint8_t author[32], uint64_t seq);
     KomeError get_version_vector(std::map<std::string, uint64_t> &vv);
 
-    KomeError update_peer_state(const uint8_t peer_fp[32],
-                                const uint8_t author[32], uint64_t seq);
-
+    /** Get entries by a specific author after a given sequence number. */
     KomeError get_entries_after(const uint8_t author[32], uint64_t after_seq,
                                 std::vector<LogEntry> &out);
+    /** Diff our version vector against a remote's to find entries they're missing. */
     KomeError get_missing_entries(const std::map<std::string, uint64_t> &remote_vv,
                                    std::vector<LogEntry> &out);
 
-    KomeError set_replication_target(const char *ns, uint32_t target_n);
-    KomeError get_replication_target(const char *ns, uint32_t *target_out);
-    KomeError get_replication_confirmed(const char *ns, const uint8_t *key,
-                                        size_t key_len, uint32_t *confirmed_out);
-    KomeError increment_replication_peer(const char *ns, const uint8_t *key,
-                                          size_t key_len, const uint8_t peer_fp[32]);
+    /** Set per-namespace entry TTL (persisted in namespace_settings table). */
+    KomeError set_entry_ttl(const char *ns, uint64_t ttl_sec);
 
+    /** Delete tombstones older than their namespace's TTL (or default). */
     KomeError gc_tombstones(uint64_t default_ttl_seconds);
-    KomeError gc_values();
 
     KomeError begin_transaction();
     KomeError commit_transaction();
     KomeError rollback_transaction();
-
-    /* Namespace configuration */
-    KomeError put_namespace_config(const char *ns, uint64_t tombstone_ttl_sec,
-                                    const KomeNamespaceACLEntry *acl, size_t acl_count);
-    KomeError get_namespace_config(const char *ns, uint64_t *tombstone_ttl_sec,
-                                    std::vector<std::pair<std::string, int>> &acl);
-    bool has_namespace_config(const char *ns);
-    KomeError remove_namespace_config(const char *ns);
-    int get_peer_role(const char *ns, const uint8_t peer_fp[32]);
-    KomeError get_peer_namespace_access(const uint8_t peer_fp[32],
-                                         std::map<std::string, int> &out);
-    KomeError rotate_acl_fingerprint(const uint8_t old_fp[32], const uint8_t new_fp[32]);
 
     KomeError get_stats(KomeStats *out);
     KomeError list_namespaces(std::vector<std::string> &out);
@@ -87,34 +83,16 @@ public:
 private:
     sqlite3 *db_ = nullptr;
 
-    /* All prepared statements — initialized once in prepare_stmts() */
     sqlite3_stmt *stmt_put_          = nullptr;
     sqlite3_stmt *stmt_get_          = nullptr;
     sqlite3_stmt *stmt_update_vv_    = nullptr;
     sqlite3_stmt *stmt_get_vv_       = nullptr;
-    sqlite3_stmt *stmt_update_ps_    = nullptr;
     sqlite3_stmt *stmt_after_        = nullptr;
-    sqlite3_stmt *stmt_del_repl_     = nullptr;
-    sqlite3_stmt *stmt_set_repl_     = nullptr;
-    sqlite3_stmt *stmt_get_repl_     = nullptr;
-    sqlite3_stmt *stmt_count_repl_   = nullptr;
-    sqlite3_stmt *stmt_inc_repl_     = nullptr;
     sqlite3_stmt *stmt_gc_tomb_      = nullptr;
     sqlite3_stmt *stmt_list_ns_      = nullptr;
     sqlite3_stmt *stmt_list_keys_    = nullptr;
     sqlite3_stmt *stmt_get_all_      = nullptr;
-
-    /* Namespace configuration statements */
-    sqlite3_stmt *stmt_put_ns_settings_  = nullptr;
-    sqlite3_stmt *stmt_del_ns_settings_  = nullptr;
-    sqlite3_stmt *stmt_del_ns_acl_by_ns_ = nullptr;
-    sqlite3_stmt *stmt_put_ns_acl_       = nullptr;
-    sqlite3_stmt *stmt_get_ns_settings_  = nullptr;
-    sqlite3_stmt *stmt_get_ns_acl_       = nullptr;
-    sqlite3_stmt *stmt_has_ns_           = nullptr;
-    sqlite3_stmt *stmt_get_peer_role_    = nullptr;
-    sqlite3_stmt *stmt_get_peer_access_  = nullptr;
-    sqlite3_stmt *stmt_rotate_acl_fp_   = nullptr;
+    sqlite3_stmt *stmt_set_ttl_      = nullptr;
 
     KomeError create_tables();
     void finalize_stmts();

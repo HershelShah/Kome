@@ -52,12 +52,6 @@ set_target_properties(cwpack PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(cwpack PUBLIC vendor)
 target_compile_options(cwpack PRIVATE -w)
 
-# --- Vendored Monocypher (minimal X25519 + ChaCha20-Poly1305) -------------
-add_library(monocypher STATIC vendor/monocypher.c)
-set_target_properties(monocypher PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(monocypher PUBLIC vendor)
-target_compile_options(monocypher PRIVATE -w)
-
 # --- Kome library ----------------------------------------------------------
 set(KOME_SOURCES
     src/kome_engine.cpp
@@ -66,10 +60,6 @@ set(KOME_SOURCES
     src/kome_wire.cpp
     src/kome_conflict.cpp
     src/kome_sync.cpp
-    src/kome_relay_transport.cpp
-    src/kome_easy.cpp
-    src/kome_sign.cpp
-    src/kome_noise.cpp
 )
 
 add_library(kome SHARED ${KOME_SOURCES})
@@ -78,7 +68,7 @@ target_include_directories(kome
     PRIVATE ${CMAKE_SOURCE_DIR}/src
             ${CMAKE_SOURCE_DIR}/vendor
 )
-target_link_libraries(kome PRIVATE sqlite3 cwpack monocypher)
+target_link_libraries(kome PRIVATE sqlite3 cwpack)
 target_compile_definitions(kome PRIVATE KOME_BUILDING)
 set_target_properties(kome PROPERTIES
     C_VISIBILITY_PRESET hidden
@@ -92,7 +82,7 @@ target_include_directories(kome_static
     PRIVATE ${CMAKE_SOURCE_DIR}/src
             ${CMAKE_SOURCE_DIR}/vendor
 )
-target_link_libraries(kome_static PRIVATE sqlite3 cwpack monocypher)
+target_link_libraries(kome_static PRIVATE sqlite3 cwpack)
 target_compile_definitions(kome_static PRIVATE KOME_BUILDING)
 
 # Link pthreads and dl on Linux
@@ -127,13 +117,8 @@ kome_add_test(test_engine   tests/gtest_engine.cpp)
 kome_add_test(test_wire     tests/gtest_wire.cpp)
 kome_add_test(test_conflict tests/gtest_conflict.cpp)
 kome_add_test(test_sync     tests/gtest_sync.cpp)
-kome_add_test(test_replication tests/gtest_replication.cpp)
 kome_add_test(test_edge_cases tests/gtest_edge_cases.cpp)
-kome_add_test(test_namespace_config tests/gtest_namespace_config.cpp)
 kome_add_test(test_encryption tests/gtest_encryption.cpp)
-kome_add_test(test_easy_and_relay tests/gtest_easy_and_relay.cpp)
-kome_add_test(test_signing    tests/gtest_signing.cpp)
-kome_add_test(test_noise      tests/gtest_noise.cpp)
 kome_add_test(test_integration tests/gtest_integration.cpp)
 
 # --- Install rules ---------------------------------------------------------
@@ -151,8 +136,6 @@ install(TARGETS kome_static
 )
 install(FILES
     include/kome.h
-    src/kome_easy.h
-    src/kome_relay_transport.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # pkg-config

@@ -221,24 +221,6 @@ TEST_F(EngineTest, GetDeletedValueReturnsNotFound) {
     EXPECT_EQ(1, read_meta.tombstone);
 }
 
-TEST_F(EngineTest, GetWithTombstonesReturnsOkForDeleted) {
-    set_test_identity();
-
-    uint8_t key[] = "dkey2";
-    uint8_t value[] = "data";
-    KomeEntryMeta m;
-    ASSERT_EQ(KOME_OK, kome_put(engine, "test", key, 5, value, 4, &m));
-    ASSERT_EQ(KOME_OK, kome_delete(engine, "test", key, 5, &m));
-
-    uint8_t *out = nullptr;
-    size_t out_len = 0;
-    KomeEntryMeta read_meta = {};
-    ASSERT_EQ(KOME_OK, kome_get_with_tombstones(engine, "test", key, 5, &out, &out_len, &read_meta));
-    EXPECT_EQ(nullptr, out);
-    EXPECT_EQ(0u, out_len);
-    EXPECT_EQ(1, read_meta.tombstone);
-}
-
 TEST_F(EngineTest, GetValueNullMeta) {
     set_test_identity();
 
@@ -338,30 +320,6 @@ TEST_F(EngineTest, ListNamespaces) {
     kome_free_namespaces(ns_list, count);
 }
 
-/* --- Replication --------------------------------------------------------- */
-
-TEST_F(EngineTest, SetReplication) {
-    ASSERT_EQ(KOME_OK, kome_set_replication(engine, "contacts", 2));
-
-    set_test_identity();
-    uint8_t key[] = "k";
-    uint8_t val[] = "v";
-    KomeEntryMeta m;
-    kome_put(engine, "contacts", key, 1, val, 1, &m);
-
-    uint32_t confirmed = 99, target = 99;
-    ASSERT_EQ(KOME_OK, kome_replication_status(engine, "contacts", key, 1,
-                                                &confirmed, &target));
-    EXPECT_EQ(0u, confirmed);
-    EXPECT_EQ(2u, target);
-}
-
-/* --- Log level ----------------------------------------------------------- */
-
-TEST_F(EngineTest, SetLogLevel) {
-    kome_set_log_level(engine, KOME_LOG_DEBUG);
-}
-
 /* --- Callback from on_remote_change can call kome API ------------------- */
 
 TEST_F(EngineTest, CallbackCanCallApi) {
@@ -398,25 +356,6 @@ TEST_F(EngineTest, CallbackCanCallApi) {
     uint8_t v[] = "cb_val";
     KomeEntryMeta m;
     kome_put(e2, "test", k, 6, v, 6, &m);
-
-    /* Configure namespace for sync */
-    KomeNamespaceACLEntry acl1;
-    std::memset(acl1.fingerprint, 0xBB, 32);  /* B's loopback fp */
-    acl1.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig nscfg1 = {};
-    nscfg1.name = "test";
-    nscfg1.acl = &acl1;
-    nscfg1.acl_count = 1;
-    kome_configure_namespace(engine, &nscfg1);
-
-    KomeNamespaceACLEntry acl2;
-    std::memset(acl2.fingerprint, 0xAA, 32);  /* A's loopback fp */
-    acl2.role = KOME_ROLE_WRITE;
-    KomeNamespaceConfig nscfg2 = {};
-    nscfg2.name = "test";
-    nscfg2.acl = &acl2;
-    nscfg2.acl_count = 1;
-    kome_configure_namespace(e2, &nscfg2);
 
     /* Connect via loopback */
     LoopbackPair lb;
