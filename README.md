@@ -1,6 +1,6 @@
 # Kome
 
-Peer-to-peer data replication middleware. C99 public API, C++17 internals, <1 MB binary, ~23 functions.
+Peer-to-peer data replication middleware. C99 public API, C++17 internals, <1 MB binary, 29 functions.
 
 Kome handles replication, conflict resolution, and version tracking. You own your storage — Kome moves data between peers.
 
@@ -31,7 +31,7 @@ cmake --install build --prefix /usr/local
 ```c
 #include "kome.h"
 
-KomeConfig cfg = { .path = "state.db", .enable_wal = 1, .busy_timeout_ms = 5000 };
+KomeConfig cfg = { .path = "state.db", .busy_timeout_ms = 5000 };
 KomeEngine *engine = NULL;
 kome_open(&cfg, &engine);
 

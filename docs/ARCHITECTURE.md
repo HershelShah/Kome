@@ -25,26 +25,26 @@ transport the app provides), Kome exchanges version vectors to determine who
 has newer data, sends only the missing entries, resolves conflicts, and
 enters live-push mode where subsequent local writes are forwarded instantly.
 
-## Source Map (2,864 lines)
+## Source Map (2,992 lines)
 
 ```
 include/
-  kome.h              321  Public C99 API — all types, constants, 25 functions
+  kome.h              308  Public C99 API — all types, constants, 29 functions
 
 src/
-  kome_entry.hpp       50  Unified Entry struct with to_meta/from_meta helpers
-  kome_engine.hpp      46  KomeEngine struct — the opaque handle behind the C API
-  kome_engine.cpp     667  C API implementation — lifecycle, CRUD, listing, callbacks
-  kome_log.hpp         75  KomeLog class — SQLite storage interface
+  kome_entry.hpp       83  Unified Entry struct with to_meta/from_meta helpers
+  kome_engine.hpp      61  KomeEngine struct — the opaque handle behind the C API
+  kome_engine.cpp     662  C API implementation — lifecycle, CRUD, listing, callbacks
+  kome_log.hpp        104  KomeLog class — SQLite storage interface
   kome_log.cpp        413  SQLite implementation — tables, prepared stmts, queries
-  kome_sync.hpp        77  KomeSyncManager — sync state machine interface
+  kome_sync.hpp       131  KomeSyncManager — sync state machine interface
   kome_sync.cpp       540  Sync protocol — handshake, 5-phase entry processing, gossip
-  kome_wire.hpp        51  Wire protocol types and encode/decode declarations
-  kome_wire.cpp       411  MessagePack serialization using cwpack
-  kome_conflict.hpp    29  Conflict resolution interface
+  kome_wire.hpp        73  Wire protocol types and encode/decode declarations
+  kome_wire.cpp       400  MessagePack serialization using cwpack
+  kome_conflict.hpp    45  Conflict resolution interface
   kome_conflict.cpp    44  LWW default + user callback delegation
-  kome_util.hpp        24  SHA-256, timestamp, key derivation declarations
-  kome_util.cpp       116  SHA-256 implementation, timestamp, derive_db_key
+  kome_util.hpp        26  SHA-256, timestamp, key derivation declarations
+  kome_util.cpp       102  SHA-256 implementation, timestamp, derive_db_key
 ```
 
 ## Data Model
@@ -109,14 +109,14 @@ namespace_settings (ns, tombstone_ttl_sec)  -- per-namespace entry TTL
   kome_close()   Shuts down sync, closes SQLite
 ```
 
-## Sync Protocol (v4)
+## Sync Protocol (v1)
 
 ### Wire Messages
 
 All messages are a 1-byte type prefix followed by a MessagePack payload.
 
 ```
-0x01 SYNC_REQUEST   { pv: 4, vv: {author→seq, ...}, nf: ["ns1","ns2"] }
+0x01 SYNC_REQUEST   { pv: 1, vv: {author→seq, ...}, nf: ["ns1","ns2"] }
 0x02 SYNC_ENTRY     { ns, k, v, ts, a, seq, h, t }
 0x03 SYNC_DONE      (empty — just the type byte)
 0x04 SYNC_ACK       { a: author, seq: N }
@@ -368,7 +368,7 @@ fingerprint with every message (so Kome knows who sent it).
   Send LIVE_ENTRY to each matching peer
 ```
 
-## Public API Summary (24 functions)
+## Public API Summary (29 functions)
 
 ```
 Lifecycle (3):    open, close, set_identity
@@ -377,7 +377,7 @@ Callbacks (5):    on_remote_change, on_remote_change_ns, on_conflict,
                   on_sync_done, on_sync_progress
 Transport (2):    attach_transport, sync_with
 Data Policy (2):  set_sync_namespaces, set_entry_ttl
-Introspection (6): get_meta, version_vector, free_version_vector,
+Introspection (9): get_meta, version_vector, free_version_vector,
                     list_namespaces, free_namespaces,
                     list_keys, free_keys, get_all, free_entries
 Info (3):         stats, errstr, version
