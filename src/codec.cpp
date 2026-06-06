@@ -1,9 +1,11 @@
-/* codec.cpp — canonical record serialization + public codec ABI (M3). */
+/* codec.cpp — canonical record serialization + public codec ABI (M3/M4). */
 #include "codec.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <new>
+
+#include "crypto.h"
 
 namespace ke {
 
@@ -67,7 +69,7 @@ bool get_bytes(const uint8_t *&p, const uint8_t *end, std::string &out) {
 
 } // namespace
 
-void encode_record(const sync_change &c, std::string &out) {
+void encode_signing(const sync_change &c, std::string &out) {
     out.push_back((char)kCodecVersion);
     out.push_back((char)c.kind);
     put_bytes(out, c.ns, c.ns_len);
@@ -79,8 +81,13 @@ void encode_record(const sync_change &c, std::string &out) {
         put_bytes(out, c.value, c.value_len);
         put_u64le(out, c.hlc.physical);
         put_u32le(out, c.hlc.logical);
-        out.append(reinterpret_cast<const char *>(c.site_id), SYNC_SITE_ID_LEN);
     }
+    out.append(reinterpret_cast<const char *>(c.author), SYNC_PUBKEY_LEN);
+}
+
+void encode_record(const sync_change &c, std::string &out) {
+    encode_signing(c, out);
+    out.append(reinterpret_cast<const char *>(c.signature), SYNC_SIG_LEN);
 }
 
 bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
@@ -103,10 +110,13 @@ bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
         if (!get_bytes(p, end, out.value)) return false;
         if (!get_u64le(p, end, out.hlc.physical)) return false;
         if (!get_u32le(p, end, out.hlc.logical)) return false;
-        if (end - p < (long)SYNC_SITE_ID_LEN) return false;
-        std::memcpy(out.site.data(), p, SYNC_SITE_ID_LEN);
-        p += SYNC_SITE_ID_LEN;
     }
+    if (end - p < (long)SYNC_PUBKEY_LEN) return false;
+    std::memcpy(out.author.data(), p, SYNC_PUBKEY_LEN);
+    p += SYNC_PUBKEY_LEN;
+    if (end - p < (long)SYNC_SIG_LEN) return false;
+    std::memcpy(out.signature.data(), p, SYNC_SIG_LEN);
+    p += SYNC_SIG_LEN;
     consumed = (size_t)(p - buf);
     return true;
 }
@@ -121,7 +131,8 @@ sync_change DecodedChange::view() const {
     c.value = (const uint8_t *)value.data();     c.value_len = value.size();
     c.causal_length = causal_length;
     c.hlc = hlc;
-    std::memcpy(c.site_id, site.data(), SYNC_SITE_ID_LEN);
+    std::memcpy(c.author, author.data(), SYNC_PUBKEY_LEN);
+    std::memcpy(c.signature, signature.data(), SYNC_SIG_LEN);
     return c;
 }
 
@@ -159,7 +170,8 @@ int sync_change_decode(const uint8_t *buf, size_t len, sync_change *out,
         out->kind = d.kind;
         out->causal_length = d.causal_length;
         out->hlc = d.hlc;
-        std::memcpy(out->site_id, d.site.data(), SYNC_SITE_ID_LEN);
+        std::memcpy(out->author, d.author.data(), SYNC_PUBKEY_LEN);
+        std::memcpy(out->signature, d.signature.data(), SYNC_SIG_LEN);
 
         /* Allocate owned copies (NULL for empty, freed by free_decoded). */
         auto dup = [](const std::string &s, const uint8_t **dst,
@@ -183,6 +195,22 @@ int sync_change_decode(const uint8_t *buf, size_t len, sync_change *out,
             return SYNC_ERR_NOMEM;
         }
         if (consumed) *consumed = used;
+        return SYNC_OK;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+int sync_change_sign(sync_change *c, const uint8_t *seed) {
+    if (!c || !seed) return SYNC_ERR_INVALID;
+    if (c->kind != SYNC_CHANGE_EXISTENCE && c->kind != SYNC_CHANGE_REGISTER)
+        return SYNC_ERR_INVALID;
+    try {
+        KeyPair kp = keypair_from_seed(seed);
+        std::memcpy(c->author, kp.sign_pk.data(), SYNC_PUBKEY_LEN);
+        std::string signing;
+        encode_signing(*c, signing);
+        sign(kp.sign_sk.data(), signing.data(), signing.size(), c->signature);
         return SYNC_OK;
     } catch (...) {
         return SYNC_ERR_INTERNAL;

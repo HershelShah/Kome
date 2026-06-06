@@ -17,8 +17,10 @@ struct sqlite3;
 namespace ke {
 
 /* Current on-disk schema version. Opening a file with a newer/unknown version
- * fails cleanly (no migration backward). */
-constexpr uint64_t kSchemaVersion = 1;
+ * fails cleanly (no migration backward).
+ *   1 — M2 (site_id, entity, field with site_id)
+ *   2 — M4 (identity seed; per-record author + signature) */
+constexpr uint64_t kSchemaVersion = 2;
 
 class Storage {
 public:
@@ -30,10 +32,10 @@ public:
     Storage(const Storage &) = delete;
     Storage &operator=(const Storage &) = delete;
 
-    /* Populate engine state (namespaces, registers), site_id and clock from
-     * disk. For a fresh database, persists site_id_default as the identity.
+    /* Populate engine state (namespaces, registers), identity and clock from
+     * disk. For a fresh database, derives and persists the identity from seed.
      * Returns false (with *err set) on corruption / schema mismatch. */
-    bool load(sync_engine *e, const SiteId &site_id_default, sync_error *err);
+    bool load(sync_engine *e, const uint8_t seed[32], sync_error *err);
 
     /* Write-through helpers. Group calls between begin()/commit(). */
     bool begin();
@@ -41,11 +43,14 @@ public:
     bool rollback();
 
     bool put_entity(const std::string &ns, const std::string &ent,
-                    uint64_t causal_length, uint64_t db_clock);
+                    uint64_t causal_length, const PubKey &ex_author,
+                    const Sig &ex_sig, uint64_t db_clock);
     bool put_field(const std::string &ns, const std::string &ent,
                    const std::string &field, const std::string &value,
-                   const Hlc &hlc, const SiteId &site, uint64_t db_clock);
+                   const Hlc &hlc, const PubKey &author, const Sig &sig,
+                   uint64_t db_clock);
     bool put_meta_u64(const char *key, uint64_t v);
+    bool put_meta_blob(const char *key, const uint8_t *data, size_t len);
 
 private:
     Storage() = default;

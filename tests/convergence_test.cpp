@@ -28,7 +28,8 @@ struct OwnedChange {
     std::string ns, entity, field, value;
     uint64_t    causal_length = 0;
     sync_hlc    hlc{};
-    std::array<uint8_t, SYNC_SITE_ID_LEN> site{};
+    std::array<uint8_t, SYNC_PUBKEY_LEN> author{};
+    std::array<uint8_t, SYNC_SIG_LEN>    signature{};
 };
 
 OwnedChange own(const sync_change &c) {
@@ -40,7 +41,8 @@ OwnedChange own(const sync_change &c) {
     if (c.value) o.value.assign((const char *)c.value, c.value_len);
     o.causal_length = c.causal_length;
     o.hlc = c.hlc;
-    std::memcpy(o.site.data(), c.site_id, SYNC_SITE_ID_LEN);
+    std::memcpy(o.author.data(), c.author, SYNC_PUBKEY_LEN);
+    std::memcpy(o.signature.data(), c.signature, SYNC_SIG_LEN);
     return o;
 }
 
@@ -54,7 +56,8 @@ sync_change view(const OwnedChange &o) {
     c.value = (const uint8_t *)o.value.data();  c.value_len = o.value.size();
     c.causal_length = o.causal_length;
     c.hlc = o.hlc;
-    std::memcpy(c.site_id, o.site.data(), SYNC_SITE_ID_LEN);
+    std::memcpy(c.author, o.author.data(), SYNC_PUBKEY_LEN);
+    std::memcpy(c.signature, o.signature.data(), SYNC_SIG_LEN);
     return c;
 }
 
@@ -283,14 +286,20 @@ TEST(Convergence, HlcReceiveMonotonicity) {
     sync_engine *e = sync_engine_create(s.data());
     std::string ns = "n", ent = "x", f = "f";
 
-    /* Apply a remote register with a far-future physical clock. */
-    OwnedChange remote;
+    /* Apply a remote register with a far-future physical clock, signed by a
+     * different identity. */
+    sync_change remote;
+    std::memset(&remote, 0, sizeof remote);
     remote.kind = SYNC_CHANGE_REGISTER;
-    remote.ns = ns; remote.entity = ent; remote.field = f; remote.value = "remote";
+    remote.ns = B(ns); remote.ns_len = ns.size();
+    remote.entity = B(ent); remote.entity_len = ent.size();
+    remote.field = B(f); remote.field_len = f.size();
+    remote.value = (const uint8_t *)"remote"; remote.value_len = 6;
     remote.hlc.physical = (uint64_t)4000000000000ull; /* far future ms */
     remote.hlc.logical = 5;
-    remote.site = site_from(0xFF);
-    apply_owned(e, remote);
+    auto rseed = site_from(0xFF);
+    ASSERT_EQ(sync_change_sign(&remote, rseed.data()), SYNC_OK);
+    ASSERT_EQ(sync_engine_apply(e, &remote), SYNC_OK);
 
     /* A subsequent local write to the same cell must win (strictly greater HLC). */
     sync_engine_set(e, B(ns), 1, B(ent), 1, B(f), 1, B("local"), 5);

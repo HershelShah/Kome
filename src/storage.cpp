@@ -3,6 +3,7 @@
 
 #include <cstring>
 
+#include "crypto.h"
 #include "sqlite3.h"
 
 namespace ke {
@@ -62,12 +63,13 @@ Storage *Storage::open(const char *path, sync_error *err) {
         "  key TEXT PRIMARY KEY, value BLOB);"
         "CREATE TABLE IF NOT EXISTS entity ("
         "  ns BLOB NOT NULL, entity BLOB NOT NULL,"
-        "  causal_length INTEGER NOT NULL, db_clock INTEGER NOT NULL,"
+        "  causal_length INTEGER NOT NULL, ex_author BLOB, ex_sig BLOB,"
+        "  db_clock INTEGER NOT NULL,"
         "  PRIMARY KEY(ns, entity));"
         "CREATE TABLE IF NOT EXISTS field ("
         "  ns BLOB NOT NULL, entity BLOB NOT NULL, field BLOB NOT NULL,"
         "  value BLOB, hlc_physical INTEGER NOT NULL, hlc_logical INTEGER NOT NULL,"
-        "  site_id BLOB NOT NULL, db_clock INTEGER NOT NULL,"
+        "  author BLOB NOT NULL, sig BLOB NOT NULL, db_clock INTEGER NOT NULL,"
         "  PRIMARY KEY(ns, entity, field));";
     if (!s->exec(schema)) {
         if (err) *err = SYNC_ERR_INTERNAL;
@@ -94,19 +96,38 @@ bool Storage::begin() { return exec("BEGIN IMMEDIATE;"); }
 bool Storage::commit() { return exec("COMMIT;"); }
 bool Storage::rollback() { return exec("ROLLBACK;"); }
 
+bool Storage::put_meta_blob(const char *key, const uint8_t *data, size_t len) {
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(db_,
+                           "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                           -1, &st, nullptr) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, data, (int)len, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
-                         uint64_t causal_length, uint64_t db_clock) {
+                         uint64_t causal_length, const PubKey &ex_author,
+                         const Sig &ex_sig, uint64_t db_clock) {
     sqlite3_stmt *st = nullptr;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT OR REPLACE INTO entity(ns,entity,causal_length,db_clock)"
-            " VALUES(?,?,?,?)",
+            "INSERT OR REPLACE INTO entity"
+            "(ns,entity,causal_length,ex_author,ex_sig,db_clock)"
+            " VALUES(?,?,?,?,?,?)",
             -1, &st, nullptr) != SQLITE_OK)
         return false;
     bind_blob(st, 1, ns);
     bind_blob(st, 2, ent);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)causal_length);
-    sqlite3_bind_int64(st, 4, (sqlite3_int64)db_clock);
+    sqlite3_bind_blob(st, 4, ex_author.data(), (int)ex_author.size(),
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 5, ex_sig.data(), (int)ex_sig.size(),
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)db_clock);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -114,13 +135,14 @@ bool Storage::put_entity(const std::string &ns, const std::string &ent,
 
 bool Storage::put_field(const std::string &ns, const std::string &ent,
                         const std::string &field, const std::string &value,
-                        const Hlc &hlc, const SiteId &site, uint64_t db_clock) {
+                        const Hlc &hlc, const PubKey &author, const Sig &sig,
+                        uint64_t db_clock) {
     sqlite3_stmt *st = nullptr;
     if (sqlite3_prepare_v2(
             db_,
             "INSERT OR REPLACE INTO field"
-            "(ns,entity,field,value,hlc_physical,hlc_logical,site_id,db_clock)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "(ns,entity,field,value,hlc_physical,hlc_logical,author,sig,db_clock)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
             -1, &st, nullptr) != SQLITE_OK)
         return false;
     bind_blob(st, 1, ns);
@@ -129,22 +151,23 @@ bool Storage::put_field(const std::string &ns, const std::string &ent,
     bind_blob(st, 4, value);
     sqlite3_bind_int64(st, 5, (sqlite3_int64)hlc.physical);
     sqlite3_bind_int64(st, 6, (sqlite3_int64)hlc.logical);
-    sqlite3_bind_blob(st, 7, site.data(), (int)site.size(), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 8, (sqlite3_int64)db_clock);
+    sqlite3_bind_blob(st, 7, author.data(), (int)author.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 8, sig.data(), (int)sig.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 9, (sqlite3_int64)db_clock);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
 }
 
-bool Storage::load(sync_engine *e, const SiteId &site_id_default,
-                   sync_error *err) {
+bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     if (err) *err = SYNC_OK;
 
-    /* Read meta into a small map. */
-    bool have_schema = false, have_site = false;
+    /* Read meta. */
+    bool have_schema = false, have_seed = false;
     uint64_t schema_version = 0, hlc_physical = 0, db_clock = 0;
     uint32_t hlc_logical = 0;
-    SiteId loaded_site = site_id_default;
+    uint8_t loaded_seed[32];
+    std::memcpy(loaded_seed, seed, 32);
 
     sqlite3_stmt *st = nullptr;
     if (sqlite3_prepare_v2(db_, "SELECT key,value FROM meta", -1, &st,
@@ -157,11 +180,11 @@ bool Storage::load(sync_engine *e, const SiteId &site_id_default,
         if (k == "schema_version") {
             schema_version = (uint64_t)sqlite3_column_int64(st, 1);
             have_schema = true;
-        } else if (k == "site_id") {
+        } else if (k == "seed") {
             std::string sv = col_blob(st, 1);
-            if (sv.size() == SYNC_SITE_ID_LEN) {
-                std::memcpy(loaded_site.data(), sv.data(), SYNC_SITE_ID_LEN);
-                have_site = true;
+            if (sv.size() == 32) {
+                std::memcpy(loaded_seed, sv.data(), 32);
+                have_seed = true;
             }
         } else if (k == "hlc_physical") {
             hlc_physical = (uint64_t)sqlite3_column_int64(st, 1);
@@ -180,54 +203,49 @@ bool Storage::load(sync_engine *e, const SiteId &site_id_default,
     }
 
     if (!have_schema) {
-        /* Fresh database: stamp schema and identity. */
+        /* Fresh database: stamp schema and identity seed. */
         if (!begin()) { if (err) *err = SYNC_ERR_INTERNAL; return false; }
-        bool ok = put_meta_u64("schema_version", kSchemaVersion);
-        sqlite3_stmt *ms = nullptr;
-        if (ok && sqlite3_prepare_v2(
-                      db_, "INSERT OR REPLACE INTO meta(key,value) VALUES('site_id',?)",
-                      -1, &ms, nullptr) == SQLITE_OK) {
-            sqlite3_bind_blob(ms, 1, site_id_default.data(),
-                              (int)site_id_default.size(), SQLITE_TRANSIENT);
-            ok = ok && sqlite3_step(ms) == SQLITE_DONE;
-            sqlite3_finalize(ms);
-        } else {
-            ok = false;
-        }
+        bool ok = put_meta_u64("schema_version", kSchemaVersion) &&
+                  put_meta_blob("seed", loaded_seed, 32);
         if (!ok || !commit()) {
             rollback();
             if (err) *err = SYNC_ERR_INTERNAL;
             return false;
         }
-        loaded_site = site_id_default;
     }
-    (void)have_site;
+    (void)have_seed;
 
-    /* Apply identity + clock + db_clock to the engine. */
-    e->site_id = loaded_site;
+    /* Derive identity and apply clock to the engine. */
+    e->identity = keypair_from_seed(loaded_seed);
+    site_id_from_pubkey(e->identity.sign_pk.data(), e->site_id.data());
     e->clock.physical = hlc_physical;
     e->clock.logical = hlc_logical;
     e->db_clock = db_clock;
 
     /* Load entities. */
-    if (sqlite3_prepare_v2(db_,
-                           "SELECT ns,entity,causal_length FROM entity", -1,
-                           &st, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(
+            db_, "SELECT ns,entity,causal_length,ex_author,ex_sig FROM entity",
+            -1, &st, nullptr) != SQLITE_OK) {
         if (err) *err = SYNC_ERR_INTERNAL;
         return false;
     }
     while (sqlite3_step(st) == SQLITE_ROW) {
         std::string ns = col_blob(st, 0);
         std::string en = col_blob(st, 1);
-        uint64_t cl = (uint64_t)sqlite3_column_int64(st, 2);
-        e->ns[ns][en].causal_length = cl;
+        Entity &ent = e->ns[ns][en];
+        ent.causal_length = (uint64_t)sqlite3_column_int64(st, 2);
+        std::string a = col_blob(st, 3), s = col_blob(st, 4);
+        if (a.size() == SYNC_PUBKEY_LEN)
+            std::memcpy(ent.ex_author.data(), a.data(), SYNC_PUBKEY_LEN);
+        if (s.size() == SYNC_SIG_LEN)
+            std::memcpy(ent.ex_sig.data(), s.data(), SYNC_SIG_LEN);
     }
     sqlite3_finalize(st);
 
     /* Load field registers. */
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT ns,entity,field,value,hlc_physical,hlc_logical,site_id"
+            "SELECT ns,entity,field,value,hlc_physical,hlc_logical,author,sig"
             " FROM field",
             -1, &st, nullptr) != SQLITE_OK) {
         if (err) *err = SYNC_ERR_INTERNAL;
@@ -241,9 +259,11 @@ bool Storage::load(sync_engine *e, const SiteId &site_id_default,
         r.value = col_blob(st, 3);
         r.hlc.physical = (uint64_t)sqlite3_column_int64(st, 4);
         r.hlc.logical = (uint32_t)sqlite3_column_int64(st, 5);
-        std::string sid = col_blob(st, 6);
-        if (sid.size() == SYNC_SITE_ID_LEN)
-            std::memcpy(r.site.data(), sid.data(), SYNC_SITE_ID_LEN);
+        std::string a = col_blob(st, 6), s = col_blob(st, 7);
+        if (a.size() == SYNC_PUBKEY_LEN)
+            std::memcpy(r.author.data(), a.data(), SYNC_PUBKEY_LEN);
+        if (s.size() == SYNC_SIG_LEN)
+            std::memcpy(r.sig.data(), s.data(), SYNC_SIG_LEN);
         e->ns[ns][en].fields[fl] = std::move(r);
     }
     sqlite3_finalize(st);

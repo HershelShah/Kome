@@ -13,14 +13,20 @@
 
 namespace ke {
 
-/* 1-byte format version stamped at the head of every record. */
-constexpr uint8_t kCodecVersion = 1;
+/* 1-byte format version stamped at the head of every record.
+ *   1 — M3 (ns/entity/field/value/hlc/site_id)
+ *   2 — M4 (author public key + per-record signature) */
+constexpr uint8_t kCodecVersion = 2;
 
 /* Unsigned LEB128 varint. */
 void     put_varint(std::string &out, uint64_t v);
 bool     get_varint(const uint8_t *&p, const uint8_t *end, uint64_t &v);
 
-/* Append the canonical serialization of c to out. */
+/* Append the canonical signing bytes (everything except the signature) to out.
+ * This is exactly what an author signs / a verifier checks. */
+void encode_signing(const sync_change &c, std::string &out);
+
+/* Append the full canonical serialization (signing bytes + signature). */
 void encode_record(const sync_change &c, std::string &out);
 
 /* A decoded record owning its own bytes; yields a borrowing sync_change view. */
@@ -29,7 +35,8 @@ struct DecodedChange {
     std::string ns, entity, field, value;
     uint64_t    causal_length = 0;
     sync_hlc    hlc{};
-    SiteId      site{};
+    PubKey      author{};
+    Sig         signature{};
 
     sync_change view() const;
 };

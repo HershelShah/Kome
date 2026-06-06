@@ -30,24 +30,33 @@ extern "C" {
 /* ABI version. Pre-1.0: breaking changes bump this and update all bindings.
  *   1 — M1 convergent in-memory core
  *   2 — M2 durable storage (sync_engine_open / sync_engine_flush)
- *   3 — M3 codec + range-based reconciliation session */
-#define SYNC_ABI_VERSION 3u
+ *   3 — M3 codec + range-based reconciliation session
+ *   4 — M4 identity + per-record signatures + capabilities */
+#define SYNC_ABI_VERSION 4u
 
-/* Identity length. 32 bytes from the start: in M4 a site_id is the
- * BLAKE2b-256 of a signing public key. (The plan widens 16->32 in M2; we
- * adopt the final width immediately — see DECISIONS.md.) */
+/* site_id length (BLAKE2b-256 of the signing public key). */
 #define SYNC_SITE_ID_LEN 32u
+
+/* Identity sizes. author = EdDSA signing public key; signature is over the
+ * canonical record content (everything but the signature itself). */
+#define SYNC_PUBKEY_LEN 32u
+#define SYNC_SIG_LEN    64u
+
+/* A 32-byte seed deterministically derives a replica's identity keypair. */
+#define SYNC_SEED_LEN 32u
 
 /* Deterministic state digest length (SHA-256). */
 #define SYNC_DIGEST_LEN 32u
 
 /* Error codes. Returned by every fallible extern "C" function. */
 typedef enum sync_error {
-    SYNC_OK            = 0,
-    SYNC_ERR_INVALID   = 1, /* NULL / malformed argument */
-    SYNC_ERR_NOMEM     = 2, /* allocation failed */
-    SYNC_ERR_NOTFOUND  = 3, /* key/field absent or entity not present */
-    SYNC_ERR_INTERNAL  = 4  /* unexpected internal failure */
+    SYNC_OK              = 0,
+    SYNC_ERR_INVALID     = 1, /* NULL / malformed argument */
+    SYNC_ERR_NOMEM       = 2, /* allocation failed */
+    SYNC_ERR_NOTFOUND    = 3, /* key/field absent or entity not present */
+    SYNC_ERR_INTERNAL    = 4, /* unexpected internal failure */
+    SYNC_ERR_BADSIG      = 5, /* record signature failed to verify */
+    SYNC_ERR_UNAUTHORIZED = 6 /* author lacks a capability for the namespace */
 } sync_error;
 
 /* A hybrid logical clock timestamp. physical is wall-clock milliseconds
@@ -66,9 +75,13 @@ typedef enum sync_change_kind {
 /* A single change record — the unit of replication.
  *
  * For SYNC_CHANGE_EXISTENCE: (ns, entity, causal_length) are meaningful;
- *   field/value/hlc/site_id are unused.
- * For SYNC_CHANGE_REGISTER: (ns, entity, field, value, hlc, site_id) are
- *   meaningful; causal_length is unused.
+ *   field/value/hlc are unused.
+ * For SYNC_CHANGE_REGISTER: (ns, entity, field, value, hlc) are meaningful;
+ *   causal_length is unused.
+ *
+ * Every record is authenticated: author is the writer's EdDSA signing public
+ * key, and signature is an EdDSA signature over the canonical content. apply
+ * rejects a record whose signature does not verify against author.
  *
  * Pointer fields are borrowed for the duration of a call (apply copies what
  * it needs). Records produced by sync_engine_export own their buffers and
@@ -84,7 +97,9 @@ typedef struct sync_change {
 
     const uint8_t *value;  size_t value_len;  /* REGISTER only */
     sync_hlc       hlc;                        /* REGISTER only */
-    uint8_t        site_id[SYNC_SITE_ID_LEN]; /* REGISTER only */
+
+    uint8_t        author[SYNC_PUBKEY_LEN];   /* writer's signing public key */
+    uint8_t        signature[SYNC_SIG_LEN];   /* EdDSA over canonical content */
 } sync_change;
 
 /* Opaque engine handle. All state lives here; no global mutable state. */
@@ -92,17 +107,17 @@ typedef struct sync_engine sync_engine;
 
 /* ---- Lifecycle ---------------------------------------------------------- */
 
-/* Create an in-memory engine with the given site identity.
- * Returns NULL on allocation failure or if site_id is NULL. */
-sync_engine *sync_engine_create(const uint8_t site_id[SYNC_SITE_ID_LEN]);
+/* Create an in-memory engine whose identity keypair is derived from seed.
+ * Returns NULL on allocation failure or if seed is NULL. */
+sync_engine *sync_engine_create(const uint8_t seed[SYNC_SEED_LEN]);
 
 /* Open (creating if needed) a durable engine backed by the SQLite file at
  * path. State is loaded on open and written through on every mutation. For a
- * fresh file, site_id becomes the persisted identity; for an existing file the
- * persisted identity is used and site_id is ignored. Returns NULL on failure
+ * fresh file, seed establishes the persisted identity; for an existing file
+ * the persisted identity is used and seed is ignored. Returns NULL on failure
  * (including an unknown/newer on-disk schema version). */
 sync_engine *sync_engine_open(const char *path,
-                              const uint8_t site_id[SYNC_SITE_ID_LEN]);
+                              const uint8_t seed[SYNC_SEED_LEN]);
 
 /* Flush durable state to disk. With write-through this is a no-op safety net;
  * a no-op for in-memory engines. Returns SYNC_OK on success. */
@@ -112,7 +127,10 @@ int sync_engine_flush(sync_engine *e);
  * Safe to call with NULL. */
 void sync_engine_destroy(sync_engine *e);
 
-/* Copy this engine's site identity into out. */
+/* Copy this engine's signing public key (its author identity) into out. */
+int sync_engine_identity(sync_engine *e, uint8_t out[SYNC_PUBKEY_LEN]);
+
+/* Copy this engine's site_id (BLAKE2b-256 of the signing public key). */
 int sync_engine_site_id(sync_engine *e, uint8_t out[SYNC_SITE_ID_LEN]);
 
 /* ---- Local operations --------------------------------------------------- */
@@ -189,6 +207,12 @@ int sync_change_decode(const uint8_t *buf, size_t len, sync_change *out,
  * NULL; does not free the sync_change struct itself. */
 void sync_change_free_decoded(sync_change *c);
 
+/* Sign an externally-constructed record in place: derives the identity keypair
+ * from seed, sets c->author to its signing public key, and fills c->signature
+ * with an EdDSA signature over the canonical content. Useful for tests and for
+ * constructing records outside an engine. Returns SYNC_OK on success. */
+int sync_change_sign(sync_change *c, const uint8_t seed[SYNC_SEED_LEN]);
+
 /* ---- Reconciliation session (M3): sync only the difference --------------- */
 
 /* A transport-agnostic, range-based set-reconciliation session. Drive it by
@@ -208,6 +232,52 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
 
 /* End a session and release its resources. Safe with NULL. */
 void sync_session_end(sync_session *s);
+
+/* Begin a session that is read-scoped to a specific peer: records in
+ * namespaces the peer is not authorized to read are excluded from the snapshot
+ * before any fingerprint is computed, so their existence never leaks. For
+ * unowned (open) namespaces every peer may read. peer_pubkey is the peer's
+ * signing public key (as authenticated by the channel). */
+sync_session *sync_session_begin_scoped(sync_engine *e, int as_initiator,
+                                        const uint8_t peer_pubkey[SYNC_PUBKEY_LEN]);
+
+/* ---- Capabilities (M4): authorization ----------------------------------- */
+
+#define SYNC_ACCESS_READ  1
+#define SYNC_ACCESS_WRITE 2
+
+/* An opaque capability token. */
+typedef struct sync_capability sync_capability;
+
+/* Create a self-signed root capability: owner becomes the namespace's owner
+ * with the given access (bitmask of SYNC_ACCESS_*). Returns NULL on error.
+ * Release with sync_capability_free. */
+sync_capability *sync_capability_root(sync_engine *owner, const char *ns,
+                                      int access);
+
+/* Delegate a (narrower-or-equal) capability to subject_pubkey, signed by
+ * delegator (which must be parent's subject). expiry_ms is a Unix-ms deadline
+ * (0 = never). Returns NULL if delegator isn't the parent's subject or access
+ * would widen the parent's. */
+sync_capability *sync_capability_delegate(sync_engine *delegator,
+                                          const sync_capability *parent,
+                                          const uint8_t subject_pubkey[SYNC_PUBKEY_LEN],
+                                          int access, uint64_t expiry_ms);
+
+/* Serialize/deserialize a capability. encode returns the required size (writes
+ * if buf fits; 0 on error). decode returns NULL on malformed input. */
+int sync_capability_encode(const sync_capability *c, uint8_t *buf, size_t buf_len);
+sync_capability *sync_capability_decode(const uint8_t *buf, size_t len);
+
+/* Copy a capability's subject public key into out. */
+void sync_capability_subject(const sync_capability *c, uint8_t out[SYNC_PUBKEY_LEN]);
+
+/* Install a capability into the engine (verifying its self-signature). Granting
+ * a root for a namespace switches that namespace into enforced mode. */
+int sync_engine_grant(sync_engine *e, const sync_capability *c);
+
+/* Release a capability. Safe with NULL. */
+void sync_capability_free(sync_capability *c);
 
 /* ---- Misc --------------------------------------------------------------- */
 

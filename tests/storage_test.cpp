@@ -107,15 +107,27 @@ TEST(Storage, ReopenIdentity) {
     Digest before = digest(e);
     sync_engine_destroy(e);
 
+    /* Capture identity before close. */
+    uint8_t id_before[SYNC_SITE_ID_LEN], pk_before[SYNC_PUBKEY_LEN];
+    {
+        sync_engine *e1 = sync_engine_open(db.c_str(), site.data());
+        ASSERT_NE(e1, nullptr);
+        sync_engine_site_id(e1, id_before);
+        sync_engine_identity(e1, pk_before);
+        sync_engine_destroy(e1);
+    }
+
     sync_engine *e2 = sync_engine_open(db.c_str(), site.data());
     ASSERT_NE(e2, nullptr);
     Digest after = digest(e2);
     EXPECT_EQ(before, after);
 
-    /* Identity persists. */
-    uint8_t id[SYNC_SITE_ID_LEN];
+    /* Identity persists and site_id == BLAKE2b-256(pubkey) is stable. */
+    uint8_t id[SYNC_SITE_ID_LEN], pk[SYNC_PUBKEY_LEN];
     sync_engine_site_id(e2, id);
-    EXPECT_EQ(0, std::memcmp(id, site.data(), SYNC_SITE_ID_LEN));
+    sync_engine_identity(e2, pk);
+    EXPECT_EQ(0, std::memcmp(id, id_before, SYNC_SITE_ID_LEN));
+    EXPECT_EQ(0, std::memcmp(pk, pk_before, SYNC_PUBKEY_LEN));
     sync_engine_destroy(e2);
 }
 
@@ -245,7 +257,7 @@ TEST(Storage, SchemaGuard) {
     /* File is still intact and re-openable once the version is restored. */
     ASSERT_EQ(sqlite3_open(db.c_str(), &raw), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(raw,
-                           "UPDATE meta SET value=1 WHERE key='schema_version'",
+                           "UPDATE meta SET value=2 WHERE key='schema_version'",
                            nullptr, nullptr, nullptr),
               SQLITE_OK);
     sqlite3_close(raw);

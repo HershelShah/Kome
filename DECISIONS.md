@@ -91,3 +91,23 @@ One line of rationale per non-obvious choice, newest last.
   (RFC 4231), X25519 (RFC 7748), BLAKE2b (RFC 7693); round-trip + tamper for
   EdDSA and the AEAD. monocypher AEAD is XChaCha20-Poly1305 (24-byte nonce), so
   the channel adapts Noise XX to that cipher rather than RFC8439 ChaChaPoly.
+
+- **Per-record EdDSA signatures.** Every change record (existence and
+  register) carries `author` (signing pubkey) + `signature` over its canonical
+  content; `apply` verifies before touching state (`SYNC_ERR_BADSIG`). Codec
+  bumped to v2; the LWW total order is now (hlc, author, value); existence
+  merges by (causal_length, author) max. The digest feeds author, not the
+  signature (deterministic and redundant).
+- **Identity from a 32-byte seed.** `sync_engine_create/open` take a seed that
+  derives the EdDSA + X25519 keypair; `sync_engine_identity` returns the signing
+  pubkey, `sync_engine_site_id` its BLAKE2b-256. The seed is persisted (schema
+  v2) so identity survives reopen.
+- **Capabilities are single signed statements** (issuer, subject, ns, access,
+  expiry, sig); chains are reconstructed by graph search from the namespace
+  root at authorize time, narrowing access per hop. Enforcement is opt-in:
+  a namespace is enforced only once a root for it is granted; otherwise open.
+  `grant` checks only the signature so expired-but-signed caps can be held but
+  fail authorization. Capabilities are in-memory (not yet persisted).
+- **Read scoping filters before fingerprinting.** `sync_session_begin_scoped`
+  drops records the peer cannot read from the snapshot, so out-of-scope
+  namespaces never enter a fingerprint or leak their existence.

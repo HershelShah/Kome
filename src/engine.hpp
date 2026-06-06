@@ -8,11 +8,14 @@
 #include <map>
 #include <string>
 
+#include "crypto.h"
 #include "sync_engine.h"
 
 namespace ke {
 
 using SiteId = std::array<uint8_t, SYNC_SITE_ID_LEN>;
+using PubKey = std::array<uint8_t, SYNC_PUBKEY_LEN>;
+using Sig    = std::array<uint8_t, SYNC_SIG_LEN>;
 
 /* Hybrid Logical Clock. */
 struct Hlc {
@@ -28,19 +31,24 @@ struct Hlc {
 /* Total order on HLC: physical, then logical. <0 / 0 / >0. */
 int hlc_cmp(const Hlc &a, const Hlc &b);
 
-/* An LWW register: a field's value plus the timestamp/site that wrote it. */
+/* An LWW register: a field's value plus the timestamp/author that wrote it,
+ * and the author's signature over the canonical record. */
 struct Register {
     std::string value;
     Hlc         hlc;
-    SiteId      site{};
+    PubKey      author{};
+    Sig         sig{};
 };
 
-/* Total order on registers: (hlc, site_id, value). Larger wins on merge. */
+/* Total order on registers: (hlc, author, value). Larger wins on merge. */
 int register_cmp(const Register &a, const Register &b);
 
-/* An entity: a causal-length counter (odd == present) and its field registers. */
+/* An entity: a causal-length counter (odd == present), the author/signature of
+ * the current existence assertion, and its field registers. */
 struct Entity {
     uint64_t                          causal_length = 0;
+    PubKey                            ex_author{};
+    Sig                               ex_sig{};
     std::map<std::string, Register>   fields;
 
     bool present() const { return (causal_length & 1u) != 0; }
@@ -52,16 +60,19 @@ using Namespaces = std::map<std::string, Entities>;
 /* Current wall-clock time in milliseconds since the Unix epoch. */
 uint64_t now_ms();
 
-class Storage; /* defined in storage.h (M2) */
+class Storage;    /* defined in storage.h (M2) */
+class CapStore;   /* defined in capability.h (M4) */
 
 } // namespace ke
 
 /* The opaque engine handle from the public header. */
 struct sync_engine {
-    ke::SiteId       site_id{};
+    ke::KeyPair      identity;        /* signing + agreement keypair */
+    ke::SiteId       site_id{};       /* BLAKE2b-256(identity.sign_pk) */
     ke::Hlc          clock;
     ke::Namespaces   ns;
     ke::Storage     *store = nullptr; /* null for in-memory engines */
+    ke::CapStore    *caps = nullptr;  /* granted capabilities (M4) */
     uint64_t         db_clock = 0;    /* monotonic per-mutation counter */
 };
 

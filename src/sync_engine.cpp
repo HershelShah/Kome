@@ -12,6 +12,9 @@
 #include <new>
 #include <string>
 
+#include "capability.h"
+#include "codec.h"
+#include "crypto.h"
 #include "engine.hpp"
 #include "sha256.h"
 #include "storage.h"
@@ -61,7 +64,7 @@ int hlc_cmp(const Hlc &a, const Hlc &b) {
 
 int register_cmp(const Register &a, const Register &b) {
     if (int c = hlc_cmp(a.hlc, b.hlc)) return c;
-    if (int c = std::memcmp(a.site.data(), b.site.data(), SYNC_SITE_ID_LEN))
+    if (int c = std::memcmp(a.author.data(), b.author.data(), SYNC_PUBKEY_LEN))
         return c < 0 ? -1 : 1;
     if (a.value != b.value) return a.value < b.value ? -1 : 1;
     return 0;
@@ -92,6 +95,22 @@ uint8_t *dup_bytes(const std::string &s, bool *oom) {
     }
     std::memcpy(p, s.data(), s.size());
     return p;
+}
+
+/* Fill c->author and c->signature by signing c's canonical content with e. */
+void author_sign(sync_engine *e, sync_change &c) {
+    std::memcpy(c.author, e->identity.sign_pk.data(), SYNC_PUBKEY_LEN);
+    std::string signing;
+    ke::encode_signing(c, signing);
+    ke::sign(e->identity.sign_sk.data(), signing.data(), signing.size(),
+             c.signature);
+}
+
+/* Verify a record's signature against its declared author. */
+bool verify_change(const sync_change *c) {
+    std::string signing;
+    ke::encode_signing(*c, signing);
+    return ke::verify(c->author, signing.data(), signing.size(), c->signature);
 }
 
 /* Hash one length-prefixed byte field (LE 64-bit length) into h. */
@@ -125,10 +144,12 @@ bool persist_meta_clock(sync_engine *e) {
 
 /* Persist an entity row (and clock) in one transaction. */
 bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
-               uint64_t cl) {
+               const Entity &en) {
     Storage *s = e->store;
     if (!s->begin()) return false;
-    bool ok = s->put_entity(ns, ent, cl, e->db_clock) && persist_meta_clock(e);
+    bool ok = s->put_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig,
+                            e->db_clock) &&
+              persist_meta_clock(e);
     if (!ok) { s->rollback(); return false; }
     return s->commit();
 }
@@ -136,12 +157,13 @@ bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
 /* Persist an entity row + one field register (and clock) in one transaction. */
 bool tx_entity_field(sync_engine *e, const std::string &ns,
                      const std::string &ent, const std::string &field,
-                     uint64_t cl, const Register &reg) {
+                     const Entity &en, const Register &reg) {
     Storage *s = e->store;
     if (!s->begin()) return false;
-    bool ok = s->put_entity(ns, ent, cl, e->db_clock) &&
-              s->put_field(ns, ent, field, reg.value, reg.hlc, reg.site,
-                           e->db_clock) &&
+    bool ok = s->put_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig,
+                            e->db_clock) &&
+              s->put_field(ns, ent, field, reg.value, reg.hlc, reg.author,
+                           reg.sig, e->db_clock) &&
               persist_meta_clock(e);
     if (!ok) { s->rollback(); return false; }
     return s->commit();
@@ -166,11 +188,12 @@ const char *sync_strerror(int err) {
 
 void sync_free(void *p) { std::free(p); }
 
-sync_engine *sync_engine_create(const uint8_t site_id[SYNC_SITE_ID_LEN]) {
-    if (!site_id) return nullptr;
+sync_engine *sync_engine_create(const uint8_t seed[SYNC_SEED_LEN]) {
+    if (!seed) return nullptr;
     try {
         sync_engine *e = new sync_engine();
-        std::memcpy(e->site_id.data(), site_id, SYNC_SITE_ID_LEN);
+        e->identity = keypair_from_seed(seed);
+        site_id_from_pubkey(e->identity.sign_pk.data(), e->site_id.data());
         return e;
     } catch (...) {
         return nullptr;
@@ -178,8 +201,8 @@ sync_engine *sync_engine_create(const uint8_t site_id[SYNC_SITE_ID_LEN]) {
 }
 
 sync_engine *sync_engine_open(const char *path,
-                              const uint8_t site_id[SYNC_SITE_ID_LEN]) {
-    if (!path || !site_id) return nullptr;
+                              const uint8_t seed[SYNC_SEED_LEN]) {
+    if (!path || !seed) return nullptr;
     try {
         sync_error err = SYNC_OK;
         Storage *store = Storage::open(path, &err);
@@ -190,9 +213,7 @@ sync_engine *sync_engine_open(const char *path,
             delete store;
             return nullptr;
         }
-        SiteId def{};
-        std::memcpy(def.data(), site_id, SYNC_SITE_ID_LEN);
-        if (!store->load(e, def, &err)) {
+        if (!store->load(e, seed, &err)) {
             delete e; /* e does not own store yet */
             delete store;
             return nullptr;
@@ -214,7 +235,14 @@ int sync_engine_flush(sync_engine *e) {
 void sync_engine_destroy(sync_engine *e) {
     if (!e) return;
     delete e->store;
+    delete e->caps;
     delete e;
+}
+
+int sync_engine_identity(sync_engine *e, uint8_t out[SYNC_PUBKEY_LEN]) {
+    if (!e || !out) return SYNC_ERR_INVALID;
+    std::memcpy(out, e->identity.sign_pk.data(), SYNC_PUBKEY_LEN);
+    return SYNC_OK;
 }
 
 int sync_engine_site_id(sync_engine *e, uint8_t out[SYNC_SITE_ID_LEN]) {
@@ -236,16 +264,44 @@ int sync_engine_set(sync_engine *e,
         std::string entk = to_str(entity, entity_len);
         std::string fk = to_str(field, field_len);
         Entity &ent = e->ns[nsk][entk];
-        if (!ent.present()) ent.causal_length += 1; /* causal-length add */
+
+        if (!ent.present()) {
+            ent.causal_length += 1; /* causal-length add; sign the assertion */
+            sync_change ec;
+            std::memset(&ec, 0, sizeof ec);
+            ec.kind = SYNC_CHANGE_EXISTENCE;
+            ec.ns = (const uint8_t *)nsk.data(); ec.ns_len = nsk.size();
+            ec.entity = (const uint8_t *)entk.data(); ec.entity_len = entk.size();
+            ec.causal_length = ent.causal_length;
+            author_sign(e, ec);
+            std::memcpy(ent.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
+            std::memcpy(ent.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
+        }
+
         Register reg;
         reg.value = to_str(value, value_len);
         reg.hlc = e->clock.tick(now_ms());
-        reg.site = e->site_id;
+        {
+            sync_change rc;
+            std::memset(&rc, 0, sizeof rc);
+            rc.kind = SYNC_CHANGE_REGISTER;
+            rc.ns = (const uint8_t *)nsk.data(); rc.ns_len = nsk.size();
+            rc.entity = (const uint8_t *)entk.data(); rc.entity_len = entk.size();
+            rc.field = (const uint8_t *)fk.data(); rc.field_len = fk.size();
+            rc.value = (const uint8_t *)reg.value.data();
+            rc.value_len = reg.value.size();
+            rc.hlc.physical = reg.hlc.physical;
+            rc.hlc.logical = reg.hlc.logical;
+            author_sign(e, rc);
+            std::memcpy(reg.author.data(), rc.author, SYNC_PUBKEY_LEN);
+            std::memcpy(reg.sig.data(), rc.signature, SYNC_SIG_LEN);
+        }
         /* A fresh local tick dominates any prior state for this cell. */
         ent.fields[fk] = reg;
+
         if (e->store) {
             e->db_clock++;
-            if (!tx_entity_field(e, nsk, entk, fk, ent.causal_length, reg))
+            if (!tx_entity_field(e, nsk, entk, fk, ent, reg))
                 return SYNC_ERR_INTERNAL;
         }
         return SYNC_OK;
@@ -269,10 +325,20 @@ int sync_engine_delete(sync_engine *e,
         auto ei = ni->second.find(entk);
         if (ei == ni->second.end()) return SYNC_OK;
         if (ei->second.present()) {
-            ei->second.causal_length += 1; /* remove */
+            Entity &ent = ei->second;
+            ent.causal_length += 1; /* remove; sign the new assertion */
+            sync_change ec;
+            std::memset(&ec, 0, sizeof ec);
+            ec.kind = SYNC_CHANGE_EXISTENCE;
+            ec.ns = (const uint8_t *)nsk.data(); ec.ns_len = nsk.size();
+            ec.entity = (const uint8_t *)entk.data(); ec.entity_len = entk.size();
+            ec.causal_length = ent.causal_length;
+            author_sign(e, ec);
+            std::memcpy(ent.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
+            std::memcpy(ent.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
             if (e->store) {
                 e->db_clock++;
-                if (!tx_entity(e, nsk, entk, ei->second.causal_length))
+                if (!tx_entity(e, nsk, entk, ent))
                     return SYNC_ERR_INTERNAL;
             }
         }
@@ -343,28 +409,48 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
         return SYNC_ERR_INVALID;
     if (c->kind != SYNC_CHANGE_EXISTENCE && c->kind != SYNC_CHANGE_REGISTER)
         return SYNC_ERR_INVALID;
+    if (c->kind == SYNC_CHANGE_REGISTER) {
+        if (!c->field && c->field_len) return SYNC_ERR_INVALID;
+        if (!c->value && c->value_len) return SYNC_ERR_INVALID;
+    }
     try {
+        /* Authenticate the record before it can touch any state. */
+        if (!verify_change(c)) return SYNC_ERR_BADSIG;
+
         std::string nsk = to_str(c->ns, c->ns_len);
+
+        /* Capability enforcement (M4): if the namespace is owned, the author
+         * must hold a valid write capability chain for it. */
+        int authz = cap_authorize_write(e, c->author, nsk);
+        if (authz != SYNC_OK) return authz;
+
         std::string entk = to_str(c->entity, c->entity_len);
         Entity &ent = e->ns[nsk][entk];
+
         if (c->kind == SYNC_CHANGE_EXISTENCE) {
-            if (c->causal_length > ent.causal_length) {
-                ent.causal_length = c->causal_length; /* max */
+            int order = (c->causal_length > ent.causal_length) ? 1
+                        : (c->causal_length < ent.causal_length) ? -1
+                        : std::memcmp(c->author, ent.ex_author.data(),
+                                      SYNC_PUBKEY_LEN);
+            if (order > 0) {
+                ent.causal_length = c->causal_length; /* (cl, author) max */
+                std::memcpy(ent.ex_author.data(), c->author, SYNC_PUBKEY_LEN);
+                std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
                 if (e->store) {
                     e->db_clock++;
-                    if (!tx_entity(e, nsk, entk, ent.causal_length))
+                    if (!tx_entity(e, nsk, entk, ent))
                         return SYNC_ERR_INTERNAL;
                 }
             }
             return SYNC_OK;
         }
+
         /* REGISTER */
-        if (!c->field && c->field_len) return SYNC_ERR_INVALID;
-        if (!c->value && c->value_len) return SYNC_ERR_INVALID;
         Register cand;
         cand.value = to_str(c->value, c->value_len);
         cand.hlc = {c->hlc.physical, c->hlc.logical};
-        std::memcpy(cand.site.data(), c->site_id, SYNC_SITE_ID_LEN);
+        std::memcpy(cand.author.data(), c->author, SYNC_PUBKEY_LEN);
+        std::memcpy(cand.sig.data(), c->signature, SYNC_SIG_LEN);
 
         std::string fkey = to_str(c->field, c->field_len);
         auto fi = ent.fields.find(fkey);
@@ -375,11 +461,11 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
 
         if (e->store && took) {
             e->db_clock++;
-            if (!tx_entity_field(e, nsk, entk, fkey, ent.causal_length, cand))
+            if (!tx_entity_field(e, nsk, entk, fkey, ent, cand))
                 return SYNC_ERR_INTERNAL;
         } else if (e->store) {
             /* Clock advanced even if the register lost; persist it. */
-            if (!tx_entity(e, nsk, entk, ent.causal_length))
+            if (!tx_entity(e, nsk, entk, ent))
                 return SYNC_ERR_INTERNAL;
         }
         return SYNC_OK;
@@ -423,6 +509,8 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
                     c.entity = dup_bytes(entk, &oom); c.entity_len = entk.size();
                     if (oom) goto fail;
                     c.causal_length = ent.causal_length;
+                    std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
+                    std::memcpy(c.signature, ent.ex_sig.data(), SYNC_SIG_LEN);
                 }
                 for (auto &fp : ent.fields) {
                     const std::string &fk = fp.first;
@@ -439,7 +527,8 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
                     if (oom) goto fail;
                     c.hlc.physical = r.hlc.physical;
                     c.hlc.logical = r.hlc.logical;
-                    std::memcpy(c.site_id, r.site.data(), SYNC_SITE_ID_LEN);
+                    std::memcpy(c.author, r.author.data(), SYNC_PUBKEY_LEN);
+                    std::memcpy(c.signature, r.sig.data(), SYNC_SIG_LEN);
                 }
             }
         }
@@ -481,6 +570,7 @@ int sync_engine_digest(sync_engine *e, uint8_t out[SYNC_DIGEST_LEN]) {
                 feed(h, nsk.data(), nsk.size());
                 feed(h, entk.data(), entk.size());
                 feed_u64(h, ent.causal_length);
+                h.update(ent.ex_author.data(), SYNC_PUBKEY_LEN);
                 for (auto &fp : ent.fields) {
                     const std::string &fk = fp.first;
                     Register &r = fp.second;
@@ -492,7 +582,7 @@ int sync_engine_digest(sync_engine *e, uint8_t out[SYNC_DIGEST_LEN]) {
                     feed(h, r.value.data(), r.value.size());
                     feed_u64(h, r.hlc.physical);
                     feed_u32(h, r.hlc.logical);
-                    h.update(r.site.data(), SYNC_SITE_ID_LEN);
+                    h.update(r.author.data(), SYNC_PUBKEY_LEN);
                 }
             }
         }

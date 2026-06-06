@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "capability.h"
 #include "codec.h"
 #include "engine.hpp"
 #include "sha256.h"
@@ -349,45 +350,70 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
 
 } // namespace
 
+namespace {
+
+/* Build a session, optionally read-scoped to peer (NULL == no scoping). */
+sync_session *begin_session(sync_engine *e, int as_initiator,
+                            const uint8_t *peer) {
+    if (!e) return nullptr;
+    sync_session *s = new (std::nothrow) sync_session();
+    if (!s) return nullptr;
+    s->engine = e;
+    s->initiator = as_initiator != 0;
+
+    /* Snapshot the current state as sorted elements with hashes. Records in
+     * namespaces the peer may not read are excluded before fingerprinting. */
+    sync_change *recs = nullptr;
+    size_t n = 0;
+    if (sync_engine_export(e, &recs, &n) != SYNC_OK) {
+        delete s;
+        return nullptr;
+    }
+    s->snap.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        if (peer) {
+            std::string ns((const char *)recs[i].ns, recs[i].ns_len);
+            if (!cap_authorize_read(e, peer, ns)) continue; /* read-scoped out */
+        }
+        Element el;
+        el.key = key_of(recs[i]);
+        encode_record(recs[i], el.bytes);
+        sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
+        s->snap.push_back(std::move(el));
+    }
+    sync_changes_free(recs, n);
+
+    std::sort(s->snap.begin(), s->snap.end(),
+              [](const Element &a, const Element &b) {
+                  return key_cmp(a.key, b.key) < 0;
+              });
+
+    s->prefix.resize(s->snap.size() + 1);
+    s->prefix[0] = Hash256{};
+    for (size_t i = 0; i < s->snap.size(); i++) {
+        s->prefix[i + 1] = s->prefix[i];
+        add256(s->prefix[i + 1], s->snap[i].hash);
+    }
+    return s;
+}
+
+} // namespace
+
 extern "C" {
 
 sync_session *sync_session_begin(sync_engine *e, int as_initiator) {
-    if (!e) return nullptr;
     try {
-        sync_session *s = new (std::nothrow) sync_session();
-        if (!s) return nullptr;
-        s->engine = e;
-        s->initiator = as_initiator != 0;
+        return begin_session(e, as_initiator, nullptr);
+    } catch (...) {
+        return nullptr;
+    }
+}
 
-        /* Snapshot the current state as sorted elements with hashes. */
-        sync_change *recs = nullptr;
-        size_t n = 0;
-        if (sync_engine_export(e, &recs, &n) != SYNC_OK) {
-            delete s;
-            return nullptr;
-        }
-        s->snap.reserve(n);
-        for (size_t i = 0; i < n; i++) {
-            Element el;
-            el.key = key_of(recs[i]);
-            encode_record(recs[i], el.bytes);
-            sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
-            s->snap.push_back(std::move(el));
-        }
-        sync_changes_free(recs, n);
-
-        std::sort(s->snap.begin(), s->snap.end(),
-                  [](const Element &a, const Element &b) {
-                      return key_cmp(a.key, b.key) < 0;
-                  });
-
-        s->prefix.resize(s->snap.size() + 1);
-        s->prefix[0] = Hash256{};
-        for (size_t i = 0; i < s->snap.size(); i++) {
-            s->prefix[i + 1] = s->prefix[i];
-            add256(s->prefix[i + 1], s->snap[i].hash);
-        }
-        return s;
+sync_session *sync_session_begin_scoped(sync_engine *e, int as_initiator,
+                                        const uint8_t peer_pubkey[32]) {
+    if (!peer_pubkey) return nullptr;
+    try {
+        return begin_session(e, as_initiator, peer_pubkey);
     } catch (...) {
         return nullptr;
     }

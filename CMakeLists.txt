@@ -44,6 +44,7 @@ set(SYNC_SOURCES
     src/codec.cpp
     src/reconcile.cpp
     src/crypto.cpp
+    src/capability.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -92,5 +93,10 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(crypto_test tests/crypto_test.cpp)
     target_link_libraries(crypto_test PRIVATE monocypher)
     target_include_directories(crypto_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+    sync_add_test(security_test tests/security_test.cpp)
+    target_link_libraries(security_test PRIVATE monocypher)
+    target_include_directories(security_test PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 endif()

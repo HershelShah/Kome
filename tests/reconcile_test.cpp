@@ -39,7 +39,8 @@ struct OwnedChange {
     std::string ns, entity, field, value;
     uint64_t causal_length = 0;
     sync_hlc hlc{};
-    std::array<uint8_t, SYNC_SITE_ID_LEN> site{};
+    std::array<uint8_t, SYNC_PUBKEY_LEN> author{};
+    std::array<uint8_t, SYNC_SIG_LEN>    signature{};
 };
 
 std::vector<OwnedChange> export_owned(sync_engine *e) {
@@ -56,7 +57,8 @@ std::vector<OwnedChange> export_owned(sync_engine *e) {
         if (recs[i].value) o.value.assign((const char *)recs[i].value, recs[i].value_len);
         o.causal_length = recs[i].causal_length;
         o.hlc = recs[i].hlc;
-        std::memcpy(o.site.data(), recs[i].site_id, SYNC_SITE_ID_LEN);
+        std::memcpy(o.author.data(), recs[i].author, SYNC_PUBKEY_LEN);
+        std::memcpy(o.signature.data(), recs[i].signature, SYNC_SIG_LEN);
         out.push_back(std::move(o));
     }
     sync_changes_free(recs, n);
@@ -73,7 +75,8 @@ void apply_owned(sync_engine *e, const OwnedChange &o) {
     c.value = B(o.value); c.value_len = o.value.size();
     c.causal_length = o.causal_length;
     c.hlc = o.hlc;
-    std::memcpy(c.site_id, o.site.data(), SYNC_SITE_ID_LEN);
+    std::memcpy(c.author, o.author.data(), SYNC_PUBKEY_LEN);
+    std::memcpy(c.signature, o.signature.data(), SYNC_SIG_LEN);
     EXPECT_EQ(sync_engine_apply(e, &c), SYNC_OK);
 }
 
@@ -230,11 +233,12 @@ TEST(Reconcile, CodecRoundTrip) {
             c.value = B(value); c.value_len = value.size();
             c.hlc.physical = ((uint64_t)rng() << 20) ^ rng();
             c.hlc.logical = rng();
-            for (int i = 0; i < (int)SYNC_SITE_ID_LEN; i++) c.site_id[i] = (uint8_t)rng();
         } else {
             c.kind = SYNC_CHANGE_EXISTENCE;
             c.causal_length = ((uint64_t)rng() << 16) ^ rng();
         }
+        for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) c.author[i] = (uint8_t)rng();
+        for (int i = 0; i < (int)SYNC_SIG_LEN; i++) c.signature[i] = (uint8_t)rng();
 
         size_t need = sync_change_encode(&c, nullptr, 0);
         ASSERT_GT(need, 0u);
@@ -254,48 +258,57 @@ TEST(Reconcile, CodecRoundTrip) {
             EXPECT_EQ(std::string((char *)out.value, out.value_len), value);
             EXPECT_EQ(out.hlc.physical, c.hlc.physical);
             EXPECT_EQ(out.hlc.logical, c.hlc.logical);
-            EXPECT_EQ(0, std::memcmp(out.site_id, c.site_id, SYNC_SITE_ID_LEN));
         } else {
             EXPECT_EQ(out.causal_length, c.causal_length);
         }
+        EXPECT_EQ(0, std::memcmp(out.author, c.author, SYNC_PUBKEY_LEN));
+        EXPECT_EQ(0, std::memcmp(out.signature, c.signature, SYNC_SIG_LEN));
         sync_change_free_decoded(&out);
     }
 }
 
 /* ---- T3.2 Codec golden vector (endianness-stable) ---------------------- */
 TEST(Reconcile, CodecGoldenVector) {
-    /* Existence: ver=01 kind=00 ns="n" entity="e" causal_length=3 (LE u64). */
-    const uint8_t golden_existence[] = {0x01, 0x00, 0x01, 0x6E, 0x01, 0x65,
-                                        0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                        0x00, 0x00};
+    /* Existence (codec v2): ver=02 kind=00 ns="n" ent="e" cl=3 (LE u64)
+     * author=0xAA*32 signature=0xCC*64. */
     {
+        std::vector<uint8_t> golden = {0x02, 0x00, 0x01, 0x6E, 0x01, 0x65,
+                                       0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                       0x00, 0x00};
+        for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) golden.push_back(0xAA);
+        for (int i = 0; i < (int)SYNC_SIG_LEN; i++) golden.push_back(0xCC);
+
         sync_change c;
         std::memset(&c, 0, sizeof c);
         c.kind = SYNC_CHANGE_EXISTENCE;
         c.ns = (const uint8_t *)"n"; c.ns_len = 1;
         c.entity = (const uint8_t *)"e"; c.entity_len = 1;
         c.causal_length = 3;
-        uint8_t buf[64];
-        size_t n = sync_change_encode(&c, buf, sizeof buf);
-        ASSERT_EQ(n, sizeof golden_existence);
-        EXPECT_EQ(0, std::memcmp(buf, golden_existence, n));
+        std::memset(c.author, 0xAA, SYNC_PUBKEY_LEN);
+        std::memset(c.signature, 0xCC, SYNC_SIG_LEN);
+        std::vector<uint8_t> buf(256);
+        size_t n = sync_change_encode(&c, buf.data(), buf.size());
+        ASSERT_EQ(n, golden.size());
+        EXPECT_EQ(0, std::memcmp(buf.data(), golden.data(), n));
 
         sync_change out;
         size_t consumed = 0;
-        ASSERT_EQ(sync_change_decode(golden_existence, sizeof golden_existence,
-                                     &out, &consumed),
+        ASSERT_EQ(sync_change_decode(golden.data(), golden.size(), &out,
+                                     &consumed),
                   SYNC_OK);
         EXPECT_EQ(out.kind, SYNC_CHANGE_EXISTENCE);
         EXPECT_EQ(out.causal_length, 3u);
         sync_change_free_decoded(&out);
     }
-    /* Register: ver kind ns="n" ent="e" field="f" value="v" phys=2 log=1 site=0xAB*32. */
+    /* Register (codec v2): ... field="f" value="v" phys=2 log=1
+     * author=0xAA*32 signature=0xCC*64. */
     {
-        std::vector<uint8_t> golden = {0x01, 0x01, 0x01, 0x6E, 0x01, 0x65,
+        std::vector<uint8_t> golden = {0x02, 0x01, 0x01, 0x6E, 0x01, 0x65,
                                        0x01, 0x66, 0x01, 0x76,
                                        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                        0x01, 0x00, 0x00, 0x00};
-        for (int i = 0; i < (int)SYNC_SITE_ID_LEN; i++) golden.push_back(0xAB);
+        for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) golden.push_back(0xAA);
+        for (int i = 0; i < (int)SYNC_SIG_LEN; i++) golden.push_back(0xCC);
 
         sync_change c;
         std::memset(&c, 0, sizeof c);
@@ -305,9 +318,10 @@ TEST(Reconcile, CodecGoldenVector) {
         c.field = (const uint8_t *)"f"; c.field_len = 1;
         c.value = (const uint8_t *)"v"; c.value_len = 1;
         c.hlc.physical = 2; c.hlc.logical = 1;
-        std::memset(c.site_id, 0xAB, SYNC_SITE_ID_LEN);
+        std::memset(c.author, 0xAA, SYNC_PUBKEY_LEN);
+        std::memset(c.signature, 0xCC, SYNC_SIG_LEN);
 
-        std::vector<uint8_t> buf(128);
+        std::vector<uint8_t> buf(256);
         size_t n = sync_change_encode(&c, buf.data(), buf.size());
         ASSERT_EQ(n, golden.size());
         EXPECT_EQ(0, std::memcmp(buf.data(), golden.data(), n));
