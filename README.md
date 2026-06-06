@@ -1,8 +1,23 @@
-# Kome
+# P2P Replication Engine
 
-Peer-to-peer data replication middleware. C99 public API, C++17 internals, <1 MB binary, 29 functions.
+A private, distributed, offline-first sync engine that runs over today's
+internet. At its heart is a convergent (CRDT) data core; around it, an
+incremental sync protocol, an encrypted/authenticated transport, and NAT
+traversal — built inside-out, milestone by milestone, each gated on its own
+test suite.
 
-Kome handles replication, conflict resolution, and version tracking. You own your storage — Kome moves data between peers.
+This is a ground-up rebuild following [the implementation plan](#milestones).
+
+## Status
+
+| Milestone | What | State |
+|-----------|------|-------|
+| **M1** | Convergent core (HLC, LWW register, causal-length set, export/apply, digest) | ✅ done |
+| M2 | Durable storage (SQLite, single file) | in progress |
+| M3 | Incremental sync (range-based set reconciliation) | — |
+| M4 | Secure transport, identity, capabilities (Noise XX) | — |
+| M5 | Real connectivity (STUN, hole punching, relay) | — |
+| M6 | Hardening (fuzz, sanitizers, bindings) | — |
 
 ## Build
 
@@ -12,83 +27,62 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-With sanitizers:
+With a sanitizer:
 
 ```bash
-cmake -B build -DKOME_SANITIZER=address
-cmake --build build
-ctest --test-dir build
+cmake -B build-asan -DSYNC_SANITIZER=address
+cmake --build build-asan
+ctest --test-dir build-asan
 ```
 
-## Install
-
-```bash
-cmake --install build --prefix /usr/local
-```
-
-## Usage (C)
+## Usage (C, M1)
 
 ```c
-#include "kome.h"
+#include "sync_engine.h"
 
-KomeConfig cfg = { .path = "state.db", .busy_timeout_ms = 5000 };
-KomeEngine *engine = NULL;
-kome_open(&cfg, &engine);
+uint8_t site_id[SYNC_SITE_ID_LEN] = { /* this replica's identity */ };
+sync_engine *e = sync_engine_create(site_id);
 
-uint8_t key[32] = { /* your identity key */ };
-kome_set_identity(engine, key, 32);
+sync_engine_set(e, (const uint8_t*)"people", 6,
+                   (const uint8_t*)"alice", 5,
+                   (const uint8_t*)"name", 4,
+                   (const uint8_t*)"Alice", 5);
 
-// Write data
-KomeEntryMeta meta;
-kome_put(engine, "contacts", (uint8_t*)"alice", 5,
-               (uint8_t*)"data", 4, &meta);
+/* Full-state replication baseline (the oracle the optimized sync is checked
+ * against): export records, apply them into a peer. */
+sync_change *recs; size_t n;
+sync_engine_export(e, &recs, &n);
+/* ... ship recs to a peer, who calls sync_engine_apply on each ... */
+sync_changes_free(recs, n);
 
-// Attach a transport and sync happens automatically
-// kome_attach_transport(engine, &my_transport);
-
-kome_close(engine);
+sync_engine_destroy(e);
 ```
 
-## Usage (Python)
+See `examples/example.c` for a complete two-replica convergence demo.
 
-```python
-from kome import Engine
+## Design
 
-with Engine("state.db") as e:
-    e.set_identity(b"my_secret_key_material_here_32b")
-    meta = e.put("contacts", b"alice", b"Alice data")
-    print(f"seq={meta.seq}")
-```
+- **Convergence is the law.** Every value type's merge is a semilattice join
+  (commutative, associative, idempotent). The merge of two replicas does not
+  depend on message order or duplication.
+  - **Hybrid Logical Clock** orders events causally without trusting wall clocks.
+  - **LWW register** per field, resolved by a total order on
+    `(hlc.physical, hlc.logical, site_id, value)`.
+  - **Causal-length set** per entity for existence/deletion: odd = present,
+    merge takes the max — so create/delete/re-create all converge.
+- **The full-state `export`/`apply` path is the oracle.** Later milestones'
+  optimized sync is verified against it; it is never removed.
+- **C ABI safety.** No C++ exception crosses the boundary; memory ownership is
+  documented per function; the suite is sanitizer-clean.
 
-```bash
-cd python && LD_LIBRARY_PATH=../build python -m pytest
-```
-
-## Transport Interface
-
-Kome is transport-agnostic. Implement the `KomeTransport` interface to use any networking layer:
-
-```c
-KomeTransport my_transport = {
-    .send = my_send_fn,
-    .set_recv_callback = my_set_recv_fn,
-    .set_peer_callback = my_set_peer_fn,
-    .user_data = my_context,
-};
-kome_attach_transport(engine, &my_transport);
-```
-
-## Architecture
-
-- **Namespaced key-value entries** with automatic metadata (timestamp, author, sequence, hash)
-- **Last-Writer-Wins** conflict resolution with pluggable callback override
-- **Version vector** sync protocol with live mode for real-time push
-- **Replication tracking** with configurable target counts
-- **Tombstone GC** with configurable TTL (default 30 days)
+Non-obvious choices are recorded in [`DECISIONS.md`](DECISIONS.md).
 
 ## Dependencies
 
-All vendored, zero external:
-- SQLite (amalgamation)
-- CWPack (MessagePack)
-- GoogleTest (fetched at build time, tests only)
+Vendored, permissively licensed:
+- **SQLite** (public domain) — single-file durable storage (M2).
+- **GoogleTest** — fetched at build time, tests only.
+
+## License
+
+Engine code: MIT or Apache-2.0 (TBD before 1.0). Spec/docs: CC0/CC-BY.
