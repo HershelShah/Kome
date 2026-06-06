@@ -30,6 +30,12 @@ target_compile_definitions(sqlite3 PRIVATE
 )
 target_compile_options(sqlite3 PRIVATE -w)
 
+# --- Vendored monocypher (M4) ----------------------------------------------
+add_library(monocypher STATIC third_party/monocypher/monocypher.c)
+set_target_properties(monocypher PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(monocypher PUBLIC third_party/monocypher)
+target_compile_options(monocypher PRIVATE -w)
+
 # --- sync_engine library ---------------------------------------------------
 set(SYNC_SOURCES
     src/sync_engine.cpp
@@ -37,14 +43,16 @@ set(SYNC_SOURCES
     src/storage.cpp
     src/codec.cpp
     src/reconcile.cpp
+    src/crypto.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
 target_include_directories(sync_engine
     PUBLIC  ${CMAKE_SOURCE_DIR}/include
     PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/sqlite
+            ${CMAKE_SOURCE_DIR}/third_party/monocypher
 )
-target_link_libraries(sync_engine PRIVATE sqlite3)
+target_link_libraries(sync_engine PRIVATE sqlite3 monocypher)
 if(UNIX AND NOT APPLE)
     target_link_libraries(sync_engine PRIVATE pthread dl)
 endif()
@@ -80,4 +88,9 @@ if(SYNC_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/sqlite)
 
     sync_add_test(reconcile_test tests/reconcile_test.cpp)
+
+    sync_add_test(crypto_test tests/crypto_test.cpp)
+    target_link_libraries(crypto_test PRIVATE monocypher)
+    target_include_directories(crypto_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 endif()

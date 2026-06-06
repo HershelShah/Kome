@@ -76,3 +76,18 @@ One line of rationale per non-obvious choice, newest last.
   stronger guarantee than the reliable-channel assumption requires.
 - **Tuning: 16 buckets, leaf threshold 2** (reconcile.h). Gives ~log16(n)
   round-trips and a few records per differing leaf.
+
+## M4 — Secure transport, identity, authorization (in progress)
+
+- **Crypto dependency: monocypher 4.0.2** (vendored, BSD-2/CC0, single file under
+  `third_party/monocypher/`). Provides X25519, BLAKE2b, ChaCha20-Poly1305 AEAD,
+  and EdDSA. The optional SHA-512 Ed25519 module is unneeded: monocypher core
+  EdDSA is BLAKE2b-based and self-contained. We do not interoperate with
+  external Ed25519, so this is fine; SHA-256 (ours) covers the Noise hash.
+- **Identity derived deterministically from a 32-byte seed**: two sub-seeds
+  (BLAKE2b of seed||0x01 / ||0x02) yield the EdDSA signing pair and the X25519
+  agreement pair. `site_id = BLAKE2b-256(signing pubkey)` per T4.4.
+- **T4.2 via primitive KATs**: published vectors for SHA-256, HMAC-SHA256
+  (RFC 4231), X25519 (RFC 7748), BLAKE2b (RFC 7693); round-trip + tamper for
+  EdDSA and the AEAD. monocypher AEAD is XChaCha20-Poly1305 (24-byte nonce), so
+  the channel adapts Noise XX to that cipher rather than RFC8439 ChaChaPoly.
