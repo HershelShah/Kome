@@ -77,7 +77,7 @@ One line of rationale per non-obvious choice, newest last.
 - **Tuning: 16 buckets, leaf threshold 2** (reconcile.h). Gives ~log16(n)
   round-trips and a few records per differing leaf.
 
-## M4 — Secure transport, identity, authorization (in progress)
+## M4 — Secure transport, identity, authorization
 
 - **Crypto dependency: monocypher 4.0.2** (vendored, BSD-2/CC0, single file under
   `third_party/monocypher/`). Provides X25519, BLAKE2b, ChaCha20-Poly1305 AEAD,
@@ -147,3 +147,27 @@ One line of rationale per non-obvious choice, newest last.
   container cannot bind IPv6 (`::1` fails). Kernel-level NAT (netns) hole
   punching isn't runnable either; the simulator covers the traversal logic.
   These need a real multi-network host to exercise end to end.
+
+## M6 — Hardening & productionization
+
+- **Fuzzing is dual-track.** Real libFuzzer targets live in `tests/fuzz/`
+  (built with `-DSYNC_FUZZ=ON` on a clang with the fuzzer runtime). Because this
+  environment lacks that runtime, `hardening_test` runs the same parser entry
+  points (`sync_change_decode`, `sync_capability_decode`, `sync_session_step`)
+  over ~30k random and mutated-valid inputs under ASan — the no-crash/no-OOB
+  property is enforced in CI regardless.
+- **Threading contract: caller-serialized, no shared global state.** The engine
+  has no internal mutex; the value is that distinct engines never interfere.
+  `threading_test` drives 8 independent engine pairs concurrently and is
+  TSan-clean, validating the no-global-state invariant.
+- **Version negotiation** is checked both on the wire (unknown/old codec
+  `format_version` → `SYNC_ERR_INVALID`) and on disk (T2.4 schema guard).
+- **Python binding** is a thin ctypes wrapper over a new `libsync_engine.so`
+  shared target. The smoke test mirrors `example.c`. Memory safety of the
+  underlying C is covered by the ASan suite; running CPython itself under ASan
+  needs an `LD_PRELOAD` of the runtime (environment-specific) so is not wired
+  into CI.
+- **T6.1 sanitizers/Valgrind.** The full 9-suite test set passes under ASan and
+  UBSan with zero errors; Valgrind reports zero leaks on the example and the
+  deterministic convergence tests (the randomized 300-trial tests are
+  leak-covered by ASan's LeakSanitizer, which is far faster).

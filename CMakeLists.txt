@@ -63,6 +63,19 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(sync_engine PRIVATE pthread dl)
 endif()
 
+# Shared library for language bindings (Python, M6).
+add_library(sync_engine_shared SHARED ${SYNC_SOURCES})
+set_target_properties(sync_engine_shared PROPERTIES OUTPUT_NAME sync_engine)
+target_include_directories(sync_engine_shared
+    PUBLIC  ${CMAKE_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/sqlite
+            ${CMAKE_SOURCE_DIR}/third_party/monocypher
+)
+target_link_libraries(sync_engine_shared PRIVATE sqlite3 monocypher)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(sync_engine_shared PRIVATE pthread dl)
+endif()
+
 # --- Example ---------------------------------------------------------------
 add_executable(example examples/example.c)
 target_link_libraries(example PRIVATE sync_engine)
@@ -111,4 +124,25 @@ if(SYNC_BUILD_TESTS)
     target_link_libraries(relay_test PRIVATE monocypher)
     target_include_directories(relay_test PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+    sync_add_test(hardening_test tests/hardening_test.cpp)
+
+    sync_add_test(threading_test tests/threading_test.cpp)
+    find_package(Threads REQUIRED)
+    target_link_libraries(threading_test PRIVATE Threads::Threads)
+endif()
+
+# --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
+option(SYNC_FUZZ "Build libFuzzer targets (requires clang + fuzzer runtime)" OFF)
+if(SYNC_FUZZ)
+    foreach(fz change_decode capability_decode session)
+        add_executable(fuzz_${fz} tests/fuzz/fuzz_${fz}.cc ${SYNC_SOURCES})
+        target_include_directories(fuzz_${fz} PRIVATE
+            ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/third_party/sqlite
+            ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+        target_link_libraries(fuzz_${fz} PRIVATE sqlite3 monocypher)
+        target_compile_options(fuzz_${fz} PRIVATE -fsanitize=fuzzer,address)
+        target_link_options(fuzz_${fz} PRIVATE -fsanitize=fuzzer,address)
+    endforeach()
 endif()

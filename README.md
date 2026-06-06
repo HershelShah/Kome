@@ -16,9 +16,8 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M2** | Durable storage (SQLite, single file) | ✅ done |
 | **M3** | Incremental sync (range-based set reconciliation) | ✅ done |
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
-| **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1-T5.8; IPv6/kernel-NAT need real network) |
-| M5 | Real connectivity (STUN, hole punching, relay) | next |
-| M6 | Hardening (fuzz, sanitizers, bindings) | — |
+| **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
+| **M6** | Hardening (fuzz, sanitizers, threading, Python binding) | ✅ done |
 
 ## Build
 
@@ -81,6 +80,39 @@ See `examples/example.c` for a complete two-replica convergence demo.
   documented per function; the suite is sanitizer-clean.
 
 Non-obvious choices are recorded in [`DECISIONS.md`](DECISIONS.md).
+
+## Threading contract
+
+A single `sync_engine` (or `sync_session`) is **not** internally synchronized:
+use one engine from one thread at a time, or guard it with your own lock.
+Distinct engines are fully independent — the library holds no global mutable
+state (validated under ThreadSanitizer in `threading_test`).
+
+## Fuzzing
+
+`tests/fuzz/` has libFuzzer targets for `sync_change_decode`,
+`sync_capability_decode`, and the reconciliation message parser. Build them
+with a clang that ships the fuzzer runtime:
+
+```bash
+cmake -B build-fuzz -DSYNC_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+cmake --build build-fuzz
+./build-fuzz/fuzz_change_decode -runs=1000000
+```
+
+`hardening_test` exercises the same parsers with tens of thousands of random
+and mutated inputs under AddressSanitizer, so the no-crash property is checked
+in CI even without the libFuzzer runtime.
+
+## Python binding
+
+```bash
+SYNC_ENGINE_LIB=build/libsync_engine.so python3 -m pytest bindings/python
+```
+
+The ctypes wrapper (`bindings/python/sync_engine.py`) mirrors the C ABI; the
+smoke test reproduces `examples/example.c` (write → export → apply → read →
+digest match).
 
 ## Dependencies
 
