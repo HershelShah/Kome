@@ -46,6 +46,8 @@ set(SYNC_SOURCES
     src/crypto.cpp
     src/capability.cpp
     src/noise.cpp
+    src/transport/reliable.cpp
+    src/transport/udp.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -100,4 +102,6 @@ if(SYNC_BUILD_TESTS)
     target_link_libraries(security_test PRIVATE monocypher)
     target_include_directories(security_test PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+    sync_add_test(network_test tests/network_test.cpp)
 endif()
