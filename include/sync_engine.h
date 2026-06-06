@@ -27,8 +27,10 @@
 extern "C" {
 #endif
 
-/* ABI version. Pre-1.0: breaking changes bump this and update all bindings. */
-#define SYNC_ABI_VERSION 1u
+/* ABI version. Pre-1.0: breaking changes bump this and update all bindings.
+ *   1 — M1 convergent in-memory core
+ *   2 — M2 durable storage (sync_engine_open / sync_engine_flush) */
+#define SYNC_ABI_VERSION 2u
 
 /* Identity length. 32 bytes from the start: in M4 a site_id is the
  * BLAKE2b-256 of a signing public key. (The plan widens 16->32 in M2; we
@@ -93,7 +95,20 @@ typedef struct sync_engine sync_engine;
  * Returns NULL on allocation failure or if site_id is NULL. */
 sync_engine *sync_engine_create(const uint8_t site_id[SYNC_SITE_ID_LEN]);
 
-/* Destroy an engine. Safe to call with NULL. */
+/* Open (creating if needed) a durable engine backed by the SQLite file at
+ * path. State is loaded on open and written through on every mutation. For a
+ * fresh file, site_id becomes the persisted identity; for an existing file the
+ * persisted identity is used and site_id is ignored. Returns NULL on failure
+ * (including an unknown/newer on-disk schema version). */
+sync_engine *sync_engine_open(const char *path,
+                              const uint8_t site_id[SYNC_SITE_ID_LEN]);
+
+/* Flush durable state to disk. With write-through this is a no-op safety net;
+ * a no-op for in-memory engines. Returns SYNC_OK on success. */
+int sync_engine_flush(sync_engine *e);
+
+/* Destroy an engine. For durable engines this also closes the database.
+ * Safe to call with NULL. */
 void sync_engine_destroy(sync_engine *e);
 
 /* Copy this engine's site identity into out. */

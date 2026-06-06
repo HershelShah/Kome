@@ -14,6 +14,7 @@
 
 #include "engine.hpp"
 #include "sha256.h"
+#include "storage.h"
 
 namespace ke {
 
@@ -114,6 +115,38 @@ void feed_u32(Sha256 &h, uint32_t v) {
     h.update(b, 4);
 }
 
+/* ---- write-through helpers (no-ops for in-memory engines) --------------- */
+
+bool persist_meta_clock(sync_engine *e) {
+    return e->store->put_meta_u64("hlc_physical", e->clock.physical) &&
+           e->store->put_meta_u64("hlc_logical", e->clock.logical) &&
+           e->store->put_meta_u64("db_clock", e->db_clock);
+}
+
+/* Persist an entity row (and clock) in one transaction. */
+bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
+               uint64_t cl) {
+    Storage *s = e->store;
+    if (!s->begin()) return false;
+    bool ok = s->put_entity(ns, ent, cl, e->db_clock) && persist_meta_clock(e);
+    if (!ok) { s->rollback(); return false; }
+    return s->commit();
+}
+
+/* Persist an entity row + one field register (and clock) in one transaction. */
+bool tx_entity_field(sync_engine *e, const std::string &ns,
+                     const std::string &ent, const std::string &field,
+                     uint64_t cl, const Register &reg) {
+    Storage *s = e->store;
+    if (!s->begin()) return false;
+    bool ok = s->put_entity(ns, ent, cl, e->db_clock) &&
+              s->put_field(ns, ent, field, reg.value, reg.hlc, reg.site,
+                           e->db_clock) &&
+              persist_meta_clock(e);
+    if (!ok) { s->rollback(); return false; }
+    return s->commit();
+}
+
 } // namespace
 
 extern "C" {
@@ -144,7 +177,45 @@ sync_engine *sync_engine_create(const uint8_t site_id[SYNC_SITE_ID_LEN]) {
     }
 }
 
-void sync_engine_destroy(sync_engine *e) { delete e; }
+sync_engine *sync_engine_open(const char *path,
+                              const uint8_t site_id[SYNC_SITE_ID_LEN]) {
+    if (!path || !site_id) return nullptr;
+    try {
+        sync_error err = SYNC_OK;
+        Storage *store = Storage::open(path, &err);
+        if (!store) return nullptr;
+
+        sync_engine *e = new (std::nothrow) sync_engine();
+        if (!e) {
+            delete store;
+            return nullptr;
+        }
+        SiteId def{};
+        std::memcpy(def.data(), site_id, SYNC_SITE_ID_LEN);
+        if (!store->load(e, def, &err)) {
+            delete e; /* e does not own store yet */
+            delete store;
+            return nullptr;
+        }
+        e->store = store;
+        return e;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+int sync_engine_flush(sync_engine *e) {
+    if (!e) return SYNC_ERR_INVALID;
+    /* Write-through keeps disk current; WAL checkpoints on close. Nothing to
+     * force here, but validate the handle for a clean contract. */
+    return SYNC_OK;
+}
+
+void sync_engine_destroy(sync_engine *e) {
+    if (!e) return;
+    delete e->store;
+    delete e;
+}
 
 int sync_engine_site_id(sync_engine *e, uint8_t out[SYNC_SITE_ID_LEN]) {
     if (!e || !out) return SYNC_ERR_INVALID;
@@ -161,14 +232,22 @@ int sync_engine_set(sync_engine *e,
         (!field && field_len) || (!value && value_len))
         return SYNC_ERR_INVALID;
     try {
-        Entity &ent = e->ns[to_str(ns, ns_len)][to_str(entity, entity_len)];
+        std::string nsk = to_str(ns, ns_len);
+        std::string entk = to_str(entity, entity_len);
+        std::string fk = to_str(field, field_len);
+        Entity &ent = e->ns[nsk][entk];
         if (!ent.present()) ent.causal_length += 1; /* causal-length add */
         Register reg;
         reg.value = to_str(value, value_len);
         reg.hlc = e->clock.tick(now_ms());
         reg.site = e->site_id;
         /* A fresh local tick dominates any prior state for this cell. */
-        ent.fields[to_str(field, field_len)] = std::move(reg);
+        ent.fields[fk] = reg;
+        if (e->store) {
+            e->db_clock++;
+            if (!tx_entity_field(e, nsk, entk, fk, ent.causal_length, reg))
+                return SYNC_ERR_INTERNAL;
+        }
         return SYNC_OK;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
@@ -183,11 +262,20 @@ int sync_engine_delete(sync_engine *e,
     if (!e || (!ns && ns_len) || (!entity && entity_len))
         return SYNC_ERR_INVALID;
     try {
-        auto ni = e->ns.find(to_str(ns, ns_len));
+        std::string nsk = to_str(ns, ns_len);
+        std::string entk = to_str(entity, entity_len);
+        auto ni = e->ns.find(nsk);
         if (ni == e->ns.end()) return SYNC_OK;
-        auto ei = ni->second.find(to_str(entity, entity_len));
+        auto ei = ni->second.find(entk);
         if (ei == ni->second.end()) return SYNC_OK;
-        if (ei->second.present()) ei->second.causal_length += 1; /* remove */
+        if (ei->second.present()) {
+            ei->second.causal_length += 1; /* remove */
+            if (e->store) {
+                e->db_clock++;
+                if (!tx_entity(e, nsk, entk, ei->second.causal_length))
+                    return SYNC_ERR_INTERNAL;
+            }
+        }
         return SYNC_OK;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
@@ -256,11 +344,18 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
     if (c->kind != SYNC_CHANGE_EXISTENCE && c->kind != SYNC_CHANGE_REGISTER)
         return SYNC_ERR_INVALID;
     try {
-        Entity &ent = e->ns[to_str(c->ns, c->ns_len)]
-                          [to_str(c->entity, c->entity_len)];
+        std::string nsk = to_str(c->ns, c->ns_len);
+        std::string entk = to_str(c->entity, c->entity_len);
+        Entity &ent = e->ns[nsk][entk];
         if (c->kind == SYNC_CHANGE_EXISTENCE) {
-            if (c->causal_length > ent.causal_length)
+            if (c->causal_length > ent.causal_length) {
                 ent.causal_length = c->causal_length; /* max */
+                if (e->store) {
+                    e->db_clock++;
+                    if (!tx_entity(e, nsk, entk, ent.causal_length))
+                        return SYNC_ERR_INTERNAL;
+                }
+            }
             return SYNC_OK;
         }
         /* REGISTER */
@@ -273,10 +368,20 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
 
         std::string fkey = to_str(c->field, c->field_len);
         auto fi = ent.fields.find(fkey);
-        if (fi == ent.fields.end() || register_cmp(cand, fi->second) > 0)
-            ent.fields[fkey] = std::move(cand);
+        bool took = (fi == ent.fields.end() || register_cmp(cand, fi->second) > 0);
+        if (took) ent.fields[fkey] = cand;
 
         e->clock.receive({c->hlc.physical, c->hlc.logical}, now_ms());
+
+        if (e->store && took) {
+            e->db_clock++;
+            if (!tx_entity_field(e, nsk, entk, fkey, ent.causal_length, cand))
+                return SYNC_ERR_INTERNAL;
+        } else if (e->store) {
+            /* Clock advanced even if the register lost; persist it. */
+            if (!tx_entity(e, nsk, entk, ent.causal_length))
+                return SYNC_ERR_INTERNAL;
+        }
         return SYNC_OK;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;

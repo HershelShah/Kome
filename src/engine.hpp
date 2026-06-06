@@ -52,6 +52,8 @@ using Namespaces = std::map<std::string, Entities>;
 /* Current wall-clock time in milliseconds since the Unix epoch. */
 uint64_t now_ms();
 
+class Storage; /* defined in storage.h (M2) */
+
 } // namespace ke
 
 /* The opaque engine handle from the public header. */
@@ -59,6 +61,8 @@ struct sync_engine {
     ke::SiteId       site_id{};
     ke::Hlc          clock;
     ke::Namespaces   ns;
+    ke::Storage     *store = nullptr; /* null for in-memory engines */
+    uint64_t         db_clock = 0;    /* monotonic per-mutation counter */
 };
 
 #endif /* SYNC_ENGINE_INTERNAL_HPP */

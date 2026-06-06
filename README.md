@@ -13,8 +13,8 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | Milestone | What | State |
 |-----------|------|-------|
 | **M1** | Convergent core (HLC, LWW register, causal-length set, export/apply, digest) | ✅ done |
-| M2 | Durable storage (SQLite, single file) | in progress |
-| M3 | Incremental sync (range-based set reconciliation) | — |
+| **M2** | Durable storage (SQLite, single file) | ✅ done |
+| M3 | Incremental sync (range-based set reconciliation) | in progress |
 | M4 | Secure transport, identity, capabilities (Noise XX) | — |
 | M5 | Real connectivity (STUN, hole punching, relay) | — |
 | M6 | Hardening (fuzz, sanitizers, bindings) | — |

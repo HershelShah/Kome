@@ -24,3 +24,26 @@ One line of rationale per non-obvious choice, newest last.
   a local write can never be silently older than current state.
 - **SQLite is vendored under `third_party/sqlite/`** (moved from `vendor/`) to
   match the plan's target layout. Built now so M2 only adds the storage layer.
+
+## M2 — Durable storage
+
+- **Persistence is a layer *under* M1**: a `ke::Storage` wrapper loads all state
+  on open and write-throughs every mutation inside a transaction. The merge
+  code in `sync_engine.cpp` is unchanged — it just calls `tx_*` helpers when a
+  store is attached. In-memory engines (`sync_engine_create`) pass `store==null`
+  and skip all of it.
+- **ns/entity/field stored as BLOB** (not TEXT) so binary keys with embedded
+  NULs round-trip losslessly.
+- **WAL + `synchronous=NORMAL` + `busy_timeout=5000`**: WAL gives crash-atomic
+  single-writer durability (committed transactions survive SIGKILL; partial
+  ones roll back on reopen), NORMAL is the safe WAL durability/speed point, and
+  busy_timeout lets a concurrent connection wait rather than fail.
+- **Per-mutation transaction (not batched)**: simplest correct write-through.
+  The plan says batch only after a benchmark shows it is needed; tests pass at
+  this granularity, so no batching yet.
+- **Persisted identity wins on reopen**: `site_id` is stored in `meta` on first
+  open; later opens load it and ignore the passed-in id. A replica's identity is
+  a property of its file.
+- **Schema guard**: `meta.schema_version` is checked on open; an
+  unknown/newer version returns `SYNC_ERR_INVALID` and `sync_engine_open`
+  yields NULL — no migration, no corruption.

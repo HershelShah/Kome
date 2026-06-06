@@ -34,15 +34,17 @@ target_compile_options(sqlite3 PRIVATE -w)
 set(SYNC_SOURCES
     src/sync_engine.cpp
     src/sha256.cpp
+    src/storage.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
 target_include_directories(sync_engine
     PUBLIC  ${CMAKE_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/sqlite
 )
+target_link_libraries(sync_engine PRIVATE sqlite3)
 if(UNIX AND NOT APPLE)
-    target_link_libraries(sync_engine PRIVATE pthread)
+    target_link_libraries(sync_engine PRIVATE pthread dl)
 endif()
 
 # --- Example ---------------------------------------------------------------
@@ -70,4 +72,8 @@ if(SYNC_BUILD_TESTS)
     endfunction()
 
     sync_add_test(convergence_test tests/convergence_test.cpp)
+    sync_add_test(storage_test tests/storage_test.cpp)
+    target_link_libraries(storage_test PRIVATE sqlite3)
+    target_include_directories(storage_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/sqlite)
 endif()
