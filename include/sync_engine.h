@@ -29,8 +29,9 @@ extern "C" {
 
 /* ABI version. Pre-1.0: breaking changes bump this and update all bindings.
  *   1 — M1 convergent in-memory core
- *   2 — M2 durable storage (sync_engine_open / sync_engine_flush) */
-#define SYNC_ABI_VERSION 2u
+ *   2 — M2 durable storage (sync_engine_open / sync_engine_flush)
+ *   3 — M3 codec + range-based reconciliation session */
+#define SYNC_ABI_VERSION 3u
 
 /* Identity length. 32 bytes from the start: in M4 a site_id is the
  * BLAKE2b-256 of a signing public key. (The plan widens 16->32 in M2; we
@@ -170,6 +171,43 @@ int sync_engine_apply(sync_engine *e, const sync_change *c);
  * registers under tombstones). Two engines that have merged the same set of
  * records produce identical digests regardless of order. */
 int sync_engine_digest(sync_engine *e, uint8_t out[SYNC_DIGEST_LEN]);
+
+/* ---- Codec (M3): canonical, little-endian, versioned record bytes -------- */
+
+/* Encode c into buf. Returns the number of bytes the encoding requires; writes
+ * into buf only when buf_len is large enough (call with buf==NULL to size).
+ * Returns 0 on invalid input. */
+size_t sync_change_encode(const sync_change *c, uint8_t *buf, size_t buf_len);
+
+/* Decode one record from buf[0,len). On success fills *out (which owns its
+ * buffers) and, if consumed!=NULL, sets *consumed to bytes read. Release the
+ * decoded record with sync_change_free_decoded. */
+int sync_change_decode(const uint8_t *buf, size_t len, sync_change *out,
+                       size_t *consumed);
+
+/* Release buffers owned by a record filled by sync_change_decode. Safe with
+ * NULL; does not free the sync_change struct itself. */
+void sync_change_free_decoded(sync_change *c);
+
+/* ---- Reconciliation session (M3): sync only the difference --------------- */
+
+/* A transport-agnostic, range-based set-reconciliation session. Drive it by
+ * pumping opaque messages between two peers until both report done. */
+typedef struct sync_session sync_session;
+
+/* Begin a session against engine e. Exactly one peer passes as_initiator=1;
+ * the initiator produces the first message (call step with in_len==0). */
+sync_session *sync_session_begin(sync_engine *e, int as_initiator);
+
+/* Process an incoming message (in,in_len) and produce the next outgoing
+ * message in *out (length *out_len; malloc'd, release with sync_free; may be
+ * NULL when *out_len==0). Sets *done to 1 when this peer has nothing further to
+ * send. For the initiator's first call, pass in=NULL,in_len=0. */
+int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
+                      uint8_t **out, size_t *out_len, int *done);
+
+/* End a session and release its resources. Safe with NULL. */
+void sync_session_end(sync_session *s);
 
 /* ---- Misc --------------------------------------------------------------- */
 

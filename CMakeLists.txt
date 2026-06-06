@@ -35,6 +35,8 @@ set(SYNC_SOURCES
     src/sync_engine.cpp
     src/sha256.cpp
     src/storage.cpp
+    src/codec.cpp
+    src/reconcile.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -76,4 +78,6 @@ if(SYNC_BUILD_TESTS)
     target_link_libraries(storage_test PRIVATE sqlite3)
     target_include_directories(storage_test PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/sqlite)
+
+    sync_add_test(reconcile_test tests/reconcile_test.cpp)
 endif()

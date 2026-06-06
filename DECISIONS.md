@@ -47,3 +47,32 @@ One line of rationale per non-obvious choice, newest last.
 - **Schema guard**: `meta.schema_version` is checked on open; an
   unknown/newer version returns `SYNC_ERR_INVALID` and `sync_engine_open`
   yields NULL — no migration, no corruption.
+
+## M3 — Incremental sync (range-based reconciliation)
+
+- **Codec is hand-rolled little-endian + LEB128 varints**, 1-byte format
+  version at the head of every record. No struct memcpy, no MessagePack
+  dependency — the format is fully specified by codec.cpp and pinned by an
+  inline golden vector in reconcile_test.cpp (committed bytes guard against
+  endianness/format drift, satisfying T3.2).
+- **Combinable fingerprint = SHA256(count_LE || Σ SHA256(record))**, where the
+  sum is 256-bit little-endian modular addition. A prefix-sum array over the
+  sorted snapshot makes any sub-range's fingerprint an O(1) delta, so splitting
+  a range never rehashes siblings.
+- **No version vector / oplog.** Range reconciliation finds the set difference
+  without peer history, exactly as the plan directs; a VV fast-path is
+  explicitly deferred.
+- **Protocol modes FP / LEAF / HAVE.** FP recurses (split into 16 buckets);
+  LEAF ships a side's full content for a small range; HAVE is the terminal
+  reply with the records the peer still lacks. This three-step finish (FP →
+  LEAF → HAVE) guarantees termination while exchanging records both ways.
+- **Sessions snapshot their own state at begin.** Fingerprints are computed
+  over the immutable snapshot; incoming records are applied to the engine (for
+  convergence) but do not perturb protocol math. Final state = union of both
+  snapshots, which equals the full-state oracle.
+- **Self-contained descriptors (explicit lo+hi bounds).** Combined with
+  idempotent merge, this makes the protocol converge under reordered and
+  duplicated messages (T3.7), tested with a lossy queue-based driver — a
+  stronger guarantee than the reliable-channel assumption requires.
+- **Tuning: 16 buckets, leaf threshold 2** (reconcile.h). Gives ~log16(n)
+  round-trips and a few records per differing leaf.

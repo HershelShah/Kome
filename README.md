@@ -14,8 +14,8 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 |-----------|------|-------|
 | **M1** | Convergent core (HLC, LWW register, causal-length set, export/apply, digest) | ✅ done |
 | **M2** | Durable storage (SQLite, single file) | ✅ done |
-| M3 | Incremental sync (range-based set reconciliation) | in progress |
-| M4 | Secure transport, identity, capabilities (Noise XX) | — |
+| **M3** | Incremental sync (range-based set reconciliation) | ✅ done |
+| M4 | Secure transport, identity, capabilities (Noise XX) | next |
 | M5 | Real connectivity (STUN, hole punching, relay) | — |
 | M6 | Hardening (fuzz, sanitizers, bindings) | — |
 
@@ -72,6 +72,10 @@ See `examples/example.c` for a complete two-replica convergence demo.
     merge takes the max — so create/delete/re-create all converge.
 - **The full-state `export`/`apply` path is the oracle.** Later milestones'
   optimized sync is verified against it; it is never removed.
+- **Incremental sync without peer history.** `sync_session_*` reconciles two
+  replicas by recursively comparing range fingerprints and exchanging only the
+  differing records — O(log n) round-trips, transfer proportional to the
+  difference — checked against the full-state oracle. No version vectors.
 - **C ABI safety.** No C++ exception crosses the boundary; memory ownership is
   documented per function; the suite is sanitizer-clean.
 
