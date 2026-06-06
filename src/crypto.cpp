@@ -1,6 +1,7 @@
 /* crypto.cpp — crypto wrapper over monocypher + our SHA-256 (M4). */
 #include "crypto.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "monocypher.h"
@@ -106,6 +107,14 @@ bool ct_eq32(const uint8_t a[32], const uint8_t b[32]) {
     uint8_t d = 0;
     for (int i = 0; i < 32; i++) d |= (uint8_t)(a[i] ^ b[i]);
     return d == 0;
+}
+
+bool random_bytes(uint8_t *buf, size_t len) {
+    FILE *f = std::fopen("/dev/urandom", "rb");
+    if (!f) return false;
+    size_t got = std::fread(buf, 1, len, f);
+    std::fclose(f);
+    return got == len;
 }
 
 } // namespace ke

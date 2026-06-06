@@ -45,6 +45,7 @@ set(SYNC_SOURCES
     src/reconcile.cpp
     src/crypto.cpp
     src/capability.cpp
+    src/noise.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})

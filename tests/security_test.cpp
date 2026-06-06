@@ -15,6 +15,9 @@
 
 #include "monocypher.h" /* crypto_blake2b for the T4.4 identity check */
 
+#include "engine.hpp" /* access to the engine's identity KeyPair */
+#include "noise.h"
+
 namespace {
 
 const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
@@ -79,7 +82,120 @@ int exists(sync_engine *e, const std::string &ns, const std::string &ent) {
     return p;
 }
 
+/* Run the Noise XX handshake between two channels to completion. */
+bool handshake(ke::NoiseChannel &ci, ke::NoiseChannel &cr) {
+    std::string msg, out;
+    bool d = false;
+    if (!ci.step("", out, d)) return false; /* msg1 */
+    msg = out;
+    if (!cr.step(msg, out, d)) return false; /* msg2 */
+    msg = out;
+    if (!ci.step(msg, out, d)) return false; /* msg3, initiator done */
+    msg = out;
+    if (!cr.step(msg, out, d)) return false; /* responder done */
+    return ci.done() && cr.done();
+}
+
 } // namespace
+
+/* ---- T4.1 Handshake + sync over the encrypted channel ------------------ */
+TEST(Security, HandshakeAndSync) {
+    auto sa = seed_from(0x31), sb = seed_from(0x32);
+    sync_engine *a = sync_engine_create(sa.data());
+    sync_engine *b = sync_engine_create(sb.data());
+
+    set(a, "n", "x", "f", "from-a");
+    set(b, "n", "y", "f", "from-b");
+
+    ke::NoiseChannel ci(true, a->identity);
+    ke::NoiseChannel cr(false, b->identity);
+    ASSERT_TRUE(handshake(ci, cr));
+
+    /* Each side learned the other's static key. */
+    EXPECT_EQ(0, std::memcmp(ci.remote_static(), b->identity.dh_pk.data(), 32));
+    EXPECT_EQ(0, std::memcmp(cr.remote_static(), a->identity.dh_pk.data(), 32));
+
+    /* Run the reconciliation session inside the channel. */
+    sync_session *ssa = sync_session_begin(a, 1);
+    sync_session *ssb = sync_session_begin(b, 0);
+
+    uint8_t *out = nullptr; size_t outlen = 0; int done = 0;
+    ASSERT_EQ(sync_session_step(ssa, nullptr, 0, &out, &outlen, &done), SYNC_OK);
+    std::string plain((char *)out, outlen);
+    if (out) sync_free(out);
+
+    bool a_to_b = true; /* direction of the in-flight message */
+    int empties = (plain.empty()) ? 1 : 0;
+    std::string wire;
+    /* encrypt initiator's first message */
+    ASSERT_TRUE(ci.encrypt(plain, wire));
+
+    for (int i = 0; i < 2000; i++) {
+        /* deliver `wire` to the receiver, decrypting with its channel */
+        ke::NoiseChannel &rx = a_to_b ? cr : ci;
+        ke::NoiseChannel &tx = a_to_b ? ci : cr;
+        (void)tx;
+        std::string in_plain;
+        ASSERT_TRUE(rx.decrypt(wire, in_plain));
+
+        sync_session *target = a_to_b ? ssb : ssa;
+        out = nullptr; outlen = 0; done = 0;
+        ASSERT_EQ(sync_session_step(target, (const uint8_t *)in_plain.data(),
+                                    in_plain.size(), &out, &outlen, &done),
+                  SYNC_OK);
+        std::string reply((char *)out, outlen);
+        if (out) sync_free(out);
+        empties = reply.empty() ? empties + 1 : 0;
+        if (empties >= 2) break;
+        /* encrypt reply with the receiver's channel for the trip back */
+        ke::NoiseChannel &rtx = a_to_b ? cr : ci;
+        ASSERT_TRUE(rtx.encrypt(reply, wire));
+        a_to_b = !a_to_b;
+    }
+
+    sync_session_end(ssa);
+    sync_session_end(ssb);
+
+    uint8_t da[SYNC_DIGEST_LEN], db[SYNC_DIGEST_LEN];
+    sync_engine_digest(a, da);
+    sync_engine_digest(b, db);
+    EXPECT_EQ(0, std::memcmp(da, db, SYNC_DIGEST_LEN));
+    EXPECT_EQ(exists(a, "n", "y"), 1);
+    EXPECT_EQ(exists(b, "n", "x"), 1);
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
+
+/* ---- T4.3 Tamper detection --------------------------------------------- */
+TEST(Security, TamperDetection) {
+    auto sa = seed_from(0x41), sb = seed_from(0x42);
+    sync_engine *a = sync_engine_create(sa.data());
+    sync_engine *b = sync_engine_create(sb.data());
+    ke::NoiseChannel ci(true, a->identity);
+    ke::NoiseChannel cr(false, b->identity);
+    ASSERT_TRUE(handshake(ci, cr));
+
+    std::string ct;
+    ASSERT_TRUE(ci.encrypt("hello world", ct));
+    std::string pt;
+    ASSERT_TRUE(cr.decrypt(ct, pt));
+    EXPECT_EQ(pt, "hello world");
+
+    /* Flip any ciphertext byte -> authentication fails (need a fresh channel
+     * at the same nonce). */
+    ke::NoiseChannel ci2(true, a->identity);
+    ke::NoiseChannel cr2(false, b->identity);
+    ASSERT_TRUE(handshake(ci2, cr2));
+    std::string ct2;
+    ASSERT_TRUE(ci2.encrypt("hello world", ct2));
+    ct2[3] ^= 0x01;
+    std::string pt2;
+    EXPECT_FALSE(cr2.decrypt(ct2, pt2)) << "tampered ciphertext was accepted";
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
 
 /* ---- T4.4 Identity stability ------------------------------------------- */
 TEST(Security, IdentityStability) {

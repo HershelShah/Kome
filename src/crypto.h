@@ -62,6 +62,10 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *msg,
 /* Constant-time 32-byte compare (1 if equal). */
 bool ct_eq32(const uint8_t a[32], const uint8_t b[32]);
 
+/* Fill buf with cryptographically random bytes (from the OS CSPRNG).
+ * Returns false if no entropy source is available. */
+bool random_bytes(uint8_t *buf, size_t len);
+
 } // namespace ke
 
 #endif /* SYNC_CRYPTO_H */

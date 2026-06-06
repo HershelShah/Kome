@@ -111,3 +111,15 @@ One line of rationale per non-obvious choice, newest last.
 - **Read scoping filters before fingerprinting.** `sync_session_begin_scoped`
   drops records the peer cannot read from the snapshot, so out-of-scope
   namespaces never enter a fingerprint or leak their existence.
+
+- **Noise XX channel adapted to XChaCha20-Poly1305.** `src/noise.{h,cpp}`
+  implements Noise_XX (X25519 / SHA-256) using monocypher's XChaCha20-Poly1305
+  AEAD instead of RFC 8439 ChaChaPoly, so it is not wire-compatible with
+  standard Noise (recorded as a deliberate trade for the single-dependency
+  invariant). It yields a mutually authenticated, forward-secret channel that
+  the M3 session runs inside (T4.1, T4.3). HKDF/HMAC-SHA256 are built on our
+  SHA-256; ephemeral keys come from /dev/urandom.
+- **Channel authenticates the X25519 static, not yet the EdDSA identity.** Both
+  derive from one seed, so for honest peers they correspond; binding the DH
+  static to the signing identity (a signed proof over the handshake hash) is a
+  follow-up. Read-scoping currently trusts the caller-supplied peer pubkey.
