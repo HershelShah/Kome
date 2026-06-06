@@ -123,3 +123,27 @@ One line of rationale per non-obvious choice, newest last.
   derive from one seed, so for honest peers they correspond; binding the DH
   static to the signing identity (a signed proof over the handshake hash) is a
   follow-up. Read-scoping currently trusts the caller-supplied peer pubkey.
+
+## M5 — Real connectivity (in-container subset)
+
+- **Pump-style reliability layer (stop-and-wait).** `transport/reliable.{h,cpp}`
+  turns a lossy/reordering/duplicating datagram link into a reliable ordered
+  stream with seq/ack/retransmit. Stop-and-wait suffices because the
+  reconciliation protocol already keeps one message in flight; no callbacks
+  (matches the engine's pump style).
+- **UDP transport is non-blocking BSD sockets** (`transport/udp.{h,cpp}`),
+  IPv4. STUN (`transport/stun.{h,cpp}`) is a minimal RFC 5389 Binding
+  client + server helpers (XOR-MAPPED-ADDRESS), tested against a local server.
+- **Relay is a blind, in-process store-and-forward core** (`transport/relay.
+  {h,cpp}`): forwards opaque blobs by destination pubkey, queues for offline
+  peers, and has no key material or decrypt path (privacy invariant by
+  construction). A network service would wrap this core.
+- **NAT traversal is verified with a userspace NAT simulator** (the plan allows
+  a simulator in place of Linux netns, which this sandbox lacks: no
+  `ip`/`iptables`). It models full-cone vs symmetric mapping + inbound
+  filtering and a STUN-reflexive lookup, so full-cone peers punch through
+  (T5.3) while symmetric peers fail and fall back to the relay (T5.4).
+- **Environment limits.** T5.9 (IPv6 preference) is not runnable here — this
+  container cannot bind IPv6 (`::1` fails). Kernel-level NAT (netns) hole
+  punching isn't runnable either; the simulator covers the traversal logic.
+  These need a real multi-network host to exercise end to end.

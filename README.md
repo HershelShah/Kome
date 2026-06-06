@@ -16,6 +16,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M2** | Durable storage (SQLite, single file) | ✅ done |
 | **M3** | Incremental sync (range-based set reconciliation) | ✅ done |
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
+| **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1-T5.8; IPv6/kernel-NAT need real network) |
 | M5 | Real connectivity (STUN, hole punching, relay) | next |
 | M6 | Hardening (fuzz, sanitizers, bindings) | — |
 

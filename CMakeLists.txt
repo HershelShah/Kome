@@ -48,6 +48,8 @@ set(SYNC_SOURCES
     src/noise.cpp
     src/transport/reliable.cpp
     src/transport/udp.cpp
+    src/transport/stun.cpp
+    src/transport/relay.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -104,4 +106,9 @@ if(SYNC_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
     sync_add_test(network_test tests/network_test.cpp)
+
+    sync_add_test(relay_test tests/relay_test.cpp)
+    target_link_libraries(relay_test PRIVATE monocypher)
+    target_include_directories(relay_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 endif()

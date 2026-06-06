@@ -20,10 +20,15 @@
 #include <string>
 #include <vector>
 
+#include "sync_drive.hpp"
 #include "transport/reliable.h"
+#include "transport/stun.h"
 #include "transport/udp.h"
 
 namespace {
+
+using synctest::Medium;
+using synctest::converge;
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
 const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
@@ -49,6 +54,12 @@ void populate(sync_engine *e, std::mt19937 &rng, int n) {
     }
 }
 
+int exists(sync_engine *e, const std::string &ns, const std::string &ent) {
+    int p = 0;
+    sync_engine_exists(e, B(ns), ns.size(), B(ent), ent.size(), &p);
+    return p;
+}
+
 Digest baseline_union(sync_engine *a, sync_engine *b) {
     sync_engine *u = sync_engine_create(seed_from(0xEE).data());
     for (sync_engine *e : {a, b}) {
@@ -61,20 +72,6 @@ Digest baseline_union(sync_engine *a, sync_engine *b) {
     sync_engine_destroy(u);
     return d;
 }
-
-uint64_t now_ms() {
-    using namespace std::chrono;
-    return (uint64_t)duration_cast<milliseconds>(
-               steady_clock::now().time_since_epoch())
-        .count();
-}
-
-/* A datagram medium between endpoint 0 (A) and endpoint 1 (B). */
-struct Medium {
-    virtual ~Medium() = default;
-    virtual void send(int from, const std::string &dg) = 0;
-    virtual bool recv(int to, std::string &dg) = 0;
-};
 
 /* In-process medium that drops, duplicates, and reorders datagrams. */
 struct LossySim : Medium {
@@ -108,72 +105,6 @@ struct UdpMedium : Medium {
     }
 };
 
-/* Drive two engines to convergence over a datagram medium using the
- * reliability layer. virtual_clock advances time deterministically (lossy
- * sim); otherwise it uses the real clock with a short sleep (UDP). */
-bool converge(sync_engine *a, sync_engine *b, Medium &m, bool virtual_clock,
-              int max_iters) {
-    sync_session *sa = sync_session_begin(a, 1);
-    sync_session *sb = sync_session_begin(b, 0);
-    ke::ReliableLink la, lb;
-
-    auto feed = [&](sync_session *s, ke::ReliableLink &l,
-                    const std::string &msg) {
-        uint8_t *o = nullptr; size_t ol = 0; int d = 0;
-        sync_session_step(s, (const uint8_t *)msg.data(), msg.size(), &o, &ol,
-                          &d);
-        if (ol) l.send(std::string((char *)o, ol));
-        if (o) sync_free(o);
-    };
-
-    { /* initiator's first message */
-        uint8_t *o = nullptr; size_t ol = 0; int d = 0;
-        sync_session_step(sa, nullptr, 0, &o, &ol, &d);
-        if (ol) la.send(std::string((char *)o, ol));
-        if (o) sync_free(o);
-    }
-
-    uint64_t now = virtual_clock ? 0 : now_ms();
-    int quiet = 0;
-    bool ok = false;
-    for (int iter = 0; iter < max_iters; iter++) {
-        now = virtual_clock ? now + 100 : now_ms();
-        bool work = false;
-
-        std::vector<std::string> dgs;
-        la.poll(dgs, now);
-        for (auto &d : dgs) { m.send(0, d); work = true; }
-        dgs.clear();
-        lb.poll(dgs, now);
-        for (auto &d : dgs) { m.send(1, d); work = true; }
-
-        std::string dg;
-        while (m.recv(0, dg)) {
-            work = true;
-            std::vector<std::string> del;
-            la.on_datagram(dg, del);
-            for (auto &msg : del) feed(sa, la, msg);
-        }
-        while (m.recv(1, dg)) {
-            work = true;
-            std::vector<std::string> del;
-            lb.on_datagram(dg, del);
-            for (auto &msg : del) feed(sb, lb, msg);
-        }
-
-        /* Quiescence: no datagrams moved and both links have nothing pending
-         * (no data in flight, no queued sends, no pending acks). */
-        if (!work && la.idle() && lb.idle()) {
-            if (++quiet > 5) { ok = true; break; }
-        } else {
-            quiet = 0;
-        }
-        if (!virtual_clock) usleep(500);
-    }
-    sync_session_end(sa);
-    sync_session_end(sb);
-    return ok;
-}
 
 } // namespace
 
@@ -197,6 +128,87 @@ TEST(Network, LanDirectUdp) {
     ASSERT_TRUE(converge(a, b, m, /*virtual_clock=*/false, /*max_iters=*/20000));
     EXPECT_EQ(digest(a), digest(b));
     EXPECT_EQ(digest(a), oracle);
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
+
+/* ---- T5.2 STUN binding (against a local test STUN server) -------------- */
+TEST(Network, StunBinding) {
+    ke::UdpSocket server, client;
+    ASSERT_TRUE(server.open("127.0.0.1", 0));
+    ASSERT_TRUE(client.open("127.0.0.1", 0));
+
+    uint8_t txid[12];
+    std::string req;
+    ke::stun_build_request(txid, req);
+    ASSERT_TRUE(client.send_to(server.local(), req));
+
+    /* Server: reflect the observed sender endpoint. */
+    std::string in;
+    ke::Endpoint from;
+    ASSERT_TRUE(server.recv(in, from, 1000));
+    uint8_t stxid[12];
+    ASSERT_TRUE(ke::stun_parse_request(in, stxid));
+    std::string resp;
+    ke::stun_build_response(stxid, from, resp);
+    ASSERT_TRUE(server.send_to(from, resp));
+
+    /* Client learns its reflexive endpoint. */
+    std::string rin;
+    ke::Endpoint rf;
+    ASSERT_TRUE(client.recv(rin, rf, 1000));
+    ke::Endpoint mapped;
+    ASSERT_TRUE(ke::stun_parse_response(rin, txid, mapped));
+    EXPECT_EQ(mapped.ip, std::string("127.0.0.1"));
+    EXPECT_EQ(mapped.port, client.local().port);
+}
+
+/* ---- T5.6 Reconnection after a network change -------------------------- */
+TEST(Network, ReconnectionResumesSync) {
+    auto sa = seed_from(0x55), sb = seed_from(0x56);
+    sync_engine *a = sync_engine_create(sa.data());
+    sync_engine *b = sync_engine_create(sb.data());
+    std::mt19937 ra(5), rb(6);
+    populate(a, ra, 20);
+    populate(b, rb, 20);
+
+    /* Initial connection over UDP. */
+    ke::UdpSocket sca, scb;
+    ASSERT_TRUE(sca.open("127.0.0.1", 0));
+    ASSERT_TRUE(scb.open("127.0.0.1", 0));
+    {
+        UdpMedium m;
+        m.sock[0] = &sca; m.sock[1] = &scb;
+        m.ep[0] = sca.local(); m.ep[1] = scb.local();
+        ASSERT_TRUE(converge(a, b, m, false, 20000));
+    }
+    EXPECT_EQ(digest(a), digest(b));
+
+    /* Simulate a network change on A: its socket gets a new local endpoint. */
+    sca.close();
+    ke::UdpSocket sca2;
+    ASSERT_TRUE(sca2.open("127.0.0.1", 0));
+
+    /* New offline writes while disconnected. */
+    for (int i = 0; i < 10; i++) {
+        std::string ent = "post-" + std::to_string(i);
+        sync_engine_set(a, B(std::string("ns")), 2, B(ent), ent.size(),
+                        B(std::string("f")), 1, B(std::string("new")), 3);
+    }
+    Digest oracle = baseline_union(a, b);
+
+    /* Re-establish over the new endpoint and resume sync. */
+    {
+        UdpMedium m;
+        m.sock[0] = &sca2; m.sock[1] = &scb;
+        m.ep[0] = sca2.local(); m.ep[1] = scb.local();
+        ASSERT_TRUE(converge(a, b, m, false, 20000));
+    }
+    EXPECT_EQ(digest(a), digest(b));
+    EXPECT_EQ(digest(a), oracle);
+    EXPECT_EQ(exists(a, "ns", "post-3"), 1);
+    EXPECT_EQ(exists(b, "ns", "post-3"), 1);
 
     sync_engine_destroy(a);
     sync_engine_destroy(b);
