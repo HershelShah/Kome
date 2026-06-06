@@ -80,6 +80,12 @@ endif()
 add_executable(example examples/example.c)
 target_link_libraries(example PRIVATE sync_engine)
 
+# Two-process end-to-end demo node (uses internal transport/crypto headers).
+add_executable(node examples/node.cpp)
+target_link_libraries(node PRIVATE sync_engine monocypher)
+target_include_directories(node PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
 # --- Tests -----------------------------------------------------------------
 if(SYNC_BUILD_TESTS)
     include(FetchContent)

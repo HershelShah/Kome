@@ -60,6 +60,28 @@ sync_engine_destroy(e);
 
 See `examples/example.c` for a complete two-replica convergence demo.
 
+## Two-node end-to-end demo
+
+A real two-process demo: two nodes, two SQLite files, syncing over UDP through
+the full stack (Noise XX encryption → reliability layer → range
+reconciliation). Each writes records offline, then they connect and converge.
+
+```bash
+cmake -B build && cmake --build build --target node
+examples/demo.sh
+```
+
+Expected: both nodes print the **same** post-sync digest and each ends up with
+all 6 records (its own 3 plus the peer's 3). Because the databases are durable,
+reopening one afterward (even from another language) shows the synced data
+persisted:
+
+```bash
+SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python \
+  python3 -c "import sync_engine as se; e=se.Engine(b'\x01'*32, path='a.db'); \
+              print(e.get(b'contacts', b'B-0', b'name'))"
+```
+
 ## Design
 
 - **Convergence is the law.** Every value type's merge is a semilattice join
