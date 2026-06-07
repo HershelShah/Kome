@@ -55,6 +55,9 @@ public:
     /* Encode every held capability as a wire blob (for sync exchange). */
     void export_blobs(std::vector<std::string> &out) const;
 
+    /* True if a capability with this exact signature is already held. */
+    bool has(const Sig &sig) const;
+
     /* True if the namespace has a known root (i.e. enforcement is active). */
     bool owned(const std::string &ns) const;
 

@@ -72,6 +72,12 @@ void CapStore::export_blobs(std::vector<std::string> &out) const {
     }
 }
 
+bool CapStore::has(const Sig &sig) const {
+    for (const auto &c : caps_)
+        if (c.sig == sig) return true;
+    return false;
+}
+
 bool CapStore::owned(const std::string &ns) const {
     for (const auto &c : caps_)
         if (c.is_root() && c.ns == ns) return true;
@@ -80,10 +86,16 @@ bool CapStore::owned(const std::string &ns) const {
 
 bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
                           uint8_t need, uint64_t now) const {
-    /* Find a valid root for the namespace. */
+    /* Capabilities in the store are signature-verified on insertion, so the
+     * hot path only checks access/expiry (no EdDSA here). */
+    auto usable = [now](const Capability &c) {
+        return c.access != 0 && (c.expiry == 0 || now <= c.expiry);
+    };
+
+    /* Find a usable root for the namespace. */
     const Capability *root = nullptr;
     for (const auto &c : caps_)
-        if (c.is_root() && c.ns == ns && cap_self_valid(c, now)) {
+        if (c.is_root() && c.ns == ns && usable(c)) {
             root = &c;
             break;
         }
@@ -112,7 +124,7 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
             if (std::memcmp(c.issuer.data(), f.holder.data(), 32) != 0) continue;
             /* A delegation cannot widen the holder's access. */
             if ((c.access & ~f.access) != 0) continue;
-            if (!cap_self_valid(c, now)) continue;
+            if (!usable(c)) continue;
             std::string subj((const char *)c.subject.data(), 32);
             if (visited.count(subj)) continue;
             visited.insert(subj);
@@ -131,7 +143,8 @@ void cap_ingest_delegations(sync_engine *e,
         Capability c;
         if (!cap_decode((const uint8_t *)blob.data(), blob.size(), c)) continue;
         if (c.is_root()) continue;          /* never trust a wire root */
-        if (!cap_sig_valid(c)) continue;    /* re-verify the signature */
+        if (e->caps && e->caps->has(c.sig)) continue; /* known: skip re-verify */
+        if (!cap_sig_valid(c)) continue;    /* verify once, on first sight */
         if (!e->caps) e->caps = new CapStore();
         e->caps->add(c);
     }
