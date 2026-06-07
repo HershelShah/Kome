@@ -470,3 +470,24 @@ One line of rationale per non-obvious choice, newest last.
   refactoring them adds risk to the socket path for little gain. STUN's BE
   `put16`/`get16` stay local (STUN-specific, tiny). TSan-clean across
   network/connection/relay/transport_parity.
+
+## Build system tidy (audit pass)
+
+- The engine sources compile once into an **OBJECT library** (`sync_engine_obj`)
+  that the STATIC (`sync_engine`) and SHARED (`sync_engine_shared`) libs reuse —
+  no double compile, no repeated include/link config. The object library now
+  carries sqlite3/monocypher (and pthread/dl) as **PUBLIC** deps, which is
+  correct for a static library: consumers must link the transitive deps. That in
+  turn made the per-test `target_link_libraries(... monocypher/sqlite3)` and
+  `target_include_directories(... third_party/...)` lines redundant — they're
+  gone; `sync_add_test` now takes an optional `LIBS` only for non-engine deps
+  (Threads::Threads).
+- `CMAKE_BUILD_TYPE` defaults to Release for a bare `cmake -B build` (single-
+  config generators) so it isn't a surprise unoptimized build.
+- `tools/coverage.sh` no longer swallows a failing `ctest` with `|| true`
+  (coverage from a red suite is misleading) and uses the same `nproc` fallback
+  as the other scripts.
+- Deferred: factoring the five CI workflows' shared checkout/configure steps
+  into a composite action. It's pure cosmetic dedup with no functional gain, and
+  can't be verified locally — left for a CI-side change where it can be tested in
+  a PR run.

@@ -9,11 +9,13 @@ cd "$ROOT"
 BUILD=build-cov
 IGN="--ignore-errors=mismatch,source,gcov,unused,empty,negative,inconsistent,corrupt"
 
+JOBS="$(nproc 2>/dev/null || echo 4)"
 cmake -B "$BUILD" -DSYNC_COVERAGE=ON -DSYNC_BUILD_TESTS=ON -DSYNC_OOM_TEST=ON >/dev/null
-cmake --build "$BUILD" -j"$(nproc)" >/dev/null
+cmake --build "$BUILD" -j"$JOBS" >/dev/null
 lcov --directory "$BUILD" --zerocounters -q
 
-ctest --test-dir "$BUILD" --output-on-failure || true
+# Fail the report if the suite fails — coverage from a red suite is misleading.
+ctest --test-dir "$BUILD" --output-on-failure
 
 lcov --capture --directory "$BUILD" --base-directory "$ROOT" \
      --output-file "$BUILD/cov.info" -q $IGN --rc geninfo_unexecuted_blocks=1

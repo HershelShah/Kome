@@ -22,7 +22,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 ## Build
 
 ```bash
-cmake -B build
+cmake -B build                 # defaults to a Release build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
