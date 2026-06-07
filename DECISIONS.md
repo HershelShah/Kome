@@ -506,3 +506,23 @@ One line of rationale per non-obvious choice, newest last.
   is >99% of convergence/apply cost; the codec/maps/digest are noise beside it.
   Top lever (next chapter): verify a record's signature only if it would change
   state, so losing/duplicate records cost nothing.
+
+## verify-on-win: authenticate only state-changing records (optimization ch.2)
+
+- `sync_engine_apply` now does the LWW/existence merge comparison *before* the
+  EdDSA signature check, and verifies only when the record would be accepted.
+  Verification is ~100x everything else (docs/PERF.md), so dropping it for
+  records that lose LWW or that we already hold is the single biggest win.
+- **Why it's safe.** A dominated record reaches no state — and we look it up
+  with `find()` (not `operator[]`), so it inserts no entity and does not even
+  advance the HLC clock (a dominated record's HLC is provably <= ours, since our
+  current value's HLC is already folded into the clock). A record forged to
+  *win* the comparison is still verified and rejected (BADSIG), so no forged data
+  is ever accepted. An attacker can still make us spend a verify by sending a
+  high-HLC record, but that was already true (we verified everything before).
+- **Behavior change:** previously *any* invalid-signature record returned
+  SYNC_ERR_BADSIG; now a forged record that would lose returns SYNC_OK (it's
+  silently ignored, exactly as a validly-signed loser is). Both halves are
+  pinned by `Defensive.VerifyOnlyWhenRecordWouldChangeState`. Convergence,
+  capability enforcement, and order-independence are unchanged (the accepted set
+  is identical; the clock only ever needed to track records we adopt).

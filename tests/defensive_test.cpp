@@ -133,6 +133,67 @@ TEST(Defensive, ApplyInvalid) {
     sync_engine_destroy(e);
 }
 
+/* verify-on-win contract (docs/PERF.md, optimization ch.2): apply checks a
+ * record's signature only if it would change state. A forged record that would
+ * LOSE LWW is dropped silently (no error, no state change — it reaches no
+ * state); one that would WIN is verified and rejected. No forged data is ever
+ * accepted either way. */
+TEST(Defensive, VerifyOnlyWhenRecordWouldChangeState) {
+    sync_engine *e = sync_engine_create(seed(7).data());
+    auto b = [](const std::string &s) { return (const uint8_t *)s.data(); };
+    const std::string n = "n", x = "x", f = "f";
+
+    /* Make (n,x) present so get() returns its register. */
+    {
+        sync_change c;
+        std::memset(&c, 0, sizeof c);
+        c.kind = SYNC_CHANGE_EXISTENCE;
+        c.ns = b(n); c.ns_len = 1; c.entity = b(x); c.entity_len = 1;
+        c.causal_length = 1;
+        ASSERT_EQ(sync_change_sign(&c, seed(7).data()), SYNC_OK);
+        ASSERT_EQ(sync_engine_apply(e, &c), SYNC_OK);
+    }
+
+    auto reg = [&](uint64_t phys, const std::string &val) {
+        sync_change c;
+        std::memset(&c, 0, sizeof c);
+        c.kind = SYNC_CHANGE_REGISTER;
+        c.ns = b(n); c.ns_len = 1; c.entity = b(x); c.entity_len = 1;
+        c.field = b(f); c.field_len = 1;
+        c.value = b(val); c.value_len = val.size();
+        c.hlc.physical = phys;
+        sync_change_sign(&c, seed(7).data());
+        return c;
+    };
+    auto value = [&]() -> std::string {
+        uint8_t *v = nullptr; size_t vl = 0;
+        int rc = sync_engine_get(e, b(n), 1, b(x), 1, b(f), 1, &v, &vl);
+        std::string s = rc == SYNC_OK ? std::string((char *)v, vl) : "<none>";
+        if (v) sync_free(v);
+        return s;
+    };
+
+    /* A legitimately signed value at a high HLC. */
+    const std::string good = "good", evil_lo = "evil-lo", evil_hi = "evil-hi";
+    sync_change ok = reg(1000000, good);
+    ASSERT_EQ(sync_engine_apply(e, &ok), SYNC_OK);
+    EXPECT_EQ(value(), "good");
+
+    /* Forged + would-lose (lower HLC): skipped without verifying -> SYNC_OK. */
+    sync_change lose = reg(5, evil_lo);
+    lose.signature[0] ^= 0x01;
+    EXPECT_EQ(sync_engine_apply(e, &lose), SYNC_OK);
+    EXPECT_EQ(value(), "good") << "a dominated record must not change state";
+
+    /* Forged + would-win (higher HLC): verified and rejected. */
+    sync_change win = reg(2000000, evil_hi);
+    win.signature[0] ^= 0x01;
+    EXPECT_EQ(sync_engine_apply(e, &win), SYNC_ERR_BADSIG);
+    EXPECT_EQ(value(), "good") << "a forged winning record must be rejected";
+
+    sync_engine_destroy(e);
+}
+
 /* ---- codec invalid / malformed ----------------------------------------- */
 TEST(Defensive, CodecInvalid) {
     EXPECT_EQ(sync_change_encode(nullptr, nullptr, 0), 0u);

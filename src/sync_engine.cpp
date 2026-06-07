@@ -83,6 +83,10 @@ std::string to_str(const uint8_t *p, size_t len) {
     return std::string(reinterpret_cast<const char *>(p), len);
 }
 
+/* The implied author of an absent entity (causal_length 0): all zeros. Used to
+ * order an incoming existence record against a not-yet-seen entity. */
+const uint8_t kZeroAuthor[SYNC_PUBKEY_LEN] = {0};
+
 /* Fill c->author and c->signature by signing c's canonical content with e. */
 void author_sign(sync_engine *e, sync_change &c) {
     std::memcpy(c.author, e->identity.sign_pk.data(), SYNC_PUBKEY_LEN);
@@ -413,39 +417,51 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
         if (!c->value && c->value_len) return SYNC_ERR_INVALID;
     }
     try {
-        /* Authenticate the record before it can touch any state. */
-        if (!verify_change(c)) {
-            engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
-            return SYNC_ERR_BADSIG;
-        }
-
         std::string nsk = to_str(c->ns, c->ns_len);
-
-        /* Capability enforcement (M4): if the namespace is owned, the author
-         * must hold a valid write capability chain for it. */
-        int authz = cap_authorize_write(e, c->author, nsk);
-        if (authz != SYNC_OK) {
-            engine_log(e, SYNC_LOG_WARN, "apply: write not authorized for namespace");
-            return authz;
-        }
-
         std::string entk = to_str(c->entity, c->entity_len);
-        Entity &ent = e->ns[nsk][entk];
+
+        /* Decide whether this record would change state *before* paying for the
+         * signature check — verifying is ~100x everything else (see docs/PERF.md),
+         * so a record that loses LWW or that we already hold is dropped for free.
+         * This is safe: an unverified record reaches no state and doesn't even
+         * perturb the clock (a dominated record's HLC is already <= ours), and a
+         * record forged to *win* the comparison still gets verified and rejected
+         * below. We look up with find() so a rejected record inserts nothing
+         * (no empty-entity growth from spam). */
+        auto find_entity = [&](void) -> const Entity * {
+            auto ni = e->ns.find(nsk);
+            if (ni == e->ns.end()) return nullptr;
+            auto ei = ni->second.find(entk);
+            return ei == ni->second.end() ? nullptr : &ei->second;
+        };
 
         if (c->kind == SYNC_CHANGE_EXISTENCE) {
-            int order = (c->causal_length > ent.causal_length) ? 1
-                        : (c->causal_length < ent.causal_length) ? -1
-                        : std::memcmp(c->author, ent.ex_author.data(),
-                                      SYNC_PUBKEY_LEN);
-            if (order > 0) {
-                ent.causal_length = c->causal_length; /* (cl, author) max */
-                std::memcpy(ent.ex_author.data(), c->author, SYNC_PUBKEY_LEN);
-                std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
-                if (e->store) {
-                    e->db_clock++;
-                    if (!tx_entity(e, nsk, entk, ent))
-                        return SYNC_ERR_INTERNAL;
-                }
+            const Entity *cur = find_entity();
+            uint64_t cur_cl = cur ? cur->causal_length : 0;
+            const uint8_t *cur_author =
+                cur ? cur->ex_author.data() : kZeroAuthor;
+            int order = (c->causal_length > cur_cl) ? 1
+                        : (c->causal_length < cur_cl) ? -1
+                        : std::memcmp(c->author, cur_author, SYNC_PUBKEY_LEN);
+            if (order <= 0) return SYNC_OK; /* dominated: no verify, no state */
+
+            if (!verify_change(c)) {
+                engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
+                return SYNC_ERR_BADSIG;
+            }
+            int authz = cap_authorize_write(e, c->author, nsk);
+            if (authz != SYNC_OK) {
+                engine_log(e, SYNC_LOG_WARN,
+                           "apply: write not authorized for namespace");
+                return authz;
+            }
+            Entity &ent = e->ns[nsk][entk];
+            ent.causal_length = c->causal_length; /* (cl, author) max */
+            std::memcpy(ent.ex_author.data(), c->author, SYNC_PUBKEY_LEN);
+            std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
+            if (e->store) {
+                e->db_clock++;
+                if (!tx_entity(e, nsk, entk, ent)) return SYNC_ERR_INTERNAL;
             }
             return SYNC_OK;
         }
@@ -456,21 +472,33 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
         cand.hlc = {c->hlc.physical, c->hlc.logical};
         std::memcpy(cand.author.data(), c->author, SYNC_PUBKEY_LEN);
         std::memcpy(cand.sig.data(), c->signature, SYNC_SIG_LEN);
-
         std::string fkey = to_str(c->field, c->field_len);
-        auto fi = ent.fields.find(fkey);
-        bool took = (fi == ent.fields.end() || register_cmp(cand, fi->second) > 0);
-        if (took) ent.fields[fkey] = cand;
 
+        const Entity *cur = find_entity();
+        if (cur) {
+            auto fi = cur->fields.find(fkey);
+            if (fi != cur->fields.end() && register_cmp(cand, fi->second) <= 0)
+                return SYNC_OK; /* dominated: no verify, no clock, no state */
+        }
+
+        if (!verify_change(c)) {
+            engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
+            return SYNC_ERR_BADSIG;
+        }
+        int authz = cap_authorize_write(e, c->author, nsk);
+        if (authz != SYNC_OK) {
+            engine_log(e, SYNC_LOG_WARN,
+                       "apply: write not authorized for namespace");
+            return authz;
+        }
+
+        Entity &ent = e->ns[nsk][entk];
+        ent.fields[fkey] = cand;
+        /* Only an accepted record advances the clock; its HLC is now adopted. */
         e->clock.receive({c->hlc.physical, c->hlc.logical}, now_ms());
-
-        if (e->store && took) {
+        if (e->store) {
             e->db_clock++;
             if (!tx_entity_field(e, nsk, entk, fkey, ent, cand))
-                return SYNC_ERR_INTERNAL;
-        } else if (e->store) {
-            /* Clock advanced even if the register lost; persist it. */
-            if (!tx_entity(e, nsk, entk, ent))
                 return SYNC_ERR_INTERNAL;
         }
         return SYNC_OK;

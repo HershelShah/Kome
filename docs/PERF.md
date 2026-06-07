@@ -67,15 +67,31 @@ to it. Two structural facts amplify it:
 - **`session begin` re-exports and re-hashes the entire state every sync**, so
   even a no-op gossip round is O(N log N).
 
+## Chapter 2 — verify only records that would change state ✅
+
+`sync_engine_apply` now runs the cheap LWW/existence comparison *first* and
+verifies the signature **only if the record would be accepted**. A record that
+loses LWW or that we already hold is dropped without verifying — and reaches no
+state at all (no entity insertion, no clock perturbation), so it's safe; a
+record forged to *win* still gets verified and rejected. (Contract locked by
+`Defensive.VerifyOnlyWhenRecordWouldChangeState`.)
+
+| Case | Before | After | |
+|------|-------:|------:|--|
+| `apply` a record we already hold | 124 µs | **44 ns** | ~2800× — was a wasted verify |
+| converge **all-conflict** | 540 µs/rec | **275 µs/rec** | ~2× — verify only the winners |
+| converge **full-transfer** | 263 µs/rec | 263 µs/rec | unchanged — all records are new, so all must verify |
+| converge **in-sync** | O(N log N) | O(N log N) | unchanged — now purely *snapshot*-bound (→ item 2) |
+| full test suite wall-time | ~62 s | ~50 s | fewer verifies in the convergence suites |
+
+Net: the duplicate/overlap paths (LEAF re-sends, partial sync, concurrent
+edits) get dramatically cheaper; the genuinely-new-data path is untouched
+(there's nothing to skip). The remaining convergence cost is now dominated by
+the per-sync snapshot — exactly backlog item 2.
+
 ## Optimization backlog (data-driven, in priority order)
 
-1. **Verify only records that would change state.** In `sync_engine_apply`, do
-   the cheap LWW/existence comparison *first* and verify the signature *only* if
-   the record would be accepted. Losing/duplicate records are dropped without
-   verifying — safe (an unverified record never touches state; a forged
-   high-HLC record still gets verified and rejected). Expected: in-sync
-   convergence drops from O(N) verifies to ~0; all-conflict roughly halves.
-   *Highest impact, security-preserving, local change.* ← next chapter
+1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2 above).
 2. **Cache the reconciliation snapshot** (sorted elements + per-element hashes +
    prefix sums) on the engine, invalidated on write, so `session begin` is
    O(changed) instead of O(N log N) per sync. Big for frequent gossip meshes.
