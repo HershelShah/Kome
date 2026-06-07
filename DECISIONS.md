@@ -454,3 +454,19 @@ One line of rationale per non-obvious choice, newest last.
   they diverge in small but real ways (ASSERT vs EXPECT, return types, custom
   drive loops), so folding them risked behavior changes for little gain. The
   goal was no-regression dedup, not maximal sharing.
+
+## Transport framing tidy (audit pass)
+
+- The reliability layer and TCP framing now serialize their seq/length prefixes
+  through `byteorder.h` (`put_u32le`/`read_u32le`) instead of open-coded byte
+  loops — same wire bytes, less duplication.
+- Magic recv-buffer/handshake sizes are named: `kRecvChunk` (TCP),
+  `kDatagramMax` (UDP), `kMaxHandshakeBytes` (WS).
+- `connect_and_sync` factors the repeated "step session -> encrypt -> send onto
+  the link" into one `pump()` helper used by both the kickoff and the per-message
+  path; relies on `sync_free(nullptr)` being a no-op to drop the `if (o)` guards.
+- Deliberately deferred: the WebSocket frame parser's `goto`-based header read
+  and a `FileDescriptor` RAII wrapper. Both are localized, tested, and working;
+  refactoring them adds risk to the socket path for little gain. STUN's BE
+  `put16`/`get16` stay local (STUN-specific, tiny). TSan-clean across
+  network/connection/relay/transport_parity.

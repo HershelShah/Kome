@@ -9,6 +9,9 @@ namespace ke {
 
 namespace {
 
+/* Cap the HTTP upgrade handshake so a peer can't grow it without bound. */
+constexpr size_t kMaxHandshakeBytes = 1u << 20;
+
 /* ---- SHA-1 (for the Sec-WebSocket-Accept handshake only) --------------- */
 struct Sha1 {
     uint32_t h[5];
@@ -84,7 +87,7 @@ std::string header(const std::string &req, const std::string &name) {
 bool read_until(TcpStream &tcp, std::string &buf, const char *delim, int timeout_ms) {
     while (buf.find(delim) == std::string::npos) {
         if (!tcp.recv_into(buf, timeout_ms)) return false;
-        if (buf.size() > 1 << 20) return false; /* runaway handshake */
+        if (buf.size() > kMaxHandshakeBytes) return false; /* runaway handshake */
     }
     return true;
 }

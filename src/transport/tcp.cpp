@@ -12,9 +12,14 @@
 #include <cerrno>
 #include <cstring>
 
+#include "byteorder.h"
+
 namespace ke {
 
 namespace {
+/* Per-recv read chunk; one syscall fills up to this many bytes. */
+constexpr size_t kRecvChunk = 65536;
+
 void set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -69,7 +74,7 @@ bool TcpStream::recv_into(std::string &buf, int timeout_ms) {
     if (fd_ < 0) return false;
     struct pollfd p{fd_, POLLIN, 0};
     if (::poll(&p, 1, timeout_ms) <= 0) return false;
-    char tmp[65536];
+    char tmp[kRecvChunk];
     ssize_t n = ::recv(fd_, tmp, sizeof tmp, 0);
     if (n <= 0) return false;
     buf.append(tmp, (size_t)n);
@@ -78,16 +83,14 @@ bool TcpStream::recv_into(std::string &buf, int timeout_ms) {
 
 bool TcpStream::send_frame(const std::string &msg) {
     std::string buf;
-    uint32_t n = (uint32_t)msg.size();
-    for (int i = 0; i < 4; i++) buf.push_back((char)(n >> (i * 8)));
+    put_u32le(buf, (uint32_t)msg.size()); /* length prefix */
     buf += msg;
     return send_all(buf.data(), buf.size());
 }
 
 bool TcpStream::extract(std::string &out) {
     if (rx_.size() < 4) return false;
-    uint32_t len = (uint8_t)rx_[0] | ((uint8_t)rx_[1] << 8) |
-                   ((uint8_t)rx_[2] << 16) | ((uint32_t)(uint8_t)rx_[3] << 24);
+    uint32_t len = read_u32le((const uint8_t *)rx_.data());
     if (rx_.size() < 4 + (size_t)len) return false;
     out.assign(rx_.data() + 4, len);
     rx_.erase(0, 4 + (size_t)len);
@@ -97,7 +100,7 @@ bool TcpStream::extract(std::string &out) {
 bool TcpStream::recv_frame(std::string &out, int timeout_ms) {
     if (fd_ < 0) return false;
     if (extract(out)) return true; /* already buffered */
-    char tmp[65536];
+    char tmp[kRecvChunk];
     for (;;) {
         struct pollfd p{fd_, POLLIN, 0};
         if (::poll(&p, 1, timeout_ms) <= 0) return false; /* timeout */

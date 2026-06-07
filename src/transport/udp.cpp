@@ -12,6 +12,11 @@
 
 namespace ke {
 
+namespace {
+/* Max single datagram we read; the UDP path caps a message at one datagram. */
+constexpr size_t kDatagramMax = 65536;
+} // namespace
+
 UdpSocket::~UdpSocket() { close(); }
 
 void UdpSocket::close() {
@@ -72,7 +77,7 @@ bool UdpSocket::recv(std::string &out, Endpoint &from, int timeout_ms) {
     int r = ::poll(&pfd, 1, timeout_ms);
     if (r <= 0) return false;
 
-    char buf[65536];
+    char buf[kDatagramMax];
     sockaddr_in addr;
     socklen_t alen = sizeof addr;
     ssize_t n = ::recvfrom(fd_, buf, sizeof buf, 0, (sockaddr *)&addr, &alen);

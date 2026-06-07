@@ -3,16 +3,19 @@
 
 #include <cstring>
 
+#include "byteorder.h"
+
 namespace ke {
 
 namespace {
 constexpr uint8_t kData = 0;
 constexpr uint8_t kAck = 1;
 
+/* Datagram: [type:1][seq:u32le][payload]. */
 std::string frame(uint8_t type, uint32_t seq, const std::string &payload) {
     std::string d;
     d.push_back((char)type);
-    for (int i = 0; i < 4; i++) d.push_back((char)(seq >> (i * 8)));
+    put_u32le(d, seq);
     d += payload;
     return d;
 }
@@ -21,9 +24,7 @@ bool parse(const std::string &dg, uint8_t &type, uint32_t &seq,
            std::string &payload) {
     if (dg.size() < 5) return false;
     type = (uint8_t)dg[0];
-    seq = 0;
-    for (int i = 0; i < 4; i++)
-        seq |= (uint32_t)(uint8_t)dg[1 + i] << (i * 8);
+    seq = read_u32le((const uint8_t *)dg.data() + 1);
     payload.assign(dg.data() + 5, dg.size() - 5);
     return true;
 }

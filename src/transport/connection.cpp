@@ -25,19 +25,25 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
     sync_session *sess = nullptr;
     bool kicked = false;
 
-    auto kick = [&]() {
-        if (kicked) return;
-        kicked = true;
-        sess = sync_session_begin(e, 1);
-        if (!sess) return; /* OOM: leave unsettled; the loop times out */
+    /* Step the reconcile session with in[0,in_len) and, if it produced a reply,
+     * encrypt it onto the reliable link. (sync_free(nullptr) is a no-op.) */
+    auto pump = [&](const uint8_t *in, size_t in_len) {
+        if (!sess) return;
         uint8_t *o = nullptr; size_t ol = 0; int d = 0;
-        sync_session_step(sess, nullptr, 0, &o, &ol, &d);
+        sync_session_step(sess, in, in_len, &o, &ol, &d);
         if (ol) {
             std::string ct;
             chan.encrypt(std::string((char *)o, ol), ct);
             link.send(ct);
         }
-        if (o) sync_free(o);
+        sync_free(o);
+    };
+
+    auto kick = [&]() {
+        if (kicked) return;
+        kicked = true;
+        sess = sync_session_begin(e, 1); /* null on OOM: pump is a no-op */
+        pump(nullptr, 0);
     };
 
     if (initiator) {
@@ -75,15 +81,7 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
                     if (!sess && !(sess = sync_session_begin(e, 0))) continue;
                     std::string pt;
                     if (!chan.decrypt(msg, pt)) continue;
-                    uint8_t *o = nullptr; size_t ol = 0; int d = 0;
-                    sync_session_step(sess, (const uint8_t *)pt.data(),
-                                      pt.size(), &o, &ol, &d);
-                    if (ol) {
-                        std::string ct;
-                        chan.encrypt(std::string((char *)o, ol), ct);
-                        link.send(ct);
-                    }
-                    if (o) sync_free(o);
+                    pump((const uint8_t *)pt.data(), pt.size());
                 }
             }
         }
