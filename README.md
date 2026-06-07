@@ -158,6 +158,20 @@ night over night. Smoke runs found zero crashes/OOB/leaks/UB. `hardening_test`
 is the always-on ASan surrogate for regular per-PR CI (random/mutated inputs
 through the same parsers) where the libFuzzer runtime isn't installed.
 
+## Coverage
+
+```bash
+sudo apt-get install -y lcov
+tools/coverage.sh          # builds with gcov, runs the suite, writes the report
+```
+
+Produces `coverage-html/` (browsable) and refreshes [`docs/COVERAGE.md`](docs/COVERAGE.md)
+— a per-file table committed to the repo. Current engine-code coverage is
+**~93% lines / ~98% functions** (third_party, tests, and GoogleTest excluded).
+`.github/workflows/coverage.yml` regenerates it on each push and uploads the
+HTML as an artifact. (Coverage already paid off: it flagged dead code and an
+untested HMAC branch + missing `sync_strerror` cases, all since fixed.)
+
 ## Python binding
 
 ```bash

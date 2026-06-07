@@ -103,12 +103,6 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *msg,
     crypto_wipe(opad, sizeof opad);
 }
 
-bool ct_eq32(const uint8_t a[32], const uint8_t b[32]) {
-    uint8_t d = 0;
-    for (int i = 0; i < 32; i++) d |= (uint8_t)(a[i] ^ b[i]);
-    return d == 0;
-}
-
 bool random_bytes(uint8_t *buf, size_t len) {
     FILE *f = std::fopen("/dev/urandom", "rb");
     if (!f) return false;

@@ -194,6 +194,8 @@ const char *sync_strerror(int err) {
         case SYNC_ERR_NOMEM:    return "out of memory";
         case SYNC_ERR_NOTFOUND: return "not found";
         case SYNC_ERR_INTERNAL: return "internal error";
+        case SYNC_ERR_BADSIG:   return "signature verification failed";
+        case SYNC_ERR_UNAUTHORIZED: return "not authorized";
         default:                return "unknown error";
     }
 }

@@ -43,8 +43,6 @@ void cap_encode(const Capability &c, std::string &out);
 bool cap_decode(const uint8_t *buf, size_t len, Capability &out);
 /* Verify only a capability's signature (ignores expiry / access). */
 bool cap_sig_valid(const Capability &c);
-/* Verify signature AND that it is unexpired with non-empty access. */
-bool cap_self_valid(const Capability &c, uint64_t now_ms);
 
 /* The set of capabilities an engine has been granted. */
 class CapStore {

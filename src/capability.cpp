@@ -52,12 +52,6 @@ bool cap_sig_valid(const Capability &c) {
     return verify(c.issuer.data(), s.data(), s.size(), c.sig.data());
 }
 
-bool cap_self_valid(const Capability &c, uint64_t now) {
-    if (c.access == 0) return false;
-    if (c.expiry != 0 && now > c.expiry) return false;
-    return cap_sig_valid(c);
-}
-
 void CapStore::add(const Capability &c) {
     for (const auto &x : caps_)
         if (x.sig == c.sig) return; /* duplicate */

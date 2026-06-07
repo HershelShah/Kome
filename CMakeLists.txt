@@ -10,6 +10,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # --- Options ---------------------------------------------------------------
 option(SYNC_SANITIZER "Enable a sanitizer (address, thread, undefined)" "")
 option(SYNC_BUILD_TESTS "Build the test suite" ON)
+option(SYNC_COVERAGE "Build with gcov instrumentation (use tools/coverage.sh)" OFF)
 
 # --- Compiler flags --------------------------------------------------------
 add_compile_options(-Wall -Wextra -Wpedantic -fstack-protector-strong)
@@ -17,6 +18,13 @@ add_compile_options(-Wall -Wextra -Wpedantic -fstack-protector-strong)
 if(SYNC_SANITIZER)
     add_compile_options(-fsanitize=${SYNC_SANITIZER} -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=${SYNC_SANITIZER})
+endif()
+
+if(SYNC_COVERAGE)
+    # Instrument our code (third_party/gtest are filtered out in the report).
+    # Atomic counters keep the threading test's coverage sound.
+    add_compile_options(-O0 -g --coverage -fprofile-update=atomic)
+    add_link_options(--coverage)
 endif()
 
 # --- Vendored SQLite (M2) --------------------------------------------------

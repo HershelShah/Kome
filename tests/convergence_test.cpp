@@ -15,6 +15,7 @@
 #include <array>
 #include <cstring>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -362,4 +363,19 @@ TEST(Convergence, TombstoneValueIndependence) {
 /* ---- ABI sanity -------------------------------------------------------- */
 TEST(Convergence, AbiVersion) {
     EXPECT_EQ(sync_abi_version(), SYNC_ABI_VERSION);
+}
+
+TEST(Convergence, StrError) {
+    /* Every error code maps to a distinct, non-empty string, incl. unknown. */
+    std::set<std::string> seen;
+    for (int e : std::initializer_list<int>{
+             SYNC_OK, SYNC_ERR_INVALID, SYNC_ERR_NOMEM, SYNC_ERR_NOTFOUND,
+             SYNC_ERR_INTERNAL, SYNC_ERR_BADSIG, SYNC_ERR_UNAUTHORIZED,
+             9999 /* unknown */}) {
+        const char *s = sync_strerror(e);
+        ASSERT_NE(s, nullptr);
+        EXPECT_GT(std::string(s).size(), 0u);
+        seen.insert(s);
+    }
+    EXPECT_GE(seen.size(), 7u);
 }

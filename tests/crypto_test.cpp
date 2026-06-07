@@ -50,6 +50,17 @@ TEST(Crypto, HmacSha256Kat) {
               "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
 }
 
+/* HMAC-SHA256 — RFC 4231 test case 6 (key longer than the block size). */
+TEST(Crypto, HmacSha256LongKey) {
+    std::vector<uint8_t> key(131, 0xaa);
+    std::string msg = "Test Using Larger Than Block-Size Key - Hash Key First";
+    uint8_t out[32];
+    ke::hmac_sha256(key.data(), key.size(), (const uint8_t *)msg.data(),
+                    msg.size(), out);
+    EXPECT_EQ(hex(out, 32),
+              "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+}
+
 /* X25519 — RFC 7748 section 5.2 first test vector. */
 TEST(Crypto, X25519Kat) {
     auto scalar = unhex(

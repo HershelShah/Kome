@@ -1,0 +1,28 @@
+name: Coverage
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Generate coverage
+        run: tools/coverage.sh
+
+      - name: Show summary
+        run: cat docs/COVERAGE.md
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage-html/

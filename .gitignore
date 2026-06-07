@@ -24,3 +24,9 @@ dist/
 *.dylib
 *.dll
 .venv/
+
+# Coverage
+coverage-html/
+*.gcda
+*.gcno
+*.info
