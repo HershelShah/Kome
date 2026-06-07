@@ -34,6 +34,10 @@ public:
     /* Receive exactly one reassembled message; false on timeout/close. */
     bool recv_frame(std::string &out, int timeout_ms);
 
+    /* Raw byte I/O (used by the WebSocket layer, which has its own framing). */
+    bool send_all(const char *p, size_t n);
+    bool recv_into(std::string &buf, int timeout_ms); /* appends; false=timeout/close */
+
 private:
     bool extract(std::string &out);
     int         fd_ = -1;

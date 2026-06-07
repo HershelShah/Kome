@@ -49,25 +49,39 @@ bool TcpStream::connect_to(const Endpoint &ep) {
     return true;
 }
 
-bool TcpStream::send_frame(const std::string &msg) {
+bool TcpStream::send_all(const char *p, size_t n) {
     if (fd_ < 0) return false;
-    std::string buf;
-    uint32_t n = (uint32_t)msg.size();
-    for (int i = 0; i < 4; i++) buf.push_back((char)(n >> (i * 8)));
-    buf += msg;
-
     size_t off = 0;
-    while (off < buf.size()) {
-        ssize_t w = ::send(fd_, buf.data() + off, buf.size() - off, MSG_NOSIGNAL);
+    while (off < n) {
+        ssize_t w = ::send(fd_, p + off, n - off, MSG_NOSIGNAL);
         if (w > 0) { off += (size_t)w; continue; }
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd p{fd_, POLLOUT, 0};
-            ::poll(&p, 1, 1000);
+            struct pollfd pf{fd_, POLLOUT, 0};
+            ::poll(&pf, 1, 1000);
             continue;
         }
         return false; /* closed / error */
     }
     return true;
+}
+
+bool TcpStream::recv_into(std::string &buf, int timeout_ms) {
+    if (fd_ < 0) return false;
+    struct pollfd p{fd_, POLLIN, 0};
+    if (::poll(&p, 1, timeout_ms) <= 0) return false;
+    char tmp[65536];
+    ssize_t n = ::recv(fd_, tmp, sizeof tmp, 0);
+    if (n <= 0) return false;
+    buf.append(tmp, (size_t)n);
+    return true;
+}
+
+bool TcpStream::send_frame(const std::string &msg) {
+    std::string buf;
+    uint32_t n = (uint32_t)msg.size();
+    for (int i = 0; i < 4; i++) buf.push_back((char)(n >> (i * 8)));
+    buf += msg;
+    return send_all(buf.data(), buf.size());
 }
 
 bool TcpStream::extract(std::string &out) {

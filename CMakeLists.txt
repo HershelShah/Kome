@@ -62,6 +62,7 @@ set(SYNC_SOURCES
     src/transport/rendezvous.cpp
     src/transport/connection.cpp
     src/transport/tcp.cpp
+    src/transport/ws.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})

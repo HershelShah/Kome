@@ -127,8 +127,11 @@ The sync stack is transport-agnostic: the engine, reconciliation session, Noise
 channel, reliability layer, and `connect_and_sync` all work on opaque bytes via
 a `send`/`recv` seam, so the library runs over **any** connection — UDP, TCP,
 BLE, WebSocket, a pipe. `transport_parity_test` runs the same scenarios over
-both UDP and TCP (`src/transport/tcp.*` adds length-prefix framing) with
-identical assertions, TSan- and ASan-clean. One boundary: the UDP adapter sends
+**UDP, TCP, and WebSocket** (`src/transport/{tcp,ws}.*`) with identical
+assertions, TSan- and ASan-clean. The WebSocket layer (RFC 6455 handshake +
+masked framing) is browser-compatible — verified by an RFC handshake
+known-answer test — so a browser can connect to a node's WS endpoint (and a
+WASM build of the engine would make the browser a full node). One boundary: the UDP adapter sends
 each message as a datagram (~64 KB cap); large payloads need a stream transport
 like TCP (`TransportTcp.LargeMessages` syncs a 256 KB value over TCP).
 

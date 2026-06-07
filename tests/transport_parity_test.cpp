@@ -15,6 +15,7 @@
 #include "transport/connection.h"
 #include "transport/tcp.h"
 #include "transport/udp.h"
+#include "transport/ws.h"
 
 using namespace cluster;
 
@@ -25,7 +26,20 @@ struct TcpTransport : ke::PeerTransport {
     bool send(const std::string &dg) override { return s->send_frame(dg); }
     bool recv(std::string &dg, int t) override { return s->recv_frame(dg, t); }
 };
+/* PeerTransport over a WebSocket stream. */
+struct WsTransport : ke::PeerTransport {
+    ke::WsStream *w = nullptr;
+    bool send(const std::string &dg) override { return w->send_frame(dg); }
+    bool recv(std::string &dg, int t) override { return w->recv_frame(dg, t); }
+};
 } // namespace
+
+/* RFC 6455 example: proves our handshake is browser-compatible without needing
+ * an actual browser. */
+TEST(WebSocket, AcceptKeyVector) {
+    EXPECT_EQ(ke::ws_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+              "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+}
 
 class TransportParity : public ::testing::TestWithParam<const char *> {
 protected:
@@ -36,23 +50,40 @@ protected:
     ke::TcpListener listener;
     ke::TcpStream tc_client, tc_server;
     TcpTransport tta, ttb;
+    /* WebSocket backing */
+    ke::WsStream ws_client, ws_server;
+    WsTransport wta, wtb;
 
     ke::PeerTransport *ta = nullptr; /* A's side (initiator) */
     ke::PeerTransport *tb = nullptr; /* B's side (responder) */
 
     void SetUp() override {
-        if (std::string(GetParam()) == "udp") {
+        std::string kind = GetParam();
+        if (kind == "udp") {
             ASSERT_TRUE(usa.open("127.0.0.1", 0));
             ASSERT_TRUE(usb.open("127.0.0.1", 0));
             uta.sock = &usa; uta.peer = usb.local();
             utb.sock = &usb; utb.peer = usa.local();
             ta = &uta; tb = &utb;
-        } else {
+        } else if (kind == "tcp") {
             ASSERT_TRUE(listener.open("127.0.0.1", 0));
             ASSERT_TRUE(tc_client.connect_to(listener.local()));
             ASSERT_TRUE(listener.accept(tc_server, 1000));
             tta.s = &tc_client; ttb.s = &tc_server;
             ta = &tta; tb = &ttb;
+        } else { /* ws */
+            ASSERT_TRUE(listener.open("127.0.0.1", 0));
+            ASSERT_TRUE(ws_client.tcp.connect_to(listener.local()));
+            ASSERT_TRUE(listener.accept(ws_server.tcp, 1000));
+            /* Handshake is request/response, so run the two sides concurrently. */
+            std::atomic<bool> okc{false}, oks{false};
+            std::thread c([&] { okc = ws_client.client_handshake("127.0.0.1", 2000); });
+            std::thread s([&] { oks = ws_server.server_handshake(2000); });
+            c.join(); s.join();
+            ASSERT_TRUE(okc.load());
+            ASSERT_TRUE(oks.load());
+            wta.w = &ws_client; wtb.w = &ws_server;
+            ta = &wta; tb = &wtb;
         }
     }
 
@@ -67,7 +98,7 @@ protected:
 };
 
 INSTANTIATE_TEST_SUITE_P(Transports, TransportParity,
-                         ::testing::Values("udp", "tcp"),
+                         ::testing::Values("udp", "tcp", "ws"),
                          [](const auto &i) { return std::string(i.param); });
 
 /* Independent writes on both sides converge. */

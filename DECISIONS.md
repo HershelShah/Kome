@@ -298,3 +298,21 @@ One line of rationale per non-obvious choice, newest last.
   message fragmentation in the reliability layer (not built; TCP is the answer
   for large payloads). Over a reliable transport `ReliableLink` is redundant but
   harmless (no loss ⇒ no retransmits), which the parity tests also confirm.
+
+## WebSocket transport (browser-facing)
+
+- **`src/transport/ws.{h,cpp}`** implements RFC 6455: the HTTP Upgrade
+  handshake (`Sec-WebSocket-Accept = base64(SHA1(key + GUID))`, with a small
+  internal SHA-1 + base64), and binary framing with client-masking /
+  server-unmasking, fragmentation reassembly, and ping/close control frames.
+  Both server and client sides are implemented so nodes can talk WS to each
+  other and a browser can connect to a node's WS endpoint.
+- **Browser compatibility is proven without a browser** by `WebSocket.
+  AcceptKeyVector` (the RFC 6455 example key → accept), plus the full parity
+  suite running all six scenarios over WS (`"ws"` in the `TEST_P` matrix) with
+  real masking, TSan- and ASan-clean.
+- **For a browser to be a full *node*** (not just connect), the engine would be
+  compiled to WASM and driven over the browser's native WebSocket — the C++ WS
+  transport here is for native nodes and for a relay/server that speaks WS to
+  such browser nodes. A WASM build is the natural next step for in-browser
+  replicas.
