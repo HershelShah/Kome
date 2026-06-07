@@ -6,6 +6,8 @@
  * reordered/duplicated messages. */
 #include "sync_engine.h"
 
+#include "cluster.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -20,7 +22,7 @@
 namespace {
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
 
 std::array<uint8_t, SYNC_SITE_ID_LEN> site_from(uint8_t seed) {
     std::array<uint8_t, SYNC_SITE_ID_LEN> s{};

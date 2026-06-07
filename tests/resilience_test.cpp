@@ -9,10 +9,10 @@
  * All in-process and deterministic (fixed seeds). */
 #include "sync_engine.h"
 
-#include <gtest/gtest.h>
+#include "cluster.hpp"
+#include "tempdir.hpp"
 
-#include <dirent.h>
-#include <unistd.h>
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cstdio>
@@ -25,13 +25,9 @@
 namespace {
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
-
-std::array<uint8_t, SYNC_SEED_LEN> seed_from(uint32_t v) {
-    std::array<uint8_t, SYNC_SEED_LEN> s{};
-    for (size_t i = 0; i < s.size(); i++) s[i] = (uint8_t)(v >> ((i % 4) * 8));
-    return s;
-}
+using cluster::B;
+using cluster::seed_from;
+using synctest::TempDir;
 
 Digest digest(sync_engine *e) {
     Digest d{};
@@ -123,26 +119,6 @@ bool all_converged(std::vector<sync_engine *> &g) {
     return true;
 }
 
-struct TempDir {
-    std::string path;
-    TempDir() {
-        char t[] = "/tmp/sync_resil_XXXXXX";
-        path = mkdtemp(t);
-    }
-    ~TempDir() {
-        DIR *d = opendir(path.c_str());
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d))) {
-                std::string n = e->d_name;
-                if (n != "." && n != "..") std::remove((path + "/" + n).c_str());
-            }
-            closedir(d);
-        }
-        rmdir(path.c_str());
-    }
-    std::string file(const std::string &n) const { return path + "/" + n; }
-};
 
 } // namespace
 

@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "cluster.hpp"
 #include "engine.hpp"
 #include "noise.h"
 #include "sync_drive.hpp"
@@ -30,7 +31,7 @@ using synctest::converge;
 namespace {
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
 
 std::array<uint8_t, SYNC_SEED_LEN> seed_from(uint8_t v) {
     std::array<uint8_t, SYNC_SEED_LEN> s{};

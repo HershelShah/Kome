@@ -9,6 +9,9 @@
  */
 #include "sync_engine.h"
 
+#include "cluster.hpp"
+#include "tempdir.hpp"
+
 #include <gtest/gtest.h>
 
 #include <dirent.h>
@@ -26,33 +29,14 @@
 
 namespace {
 
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
+using synctest::TempDir;
+
 std::array<uint8_t, SYNC_SEED_LEN> seed_from(uint8_t v) {
     std::array<uint8_t, SYNC_SEED_LEN> s{};
     for (auto &b : s) b = v;
     return s;
 }
-
-struct TempDir {
-    std::string path;
-    TempDir() {
-        char t[] = "/tmp/sync_harden_XXXXXX";
-        path = mkdtemp(t);
-    }
-    ~TempDir() {
-        DIR *d = opendir(path.c_str());
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d))) {
-                std::string n = e->d_name;
-                if (n != "." && n != "..") std::remove((path + "/" + n).c_str());
-            }
-            closedir(d);
-        }
-        rmdir(path.c_str());
-    }
-    std::string file(const char *n) const { return path + "/" + n; }
-};
 
 } // namespace
 

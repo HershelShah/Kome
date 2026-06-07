@@ -22,13 +22,15 @@
 #include <string>
 #include <vector>
 
+#include "cluster.hpp"
 #include "sqlite3.h" /* T2.4 tampers with the file directly */
+#include "tempdir.hpp"
 
 namespace {
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
-
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
+using synctest::TempDir;
 
 std::array<uint8_t, SYNC_SITE_ID_LEN> site_from(uint8_t seed) {
     std::array<uint8_t, SYNC_SITE_ID_LEN> s{};
@@ -66,31 +68,6 @@ void random_ops(sync_engine *e, std::mt19937 &rng, int count) {
         }
     }
 }
-
-/* A unique temp directory that cleans itself up. */
-struct TempDir {
-    std::string path;
-    TempDir() {
-        char tmpl[] = "/tmp/sync_storage_XXXXXX";
-        char *p = mkdtemp(tmpl);
-        EXPECT_NE(p, nullptr);
-        path = p;
-    }
-    ~TempDir() {
-        DIR *d = opendir(path.c_str());
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d))) {
-                std::string n = e->d_name;
-                if (n == "." || n == "..") continue;
-                std::remove((path + "/" + n).c_str());
-            }
-            closedir(d);
-        }
-        rmdir(path.c_str());
-    }
-    std::string file(const char *name) const { return path + "/" + name; }
-};
 
 } // namespace
 

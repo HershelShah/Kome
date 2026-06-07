@@ -15,12 +15,13 @@
 
 #include "monocypher.h" /* crypto_blake2b for the T4.4 identity check */
 
+#include "cluster.hpp"
 #include "engine.hpp" /* access to the engine's identity KeyPair */
 #include "noise.h"
 
 namespace {
 
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
 
 std::array<uint8_t, SYNC_SEED_LEN> seed_from(uint8_t v) {
     std::array<uint8_t, SYNC_SEED_LEN> s{};

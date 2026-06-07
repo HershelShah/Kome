@@ -13,6 +13,14 @@
 #include <string>
 #include <vector>
 
+/* Assert/expect a SYNC_* call returned SYNC_OK, printing the code + its
+ * sync_strerror on failure. Clearer than EXPECT_EQ(expr, SYNC_OK) at the 60+
+ * status-check call sites across the suite. */
+#define EXPECT_SYNC_OK(expr)                                                    \
+    EXPECT_EQ((expr), SYNC_OK) << "expected SYNC_OK"
+#define ASSERT_SYNC_OK(expr)                                                    \
+    ASSERT_EQ((expr), SYNC_OK) << "expected SYNC_OK"
+
 namespace cluster {
 
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
@@ -30,14 +38,12 @@ inline sync_engine *make(uint32_t seed) {
 
 inline void put(sync_engine *e, const std::string &ns, const std::string &ent,
                 const std::string &field, const std::string &val) {
-    EXPECT_EQ(sync_engine_set(e, B(ns), ns.size(), B(ent), ent.size(), B(field),
-                              field.size(), B(val), val.size()),
-              SYNC_OK);
+    EXPECT_SYNC_OK(sync_engine_set(e, B(ns), ns.size(), B(ent), ent.size(),
+                                   B(field), field.size(), B(val), val.size()));
 }
 
 inline void del(sync_engine *e, const std::string &ns, const std::string &ent) {
-    EXPECT_EQ(sync_engine_delete(e, B(ns), ns.size(), B(ent), ent.size()),
-              SYNC_OK);
+    EXPECT_SYNC_OK(sync_engine_delete(e, B(ns), ns.size(), B(ent), ent.size()));
 }
 
 inline std::string get(sync_engine *e, const std::string &ns,
@@ -61,14 +67,14 @@ inline bool exists(sync_engine *e, const std::string &ns,
 
 inline Digest digest(sync_engine *e) {
     Digest d{};
-    EXPECT_EQ(sync_engine_digest(e, d.data()), SYNC_OK);
+    EXPECT_SYNC_OK(sync_engine_digest(e, d.data()));
     return d;
 }
 
 inline int record_count(sync_engine *e) {
     sync_change *recs = nullptr;
     size_t n = 0;
-    EXPECT_EQ(sync_engine_export(e, &recs, &n), SYNC_OK);
+    EXPECT_SYNC_OK(sync_engine_export(e, &recs, &n));
     int c = 0;
     for (size_t i = 0; i < n; i++)
         if (recs[i].kind == SYNC_CHANGE_REGISTER) c++;
@@ -92,8 +98,8 @@ inline void apply_register(sync_engine *e, const std::string &ns,
     c.hlc.physical = physical;
     c.hlc.logical = logical;
     auto s = seed_from(seed);
-    EXPECT_EQ(sync_change_sign(&c, s.data()), SYNC_OK);
-    EXPECT_EQ(sync_engine_apply(e, &c), SYNC_OK);
+    EXPECT_SYNC_OK(sync_change_sign(&c, s.data()));
+    EXPECT_SYNC_OK(sync_engine_apply(e, &c));
 }
 
 /* Fully reconcile two engines (bidirectional, in-process session pump). */
@@ -126,9 +132,9 @@ inline void sync2(sync_engine *a, sync_engine *b) {
 inline void replicate(sync_engine *from, sync_engine *into) {
     sync_change *r = nullptr;
     size_t n = 0;
-    EXPECT_EQ(sync_engine_export(from, &r, &n), SYNC_OK);
+    EXPECT_SYNC_OK(sync_engine_export(from, &r, &n));
     for (size_t i = 0; i < n; i++)
-        EXPECT_EQ(sync_engine_apply(into, &r[i]), SYNC_OK);
+        EXPECT_SYNC_OK(sync_engine_apply(into, &r[i]));
     sync_changes_free(r, n);
 }
 

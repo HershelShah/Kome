@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "cluster.hpp"
 #include "engine.hpp"
 #include "transport/connection.h"
 #include "transport/relay.h"
@@ -21,12 +22,8 @@
 using namespace ke;
 
 namespace {
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
-std::array<uint8_t, SYNC_SEED_LEN> seed_from(uint32_t v) {
-    std::array<uint8_t, SYNC_SEED_LEN> s{};
-    for (size_t i = 0; i < s.size(); i++) s[i] = (uint8_t)(v >> ((i % 4) * 8));
-    return s;
-}
+using cluster::B;
+using cluster::seed_from;
 sync_engine *make(uint32_t s) { return sync_engine_create(seed_from(s).data()); }
 void put(sync_engine *e, const std::string &ent, const std::string &val) {
     sync_engine_set(e, B(std::string("ns")), 2, B(ent), ent.size(),

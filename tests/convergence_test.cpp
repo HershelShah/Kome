@@ -9,6 +9,8 @@
  * diverging digests so a failure is reproducible (T1.8). */
 #include "sync_engine.h"
 
+#include "cluster.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -95,7 +97,7 @@ std::array<uint8_t, SYNC_SITE_ID_LEN> site_from(uint8_t seed) {
     return s;
 }
 
-const uint8_t *B(const std::string &s) { return (const uint8_t *)s.data(); }
+using cluster::B;
 
 /* Drive a sequence of random local ops against an engine. Small key space so
  * keys collide across replicas. */

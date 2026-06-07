@@ -434,3 +434,23 @@ One line of rationale per non-obvious choice, newest last.
   twice; **`key_bytes`** (engine.hpp) renders a `PubKey` as a map/set key in one
   place. Pure deduplication — wire formats and digests are byte-identical
   (verified against the unchanged convergence/fuzz oracles and WASM parity).
+
+## Test helper consolidation (audit pass)
+
+- The three durability suites (storage/hardening/resilience) each carried a
+  near-identical self-cleaning temp-directory struct; they now share
+  **`tests/tempdir.hpp`** (`synctest::TempDir`, prefix-configurable). POSIX-only,
+  which is fine — those suites are native-only.
+- The trivial `B()` byte-cast and the "spread" `seed_from(uint32_t)` helper were
+  copy-pasted into ~11 test files; they now come from `cluster.hpp`
+  (`using cluster::B; using cluster::seed_from;`). The "fill" `seed_from(uint8_t)`
+  variant (all bytes = v) is a *different* mapping, so those files keep their
+  local one — both produce distinct per-seed identities, and the tests only rely
+  on distinctness + convergence, so neither choice affects results.
+- Added **`EXPECT_SYNC_OK` / `ASSERT_SYNC_OK`** macros (in cluster.hpp) for the
+  60+ `EXPECT_EQ(call, SYNC_OK)` sites; adopted in cluster.hpp itself.
+- Deliberately left each suite's richer local helpers (per-file `digest`/`put`/
+  `populate`/session-pump variants, and the two `baseline_union`s) in place:
+  they diverge in small but real ways (ASSERT vs EXPECT, return types, custom
+  drive loops), so folding them risked behavior changes for little gain. The
+  goal was no-regression dedup, not maximal sharing.
