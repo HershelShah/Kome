@@ -113,6 +113,11 @@ bool verify_change(const sync_change *c) {
     return ke::verify(c->author, signing.data(), signing.size(), c->signature);
 }
 
+/* Emit a diagnostic log line (no record values/keys/namespaces/secrets). */
+void engine_log(sync_engine *e, int level, const char *msg) {
+    if (e->log_fn) e->log_fn(e->log_ctx, level, msg);
+}
+
 /* Hash one length-prefixed byte field (LE 64-bit length) into h. */
 void feed(Sha256 &h, const void *p, size_t len) {
     uint8_t lb[8];
@@ -174,6 +179,13 @@ bool tx_entity_field(sync_engine *e, const std::string &ns,
 extern "C" {
 
 uint32_t sync_abi_version(void) { return SYNC_ABI_VERSION; }
+
+int sync_engine_set_logger(sync_engine *e, sync_log_fn fn, void *ctx) {
+    if (!e) return SYNC_ERR_INVALID;
+    e->log_fn = fn;
+    e->log_ctx = ctx;
+    return SYNC_OK;
+}
 
 const char *sync_strerror(int err) {
     switch (err) {
@@ -415,14 +427,20 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
     }
     try {
         /* Authenticate the record before it can touch any state. */
-        if (!verify_change(c)) return SYNC_ERR_BADSIG;
+        if (!verify_change(c)) {
+            engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
+            return SYNC_ERR_BADSIG;
+        }
 
         std::string nsk = to_str(c->ns, c->ns_len);
 
         /* Capability enforcement (M4): if the namespace is owned, the author
          * must hold a valid write capability chain for it. */
         int authz = cap_authorize_write(e, c->author, nsk);
-        if (authz != SYNC_OK) return authz;
+        if (authz != SYNC_OK) {
+            engine_log(e, SYNC_LOG_WARN, "apply: write not authorized for namespace");
+            return authz;
+        }
 
         std::string entk = to_str(c->entity, c->entity_len);
         Entity &ent = e->ns[nsk][entk];

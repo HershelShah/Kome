@@ -45,6 +45,7 @@ set(SYNC_SOURCES
     src/reconcile.cpp
     src/crypto.cpp
     src/capability.cpp
+    src/invite.cpp
     src/noise.cpp
     src/transport/reliable.cpp
     src/transport/udp.cpp

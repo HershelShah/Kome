@@ -288,6 +288,99 @@ TEST(Security, ChannelIdentityBinding) {
     sync_engine_destroy(b);
 }
 
+/* ---- Logging hook (off by default; no secrets) ------------------------- */
+namespace {
+struct LogCapture { std::vector<std::string> msgs; };
+void log_sink(void *ctx, int /*level*/, const char *msg) {
+    static_cast<LogCapture *>(ctx)->msgs.push_back(msg);
+}
+}
+
+TEST(Security, LoggerHook) {
+    auto so = seed_from(0x01);
+    sync_engine *owner = sync_engine_create(so.data());
+    sync_engine *v = sync_engine_create(seed_from(0x09).data());
+
+    /* Off by default: nothing logged even on a rejected apply. */
+    sync_capability *root = sync_capability_root(v, "nsA", SYNC_ACCESS_READ); /* v owns */
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    sync_capability_free(root);
+    set(owner, "nsA", "x", "secretfield", "TOPSECRETVALUE");
+
+    LogCapture cap;
+    /* Install the logger and trigger a rejection (owner has no write cap). */
+    ASSERT_EQ(sync_engine_set_logger(v, log_sink, &cap), SYNC_OK);
+    EXPECT_EQ(apply_all(v, owner), SYNC_ERR_UNAUTHORIZED);
+    ASSERT_FALSE(cap.msgs.empty()) << "logger captured nothing";
+
+    /* No log line leaks the value, field, or namespace content. */
+    for (const auto &m : cap.msgs) {
+        EXPECT_EQ(m.find("TOPSECRETVALUE"), std::string::npos);
+        EXPECT_EQ(m.find("secretfield"), std::string::npos);
+    }
+
+    /* Clearing the logger silences it. */
+    sync_engine_set_logger(v, nullptr, nullptr);
+    cap.msgs.clear();
+    apply_all(v, owner);
+    EXPECT_TRUE(cap.msgs.empty());
+
+    sync_engine_destroy(owner);
+    sync_engine_destroy(v);
+}
+
+/* ---- Invite encode/decode (discovery) ---------------------------------- */
+TEST(Security, InviteRoundTrip) {
+    sync_engine *owner = sync_engine_create(seed_from(0x01).data());
+    sync_engine *peer = sync_engine_create(seed_from(0x02).data());
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(peer, ppk);
+
+    /* Owner mints a capability for the peer and bundles it into an invite. */
+    sync_capability *root = sync_capability_root(owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    sync_capability *deleg = sync_capability_delegate(owner, root, ppk, SYNC_ACCESS_WRITE, 0);
+    const char *addr = "relay.example:9000";
+
+    size_t need = sync_invite_encode(ppk, addr, deleg, nullptr, 0);
+    ASSERT_GT(need, 0u);
+    std::vector<uint8_t> buf(need);
+    ASSERT_EQ(sync_invite_encode(ppk, addr, deleg, buf.data(), buf.size()), need);
+
+    uint8_t got_pk[SYNC_PUBKEY_LEN];
+    char got_addr[128];
+    sync_capability *got_cap = nullptr;
+    ASSERT_EQ(sync_invite_decode(buf.data(), buf.size(), got_pk, got_addr,
+                                 sizeof got_addr, &got_cap),
+              SYNC_OK);
+    EXPECT_EQ(0, std::memcmp(got_pk, ppk, SYNC_PUBKEY_LEN));
+    EXPECT_STREQ(got_addr, addr);
+    ASSERT_NE(got_cap, nullptr);
+
+    /* The carried capability is usable: granting it authorizes the peer. */
+    sync_engine *v = sync_engine_create(seed_from(0x09).data());
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(v, got_cap), SYNC_OK);
+    set(peer, "nsA", "p", "f", "ok");
+    EXPECT_EQ(apply_all(v, peer), SYNC_OK);
+
+    /* Invite without a capability also round-trips. */
+    size_t n2 = sync_invite_encode(ppk, addr, nullptr, nullptr, 0);
+    std::vector<uint8_t> b2(n2);
+    sync_invite_encode(ppk, addr, nullptr, b2.data(), b2.size());
+    sync_capability *c2 = (sync_capability *)0x1;
+    ASSERT_EQ(sync_invite_decode(b2.data(), b2.size(), got_pk, got_addr,
+                                 sizeof got_addr, &c2),
+              SYNC_OK);
+    EXPECT_EQ(c2, nullptr);
+
+    sync_capability_free(root);
+    sync_capability_free(deleg);
+    sync_capability_free(got_cap);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(peer);
+    sync_engine_destroy(v);
+}
+
 /* ---- T4.4 Identity stability ------------------------------------------- */
 TEST(Security, IdentityStability) {
     auto seed = seed_from(0x21);

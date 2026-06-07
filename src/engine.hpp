@@ -74,6 +74,8 @@ struct sync_engine {
     ke::Storage     *store = nullptr; /* null for in-memory engines */
     ke::CapStore    *caps = nullptr;  /* granted capabilities (M4) */
     uint64_t         db_clock = 0;    /* monotonic per-mutation counter */
+    sync_log_fn      log_fn = nullptr;
+    void            *log_ctx = nullptr;
 };
 
 #endif /* SYNC_ENGINE_INTERNAL_HPP */

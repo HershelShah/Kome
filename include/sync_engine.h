@@ -279,10 +279,49 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c);
 /* Release a capability. Safe with NULL. */
 void sync_capability_free(sync_capability *c);
 
+/* ---- Invites (M5 discovery) --------------------------------------------- */
+
+/* An invite carries the peer's signing public key, a rendezvous address, and
+ * an optional capability granting the holder access. Share the encoded bytes
+ * out-of-band (QR, link, message); the recipient learns whom to connect to,
+ * where to find them, and what they may do. No public DHT.
+ *
+ * encode returns the number of bytes required (writes into buf only if buf_len
+ * is large enough; call with buf==NULL to size). Returns 0 on invalid input. */
+size_t sync_invite_encode(const uint8_t peer_pubkey[SYNC_PUBKEY_LEN],
+                          const char *rendezvous_addr,
+                          const sync_capability *cap /* nullable */,
+                          uint8_t *buf, size_t buf_len);
+
+/* Decode an invite. Fills peer_pubkey and the NUL-terminated address into
+ * addr_out (capacity addr_cap). If cap_out is non-NULL it receives a newly
+ * allocated capability (or NULL when the invite carries none); release it with
+ * sync_capability_free. Returns SYNC_OK or an error. */
+int sync_invite_decode(const uint8_t *buf, size_t len,
+                       uint8_t peer_pubkey[SYNC_PUBKEY_LEN],
+                       char *addr_out, size_t addr_cap,
+                       sync_capability **cap_out /* nullable */);
+
 /* ---- Misc --------------------------------------------------------------- */
 
 /* Release a buffer returned by sync_engine_get. Safe with NULL. */
 void sync_free(void *p);
+
+/* ---- Logging (optional, off by default) --------------------------------- */
+
+typedef enum sync_log_level {
+    SYNC_LOG_ERROR = 0,
+    SYNC_LOG_WARN  = 1,
+    SYNC_LOG_INFO  = 2
+} sync_log_level;
+
+/* Diagnostic log callback. msg is a short, NUL-terminated description that
+ * never contains record values, keys, namespaces, or secrets. */
+typedef void (*sync_log_fn)(void *ctx, int level, const char *msg);
+
+/* Install (or clear, with fn==NULL) a per-engine log callback. Off by default;
+ * the library logs nothing until one is set. */
+int sync_engine_set_logger(sync_engine *e, sync_log_fn fn, void *ctx);
 
 /* Human-readable string for a sync_error code. Never NULL. */
 const char *sync_strerror(int err);
