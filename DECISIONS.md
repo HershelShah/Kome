@@ -389,3 +389,29 @@ One line of rationale per non-obvious choice, newest last.
     main(void)`), not `__main_argc_argv` (`int main(int, char**)`). So we
     compile our own no-arg `main()` directly into each WASM test and link plain
     `gtest`; the native build still uses upstream `gtest_main`.
+
+## Code style: .editorconfig + advisory clang-tidy, no enforced clang-format
+
+- We anchor style with **`.editorconfig`** (indent, charset, LF, final newline,
+  80-col) and an **advisory `.clang-tidy`** (bug-finding + safe modernization;
+  not a CI gate). We deliberately do **not** enforce `clang-format`: the
+  hand-tuned layout — aligned `switch` returns, aligned trailing assignments,
+  and compact one-line guard blocks (`if (!ok) { rollback(); return false; }`)
+  — reads better than any `clang-format` config can reproduce, and forcing one
+  would churn ~200 lines per core file while degrading readability. New code
+  should match the surrounding style by hand.
+- clang-tidy mutes a few checks that fight deliberate choices at the C ABI
+  boundary (C arrays and C-style casts on the `extern "C"` surface, byte<->char
+  `reinterpret_cast`, magic-number literals).
+
+## Defensive hardening (audit pass)
+
+- `tcp.cpp` now fails `TcpListener::open` if `setsockopt(SO_REUSEADDR)` errors
+  (was ignored); `stun.cpp` zero-initializes the `in_addr` and tolerates a bad
+  `inet_pton` instead of reading uninitialized memory; `connect_and_sync` bails
+  cleanly if `sync_session_begin` returns null (OOM) rather than driving a null
+  session. None changed observable behavior on the happy path.
+- Fixed-length crypto constants (`SYNC_PUBKEY_LEN`/`SYNC_SIG_LEN`) replace bare
+  `32`/`64` literals in `capability.cpp` (and the peer-key copy in
+  `connection.cpp`), matching the `(long)SYNC_PUBKEY_LEN` idiom already used in
+  `codec.cpp`.

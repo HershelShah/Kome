@@ -30,19 +30,19 @@ void cap_encode(const Capability &c, std::string &out) {
 bool cap_decode(const uint8_t *buf, size_t len, Capability &out) {
     const uint8_t *p = buf, *end = buf + len;
     if (p >= end || *p++ != 0x01) return false; /* version */
-    if (end - p < 64) return false;
-    std::memcpy(out.issuer.data(), p, 32); p += 32;
-    std::memcpy(out.subject.data(), p, 32); p += 32;
+    if (end - p < (long)(2 * SYNC_PUBKEY_LEN)) return false; /* issuer+subject */
+    std::memcpy(out.issuer.data(), p, SYNC_PUBKEY_LEN); p += SYNC_PUBKEY_LEN;
+    std::memcpy(out.subject.data(), p, SYNC_PUBKEY_LEN); p += SYNC_PUBKEY_LEN;
     uint64_t nslen = 0;
     if (!get_varint(p, end, nslen) || (uint64_t)(end - p) < nslen) return false;
     out.ns.assign((const char *)p, (size_t)nslen); p += nslen;
     if (p >= end) return false;
     out.access = *p++;
-    if (end - p < 8 + 64) return false;
+    if (end - p < (long)(8 + SYNC_SIG_LEN)) return false; /* expiry + sig */
     out.expiry = 0;
     for (int i = 0; i < 8; i++) out.expiry |= (uint64_t)p[i] << (i * 8);
     p += 8;
-    std::memcpy(out.sig.data(), p, 64);
+    std::memcpy(out.sig.data(), p, SYNC_SIG_LEN);
     return true;
 }
 
@@ -103,23 +103,24 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
     start.holder = root->issuer;
     start.access = root->access;
     stack.push_back(start);
-    visited.insert(std::string((const char *)root->issuer.data(), 32));
+    visited.insert(std::string((const char *)root->issuer.data(), SYNC_PUBKEY_LEN));
 
     while (!stack.empty()) {
         Frame f = stack.back();
         stack.pop_back();
 
-        if (std::memcmp(f.holder.data(), author, 32) == 0)
+        if (std::memcmp(f.holder.data(), author, SYNC_PUBKEY_LEN) == 0)
             return (f.access & need) == need;
 
         for (const auto &c : caps_) {
             if (c.is_root()) continue;
             if (c.ns != ns) continue;
-            if (std::memcmp(c.issuer.data(), f.holder.data(), 32) != 0) continue;
+            if (std::memcmp(c.issuer.data(), f.holder.data(), SYNC_PUBKEY_LEN) != 0)
+                continue;
             /* A delegation cannot widen the holder's access. */
             if ((c.access & ~f.access) != 0) continue;
             if (!usable(c)) continue;
-            std::string subj((const char *)c.subject.data(), 32);
+            std::string subj((const char *)c.subject.data(), SYNC_PUBKEY_LEN);
             if (visited.count(subj)) continue;
             visited.insert(subj);
             Frame nf;
@@ -202,14 +203,14 @@ sync_capability *sync_capability_delegate(sync_engine *delegator,
         return nullptr;
     /* The delegator must be the parent's subject, and may not widen access. */
     if (std::memcmp(delegator->identity.sign_pk.data(), parent->subject.data(),
-                    32) != 0)
+                    SYNC_PUBKEY_LEN) != 0)
         return nullptr;
     if (((uint8_t)access & ~parent->access) != 0) return nullptr; /* over-broad */
     try {
         sync_capability *c = new (std::nothrow) sync_capability();
         if (!c) return nullptr;
         c->issuer = delegator->identity.sign_pk;
-        std::memcpy(c->subject.data(), subject_pubkey, 32);
+        std::memcpy(c->subject.data(), subject_pubkey, SYNC_PUBKEY_LEN);
         c->ns = parent->ns;
         c->access = (uint8_t)access;
         c->expiry = expiry_ms;
@@ -274,7 +275,7 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
 }
 
 void sync_capability_subject(const sync_capability *c, uint8_t out[32]) {
-    if (c && out) std::memcpy(out, c->subject.data(), 32);
+    if (c && out) std::memcpy(out, c->subject.data(), SYNC_PUBKEY_LEN);
 }
 
 void sync_capability_free(sync_capability *c) { delete c; }

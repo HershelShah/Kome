@@ -29,6 +29,7 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
         if (kicked) return;
         kicked = true;
         sess = sync_session_begin(e, 1);
+        if (!sess) return; /* OOM: leave unsettled; the loop times out */
         uint8_t *o = nullptr; size_t ol = 0; int d = 0;
         sync_session_step(sess, nullptr, 0, &o, &ol, &d);
         if (ol) {
@@ -71,7 +72,7 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
                     if (!out.empty()) link.send(out);
                     if (chan.done() && initiator) kick();
                 } else {
-                    if (!sess) sess = sync_session_begin(e, 0);
+                    if (!sess && !(sess = sync_session_begin(e, 0))) continue;
                     std::string pt;
                     if (!chan.decrypt(msg, pt)) continue;
                     uint8_t *o = nullptr; size_t ol = 0; int d = 0;
@@ -117,7 +118,7 @@ ConnResult ConnectionManager::sync_with(const uint8_t peer_pk[32],
         RelayTransport t;
         t.sock = sock;
         t.relay = relay;
-        std::memcpy(t.peer_pk.data(), peer_pk, 32);
+        std::memcpy(t.peer_pk.data(), peer_pk, SYNC_PUBKEY_LEN);
         t.my_pk = my_pk;
         if (connect_and_sync(engine, t, initiator, relay_ms))
             return ConnResult::Relay;

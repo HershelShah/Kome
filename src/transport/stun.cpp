@@ -55,8 +55,8 @@ void stun_build_response(const uint8_t txid[12], const Endpoint &mapped,
     attr.push_back(0x01);            /* family IPv4 */
     uint16_t xport = (uint16_t)(mapped.port ^ (kStunMagicCookie >> 16));
     put16(attr, xport);
-    in_addr a;
-    inet_pton(AF_INET, mapped.ip.c_str(), &a);
+    in_addr a{};
+    if (inet_pton(AF_INET, mapped.ip.c_str(), &a) != 1) a.s_addr = 0;
     uint32_t addr = ntohl(a.s_addr);
     uint32_t xaddr = addr ^ kStunMagicCookie;
     attr.push_back((char)(xaddr >> 24)); attr.push_back((char)(xaddr >> 16));

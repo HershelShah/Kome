@@ -1,0 +1,39 @@
+# Editor-agnostic baseline so contributions match the house style without a
+# reformatter. (We deliberately don't enforce clang-format: the hand-tuned
+# layout — aligned switch returns, compact guard blocks — reads better than any
+# config can reproduce. See DECISIONS.md.)
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,cpp,h,hpp,cc}]
+indent_style = space
+indent_size = 4
+max_line_length = 80
+
+[*.{cmake,txt}]
+indent_style = space
+indent_size = 4
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{sh,js,cjs}]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab

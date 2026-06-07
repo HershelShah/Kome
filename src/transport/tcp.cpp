@@ -119,7 +119,10 @@ bool TcpListener::open(const char *ip, uint16_t port) {
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd_ < 0) return false;
     int one = 1;
-    setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) != 0) {
+        close();
+        return false;
+    }
     sockaddr_in a;
     std::memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;

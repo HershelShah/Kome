@@ -1,0 +1,26 @@
+# Advisory static-analysis config (not a CI gate). Run locally / in an IDE:
+#
+#   clang-tidy -p build src/*.cpp src/transport/*.cpp
+#
+# Scope is bug-finding and safe modernization, NOT formatting (see .editorconfig
+# and DECISIONS.md for why we don't enforce a reformatter). A few checks are
+# tuned out where they'd fight deliberate choices at the C ABI boundary:
+#   - C arrays / C-style casts are unavoidable in the extern "C" surface.
+#   - reinterpret_cast noise on byte<->char buffers is intentional.
+Checks: >
+  bugprone-*,
+  performance-*,
+  misc-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -misc-no-recursion,
+  -misc-include-cleaner
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(src|include)/'
+FormatStyle: none
