@@ -204,8 +204,21 @@ transport-agnostic reconciliation session over its native WebSocket:
 ```bash
 sudo apt-get install -y emscripten
 tools/wasm_build.sh                       # -> build-wasm/sync_engine.{js,wasm}
-node bindings/wasm/parity.cjs              # same scenarios as UDP/TCP/WS, in WASM
+node bindings/wasm/parity.cjs             # same scenarios as UDP/TCP/WS, in WASM
+
+tools/wasm_tests.sh                       # the actual gtest suites, compiled
+                                          # to WASM and run under Node via ctest
 ```
+
+The WASM target isn't checked by a hand-written subset — the **literal**
+GoogleTest suites compile to WebAssembly and run under Node, so every
+transport-agnostic scenario test passes on WASM exactly as it does on
+UDP/TCP/WS. `tools/wasm_tests.sh` configures the build with `emcmake` (which
+points ctest at `node`) and runs `convergence`, `reconcile`, `crypto`,
+`security`, `relay`, `multinode`, `resilience`, `scenario`, and `defensive` as
+`.wasm`. Native-only suites (real sockets, `fork`, threads, linker `--wrap`)
+are gated out under `if(NOT EMSCRIPTEN)`; their engine logic is still covered on
+WASM through the suites above (e.g. durability via `resilience_test`).
 
 `bindings/wasm/sync_engine.cjs` is the JS binding (mirrors the Python one);
 `examples/web/index.html` is an in-page browser demo. A browser node reaches
@@ -218,7 +231,7 @@ side). Verified in CI by `.github/workflows/wasm.yml`.
 |----------|------|------|
 | `ci.yml` | every push / PR | build + full suite across Release/Debug + ASan/UBSan/TSan (`-Werror`) |
 | `coverage.yml` | push / PR | lcov report (artifact) + refreshes `docs/COVERAGE.md` |
-| `wasm.yml` | push / PR | build WASM + run the parity battery in Node |
+| `wasm.yml` | push / PR | build WASM + parity battery + the full gtest scenario suites compiled to WASM, in Node |
 | `fuzz.yml` | nightly | whole-surface coverage-guided fuzzing, compounding corpora |
 | `nightly.yml` | nightly | **everything**: full suite incl. opt-in OOM + multi-process chaos, all sanitizers, N=250 scale, WASM parity, coverage |
 

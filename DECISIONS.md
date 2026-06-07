@@ -350,3 +350,42 @@ One line of rationale per non-obvious choice, newest last.
 - Intentionally **not** in WASM: the native socket transports (UDP/TCP/WS),
   STUN, and the relay/rendezvous daemons — a browser uses its own WebSocket and
   reaches those as native server/relay peers, so they aren't a WASM concern.
+
+## WASM runs the actual gtest suites (not a hand-written subset)
+
+- "All transports pass all the scenarios" is taken literally: the **real**
+  GoogleTest binaries compile to WebAssembly and run under Node, so the WASM
+  target passes the same scenario suites as the native UDP/TCP/WS builds rather
+  than a parallel battery (`bindings/wasm/parity.cjs` stays as the binding-level
+  smoke test). `tools/wasm_tests.sh` drives it: `emcmake cmake` sets
+  `CMAKE_CROSSCOMPILING_EMULATOR=node`, so `ctest` runs each `<test>.js`.
+- Built for WASM (pure in-process compute): `convergence`, `reconcile`,
+  `crypto`, `security`, `relay`, `multinode`, `resilience`, `scenario`,
+  `defensive`. Gated out under `if(NOT EMSCRIPTEN)`: `storage` (fork),
+  `network`/`connection`/`transport_parity`/`service` (real sockets/threads),
+  `hardening` (fork), `threading` (pthreads), `oom` (linker `--wrap`), and the
+  multi-process chaos test. Their engine logic is still exercised on WASM by the
+  built suites (durability via `resilience_test`, transport semantics via the
+  reconciliation session in `multinode`/`scenario`), so no scenario goes
+  unverified on the WASM target.
+- Three Emscripten-specific build details, all isolated to `if(EMSCRIPTEN)` so
+  the native build is untouched:
+  - `-fstack-protector-strong` is dropped (Emscripten's libc has no
+    `__stack_chk_guard`).
+  - The link flags target Node: `-sENVIRONMENT=node -sNODERAWFS=1`
+    (real FS for the durability tests' temp DBs), `-sWASM_BIGINT`,
+    `-sEXIT_RUNTIME=1` (process exits with gtest's code so ctest sees
+    pass/fail), `-sALLOW_MEMORY_GROWTH`/roomy `TOTAL_STACK`/`INITIAL_MEMORY`
+    for the larger in-process multinode runs, and `-sWASM_ASYNC_COMPILATION=0`
+    so `main()` runs (and flushes output) during load.
+  - A `--pre-js` (`tools/wasm_node_prejs.js`) hides Node 22's global `fetch`,
+    which this toolchain's loader otherwise tries to use on a bare `.wasm`
+    filesystem path (same root cause as the binding's `wasmBinary` workaround).
+  - **`main()` plumbing** (`tests/wasm_gtest_main.cpp`): Emscripten emits the
+    `callMain` that runs the program only when it sees `main()` among its
+    *direct* link inputs — a `main()` inside the `gtest_main` archive is
+    invisible, so the binary would load and exit 0 having run nothing. And this
+    version wires `callMain` to the `main`/`__main_void` symbol (`int
+    main(void)`), not `__main_argc_argv` (`int main(int, char**)`). So we
+    compile our own no-arg `main()` directly into each WASM test and link plain
+    `gtest`; the native build still uses upstream `gtest_main`.

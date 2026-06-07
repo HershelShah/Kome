@@ -73,6 +73,8 @@ jobs:
           node-version: "22"
       - run: tools/wasm_build.sh
       - run: node bindings/wasm/parity.cjs
+      # The full gtest scenario suites compiled to WASM and run under Node.
+      - run: tools/wasm_tests.sh
 
   # Coverage report (uploaded as an artifact; refreshes docs/COVERAGE.md locally).
   coverage:

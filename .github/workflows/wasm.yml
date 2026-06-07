@@ -24,3 +24,9 @@ jobs:
 
       - name: Parity test (same scenarios as UDP/TCP/WS, in WASM)
         run: node bindings/wasm/parity.cjs
+
+      - name: GoogleTest suites compiled to WASM, run under Node
+        # The literal convergence/reconcile/crypto/security/relay/multinode/
+        # resilience/scenario/defensive gtest binaries as .wasm — every
+        # transport-agnostic scenario test passing on the WASM target.
+        run: tools/wasm_tests.sh
