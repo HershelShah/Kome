@@ -40,7 +40,12 @@ struct Peer {
     sync_session *sess = nullptr;
     bool sess_done = false;   /* responder: produced empty, ready for next cycle */
     uint64_t last_kick = 0;   /* initiator: when we last started a cycle */
+    uint64_t last_progress = 0; /* last handshake step / successful decrypt */
 };
+
+/* If a peer makes no progress for this long, assume it restarted (fresh Noise
+ * + reliability state) and reset our side of the connection to re-handshake. */
+static const uint64_t kResetMs = 2000;
 
 int main(int argc, char **argv) {
     std::string db, peers_arg;
@@ -60,11 +65,16 @@ int main(int argc, char **argv) {
     sync_engine *e = sync_engine_open(db.c_str(), seed);
     if (!e) { fprintf(stderr, "open failed\n"); return 1; }
 
-    /* One local record, tagged by this node's port (so we can see it spread). */
+    /* One local record, tagged by this node's port (so we can see it spread).
+     * Write it only once: on restart the durable DB already has it, and
+     * re-writing would needlessly bump its HLC (churn with no new information). */
     std::string ns = "mesh";
     std::string mine = "node-" + std::to_string(listen);
-    sync_engine_set(e, B(ns), ns.size(), B(mine), mine.size(),
-                    B(std::string("v")), 1, B(mine), mine.size());
+    int already = 0;
+    sync_engine_exists(e, B(ns), ns.size(), B(mine), mine.size(), &already);
+    if (!already)
+        sync_engine_set(e, B(ns), ns.size(), B(mine), mine.size(),
+                        B(std::string("v")), 1, B(mine), mine.size());
 
     UdpSocket sock;
     if (!sock.open("127.0.0.1", (uint16_t)listen)) { fprintf(stderr, "bind\n"); return 1; }
@@ -97,6 +107,23 @@ int main(int argc, char **argv) {
         pr.last_kick = wall_ms();
     };
 
+    /* Reset our side of a peer connection (used when a peer restarts): fresh
+     * Noise channel + reliability state, then re-open the handshake. */
+    auto reset = [&](Peer &pr) {
+        delete pr.chan;
+        pr.chan = new NoiseChannel(pr.initiator, e->identity);
+        pr.link = ReliableLink();
+        if (pr.sess) { sync_session_end(pr.sess); pr.sess = nullptr; }
+        pr.sess_done = false;
+        pr.last_progress = wall_ms();
+        pr.last_kick = 0;
+        if (pr.initiator) {
+            std::string out; bool done = false;
+            pr.chan->step("", out, done);
+            pr.link.send(out);
+        }
+    };
+
     /* Initiators open handshakes. */
     for (auto &kv : peers)
         if (kv.second.initiator) {
@@ -106,11 +133,17 @@ int main(int argc, char **argv) {
         }
 
     uint64_t start = wall_ms();
+    for (auto &kv : peers) kv.second.last_progress = start;
     while (wall_ms() - start < (uint64_t)seconds * 1000) {
         uint64_t now = wall_ms();
 
         for (auto &kv : peers) {
             Peer &pr = kv.second;
+            /* No genuine progress (delivered msg or valid ack) for a while ->
+             * the peer is silent or restarted; re-handshake. Healthy idle
+             * connections still progress: the initiator's periodic FP is acked
+             * and the responder decrypts it, so last_progress stays fresh. */
+            if (now - pr.last_progress > kResetMs) reset(pr);
             std::vector<std::string> dgs;
             pr.link.poll(dgs, now);
             for (auto &d : dgs) sock.send_to(pr.ep, d);
@@ -127,11 +160,11 @@ int main(int argc, char **argv) {
             if (it == peers.end()) continue;
             Peer &pr = it->second;
             std::vector<std::string> delivered;
-            pr.link.on_datagram(dg, delivered);
+            if (pr.link.on_datagram(dg, delivered)) pr.last_progress = now;
             for (auto &msg : delivered) {
                 if (!pr.chan->done()) {
                     std::string out; bool done = false;
-                    pr.chan->step(msg, out, done);
+                    if (pr.chan->step(msg, out, done)) pr.last_progress = now;
                     if (!out.empty()) pr.link.send(out);
                     if (pr.chan->done() && pr.initiator) kick(pr);
                 } else {
@@ -145,6 +178,7 @@ int main(int argc, char **argv) {
                     if (!pr.sess) pr.sess = sync_session_begin(e, 0);
                     std::string pt;
                     if (!pr.chan->decrypt(msg, pt)) continue;
+                    pr.last_progress = now;
                     uint8_t *o = nullptr; size_t ol = 0; int d = 0;
                     sync_session_step(pr.sess, (const uint8_t *)pt.data(),
                                       pt.size(), &o, &ol, &d);

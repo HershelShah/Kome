@@ -150,6 +150,17 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(scenario_test tests/scenario_test.cpp)
 endif()
 
+# --- Multi-process chaos integration test (slow; opt in) -------------------
+option(SYNC_CHAOS "Enable the multi-process chaos integration test" OFF)
+if(SYNC_CHAOS)
+    add_test(NAME chaos_test
+             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/chaos_test.sh 6 12 12)
+    set_tests_properties(chaos_test PROPERTIES
+        ENVIRONMENT
+          "MESHNODE_BIN=$<TARGET_FILE:meshnode>;SYNC_ENGINE_LIB=$<TARGET_FILE:sync_engine_shared>"
+        TIMEOUT 120)
+endif()
+
 # --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
 option(SYNC_FUZZ "Build libFuzzer targets (requires clang + fuzzer runtime)" OFF)
 if(SYNC_FUZZ)

@@ -31,17 +31,19 @@ bool parse(const std::string &dg, uint8_t &type, uint32_t &seq,
 
 void ReliableLink::send(const std::string &msg) { outbox_.push_back(msg); }
 
-void ReliableLink::on_datagram(const std::string &dg,
+bool ReliableLink::on_datagram(const std::string &dg,
                                std::vector<std::string> &delivered) {
     uint8_t type;
     uint32_t seq;
     std::string payload;
-    if (!parse(dg, type, seq, payload)) return;
+    if (!parse(dg, type, seq, payload)) return false;
 
+    bool progress = false;
     if (type == kData) {
         if (seq == recv_seq_) {
             delivered.push_back(payload);
             recv_seq_++;
+            progress = true;
         }
         /* Always (re-)ack the highest in-order seq we have, so a lost ack or a
          * duplicate DATA is handled. ack the last accepted seq. */
@@ -52,8 +54,10 @@ void ReliableLink::on_datagram(const std::string &dg,
             in_flight_ = false;
             in_flight_payload_.clear();
             send_seq_++;
+            progress = true;
         }
     }
+    return progress;
 }
 
 void ReliableLink::poll(std::vector<std::string> &out, uint64_t now_ms) {

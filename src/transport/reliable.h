@@ -22,8 +22,10 @@ public:
     void send(const std::string &msg);
 
     /* Feed one incoming datagram; append any fully-delivered application
-     * messages (in order) to `delivered`. */
-    void on_datagram(const std::string &dg, std::vector<std::string> &delivered);
+     * messages (in order) to `delivered`. Returns true if the datagram made
+     * genuine progress (delivered a message or acked our outstanding send) —
+     * a liveness signal callers can use to detect a silent/restarted peer. */
+    bool on_datagram(const std::string &dg, std::vector<std::string> &delivered);
 
     /* Collect datagrams to transmit now: freshly queued data plus any
      * retransmission whose ack is overdue, plus pending acks. */

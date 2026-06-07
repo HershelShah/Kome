@@ -61,6 +61,7 @@ Legend: test file — `c`=convergence, `r`=reconcile, `sec`=security,
 | Store-and-forward to an offline peer | rel: StoreAndForward |
 | Reconnection after a network/IP change | net: ReconnectionResumesSync |
 | Lossy/reordering/duplicating datagram link | net: ReliabilityOverLossyLink |
+| **Multi-process chaos: SIGKILL + restart real daemons mid-gossip** | tests/chaos_test.sh (real processes; durable; converges, no data loss) |
 
 ## Liveness / concurrency
 
@@ -95,7 +96,4 @@ Legend: test file — `c`=convergence, `r`=reconcile, `sec`=security,
 
 - Kernel-level NAT hole punching, IPv6 path, public STUN (sandbox can't bind
   IPv6 or run `ip`/`iptables`) — covered by the userspace NAT simulator only.
-- Multi-process *chaos* (kill/restart real `meshnode` processes mid-gossip) —
-  in-process resilience tests cover the logic; the socket/Noise/relay layers
-  under churn are not yet chaos-tested.
 - Real libFuzzer run for a budget (no fuzzer runtime here).

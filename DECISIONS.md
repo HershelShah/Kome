@@ -209,3 +209,22 @@ One line of rationale per non-obvious choice, newest last.
   random churn (nodes independently up/down + writing) that converges with
   every record present on every node (no data loss). All in-process and
   deterministic.
+
+## Multi-process chaos + connection self-healing
+
+- **meshnode survives peer restarts.** When a peer is SIGKILL'd and comes back,
+  its Noise channel and reliability state reset but the survivor's don't, which
+  would deadlock the edge. Each peer connection now tracks last-progress
+  (a delivered message or a valid ack, reported by `ReliableLink::on_datagram`);
+  after `kResetMs` (2s) with no progress it tears down and re-handshakes. Acks
+  count as progress, so healthy idle connections (initiator's periodic FP gets
+  acked) are never reset, while a silent/restarted peer is detected on both the
+  initiator and responder side.
+- **A node announces its record once, not per restart.** Re-writing identical
+  data on every restart only bumped its HLC (churn that delays digest
+  convergence); meshnode now writes its self-record only on a fresh DB.
+- **tests/chaos_test.sh**: launches N real `meshnode` processes in a ring,
+  SIGKILLs + restarts random nodes for a chaos window, then settles and
+  verifies (via the Python binding) that every durable DB reopens cleanly,
+  holds every node's record (no data loss), and all converge to one digest.
+  Wired into ctest behind `-DSYNC_CHAOS=ON` (slow/timing-heavy; off by default).
