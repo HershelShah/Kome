@@ -204,13 +204,26 @@ transport-agnostic reconciliation session over its native WebSocket:
 ```bash
 sudo apt-get install -y emscripten
 tools/wasm_build.sh                       # -> build-wasm/sync_engine.{js,wasm}
-node bindings/wasm/smoke.cjs              # two engines converge, in WASM
+node bindings/wasm/parity.cjs              # same scenarios as UDP/TCP/WS, in WASM
 ```
 
 `bindings/wasm/sync_engine.cjs` is the JS binding (mirrors the Python one);
 `examples/web/index.html` is an in-page browser demo. A browser node reaches
 other nodes via a WebSocket-speaking peer/relay (the native `src/transport/ws.*`
 side). Verified in CI by `.github/workflows/wasm.yml`.
+
+## Continuous integration
+
+| Workflow | When | What |
+|----------|------|------|
+| `ci.yml` | every push / PR | build + full suite across Release/Debug + ASan/UBSan/TSan (`-Werror`) |
+| `coverage.yml` | push / PR | lcov report (artifact) + refreshes `docs/COVERAGE.md` |
+| `wasm.yml` | push / PR | build WASM + run the parity battery in Node |
+| `fuzz.yml` | nightly | whole-surface coverage-guided fuzzing, compounding corpora |
+| `nightly.yml` | nightly | **everything**: full suite incl. opt-in OOM + multi-process chaos, all sanitizers, N=250 scale, WASM parity, coverage |
+
+So every path — the engine, all transports (UDP/TCP/WS), WASM, the services,
+chaos/resilience, and OOM/defensive — is exercised either per-PR or overnight.
 
 ## Dependencies
 

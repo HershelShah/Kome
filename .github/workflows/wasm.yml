@@ -22,5 +22,5 @@ jobs:
       - name: Build WASM
         run: tools/wasm_build.sh
 
-      - name: Smoke test (engine + reconciliation session run in WASM)
-        run: node bindings/wasm/smoke.cjs
+      - name: Parity test (same scenarios as UDP/TCP/WS, in WASM)
+        run: node bindings/wasm/parity.cjs

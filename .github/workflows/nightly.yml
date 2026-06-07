@@ -1,0 +1,88 @@
+name: Nightly
+
+# Comprehensive overnight run that exercises EVERY path so nothing rots between
+# the fast per-PR checks. (The whole-surface fuzzing has its own schedule in
+# fuzz.yml.)
+on:
+  schedule:
+    - cron: "0 4 * * *"   # nightly 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  # Full suite incl. the opt-in OOM + multi-process chaos tests, under -Werror.
+  full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure (all tests on)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-Werror" -DCMAKE_C_FLAGS="-Werror" \
+            -DSYNC_OOM_TEST=ON -DSYNC_CHAOS=ON
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Test (repeat to catch flakiness)
+        run: |
+          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure   # second pass
+
+  # Re-run the suite under every sanitizer (OOM/chaos excluded — --wrap and the
+  # subprocess chaos test don't mix with the sanitizer allocators).
+  sanitizers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        san: [address, undefined, thread]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSYNC_SANITIZER=${{ matrix.san }}
+      - run: cmake --build build -j"$(nproc)"
+      - run: ctest --test-dir build --output-on-failure
+
+  # Larger multi-node scale than the per-PR cap (ring/star/mesh + enforced caps).
+  scale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cmake -B build && cmake --build build -j"$(nproc)" --target multinode_test
+      - name: Ring + enforced ring at N=250
+        env:
+          SYNC_SCALE_N: "250"
+        run: |
+          ./build/multinode_test --gtest_filter='MultiNode.RingScaling'
+          ./build/multinode_test --gtest_filter='MultiNode.EnforcedRingWithCapabilities'
+
+  # Multi-process chaos, repeated, to shake out timing-dependent regressions.
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cmake -B build && cmake --build build -j"$(nproc)" --target meshnode sync_engine_shared
+      - name: Chaos x3
+        run: for i in 1 2 3; do tests/chaos_test.sh 6 12 12 || exit 1; done
+
+  # WebAssembly parity (same scenarios as UDP/TCP/WS, compiled to WASM).
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y emscripten
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: tools/wasm_build.sh
+      - run: node bindings/wasm/parity.cjs
+
+  # Coverage report (uploaded as an artifact; refreshes docs/COVERAGE.md locally).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y lcov
+      - run: tools/coverage.sh
+      - run: cat docs/COVERAGE.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-coverage-html
+          path: coverage-html/

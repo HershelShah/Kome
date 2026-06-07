@@ -329,7 +329,7 @@ One line of rationale per non-obvious choice, newest last.
   WASM); in-memory engines don't touch it, and durable storage in-browser
   (IDBFS/OPFS) is a later step.
 - **`bindings/wasm/sync_engine.cjs`** mirrors the Python binding over the WASM
-  heap; **`bindings/wasm/smoke.cjs`** runs in Node (identical to a browser for
+  heap; **`bindings/wasm/parity.cjs`** runs in Node (identical to a browser for
   the compute) and verifies two engines converge via the session + a
   conflict resolves — wired into `.github/workflows/wasm.yml`. `examples/web/`
   is an in-page browser demo with the WebSocket pump sketched.

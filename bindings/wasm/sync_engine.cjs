@@ -48,6 +48,14 @@ class Binding {
     if (rc !== SYNC_OK) throw new Error("set failed: " + rc);
   }
 
+  del(e, ns, ent) {
+    ns = bytes(ns); ent = bytes(ent);
+    const pn = this._toHeap(ns), pe = this._toHeap(ent);
+    const rc = this.M._sync_engine_delete(e, pn, ns.length, pe, ent.length);
+    this.M._free(pn); this.M._free(pe);
+    if (rc !== SYNC_OK) throw new Error("delete failed: " + rc);
+  }
+
   get(e, ns, ent, field) {
     ns = bytes(ns); ent = bytes(ent); field = bytes(field);
     const pn = this._toHeap(ns), pe = this._toHeap(ent), pf = this._toHeap(field);
