@@ -96,4 +96,3 @@ Legend: test file — `c`=convergence, `r`=reconcile, `sec`=security,
 
 - Kernel-level NAT hole punching, IPv6 path, public STUN (sandbox can't bind
   IPv6 or run `ip`/`iptables`) — covered by the userspace NAT simulator only.
-- Real libFuzzer run for a budget (no fuzzer runtime here).

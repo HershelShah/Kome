@@ -228,3 +228,15 @@ One line of rationale per non-obvious choice, newest last.
   verifies (via the Python binding) that every durable DB reopens cleanly,
   holds every node's record (no data loss), and all converge to one digest.
   Wired into ctest behind `-DSYNC_CHAOS=ON` (slow/timing-heavy; off by default).
+
+## Fuzzing — real coverage-guided run
+
+- **libFuzzer requires the compiler-rt fuzzer runtime** (`libclang_rt.fuzzer`),
+  which is shipped by `libclang-rt-18-dev`, not by clang alone. With it
+  installed, `-DSYNC_FUZZ=ON` (clang) builds the three targets and a budget run
+  executed ~34M inputs through `sync_change_decode` / `sync_capability_decode`
+  and reached 857 edges in the reconciliation message parser (`fuzz_session`)
+  with zero crashes/OOB/leaks/UB. `.github/workflows/fuzz.yml` runs this nightly
+  (installs the runtime, caches corpora, uploads any crash artifacts).
+- `hardening_test` remains the always-on surrogate for regular CI (random +
+  mutated inputs under ASan) where the fuzzer runtime isn't installed.

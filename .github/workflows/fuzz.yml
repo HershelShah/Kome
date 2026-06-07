@@ -1,0 +1,56 @@
+name: Fuzz
+
+# Coverage-guided libFuzzer budget run. Fuzzing is open-ended, so this runs on
+# a nightly schedule and on demand rather than on every push.
+on:
+  schedule:
+    - cron: "0 3 * * *"   # nightly 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Per-target time budget (seconds)"
+        default: "120"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install clang + libFuzzer runtime
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-rt-18-dev
+
+      - name: Build fuzz targets
+        run: |
+          cmake -B build-fuzz \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DSYNC_FUZZ=ON -DSYNC_BUILD_TESTS=OFF
+          cmake --build build-fuzz -j"$(nproc)"
+
+      - name: Restore corpora
+        uses: actions/cache@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Run budget
+        run: |
+          SECS="${{ github.event.inputs.seconds || '120' }}"
+          mkdir -p corpus/change corpus/capability corpus/session crashes
+          rc=0
+          for t in change_decode capability_decode session; do
+            d="${t%_decode}"
+            echo "::group::fuzz_$t ($SECS s)"
+            ./build-fuzz/fuzz_$t -max_total_time="$SECS" \
+              -artifact_prefix="crashes/${t}-" corpus/$d || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      - name: Upload crashes (if any)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: crashes/
