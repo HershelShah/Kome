@@ -168,6 +168,17 @@ if(SYNC_BUILD_TESTS)
 
     sync_add_test(scenario_test tests/scenario_test.cpp)
 
+    sync_add_test(defensive_test tests/defensive_test.cpp)
+
+    # OOM fault-injection test (allocation-failure paths). Off by default and
+    # out of the sanitizer matrix, where --wrap conflicts with ASan's allocator.
+    option(SYNC_OOM_TEST "Build the OOM fault-injection test" OFF)
+    if(SYNC_OOM_TEST)
+        sync_add_test(oom_test tests/oom_test.cpp)
+        target_link_options(oom_test PRIVATE
+            -Wl,--wrap=malloc -Wl,--wrap=calloc)
+    endif()
+
     sync_add_test(service_test tests/service_test.cpp)
     target_link_libraries(service_test PRIVATE monocypher)
     target_include_directories(service_test PRIVATE

@@ -9,7 +9,7 @@ cd "$ROOT"
 BUILD=build-cov
 IGN="--ignore-errors=mismatch,source,gcov,unused,empty,negative,inconsistent,corrupt"
 
-cmake -B "$BUILD" -DSYNC_COVERAGE=ON -DSYNC_BUILD_TESTS=ON >/dev/null
+cmake -B "$BUILD" -DSYNC_COVERAGE=ON -DSYNC_BUILD_TESTS=ON -DSYNC_OOM_TEST=ON >/dev/null
 cmake --build "$BUILD" -j"$(nproc)" >/dev/null
 lcov --directory "$BUILD" --zerocounters -q
 
