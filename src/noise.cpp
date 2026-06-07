@@ -214,13 +214,14 @@ bool NoiseChannel::decrypt(const std::string &ct, std::string &pt) {
     if (!done_ || ct.size() < 16) return false;
     size_t blen = ct.size() - 16;
     uint8_t nn[24];
-    nonce24(recv_nonce_++, nn);
+    nonce24(recv_nonce_, nn); /* peek; advance only on a successful auth */
     std::string body(blen, '\0');
     if (!aead_decrypt(recv_k_.data(), nn, nullptr, 0,
                       (const uint8_t *)ct.data(), blen,
                       (const uint8_t *)ct.data() + blen,
                       (uint8_t *)body.data()))
-        return false;
+        return false; /* forged/corrupt frame: do NOT desync the counter */
+    recv_nonce_++;
     pt = body;
     return true;
 }

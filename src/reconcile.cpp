@@ -209,6 +209,9 @@ bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
     } else {
         uint64_t cnt = 0;
         if (!get_varint(p, end, cnt)) return false;
+        /* Each record needs >=1 byte, so a count beyond the remaining buffer is
+         * bogus — reject before reserving/allocating (allocation-DoS guard). */
+        if (cnt > (uint64_t)(end - p)) return false;
         for (uint64_t i = 0; i < cnt; i++) {
             uint64_t rl = 0;
             if (!get_varint(p, end, rl)) return false;
@@ -241,6 +244,7 @@ bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
     const uint8_t *end = buf + len;
     uint64_t nc = 0;
     if (!get_varint(p, end, nc)) return false;
+    if (nc > (uint64_t)(end - p)) return false; /* each cap >=1 byte */
     for (uint64_t i = 0; i < nc; i++) {
         uint64_t cl = 0;
         if (!get_varint(p, end, cl)) return false;
@@ -250,6 +254,7 @@ bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
     }
     uint64_t n = 0;
     if (!get_varint(p, end, n)) return false;
+    if (n > (uint64_t)(end - p)) return false; /* each descriptor >=1 byte */
     for (uint64_t i = 0; i < n; i++) {
         Desc d;
         if (!decode_desc(p, end, d)) return false;
@@ -361,8 +366,14 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
             size_t lo = (size_t)w * chunk, hi = std::min(n, lo + chunk);
             if (lo >= hi) break;
             pool.emplace_back([&decoded, &ok, lo, hi] {
-                for (size_t i = lo; i < hi; i++)
-                    ok[i] = change_sig_ok(decoded[i].view()) ? 1 : 0;
+                /* An exception escaping a std::thread calls std::terminate;
+                 * encode_signing can throw bad_alloc on a huge record. Treat
+                 * any failure as not-verified (fail-closed). */
+                try {
+                    for (size_t i = lo; i < hi; i++)
+                        ok[i] = change_sig_ok(decoded[i].view()) ? 1 : 0;
+                } catch (...) {
+                }
             });
         }
         for (auto &t : pool) t.join();

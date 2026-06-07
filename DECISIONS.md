@@ -647,3 +647,24 @@ One line of rationale per non-obvious choice, newest last.
 - 64 MiB is far above any real reconcile message (the LargeMessages test is
   256 KB; the UDP path is a single ~64 KB datagram). Follow-up noted: the WS
   frame parser and `sync_invite_decode` still lack fuzz targets.
+
+## Security S4: DoS-hardening batch
+
+Three contained fixes against remote denial-of-service:
+
+- **Unbounded wire counts.** `decode_message`/`decode_desc` read a varint
+  count (caps, descriptors, leaf records) up to 2^63 and `emplace_back` per
+  entry, so a few KB of zero-length entries allocated thousands of objects.
+  Each entry needs >=1 byte, so the count is now rejected if it exceeds the
+  remaining buffer — before any allocation. (We still don't `reserve()` on the
+  count, keeping the existing grow-as-bytes-permit guard.)
+- **Parallel-verify worker exception.** `change_sig_ok` -> `encode_signing` can
+  throw `bad_alloc`; an exception escaping a `std::thread` calls
+  `std::terminate`. The worker loop is now wrapped in try/catch (any failure ->
+  not-verified, fail-closed), so a large batch under memory pressure can't crash
+  the process.
+- **Noise receive-nonce desync.** The transport `decrypt` advanced
+  `recv_nonce_` before the auth check, so a single forged/corrupt frame
+  permanently desynced the channel (every later legit frame then failed). It now
+  advances the counter only on a successful decrypt — covered by
+  `Security.ForgedFrameDoesNotDesync`.

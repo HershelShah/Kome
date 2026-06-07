@@ -198,6 +198,34 @@ TEST(Security, TamperDetection) {
     sync_engine_destroy(b);
 }
 
+/* S4: a forged/corrupt frame is rejected WITHOUT advancing the receive counter,
+ * so one injected frame can't permanently wedge the channel. */
+TEST(Security, ForgedFrameDoesNotDesync) {
+    auto sa = seed_from(0x4A), sb = seed_from(0x4B);
+    sync_engine *a = sync_engine_create(sa.data());
+    sync_engine *b = sync_engine_create(sb.data());
+    ke::NoiseChannel ci(true, a->identity);
+    ke::NoiseChannel cr(false, b->identity);
+    ASSERT_TRUE(handshake(ci, cr));
+
+    std::string ct1;
+    ASSERT_TRUE(ci.encrypt("first", ct1));
+    std::string forged = ct1;
+    forged[5] ^= 0x01;
+    std::string junk, pt1;
+    EXPECT_FALSE(cr.decrypt(forged, junk));     /* rejected... */
+    EXPECT_TRUE(cr.decrypt(ct1, pt1));          /* ...next legit frame still ok */
+    EXPECT_EQ(pt1, "first");
+
+    std::string ct2, pt2; /* stream continues in order */
+    ASSERT_TRUE(ci.encrypt("second", ct2));
+    EXPECT_TRUE(cr.decrypt(ct2, pt2));
+    EXPECT_EQ(pt2, "second");
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
+
 /* Begin a session pair and drive them to convergence. */
 static void reconcile(sync_engine *a, sync_engine *b) {
     sync_session *sa = sync_session_begin(a, 1);
