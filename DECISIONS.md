@@ -415,3 +415,22 @@ One line of rationale per non-obvious choice, newest last.
   `32`/`64` literals in `capability.cpp` (and the peer-key copy in
   `connection.cpp`), matching the `(long)SYNC_PUBKEY_LEN` idiom already used in
   `codec.cpp`.
+
+## Shared low-level primitives (audit pass)
+
+- **`src/byteorder.h`** is the single home for fixed-width little-endian
+  (de)serialization (`put_/store_/read_/get_*u32le/u64le`). It replaces the
+  hand-rolled byte loops that had been copied into the codec, the engine's
+  digest, the reconciliation fingerprint, and the capability codec. Big-endian
+  network framing stays with the transports (different concern, different file).
+- **`dup_field` / `free_change_fields`** (codec) own the four malloc'd byte
+  fields of a `sync_change`; both `export`/`sync_changes_free` and
+  `decode`/`free_decoded` now go through them instead of repeating the
+  malloc-copy-or-NULL and four-field-free dance. `dup_field` only ever *sets*
+  its `*oom` flag, so a caller can run several dups and test once.
+- **`sign_existence`** (engine) factors the identical existence-assertion
+  build+sign block that `set` and `delete` each had inline; **`serialize_key`**
+  (reconcile) factors the cell-key serialization that `process_desc` built
+  twice; **`key_bytes`** (engine.hpp) renders a `PubKey` as a map/set key in one
+  place. Pure deduplication — wire formats and digests are byte-identical
+  (verified against the unchanged convergence/fuzz oracles and WASM parity).

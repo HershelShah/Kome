@@ -17,6 +17,11 @@ using SiteId = std::array<uint8_t, SYNC_SITE_ID_LEN>;
 using PubKey = std::array<uint8_t, SYNC_PUBKEY_LEN>;
 using Sig    = std::array<uint8_t, SYNC_SIG_LEN>;
 
+/* A public key rendered as raw bytes, for use as a std::map/std::set key. */
+inline std::string key_bytes(const PubKey &pk) {
+    return std::string(reinterpret_cast<const char *>(pk.data()), pk.size());
+}
+
 /* Hybrid Logical Clock. */
 struct Hlc {
     uint64_t physical = 0;

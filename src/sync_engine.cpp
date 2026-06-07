@@ -12,6 +12,7 @@
 #include <new>
 #include <string>
 
+#include "byteorder.h"
 #include "capability.h"
 #include "codec.h"
 #include "crypto.h"
@@ -82,21 +83,6 @@ std::string to_str(const uint8_t *p, size_t len) {
     return std::string(reinterpret_cast<const char *>(p), len);
 }
 
-/* malloc a copy of s; returns NULL for an empty string (callers treat NULL +
- * len 0 as the empty buffer). Returns false via out==NULL only on OOM of a
- * non-empty copy. */
-uint8_t *dup_bytes(const std::string &s, bool *oom) {
-    *oom = false;
-    if (s.empty()) return nullptr;
-    uint8_t *p = static_cast<uint8_t *>(std::malloc(s.size()));
-    if (!p) {
-        *oom = true;
-        return nullptr;
-    }
-    std::memcpy(p, s.data(), s.size());
-    return p;
-}
-
 /* Fill c->author and c->signature by signing c's canonical content with e. */
 void author_sign(sync_engine *e, sync_change &c) {
     std::memcpy(c.author, e->identity.sign_pk.data(), SYNC_PUBKEY_LEN);
@@ -113,6 +99,22 @@ bool verify_change(const sync_change *c) {
     return ke::verify(c->author, signing.data(), signing.size(), c->signature);
 }
 
+/* Sign the entity's current existence assertion (the caller has already set
+ * en.causal_length) and store the author/signature on the entity. Shared by
+ * the add path (set) and the remove path (delete). */
+void sign_existence(sync_engine *e, const std::string &ns,
+                    const std::string &ent, Entity &en) {
+    sync_change ec;
+    std::memset(&ec, 0, sizeof ec);
+    ec.kind = SYNC_CHANGE_EXISTENCE;
+    ec.ns = (const uint8_t *)ns.data(); ec.ns_len = ns.size();
+    ec.entity = (const uint8_t *)ent.data(); ec.entity_len = ent.size();
+    ec.causal_length = en.causal_length;
+    author_sign(e, ec);
+    std::memcpy(en.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
+    std::memcpy(en.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
+}
+
 /* Emit a diagnostic log line (no record values/keys/namespaces/secrets). */
 void engine_log(sync_engine *e, int level, const char *msg) {
     if (e->log_fn) e->log_fn(e->log_ctx, level, msg);
@@ -121,21 +123,20 @@ void engine_log(sync_engine *e, int level, const char *msg) {
 /* Hash one length-prefixed byte field (LE 64-bit length) into h. */
 void feed(Sha256 &h, const void *p, size_t len) {
     uint8_t lb[8];
-    uint64_t n = (uint64_t)len;
-    for (int i = 0; i < 8; i++) lb[i] = (uint8_t)(n >> (i * 8));
+    store_u64le(lb, (uint64_t)len);
     h.update(lb, 8);
     if (len) h.update(p, len);
 }
 
 void feed_u64(Sha256 &h, uint64_t v) {
     uint8_t b[8];
-    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (i * 8));
+    store_u64le(b, v);
     h.update(b, 8);
 }
 
 void feed_u32(Sha256 &h, uint32_t v) {
     uint8_t b[4];
-    for (int i = 0; i < 4; i++) b[i] = (uint8_t)(v >> (i * 8));
+    store_u32le(b, v);
     h.update(b, 4);
 }
 
@@ -281,15 +282,7 @@ int sync_engine_set(sync_engine *e,
 
         if (!ent.present()) {
             ent.causal_length += 1; /* causal-length add; sign the assertion */
-            sync_change ec;
-            std::memset(&ec, 0, sizeof ec);
-            ec.kind = SYNC_CHANGE_EXISTENCE;
-            ec.ns = (const uint8_t *)nsk.data(); ec.ns_len = nsk.size();
-            ec.entity = (const uint8_t *)entk.data(); ec.entity_len = entk.size();
-            ec.causal_length = ent.causal_length;
-            author_sign(e, ec);
-            std::memcpy(ent.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
-            std::memcpy(ent.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
+            sign_existence(e, nsk, entk, ent);
         }
 
         Register reg;
@@ -341,15 +334,7 @@ int sync_engine_delete(sync_engine *e,
         if (ei->second.present()) {
             Entity &ent = ei->second;
             ent.causal_length += 1; /* remove; sign the new assertion */
-            sync_change ec;
-            std::memset(&ec, 0, sizeof ec);
-            ec.kind = SYNC_CHANGE_EXISTENCE;
-            ec.ns = (const uint8_t *)nsk.data(); ec.ns_len = nsk.size();
-            ec.entity = (const uint8_t *)entk.data(); ec.entity_len = entk.size();
-            ec.causal_length = ent.causal_length;
-            author_sign(e, ec);
-            std::memcpy(ent.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
-            std::memcpy(ent.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
+            sign_existence(e, nsk, entk, ent);
             if (e->store) {
                 e->db_clock++;
                 if (!tx_entity(e, nsk, entk, ent))
@@ -524,9 +509,9 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
                 if (ent.causal_length > 0) {
                     sync_change &c = arr[i++];
                     c.kind = SYNC_CHANGE_EXISTENCE;
-                    c.ns = dup_bytes(nsk, &oom); c.ns_len = nsk.size();
+                    c.ns = dup_field(nsk, &oom); c.ns_len = nsk.size();
                     if (oom) goto fail;
-                    c.entity = dup_bytes(entk, &oom); c.entity_len = entk.size();
+                    c.entity = dup_field(entk, &oom); c.entity_len = entk.size();
                     if (oom) goto fail;
                     c.causal_length = ent.causal_length;
                     std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
@@ -537,13 +522,13 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
                     Register &r = fp.second;
                     sync_change &c = arr[i++];
                     c.kind = SYNC_CHANGE_REGISTER;
-                    c.ns = dup_bytes(nsk, &oom); c.ns_len = nsk.size();
+                    c.ns = dup_field(nsk, &oom); c.ns_len = nsk.size();
                     if (oom) goto fail;
-                    c.entity = dup_bytes(entk, &oom); c.entity_len = entk.size();
+                    c.entity = dup_field(entk, &oom); c.entity_len = entk.size();
                     if (oom) goto fail;
-                    c.field = dup_bytes(fk, &oom); c.field_len = fk.size();
+                    c.field = dup_field(fk, &oom); c.field_len = fk.size();
                     if (oom) goto fail;
-                    c.value = dup_bytes(r.value, &oom); c.value_len = r.value.size();
+                    c.value = dup_field(r.value, &oom); c.value_len = r.value.size();
                     if (oom) goto fail;
                     c.hlc.physical = r.hlc.physical;
                     c.hlc.logical = r.hlc.logical;
@@ -567,12 +552,7 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
 
 void sync_changes_free(sync_change *arr, size_t count) {
     if (!arr) return;
-    for (size_t i = 0; i < count; i++) {
-        std::free(const_cast<uint8_t *>(arr[i].ns));
-        std::free(const_cast<uint8_t *>(arr[i].entity));
-        std::free(const_cast<uint8_t *>(arr[i].field));
-        std::free(const_cast<uint8_t *>(arr[i].value));
-    }
+    for (size_t i = 0; i < count; i++) free_change_fields(arr[i]);
     std::free(arr);
 }
 

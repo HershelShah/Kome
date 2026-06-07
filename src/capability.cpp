@@ -6,6 +6,7 @@
 #include <new>
 #include <set>
 
+#include "byteorder.h"
 #include "codec.h" /* put_varint / get_varint */
 #include "crypto.h"
 #include "storage.h"
@@ -19,7 +20,7 @@ void cap_signing_bytes(const Capability &c, std::string &out) {
     put_varint(out, c.ns.size());
     out.append(c.ns);
     out.push_back((char)c.access);
-    for (int i = 0; i < 8; i++) out.push_back((char)(c.expiry >> (i * 8)));
+    put_u64le(out, c.expiry);
 }
 
 void cap_encode(const Capability &c, std::string &out) {
@@ -39,8 +40,7 @@ bool cap_decode(const uint8_t *buf, size_t len, Capability &out) {
     if (p >= end) return false;
     out.access = *p++;
     if (end - p < (long)(8 + SYNC_SIG_LEN)) return false; /* expiry + sig */
-    out.expiry = 0;
-    for (int i = 0; i < 8; i++) out.expiry |= (uint64_t)p[i] << (i * 8);
+    out.expiry = read_u64le(p);
     p += 8;
     std::memcpy(out.sig.data(), p, SYNC_SIG_LEN);
     return true;
@@ -103,7 +103,7 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
     start.holder = root->issuer;
     start.access = root->access;
     stack.push_back(start);
-    visited.insert(std::string((const char *)root->issuer.data(), SYNC_PUBKEY_LEN));
+    visited.insert(key_bytes(root->issuer));
 
     while (!stack.empty()) {
         Frame f = stack.back();
@@ -120,7 +120,7 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
             /* A delegation cannot widen the holder's access. */
             if ((c.access & ~f.access) != 0) continue;
             if (!usable(c)) continue;
-            std::string subj((const char *)c.subject.data(), SYNC_PUBKEY_LEN);
+            std::string subj = key_bytes(c.subject);
             if (visited.count(subj)) continue;
             visited.insert(subj);
             Frame nf;

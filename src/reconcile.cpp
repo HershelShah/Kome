@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "byteorder.h"
 #include "capability.h"
 #include "codec.h"
 #include "engine.hpp"
@@ -65,6 +66,21 @@ SortKey key_of(const sync_change &c) {
     k.existence = (c.kind == SYNC_CHANGE_EXISTENCE);
     if (!k.existence) k.field.assign((const char *)c.field, c.field_len);
     return k;
+}
+
+/* Compact serialization of a key, used to match an element across peers (the
+ * fingerprint is over content; this identifies the cell). */
+std::string serialize_key(const std::string &ns, const std::string &entity,
+                          bool existence, const std::string &field) {
+    std::string kk;
+    put_varint(kk, ns.size());     kk += ns;
+    put_varint(kk, entity.size()); kk += entity;
+    kk.push_back(existence ? 1 : 0);
+    put_varint(kk, field.size());  kk += field;
+    return kk;
+}
+std::string serialize_key(const SortKey &k) {
+    return serialize_key(k.ns, k.entity, k.existence, k.field);
 }
 
 /* ---- bounds ------------------------------------------------------------ */
@@ -257,8 +273,7 @@ struct sync_session {
         sub256(sum, prefix[lo]);
         Sha256 h;
         uint8_t cnt[8];
-        uint64_t c = (uint64_t)(hi - lo);
-        for (int i = 0; i < 8; i++) cnt[i] = (uint8_t)(c >> (i * 8));
+        store_u64le(cnt, (uint64_t)(hi - lo));
         h.update(cnt, 8);
         h.update(sum.data(), sum.size());
         Hash256 out;
@@ -334,11 +349,9 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
             size_t used = 0;
             if (!decode_record((const uint8_t *)r.data(), r.size(), dc, used))
                 continue;
-            std::string kk;
-            put_varint(kk, dc.ns.size()); kk += dc.ns;
-            put_varint(kk, dc.entity.size()); kk += dc.entity;
-            kk.push_back(dc.kind == SYNC_CHANGE_EXISTENCE ? 1 : 0);
-            put_varint(kk, dc.field.size()); kk += dc.field;
+            std::string kk = serialize_key(dc.ns, dc.entity,
+                                           dc.kind == SYNC_CHANGE_EXISTENCE,
+                                           dc.field);
             Hash256 hh;
             sha256(r.data(), r.size(), hh.data());
             peer[kk] = hh;
@@ -350,11 +363,7 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
         have.hi = d.hi;
         for (size_t i = lo; i < hi; i++) {
             const SortKey &k = s->snap[i].key;
-            std::string kk;
-            put_varint(kk, k.ns.size()); kk += k.ns;
-            put_varint(kk, k.entity.size()); kk += k.entity;
-            kk.push_back(k.existence ? 1 : 0);
-            put_varint(kk, k.field.size()); kk += k.field;
+            std::string kk = serialize_key(k);
             auto it = peer.find(kk);
             if (it == peer.end() || it->second != s->snap[i].hash)
                 have.records.push_back(s->snap[i].bytes);

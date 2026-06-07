@@ -46,6 +46,17 @@ struct DecodedChange {
 bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
                    size_t &consumed);
 
+/* Ownership helpers for a sync_change's four malloc'd byte fields (ns, entity,
+ * field, value), shared by export and decode. */
+
+/* malloc a copy of s; NULL for an empty field. Sets *oom (never clears it) on
+ * allocation failure, so callers can chain several dups and test once. */
+uint8_t *dup_field(const std::string &s, bool *oom);
+
+/* free + null the four byte fields and zero their lengths. Safe on a
+ * zero-initialized change and idempotent. */
+void free_change_fields(sync_change &c);
+
 } // namespace ke
 
 #endif /* SYNC_CODEC_H */

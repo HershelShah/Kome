@@ -5,6 +5,7 @@
 #include <cstring>
 #include <new>
 
+#include "byteorder.h"
 #include "crypto.h"
 
 namespace ke {
@@ -33,31 +34,13 @@ bool get_varint(const uint8_t *&p, const uint8_t *end, uint64_t &v) {
 
 namespace {
 
-void put_u64le(std::string &out, uint64_t v) {
-    for (int i = 0; i < 8; i++) out.push_back((char)(v >> (i * 8)));
-}
-void put_u32le(std::string &out, uint32_t v) {
-    for (int i = 0; i < 4; i++) out.push_back((char)(v >> (i * 8)));
-}
+/* Length-prefixed byte field (varint length + raw bytes). Fixed-width integer
+ * (de)serialization lives in byteorder.h. */
 void put_bytes(std::string &out, const uint8_t *p, size_t len) {
     put_varint(out, len);
     if (len) out.append(reinterpret_cast<const char *>(p), len);
 }
 
-bool get_u64le(const uint8_t *&p, const uint8_t *end, uint64_t &v) {
-    if (end - p < 8) return false;
-    v = 0;
-    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (i * 8);
-    p += 8;
-    return true;
-}
-bool get_u32le(const uint8_t *&p, const uint8_t *end, uint32_t &v) {
-    if (end - p < 4) return false;
-    v = 0;
-    for (int i = 0; i < 4; i++) v |= (uint32_t)p[i] << (i * 8);
-    p += 4;
-    return true;
-}
 bool get_bytes(const uint8_t *&p, const uint8_t *end, std::string &out) {
     uint64_t len = 0;
     if (!get_varint(p, end, len)) return false;
@@ -121,6 +104,26 @@ bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
     return true;
 }
 
+uint8_t *dup_field(const std::string &s, bool *oom) {
+    if (s.empty()) return nullptr;
+    uint8_t *p = static_cast<uint8_t *>(std::malloc(s.size()));
+    if (!p) {
+        *oom = true;
+        return nullptr;
+    }
+    std::memcpy(p, s.data(), s.size());
+    return p;
+}
+
+void free_change_fields(sync_change &c) {
+    std::free(const_cast<uint8_t *>(c.ns));
+    std::free(const_cast<uint8_t *>(c.entity));
+    std::free(const_cast<uint8_t *>(c.field));
+    std::free(const_cast<uint8_t *>(c.value));
+    c.ns = c.entity = c.field = c.value = nullptr;
+    c.ns_len = c.entity_len = c.field_len = c.value_len = 0;
+}
+
 sync_change DecodedChange::view() const {
     sync_change c;
     std::memset(&c, 0, sizeof c);
@@ -174,23 +177,12 @@ int sync_change_decode(const uint8_t *buf, size_t len, sync_change *out,
         std::memcpy(out->signature, d.signature.data(), SYNC_SIG_LEN);
 
         /* Allocate owned copies (NULL for empty, freed by free_decoded). */
-        auto dup = [](const std::string &s, const uint8_t **dst,
-                      size_t *dlen) -> bool {
-            *dlen = s.size();
-            if (s.empty()) {
-                *dst = nullptr;
-                return true;
-            }
-            uint8_t *m = (uint8_t *)std::malloc(s.size());
-            if (!m) return false;
-            std::memcpy(m, s.data(), s.size());
-            *dst = m;
-            return true;
-        };
-        if (!dup(d.ns, &out->ns, &out->ns_len) ||
-            !dup(d.entity, &out->entity, &out->entity_len) ||
-            !dup(d.field, &out->field, &out->field_len) ||
-            !dup(d.value, &out->value, &out->value_len)) {
+        bool oom = false;
+        out->ns = dup_field(d.ns, &oom);         out->ns_len = d.ns.size();
+        out->entity = dup_field(d.entity, &oom); out->entity_len = d.entity.size();
+        out->field = dup_field(d.field, &oom);   out->field_len = d.field.size();
+        out->value = dup_field(d.value, &oom);   out->value_len = d.value.size();
+        if (oom) {
             sync_change_free_decoded(out);
             return SYNC_ERR_NOMEM;
         }
@@ -218,13 +210,7 @@ int sync_change_sign(sync_change *c, const uint8_t *seed) {
 }
 
 void sync_change_free_decoded(sync_change *c) {
-    if (!c) return;
-    std::free(const_cast<uint8_t *>(c->ns));
-    std::free(const_cast<uint8_t *>(c->entity));
-    std::free(const_cast<uint8_t *>(c->field));
-    std::free(const_cast<uint8_t *>(c->value));
-    c->ns = c->entity = c->field = c->value = nullptr;
-    c->ns_len = c->entity_len = c->field_len = c->value_len = 0;
+    if (c) free_change_fields(*c);
 }
 
 } // extern "C"
