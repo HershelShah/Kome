@@ -20,6 +20,11 @@ namespace {
 /* Per-recv read chunk; one syscall fills up to this many bytes. */
 constexpr size_t kRecvChunk = 65536;
 
+/* Max length-prefixed frame; a peer's 32-bit length is otherwise honored up to
+ * 4 GiB, letting one prefix make us buffer unbounded bytes. 64 MiB is well above
+ * any real reconcile message. */
+constexpr uint32_t kMaxFrameBytes = 64u << 20;
+
 void set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -91,6 +96,7 @@ bool TcpStream::send_frame(const std::string &msg) {
 bool TcpStream::extract(std::string &out) {
     if (rx_.size() < 4) return false;
     uint32_t len = read_u32le((const uint8_t *)rx_.data());
+    if (len > kMaxFrameBytes) { close(); return false; } /* oversized: drop */
     if (rx_.size() < 4 + (size_t)len) return false;
     out.assign(rx_.data() + 4, len);
     rx_.erase(0, 4 + (size_t)len);

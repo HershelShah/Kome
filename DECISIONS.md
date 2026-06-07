@@ -633,3 +633,17 @@ One line of rationale per non-obvious choice, newest last.
 - Covered by `Storage.ForgedRowRejectedOnLoad` (a zeroed field sig → field
   dropped but existence intact; a zeroed existence sig → entity not present;
   legit rows survive).
+
+## Security S3: bound network frame sizes
+
+- WebSocket `recv_frame` honored a peer-controlled 64-bit frame length: the
+  `hdr+masklen+len` "is it all buffered yet?" check overflowed `size_t`, passed,
+  then `std::string payload(ptr, len)` allocated ~2^64 → remote crash/over-read.
+  And fragmented-message reassembly (`assembling_ += payload`) was unbounded.
+  Both now cap at `kMaxMessageBytes` (64 MiB) and drop the connection on
+  violation (rejecting *before* the size math, so it can't overflow).
+- TCP `extract` honored a 32-bit length up to 4 GiB, letting one prefix make us
+  buffer unbounded bytes; now capped at `kMaxFrameBytes` (64 MiB) → drop.
+- 64 MiB is far above any real reconcile message (the LargeMessages test is
+  256 KB; the UDP path is a single ~64 KB datagram). Follow-up noted: the WS
+  frame parser and `sync_invite_decode` still lack fuzz targets.

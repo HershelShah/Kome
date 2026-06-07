@@ -12,6 +12,13 @@ namespace {
 /* Cap the HTTP upgrade handshake so a peer can't grow it without bound. */
 constexpr size_t kMaxHandshakeBytes = 1u << 20;
 
+/* Cap a single frame's payload and a reassembled (fragmented) message. A peer
+ * controls the 64-bit frame length, so without this the `hdr+masklen+len` size
+ * math overflows (passing the buffered-enough check, then allocating ~2^64) and
+ * continuation frames grow the reassembly buffer without bound. 64 MiB is well
+ * above any real reconcile message (the UDP path is one ~64 KB datagram). */
+constexpr size_t kMaxMessageBytes = 64u << 20;
+
 /* ---- SHA-1 (for the Sec-WebSocket-Accept handshake only) --------------- */
 struct Sha1 {
     uint32_t h[5];
@@ -181,6 +188,8 @@ bool WsStream::recv_frame(std::string &out, int timeout_ms) {
                 len = 0; for (int i = 0; i < 8; i++) len = (len<<8) | p[2+i];
                 hdr = 10;
             }
+            /* Reject before the size math can overflow / over-allocate. */
+            if (len > kMaxMessageBytes) { tcp.close(); rx_.clear(); return false; }
             size_t masklen = masked ? 4 : 0;
             if (rx_.size() < hdr + masklen + len) goto need;
             const uint8_t *mk = p + hdr;
@@ -204,8 +213,14 @@ bool WsStream::recv_frame(std::string &out, int timeout_ms) {
             if (op == 0xA) continue;               /* pong: ignore */
 
             /* data: 0x1 text, 0x2 binary, 0x0 continuation */
-            if (op == 0x0) { assembling_ += payload; }
-            else { assembling_ = payload; assembling_op_ = op; in_message_ = true; }
+            if (op == 0x0) {
+                if (assembling_.size() + payload.size() > kMaxMessageBytes) {
+                    tcp.close(); rx_.clear(); assembling_.clear(); return false;
+                }
+                assembling_ += payload;
+            } else {
+                assembling_ = payload; assembling_op_ = op; in_message_ = true;
+            }
             if (fin && in_message_) {
                 out.swap(assembling_);
                 assembling_.clear();
