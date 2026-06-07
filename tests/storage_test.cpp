@@ -108,6 +108,46 @@ TEST(Storage, ReopenIdentity) {
     sync_engine_destroy(e2);
 }
 
+/* S2: rows are NOT trusted just for being on disk. A crafted/swapped DB file
+ * with a corrupted signature must be dropped on load, not laundered into the
+ * trusted (and re-gossiped) set. */
+TEST(Storage, ForgedRowRejectedOnLoad) {
+    TempDir dir;
+    std::string db = dir.file("forged.db");
+    auto site = site_from(0x05);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "ns", "keep", "f", "good");      /* stays valid */
+    cluster::put(e, "ns", "tamper", "f", "secret");  /* field sig corrupted */
+    cluster::put(e, "ns", "ghost", "f", "boo");       /* existence sig corrupted */
+    sync_engine_destroy(e);
+
+    /* Corrupt signatures directly in the file (zeroblob won't verify). */
+    sqlite3 *raw = nullptr;
+    ASSERT_EQ(sqlite3_open(db.c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                  "UPDATE field SET sig = zeroblob(64) "
+                  "WHERE entity = CAST('tamper' AS BLOB)",
+                  nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                  "UPDATE entity SET ex_sig = zeroblob(64) "
+                  "WHERE entity = CAST('ghost' AS BLOB)",
+                  nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(raw);
+
+    sync_engine *e2 = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e2, nullptr);
+    EXPECT_EQ(cluster::get(e2, "ns", "keep", "f"), "good")
+        << "legit signed row must survive";
+    EXPECT_TRUE(cluster::exists(e2, "ns", "tamper")); /* existence intact */
+    EXPECT_EQ(cluster::get(e2, "ns", "tamper", "f"), "<none>")
+        << "field with a forged signature must be dropped";
+    EXPECT_FALSE(cluster::exists(e2, "ns", "ghost"))
+        << "entity with a forged existence signature must be dropped";
+    sync_engine_destroy(e2);
+}
+
 /* ---- T2.2 Convergence with persistence (reopen mid-exchange) ----------- */
 TEST(Storage, ConvergenceWithPersistence) {
     TempDir dir;

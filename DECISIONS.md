@@ -615,3 +615,21 @@ One line of rationale per non-obvious choice, newest last.
   the proof construction/rejection itself is covered by security_test.
 - Scope: the library path (`connect_and_sync`). The `meshnode`/`node` *demo*
   binaries hand-roll their own Noise loop and remain demo-only.
+
+## Security S2: re-verify record signatures on storage load
+
+- `Storage::load` trusted entity/field rows because they were on disk — it
+  copied `author`/`sig`/`value` straight into engine state with no signature
+  check (the capability load already re-verified via `cap_sig_valid`). A
+  crafted/swapped/shared DB file could thus inject forged records that bypass
+  the signature gate the network path enforces, and those rows were then
+  re-emitted into the reconcile snapshot and gossiped as authentic.
+- Load now re-verifies every signed row through `record_sig_ok` (rebuild the
+  canonical signing bytes, `verify` against the stored author/sig) and drops
+  any that fail — existence assertions when `causal_length>0`, every field
+  register. `cl==0` entity rows carry no signed assertion (and are never emitted
+  as existence elements), so they need no check. Same fail-closed posture as the
+  capability load.
+- Covered by `Storage.ForgedRowRejectedOnLoad` (a zeroed field sig → field
+  dropped but existence intact; a zeroed existence sig → entity not present;
+  legit rows survive).

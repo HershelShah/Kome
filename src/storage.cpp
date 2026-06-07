@@ -4,12 +4,23 @@
 #include <cstring>
 
 #include "capability.h"
+#include "codec.h"
 #include "crypto.h"
 #include "sqlite3.h"
 
 namespace ke {
 
 namespace {
+
+/* Re-verify a record's signature on load. Persisted rows are NOT trusted just
+ * because they're on disk — a crafted/swapped DB file could otherwise inject
+ * forged records that bypass the signature gate the network path enforces (and
+ * be re-gossiped as authentic). Same defense the capability load already uses. */
+bool record_sig_ok(const sync_change &c) {
+    std::string signing;
+    encode_signing(c, signing);
+    return verify(c.author, signing.data(), signing.size(), c.signature);
+}
 
 /* Bind a (possibly empty, possibly NUL-containing) byte string as a BLOB. */
 int bind_blob(sqlite3_stmt *st, int idx, const std::string &s) {
@@ -248,13 +259,30 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     while (sqlite3_step(st) == SQLITE_ROW) {
         std::string ns = col_blob(st, 0);
         std::string en = col_blob(st, 1);
-        Entity &ent = e->ns[ns][en];
-        ent.causal_length = (uint64_t)sqlite3_column_int64(st, 2);
+        uint64_t cl = (uint64_t)sqlite3_column_int64(st, 2);
         std::string a = col_blob(st, 3), s = col_blob(st, 4);
-        if (a.size() == SYNC_PUBKEY_LEN)
-            std::memcpy(ent.ex_author.data(), a.data(), SYNC_PUBKEY_LEN);
-        if (s.size() == SYNC_SIG_LEN)
-            std::memcpy(ent.ex_sig.data(), s.data(), SYNC_SIG_LEN);
+        if (a.size() != SYNC_PUBKEY_LEN || s.size() != SYNC_SIG_LEN) continue;
+
+        /* A present/tombstoned entity (cl>0) carries a signed existence
+         * assertion — re-verify it; drop the row if forged. (cl==0 rows hold no
+         * signed assertion and only persist a not-present entity for its
+         * fields, which are verified below.) */
+        if (cl > 0) {
+            sync_change c;
+            std::memset(&c, 0, sizeof c);
+            c.kind = SYNC_CHANGE_EXISTENCE;
+            c.ns = (const uint8_t *)ns.data(); c.ns_len = ns.size();
+            c.entity = (const uint8_t *)en.data(); c.entity_len = en.size();
+            c.causal_length = cl;
+            std::memcpy(c.author, a.data(), SYNC_PUBKEY_LEN);
+            std::memcpy(c.signature, s.data(), SYNC_SIG_LEN);
+            if (!record_sig_ok(c)) continue; /* forged existence assertion */
+        }
+
+        Entity &ent = e->ns[ns][en];
+        ent.causal_length = cl;
+        std::memcpy(ent.ex_author.data(), a.data(), SYNC_PUBKEY_LEN);
+        std::memcpy(ent.ex_sig.data(), s.data(), SYNC_SIG_LEN);
     }
     sqlite3_finalize(st);
 
@@ -276,10 +304,24 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         r.hlc.physical = (uint64_t)sqlite3_column_int64(st, 4);
         r.hlc.logical = (uint32_t)sqlite3_column_int64(st, 5);
         std::string a = col_blob(st, 6), s = col_blob(st, 7);
-        if (a.size() == SYNC_PUBKEY_LEN)
-            std::memcpy(r.author.data(), a.data(), SYNC_PUBKEY_LEN);
-        if (s.size() == SYNC_SIG_LEN)
-            std::memcpy(r.sig.data(), s.data(), SYNC_SIG_LEN);
+        if (a.size() != SYNC_PUBKEY_LEN || s.size() != SYNC_SIG_LEN) continue;
+        std::memcpy(r.author.data(), a.data(), SYNC_PUBKEY_LEN);
+        std::memcpy(r.sig.data(), s.data(), SYNC_SIG_LEN);
+
+        /* Every field carries a signed register — re-verify; drop if forged. */
+        sync_change c;
+        std::memset(&c, 0, sizeof c);
+        c.kind = SYNC_CHANGE_REGISTER;
+        c.ns = (const uint8_t *)ns.data(); c.ns_len = ns.size();
+        c.entity = (const uint8_t *)en.data(); c.entity_len = en.size();
+        c.field = (const uint8_t *)fl.data(); c.field_len = fl.size();
+        c.value = (const uint8_t *)r.value.data(); c.value_len = r.value.size();
+        c.hlc.physical = r.hlc.physical;
+        c.hlc.logical = r.hlc.logical;
+        std::memcpy(c.author, a.data(), SYNC_PUBKEY_LEN);
+        std::memcpy(c.signature, s.data(), SYNC_SIG_LEN);
+        if (!record_sig_ok(c)) continue; /* forged register */
+
         e->ns[ns][en].fields[fl] = std::move(r);
     }
     sqlite3_finalize(st);
