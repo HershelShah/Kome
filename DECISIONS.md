@@ -255,3 +255,25 @@ One line of rationale per non-obvious choice, newest last.
   seeds).
 - Smoke runs of all eight (15-30s each here) executed tens of millions of
   inputs total with zero findings.
+
+## M5 doables — services, invites, connection manager (§4/§7 too)
+
+- **LICENSE/§7**: MIT for engine code, CC0 for docs, vendored deps keep theirs.
+- **Logging/§4**: per-engine `sync_engine_set_logger` (off by default); messages
+  are generic (apply-rejection reasons) and never include values/keys/namespaces.
+- **Invites**: `sync_invite_encode/decode` carry peer pubkey + rendezvous address
+  + optional capability (no public DHT).
+- **Relay/rendezvous daemons**: the blind relay and a rendezvous registry now
+  have UDP request/reply protocols and standalone daemons (`relayd`,
+  `rendezvousd`); loopback tests cover store-and-forward and register/lookup.
+- **Connection manager**: `connect_and_sync` runs Noise + reliability + reconcile
+  over a pluggable `PeerTransport` (Direct UDP or Relay), and `ConnectionManager`
+  tries direct then falls back to relay. For a *one-shot* sync, "done" means
+  **quiesced** (handshake complete, session started, reliable link drained, no
+  activity) — not "produced an empty reply", which would hang the side that
+  sends the terminal records (its last output is non-empty and the settled peer
+  stops pumping it). On a reliable link a lull only occurs once the exchange is
+  complete, so this can't settle mid-protocol.
+- **Still environment-bound**: T5.9 IPv6, real kernel-NAT hole punching, and a
+  true cross-network run need a real multi-host setup; the components above are
+  validated on localhost.

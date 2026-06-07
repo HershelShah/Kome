@@ -62,6 +62,11 @@ Legend: test file — `c`=convergence, `r`=reconcile, `sec`=security,
 | Reconnection after a network/IP change | net: ReconnectionResumesSync |
 | Lossy/reordering/duplicating datagram link | net: ReliabilityOverLossyLink |
 | **Multi-process chaos: SIGKILL + restart real daemons mid-gossip** | tests/chaos_test.sh (real processes; durable; converges, no data loss) |
+| Relay/rendezvous daemons (UDP services) | service: RelayLoopback / RendezvousLoopback |
+| Connect-and-sync over direct UDP / over relay | connection: DirectPath / RelayPath |
+| Connection manager direct->relay fallback | connection: ManagerRelayFallback |
+| Invite encode/decode (discovery) | sec: InviteRoundTrip |
+| Optional logging hook (no secrets leaked) | sec: LoggerHook |
 
 ## Liveness / concurrency
 
