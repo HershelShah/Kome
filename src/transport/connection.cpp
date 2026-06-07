@@ -23,7 +23,9 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
     NoiseChannel chan(initiator, e->identity);
     ReliableLink link;
     sync_session *sess = nullptr;
-    bool kicked = false;
+    bool proof_sent = false;   /* our signed identity proof sent (once) */
+    bool peer_ok = false;      /* peer's identity proof verified */
+    uint8_t peer_pk[SYNC_PUBKEY_LEN]{};
 
     /* Step the reconcile session with in[0,in_len) and, if it produced a reply,
      * encrypt it onto the reliable link. (sync_free(nullptr) is a no-op.) */
@@ -39,11 +41,16 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
         sync_free(o);
     };
 
-    auto kick = [&]() {
-        if (kicked) return;
-        kicked = true;
-        sess = sync_session_begin(e, 1); /* null on OOM: pump is a no-op */
-        pump(nullptr, 0);
+    /* The Noise XX handshake authenticates only the X25519 static. Bind the
+     * channel to our long-term EdDSA identity by signing the unique handshake
+     * transcript and sending it as the first post-handshake message (once). */
+    auto send_proof = [&]() {
+        if (proof_sent || !chan.done()) return;
+        std::string proof, ct;
+        if (chan.make_identity_proof(proof) && chan.encrypt(proof, ct)) {
+            link.send(ct);
+            proof_sent = true;
+        }
     };
 
     if (initiator) {
@@ -55,9 +62,9 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
 
     uint64_t deadline = now_ms_mono() + (uint64_t)total_timeout_ms;
     int quiet = 0;
-    bool ok = false;
+    bool ok = false, failed = false;
 
-    while (now_ms_mono() < deadline) {
+    while (!failed && now_ms_mono() < deadline) {
         uint64_t now = now_ms_mono();
 
         std::vector<std::string> dgs;
@@ -74,23 +81,38 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
                 if (!chan.done()) {
                     std::string out;
                     bool done = false;
-                    chan.step(msg, out, done);
+                    if (!chan.step(msg, out, done)) { failed = true; break; }
                     if (!out.empty()) link.send(out);
-                    if (chan.done() && initiator) kick();
+                    if (chan.done()) send_proof();
                 } else {
-                    if (!sess && !(sess = sync_session_begin(e, 0))) continue;
                     std::string pt;
                     if (!chan.decrypt(msg, pt)) continue;
-                    pump((const uint8_t *)pt.data(), pt.size());
+                    if (!peer_ok) {
+                        /* The first post-handshake message MUST be the peer's
+                         * identity proof. A bad/absent proof => MITM, forgery,
+                         * or a peer skipping authentication => abort the sync. */
+                        if (!chan.verify_identity_proof(pt, peer_pk)) {
+                            failed = true;
+                            break;
+                        }
+                        peer_ok = true;
+                        /* Reconcile read-scoped to the authenticated peer, so a
+                         * peer only receives namespaces it may read. */
+                        sess = sync_session_begin_scoped(e, initiator ? 1 : 0,
+                                                         peer_pk);
+                        if (initiator) pump(nullptr, 0); /* send first FP */
+                    } else {
+                        pump((const uint8_t *)pt.data(), pt.size());
+                    }
                 }
             }
         }
 
-        /* Quiesced: handshake done, reconcile started, link drained, and no
-         * activity for a while. (On a reliable localhost link, a lull only
-         * happens once the exchange is complete; a lost message keeps the link
-         * non-idle, so we won't settle mid-protocol.) */
-        bool settled = chan.done() && sess != nullptr && link.idle();
+        /* Quiesced: peer authenticated, reconcile started, link drained, and no
+         * activity for a while. We never settle before the peer's identity is
+         * verified (sess stays null until then), so an unauthenticated peer
+         * cannot complete a sync. */
+        bool settled = peer_ok && sess != nullptr && link.idle();
         if (!work && settled) {
             if (++quiet > 5) { ok = true; break; }
         } else {
@@ -99,7 +121,7 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
     }
 
     if (sess) sync_session_end(sess);
-    return ok;
+    return ok && !failed;
 }
 
 ConnResult ConnectionManager::sync_with(const uint8_t peer_pk[32],

@@ -62,7 +62,46 @@ TEST(Connection, DirectPath) {
     sync_engine_destroy(a); sync_engine_destroy(b);
 }
 
-/* ---- Relay path (live encrypted reconcile through the relay) ------------ */
+/* ---- S1: identity-bound channel enforces read scoping ------------------- */
+/* A owns namespace "secret"; an authenticated peer with no read delegation must
+ * NOT receive it over connect_and_sync, while an open namespace still syncs.
+ * Pre-fix the live path used an unscoped session and shipped every namespace. */
+TEST(Connection, ReadScopingEnforcedOverTransport) {
+    sync_engine *a = make(1), *b = make(2);
+
+    sync_capability *root =
+        sync_capability_root(a, "secret", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(a, root), SYNC_OK); /* A owns "secret" */
+    sync_capability_free(root);
+    ASSERT_EQ(sync_engine_set(a, B(std::string("secret")), 6, B(std::string("s1")),
+                              2, B(std::string("f")), 1, B(std::string("v")), 1),
+              SYNC_OK);
+    ASSERT_EQ(sync_engine_set(a, B(std::string("pub")), 3, B(std::string("p1")), 2,
+                              B(std::string("f")), 1, B(std::string("v")), 1),
+              SYNC_OK); /* open namespace */
+
+    UdpSocket sa, sb;
+    ASSERT_TRUE(sa.open("127.0.0.1", 0));
+    ASSERT_TRUE(sb.open("127.0.0.1", 0));
+    DirectTransport ta; ta.sock = &sa; ta.peer = sb.local();
+    DirectTransport tb; tb.sock = &sb; tb.peer = sa.local();
+
+    std::atomic<bool> ra{false}, rb{false};
+    std::thread A([&] { ra = connect_and_sync(a, ta, true, 5000); });
+    std::thread Bt([&] { rb = connect_and_sync(b, tb, false, 5000); });
+    A.join(); Bt.join();
+    EXPECT_TRUE(ra.load());
+    EXPECT_TRUE(rb.load());
+
+    int sec = 0, pub = 0;
+    sync_engine_exists(b, B(std::string("secret")), 6, B(std::string("s1")), 2, &sec);
+    sync_engine_exists(b, B(std::string("pub")), 3, B(std::string("p1")), 2, &pub);
+    EXPECT_EQ(sec, 0) << "read-scoping bypassed: peer received a restricted namespace";
+    EXPECT_EQ(pub, 1) << "open namespace should have synced";
+
+    sync_engine_destroy(a); sync_engine_destroy(b);
+}
 TEST(Connection, RelayPath) {
     UdpSocket server;
     ASSERT_TRUE(server.open("127.0.0.1", 0));

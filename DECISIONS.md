@@ -593,3 +593,25 @@ One line of rationale per non-obvious choice, newest last.
   churn; the cached gossip path (ch.3) is unchanged. Recorded a follow-up in
   docs/PERF.md: the per-element SHA-256 (~35% of the cold build) could move to
   BLAKE2b (~4×), but that shifts the on-wire fingerprint and needs versioning.
+
+## Security S1: bind the live channel to identity + enforce read scoping
+
+- The Noise XX handshake authenticates only the X25519 static key. The EdDSA
+  identity-proof machinery (`make/verify_identity_proof`, signing the handshake
+  transcript) existed but was only exercised in tests — `connect_and_sync` used
+  the **unscoped** `sync_session_begin` and never verified the peer. Result: a
+  peer that completed a handshake received *every* namespace, so capability read
+  scoping was silently dead on the live path, and the far end's identity was
+  unbound.
+- `connect_and_sync` now, immediately after the handshake completes, sends its
+  signed identity proof as the first encrypted message and requires the peer's
+  proof as the first message it receives; a bad/absent proof aborts the sync
+  (fail-closed — the session is never created, so it can't settle). The proof is
+  bound to the unique transcript, so a relay-MITM can't forward A's proof onto
+  its own channel to B. The verified peer signing key then drives
+  `sync_session_begin_scoped`, so a peer only receives namespaces it may read.
+- Covered by `Connection.ReadScopingEnforcedOverTransport` (an authenticated
+  peer with no read delegation gets the open namespace but not the owned one);
+  the proof construction/rejection itself is covered by security_test.
+- Scope: the library path (`connect_and_sync`). The `meshnode`/`node` *demo*
+  binaries hand-roll their own Noise loop and remain demo-only.
