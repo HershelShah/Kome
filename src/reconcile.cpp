@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -484,6 +485,14 @@ void emit_element(const sync_change &c, const std::string &nsk,
 bool build_snapshot(sync_engine *e, const uint8_t *peer,
                     std::vector<Element> &out) {
     static const std::string kEmpty;
+    /* Reserve exactly: one element per present-or-tombstoned entity + one per
+     * field, so the push_backs below never regrow (and move) the vector. */
+    size_t count = 0;
+    for (const auto &np : e->ns)
+        for (const auto &ep : np.second)
+            count += (ep.second.causal_length > 0 ? 1 : 0) + ep.second.fields.size();
+    out.reserve(count);
+
     for (const auto &np : e->ns) {
         const std::string &nsk = np.first;
         if (peer && !cap_authorize_read(e, peer, nsk))
@@ -520,9 +529,13 @@ bool build_snapshot(sync_engine *e, const uint8_t *peer,
             }
         }
     }
-    std::sort(out.begin(), out.end(), [](const Element &a, const Element &b) {
-        return key_cmp(a.key, b.key) < 0;
-    });
+    /* No sort: std::map yields (ns, entity) ascending and fields ascending, and
+     * we emit each entity's existence element before its registers — which is
+     * exactly SortKey order (existence sorts before registers). Checked in debug. */
+    assert(std::is_sorted(out.begin(), out.end(),
+                          [](const Element &a, const Element &b) {
+                              return key_cmp(a.key, b.key) < 0;
+                          }));
     return true;
 }
 

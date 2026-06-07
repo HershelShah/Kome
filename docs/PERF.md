@@ -155,14 +155,22 @@ freed right after re-encoding.
 - **`add256`/`sub256` work 64-bit limbs at a time** (4 iterations, not 32) via
   the LE byte helpers — portable (single load/store on LE, bswap on BE),
   byte-identical, ~8× fewer iterations on the prefix-sum build.
+- **No sort in the snapshot build.** `std::map` already yields `(ns, entity)`
+  and fields ascending, and we emit each entity's existence element before its
+  registers — exactly `SortKey` order. The `std::sort` (≈7% of the cold build:
+  `key_cmp` string compares + moving large `Element`s) is gone; a debug
+  `assert(is_sorted)` guards the invariant.
+- **`reserve` the snapshot vector** to its exact element count (one counting
+  pass over the maps) so the `push_back`s never regrow/move it.
 
 | Case | before | after | |
 |------|-------:|------:|--|
-| cold `session_begin` (rebuild) N=4096 | 11.3 ms | 9.9 ms | ~12%, and far less allocator churn |
+| cold `session_begin` (rebuild) N=4096 | 11.3 ms | **8.2 ms** | ~28% (export-bypass + no-sort + reserve) |
+| cold `session_begin` (rebuild) N=1024 | 2.68 ms | 2.02 ms | ~25% |
 
 This is the *cold* path (first sync after a write); the cached gossip path
-(chapter 3) is untouched. Modest in wall-time but it removes the per-record
-allocation/copy overhead and decouples reconciliation from the public export.
+(chapter 3) is untouched. The remainder is now ~63% per-element SHA-256 — see
+backlog item 7 (BLAKE2b, version-gated).
 
 ## Optimization backlog (data-driven, in priority order)
 
