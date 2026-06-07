@@ -277,3 +277,24 @@ One line of rationale per non-obvious choice, newest last.
 - **Still environment-bound**: T5.9 IPv6, real kernel-NAT hole punching, and a
   true cross-network run need a real multi-host setup; the components above are
   validated on localhost.
+
+## Transport independence (TCP parity)
+
+- **The sync stack is transport-agnostic.** Engine, reconcile session, Noise
+  channel, reliability layer, and `connect_and_sync` operate on opaque bytes via
+  the `PeerTransport` (`send`/`recv`) seam. UDP is one adapter; TCP is another.
+- **`src/transport/tcp.{h,cpp}`** adds a loopback-TCP stream with length-prefix
+  framing + reassembly (the one TCP-specific bit: a stream isn't message-
+  delimited). It presents the same datagram-shaped interface, so the existing
+  stack runs over it unchanged. `transport_parity_test` runs six scenarios
+  (basic converge, conflict, delete-vs-edit, binary value, many entities,
+  empty-vs-full) over **both UDP and TCP** with identical assertions —
+  TSan- and ASan-clean — proving every transport-agnostic path works over TCP.
+- **Known boundary the exercise surfaced:** the UDP adapter sends each reconcile
+  message as a single datagram, so it is capped at the ~64 KB UDP limit. A large
+  value or a big empty-vs-full `HAVE` batch exceeds that and only works over a
+  stream transport (TCP). `TransportTcp.LargeMessages` syncs a 256 KB value +
+  1500 records over TCP to demonstrate this. Lifting the UDP cap would require
+  message fragmentation in the reliability layer (not built; TCP is the answer
+  for large payloads). Over a reliable transport `ReliableLink` is redundant but
+  harmless (no loss ⇒ no retransmits), which the parity tests also confirm.

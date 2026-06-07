@@ -121,6 +121,17 @@ random-mesh topologies.
 
 Non-obvious choices are recorded in [`DECISIONS.md`](DECISIONS.md).
 
+## Transport independence
+
+The sync stack is transport-agnostic: the engine, reconciliation session, Noise
+channel, reliability layer, and `connect_and_sync` all work on opaque bytes via
+a `send`/`recv` seam, so the library runs over **any** connection — UDP, TCP,
+BLE, WebSocket, a pipe. `transport_parity_test` runs the same scenarios over
+both UDP and TCP (`src/transport/tcp.*` adds length-prefix framing) with
+identical assertions, TSan- and ASan-clean. One boundary: the UDP adapter sends
+each message as a datagram (~64 KB cap); large payloads need a stream transport
+like TCP (`TransportTcp.LargeMessages` syncs a 256 KB value over TCP).
+
 ## Threading contract
 
 A single `sync_engine` (or `sync_session`) is **not** internally synchronized:

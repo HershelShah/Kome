@@ -61,6 +61,7 @@ set(SYNC_SOURCES
     src/transport/relay.cpp
     src/transport/rendezvous.cpp
     src/transport/connection.cpp
+    src/transport/tcp.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -187,6 +188,11 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(connection_test tests/connection_test.cpp)
     target_link_libraries(connection_test PRIVATE monocypher)
     target_include_directories(connection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+    sync_add_test(transport_parity_test tests/transport_parity_test.cpp)
+    target_link_libraries(transport_parity_test PRIVATE monocypher Threads::Threads)
+    target_include_directories(transport_parity_test PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 endif()
 
