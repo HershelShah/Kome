@@ -82,15 +82,6 @@ int key_cmp(const SortKey &a, const SortKey &b) {
     return 0;
 }
 
-SortKey key_of(const sync_change &c) {
-    SortKey k;
-    k.ns.assign((const char *)c.ns, c.ns_len);
-    k.entity.assign((const char *)c.entity, c.entity_len);
-    k.existence = (c.kind == SYNC_CHANGE_EXISTENCE);
-    if (!k.existence) k.field.assign((const char *)c.field, c.field_len);
-    return k;
-}
-
 /* Compact serialization of a key, used to match an element across peers (the
  * fingerprint is over content; this identifies the cell). */
 std::string serialize_key(const std::string &ns, const std::string &entity,
@@ -115,20 +106,32 @@ struct Bound {
 
 /* ---- 256-bit combinable fingerprint ------------------------------------ */
 
+/* acc/x are a 256-bit little-endian integer; add/subtract mod 2^256. Done four
+ * 64-bit limbs at a time (read_/store_u64le compile to a single load/store on
+ * little-endian, a bswap on big-endian) instead of 32 byte steps — same bytes
+ * out, endianness-independent, ~8x fewer iterations on the prefix-sum build. */
 void add256(Hash256 &acc, const Hash256 &x) {
-    uint16_t carry = 0;
-    for (int i = 0; i < 32; i++) {
-        uint16_t s = (uint16_t)acc[i] + x[i] + carry;
-        acc[i] = (uint8_t)s;
-        carry = s >> 8;
+    uint64_t carry = 0;
+    for (int i = 0; i < 32; i += 8) {
+        uint64_t a = read_u64le(acc.data() + i), b = read_u64le(x.data() + i);
+        uint64_t s = a + b;
+        uint64_t c = (s < a) ? 1 : 0; /* a+b overflowed */
+        s += carry;
+        c += (s < carry) ? 1 : 0; /* adding the incoming carry overflowed */
+        store_u64le(acc.data() + i, s);
+        carry = c;
     }
 }
 void sub256(Hash256 &acc, const Hash256 &x) {
-    int borrow = 0;
-    for (int i = 0; i < 32; i++) {
-        int v = (int)acc[i] - x[i] - borrow;
-        if (v < 0) { v += 256; borrow = 1; } else borrow = 0;
-        acc[i] = (uint8_t)v;
+    uint64_t borrow = 0;
+    for (int i = 0; i < 32; i += 8) {
+        uint64_t a = read_u64le(acc.data() + i), b = read_u64le(x.data() + i);
+        uint64_t d = a - b;
+        uint64_t bo = (a < b) ? 1 : 0; /* a-b underflowed */
+        uint64_t d2 = d - borrow;
+        bo += (d < borrow) ? 1 : 0; /* subtracting the incoming borrow underflowed */
+        store_u64le(acc.data() + i, d2);
+        borrow = bo;
     }
 }
 
@@ -456,27 +459,67 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
 
 namespace {
 
+/* Append the element for one change (key + canonical bytes + hash) to out. The
+ * change borrows the engine's strings; only the Element's key/bytes are copied. */
+void emit_element(const sync_change &c, const std::string &nsk,
+                  const std::string &entk, const std::string &fk, bool existence,
+                  std::vector<Element> &out) {
+    Element el;
+    el.key.ns = nsk;
+    el.key.entity = entk;
+    el.key.existence = existence;
+    if (!existence) el.key.field = fk;
+    encode_record(c, el.bytes);
+    sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
+    out.push_back(std::move(el));
+}
+
 /* Snapshot the engine as sorted elements with per-element hashes. Records in
  * namespaces peer may not read are excluded (peer == NULL == no scoping).
- * Returns false only on export failure (OOM). */
+ *
+ * Iterates the engine's maps directly rather than via sync_engine_export — the
+ * export path mallocs an N-element array plus four field copies per record and
+ * then we free it all (profiled at ~55% of the build). Here each change borrows
+ * the map's strings and is encoded straight into its Element. */
 bool build_snapshot(sync_engine *e, const uint8_t *peer,
                     std::vector<Element> &out) {
-    sync_change *recs = nullptr;
-    size_t n = 0;
-    if (sync_engine_export(e, &recs, &n) != SYNC_OK) return false;
-    out.reserve(n);
-    for (size_t i = 0; i < n; i++) {
-        if (peer) {
-            std::string ns((const char *)recs[i].ns, recs[i].ns_len);
-            if (!cap_authorize_read(e, peer, ns)) continue; /* read-scoped out */
+    static const std::string kEmpty;
+    for (const auto &np : e->ns) {
+        const std::string &nsk = np.first;
+        if (peer && !cap_authorize_read(e, peer, nsk))
+            continue; /* whole namespace read-scoped out */
+        for (const auto &ep : np.second) {
+            const std::string &entk = ep.first;
+            const Entity &ent = ep.second;
+
+            sync_change c;
+            std::memset(&c, 0, sizeof c);
+            c.ns = (const uint8_t *)nsk.data(); c.ns_len = nsk.size();
+            c.entity = (const uint8_t *)entk.data(); c.entity_len = entk.size();
+
+            if (ent.causal_length > 0) { /* existence element (incl. tombstone) */
+                c.kind = SYNC_CHANGE_EXISTENCE;
+                c.causal_length = ent.causal_length;
+                std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
+                std::memcpy(c.signature, ent.ex_sig.data(), SYNC_SIG_LEN);
+                emit_element(c, nsk, entk, kEmpty, true, out);
+            }
+            for (const auto &fp : ent.fields) { /* register element per field */
+                const std::string &fk = fp.first;
+                const Register &r = fp.second;
+                c.kind = SYNC_CHANGE_REGISTER;
+                c.causal_length = 0;
+                c.field = (const uint8_t *)fk.data(); c.field_len = fk.size();
+                c.value = (const uint8_t *)r.value.data();
+                c.value_len = r.value.size();
+                c.hlc.physical = r.hlc.physical;
+                c.hlc.logical = r.hlc.logical;
+                std::memcpy(c.author, r.author.data(), SYNC_PUBKEY_LEN);
+                std::memcpy(c.signature, r.sig.data(), SYNC_SIG_LEN);
+                emit_element(c, nsk, entk, fk, false, out);
+            }
         }
-        Element el;
-        el.key = key_of(recs[i]);
-        encode_record(recs[i], el.bytes);
-        sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
-        out.push_back(std::move(el));
     }
-    sync_changes_free(recs, n);
     std::sort(out.begin(), out.end(), [](const Element &a, const Element &b) {
         return key_cmp(a.key, b.key) < 0;
     });

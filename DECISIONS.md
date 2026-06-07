@@ -573,3 +573,23 @@ One line of rationale per non-obvious choice, newest last.
   count (docs/PERF.md). all-conflict is unchanged (its batches are ≤2 records,
   below the threshold). Per-record verify cost is unchanged — we just run them
   concurrently.
+
+## Allocation & code-level cleanups (optimization ch.5)
+
+- Profiling the cold snapshot build showed ~55% malloc/free/memset/memcpy: it
+  round-tripped through `sync_engine_export` (callocs an N array + four
+  `dup_field` mallocs per record, freed right after). `build_snapshot` now
+  iterates the engine's `ns`/`fields` maps directly and encodes each element in
+  place, borrowing the maps' strings — export array and 4×N field copies/frees
+  gone. Output is byte-identical (reconcile/convergence oracle unchanged), and
+  reconciliation no longer depends on the public export path.
+- `encode_record` reserves its buffer once (no per-append regrowth).
+- `add256`/`sub256` operate on four 64-bit limbs instead of 32 bytes, via the
+  little-endian byte helpers so they stay endianness-independent (the compiler
+  lowers read/store_u64le to a single load/store on LE, a bswap on BE) and
+  byte-identical. Avoided `unsigned __int128` (it trips `-Wpedantic`/`-Werror`);
+  carry/borrow are detected with the standard `s < a` overflow test.
+- Effect: cold `session_begin` ~12% faster at N=4096 and much less allocator
+  churn; the cached gossip path (ch.3) is unchanged. Recorded a follow-up in
+  docs/PERF.md: the per-element SHA-256 (~35% of the cold build) could move to
+  BLAKE2b (~4×), but that shifts the on-wire fingerprint and needs versioning.

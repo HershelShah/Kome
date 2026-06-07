@@ -271,6 +271,29 @@ void BM_SessionBegin(benchmark::State &st) {
 }
 BENCHMARK(BM_SessionBegin)->RangeMultiplier(4)->Range(64, 16384)->Complexity();
 
+void BM_SessionBeginCold(benchmark::State &st) {
+    /* Force a snapshot rebuild each iteration (one overwrite bumps state_gen),
+     * so this measures the cold build_snapshot path, not the cached hit. The
+     * constant ~one-sign overwrite cost cancels in before/after comparisons; the
+     * N-scaling part is the snapshot build. */
+    int n = (int)st.range(0);
+    sync_engine *e = sync_engine_create(seed_of(12).data());
+    populate(e, n);
+    const std::string ns = "ns", f = "f", v = "v";
+    uint64_t i = 0;
+    for (auto _ : st) {
+        std::string ent = "e" + std::to_string(i++ % (uint64_t)n);
+        sync_engine_set(e, B(ns), ns.size(), B(ent), ent.size(), B(f), f.size(),
+                        B(v), v.size());
+        sync_session *s = sync_session_begin(e, 1);
+        benchmark::DoNotOptimize(s);
+        sync_session_end(s);
+    }
+    st.SetComplexityN(n);
+    sync_engine_destroy(e);
+}
+BENCHMARK(BM_SessionBeginCold)->RangeMultiplier(4)->Range(64, 4096)->Complexity();
+
 void BM_ConvergeInSync(benchmark::State &st) {
     /* Already-converged engines: the fingerprint matches at the top, so this is
      * the "nothing to send" fast path (dominated by the two session snapshots).

@@ -69,6 +69,11 @@ void encode_signing(const sync_change &c, std::string &out) {
 }
 
 void encode_record(const sync_change &c, std::string &out) {
+    /* Reserve once so the field appends below don't repeatedly regrow the
+     * buffer (worst case: version+kind, two varints+ns+entity, field+value with
+     * varints, hlc, author, signature). */
+    out.reserve(out.size() + 4 + c.ns_len + c.entity_len + 5 + c.field_len + 5 +
+                c.value_len + 12 + SYNC_PUBKEY_LEN + SYNC_SIG_LEN);
     encode_signing(c, out);
     out.append(reinterpret_cast<const char *>(c.signature), SYNC_SIG_LEN);
 }

@@ -138,6 +138,32 @@ Initial sync of a large dataset — the last expensive case — now scales with
 hardware. (TSan-clean: the parallel region touches only per-index outputs and
 const inputs.)
 
+## Chapter 5 — allocation & code-level cleanups ✅
+
+After the algorithmic wins, profiling the cold snapshot build (callgrind,
+`BM_Export`-style) showed **~55% of it was malloc/free/memset/memcpy**, not
+compute — the build round-tripped through the public `sync_engine_export`, which
+`calloc`s an N-element array and `dup_field`-mallocs four copies per record, all
+freed right after re-encoding.
+
+- **`build_snapshot` iterates the engine's maps directly** and encodes each
+  element in place — the change borrows the map's strings, so the export array,
+  the 4×N field mallocs, and the matching frees are all gone. Byte-identical
+  output (verified by the reconcile/convergence oracle).
+- **`encode_record` reserves** its buffer once instead of regrowing on each
+  field append.
+- **`add256`/`sub256` work 64-bit limbs at a time** (4 iterations, not 32) via
+  the LE byte helpers — portable (single load/store on LE, bswap on BE),
+  byte-identical, ~8× fewer iterations on the prefix-sum build.
+
+| Case | before | after | |
+|------|-------:|------:|--|
+| cold `session_begin` (rebuild) N=4096 | 11.3 ms | 9.9 ms | ~12%, and far less allocator churn |
+
+This is the *cold* path (first sync after a write); the cached gossip path
+(chapter 3) is untouched. Modest in wall-time but it removes the per-record
+allocation/copy overhead and decouples reconciliation from the public export.
+
 ## Optimization backlog (data-driven, in priority order)
 
 1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2).
@@ -145,12 +171,16 @@ const inputs.)
 3. ~~**Faster verify** — parallel batch verification.~~ ✅ done (chapter 4).
    (True batch-Ed25519 / a faster backend remain possible but need a different
    vendored crypto lib; parallelism captured most of the win safely.)
+4. ~~**Allocation & code-level cleanups.**~~ ✅ done (chapter 5).
 
 Remaining, lower-priority:
-4. **One sign per new cell.** A fresh cell signs the existence assertion *and*
+5. **One sign per new cell.** A fresh cell signs the existence assertion *and*
    the first register (86 µs). Explore deferring/coalescing.
-5. **Incremental digest** — maintain a running combinable digest so `digest` is
+6. **Incremental digest** — maintain a running combinable digest so `digest` is
    O(changed) rather than O(N) SHA-256 each call.
+7. **Faster per-element hash** — the snapshot build SHA-256s every element
+   (~35% of the cold build); BLAKE2b is ~4× faster. It's an internal fingerprint
+   detail, but changing it shifts the on-wire fingerprint, so version-gate it.
 
 Each subsequent chapter takes one item, re-runs `./build/bench` against this
 baseline, and records the delta here.
