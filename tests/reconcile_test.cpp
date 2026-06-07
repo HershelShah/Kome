@@ -508,3 +508,35 @@ TEST(Reconcile, MessageRobustness) {
         sync_engine_destroy(b);
     }
 }
+
+/* The session snapshot is cached on the engine (keyed by a state generation);
+ * this pins that writes/deletes between syncs invalidate it, so a second sync
+ * reflects the new state. A missing invalidation would leave the second sync
+ * reconciling a stale snapshot and silently failing to propagate. */
+TEST(Reconcile, SnapshotCacheInvalidatesOnWrite) {
+    sync_engine *a = cluster::make(0x70);
+    sync_engine *b = cluster::make(0x71);
+
+    cluster::put(a, "ns", "x", "f", "1");
+    cluster::sync2(a, b); /* builds + caches a's snapshot */
+    EXPECT_TRUE(cluster::exists(b, "ns", "x"));
+
+    /* Write AFTER the first sync: the cache must be rebuilt next time. */
+    cluster::put(a, "ns", "y", "f", "2");
+    cluster::sync2(a, b);
+    EXPECT_TRUE(cluster::exists(b, "ns", "y")) << "stale snapshot: write not synced";
+
+    /* Overwrite an existing cell, then sync: value must update. */
+    cluster::put(a, "ns", "x", "f", "updated");
+    cluster::sync2(a, b);
+    EXPECT_EQ(cluster::get(b, "ns", "x", "f"), "updated");
+
+    /* Delete, then sync: removal must propagate. */
+    cluster::del(a, "ns", "y");
+    cluster::sync2(a, b);
+    EXPECT_FALSE(cluster::exists(b, "ns", "y")) << "stale snapshot: delete not synced";
+
+    EXPECT_EQ(digest(a), digest(b));
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}

@@ -526,3 +526,22 @@ One line of rationale per non-obvious choice, newest last.
   pinned by `Defensive.VerifyOnlyWhenRecordWouldChangeState`. Convergence,
   capability enforcement, and order-independence are unchanged (the accepted set
   is identical; the clock only ever needed to track records we adopt).
+
+## Cached reconciliation snapshot (optimization ch.3)
+
+- `session_begin` no longer rebuilds the sorted/hashed element set every time.
+  The engine caches it in `std::shared_ptr<const ReconSnapshot>`, rebuilt lazily
+  only when `state_gen` (bumped on every write/delete/accepted-apply) shows it's
+  stale. A session takes a `shared_ptr` to the snapshot at begin, so it observes
+  a stable point-in-time view even though records it applies mid-sync bump
+  `state_gen` and cause the *next* begin to build a fresh one — the in-flight
+  session keeps the old via the refcount (no copy, no dangling).
+- `ReconSnapshot`/`Element`/`SortKey` moved out of reconcile.cpp's anonymous
+  namespace into named `ke` so the engine can hold a `shared_ptr<const
+  ReconSnapshot>` without tripping `-Wsubobject-linkage` under `-Werror`.
+- Effect: the gossip steady state (repeated sync without writes) drops from
+  O(N log N) to O(1) — `session_begin` 2.5 ms → 15 ns and in-sync converge
+  5.2 ms → 1 µs at N=1024 (docs/PERF.md). Write→sync→write is unchanged (one
+  rebuild per write). Invalidation pinned by
+  `Reconcile.SnapshotCacheInvalidatesOnWrite`; scoped (per-peer read-filtered)
+  sessions still build their own snapshot (not cached).

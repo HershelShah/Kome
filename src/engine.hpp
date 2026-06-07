@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "crypto.h"
@@ -65,8 +66,9 @@ using Namespaces = std::map<std::string, Entities>;
 /* Current wall-clock time in milliseconds since the Unix epoch. */
 uint64_t now_ms();
 
-class Storage;    /* defined in storage.h (M2) */
-class CapStore;   /* defined in capability.h (M4) */
+class Storage;          /* defined in storage.h (M2) */
+class CapStore;         /* defined in capability.h (M4) */
+struct ReconSnapshot;   /* defined in reconcile.cpp (M3): cached sync snapshot */
 
 } // namespace ke
 
@@ -81,6 +83,14 @@ struct sync_engine {
     uint64_t         db_clock = 0;    /* monotonic per-mutation counter */
     sync_log_fn      log_fn = nullptr;
     void            *log_ctx = nullptr;
+
+    /* Reconciliation snapshot cache (M3 perf): the sorted, hashed element set a
+     * session reconciles over. state_gen bumps on every state change; the cache
+     * is rebuilt lazily on the next session_begin when its gen is stale. Shared
+     * via shared_ptr so an in-flight session keeps the snapshot it began with
+     * even as later writes replace the engine's cached one. */
+    uint64_t                                  state_gen = 0;
+    std::shared_ptr<const ke::ReconSnapshot>  recon_cache;
 };
 
 #endif /* SYNC_ENGINE_INTERNAL_HPP */

@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <new>
 #include <string>
 #include <vector>
@@ -38,11 +39,8 @@ using sync_engine_detail::Sha256;
 using sync_engine_detail::sha256;
 
 namespace ke {
-namespace {
 
 using Hash256 = std::array<uint8_t, 32>;
-
-enum Mode : uint8_t { MODE_FP = 0, MODE_LEAF = 1, MODE_HAVE = 2 };
 
 /* ---- sort key ---------------------------------------------------------- */
 
@@ -50,6 +48,27 @@ struct SortKey {
     std::string ns, entity, field;
     bool existence = false; /* existence sorts before registers of an entity */
 };
+
+/* A reconciliation element: a cell's sort key, its canonical record bytes, and
+ * the per-element hash the combinable fingerprint sums. */
+struct Element {
+    SortKey     key;
+    std::string bytes;
+    Hash256     hash;
+};
+
+/* The sorted snapshot a session reconciles over; cached on the engine and
+ * shared by sessions (see sync_engine::recon_cache). Named (external linkage)
+ * so the engine can hold a shared_ptr<const ReconSnapshot>. */
+struct ReconSnapshot {
+    uint64_t             gen = 0;
+    std::vector<Element> snap;
+    std::vector<Hash256> prefix; /* prefix[i] = sum of snap[0..i).hash */
+};
+
+namespace {
+
+enum Mode : uint8_t { MODE_FP = 0, MODE_LEAF = 1, MODE_HAVE = 2 };
 
 int key_cmp(const SortKey &a, const SortKey &b) {
     if (a.ns != b.ns) return a.ns < b.ns ? -1 : 1;
@@ -108,14 +127,6 @@ void sub256(Hash256 &acc, const Hash256 &x) {
         acc[i] = (uint8_t)v;
     }
 }
-
-/* ---- element ----------------------------------------------------------- */
-
-struct Element {
-    SortKey     key;
-    std::string bytes; /* canonical record serialization */
-    Hash256     hash;
-};
 
 /* ---- varint / wire helpers --------------------------------------------- */
 
@@ -252,25 +263,31 @@ struct sync_session {
     bool         sent_initial = false;
     bool         sent_caps = false; /* delegation caps sent once */
 
-    std::vector<Element> snap;   /* sorted local snapshot */
-    std::vector<Hash256> prefix; /* prefix[i] = sum of snap[0..i).hash */
+    /* The point-in-time snapshot this session reconciles over. Held by
+     * shared_ptr so it stays stable even as records applied mid-session bump
+     * the engine's state_gen and replace its cached snapshot. */
+    std::shared_ptr<const ReconSnapshot> ss;
+
+    const std::vector<Element> &snap() const { return ss->snap; }
+    const std::vector<Hash256> &prefix() const { return ss->prefix; }
 
     /* First snapshot index whose key >= bound. */
     size_t lower_index(const Bound &b) const {
+        const auto &sn = snap();
         if (b.type == Bound::NEG_INF) return 0;
-        if (b.type == Bound::POS_INF) return snap.size();
-        size_t lo = 0, hi = snap.size();
+        if (b.type == Bound::POS_INF) return sn.size();
+        size_t lo = 0, hi = sn.size();
         while (lo < hi) {
             size_t mid = (lo + hi) / 2;
-            if (key_cmp(snap[mid].key, b.key) < 0) lo = mid + 1;
+            if (key_cmp(sn[mid].key, b.key) < 0) lo = mid + 1;
             else hi = mid;
         }
         return lo;
     }
 
     Hash256 fingerprint(size_t lo, size_t hi) const {
-        Hash256 sum = prefix[hi];
-        sub256(sum, prefix[lo]);
+        Hash256 sum = prefix()[hi];
+        sub256(sum, prefix()[lo]);
         Sha256 h;
         uint8_t cnt[8];
         store_u64le(cnt, (uint64_t)(hi - lo));
@@ -284,7 +301,7 @@ struct sync_session {
     Bound key_bound(size_t idx) const {
         Bound b;
         b.type = Bound::KEY;
-        b.key = snap[idx].key;
+        b.key = snap()[idx].key;
         return b;
     }
 };
@@ -318,7 +335,8 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
             leaf.mode = MODE_LEAF;
             leaf.lo = d.lo;
             leaf.hi = d.hi;
-            for (size_t i = lo; i < hi; i++) leaf.records.push_back(s->snap[i].bytes);
+            for (size_t i = lo; i < hi; i++)
+                leaf.records.push_back(s->snap()[i].bytes);
             out.push_back(std::move(leaf));
             return;
         }
@@ -362,11 +380,11 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
         have.lo = d.lo;
         have.hi = d.hi;
         for (size_t i = lo; i < hi; i++) {
-            const SortKey &k = s->snap[i].key;
+            const SortKey &k = s->snap()[i].key;
             std::string kk = serialize_key(k);
             auto it = peer.find(kk);
-            if (it == peer.end() || it->second != s->snap[i].hash)
-                have.records.push_back(s->snap[i].bytes);
+            if (it == peer.end() || it->second != s->snap()[i].hash)
+                have.records.push_back(s->snap()[i].bytes);
         }
         if (!have.records.empty()) out.push_back(std::move(have));
         return;
@@ -380,24 +398,15 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
 
 namespace {
 
-/* Build a session, optionally read-scoped to peer (NULL == no scoping). */
-sync_session *begin_session(sync_engine *e, int as_initiator,
-                            const uint8_t *peer) {
-    if (!e) return nullptr;
-    sync_session *s = new (std::nothrow) sync_session();
-    if (!s) return nullptr;
-    s->engine = e;
-    s->initiator = as_initiator != 0;
-
-    /* Snapshot the current state as sorted elements with hashes. Records in
-     * namespaces the peer may not read are excluded before fingerprinting. */
+/* Snapshot the engine as sorted elements with per-element hashes. Records in
+ * namespaces peer may not read are excluded (peer == NULL == no scoping).
+ * Returns false only on export failure (OOM). */
+bool build_snapshot(sync_engine *e, const uint8_t *peer,
+                    std::vector<Element> &out) {
     sync_change *recs = nullptr;
     size_t n = 0;
-    if (sync_engine_export(e, &recs, &n) != SYNC_OK) {
-        delete s;
-        return nullptr;
-    }
-    s->snap.reserve(n);
+    if (sync_engine_export(e, &recs, &n) != SYNC_OK) return false;
+    out.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (peer) {
             std::string ns((const char *)recs[i].ns, recs[i].ns_len);
@@ -407,20 +416,58 @@ sync_session *begin_session(sync_engine *e, int as_initiator,
         el.key = key_of(recs[i]);
         encode_record(recs[i], el.bytes);
         sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
-        s->snap.push_back(std::move(el));
+        out.push_back(std::move(el));
     }
     sync_changes_free(recs, n);
+    std::sort(out.begin(), out.end(), [](const Element &a, const Element &b) {
+        return key_cmp(a.key, b.key) < 0;
+    });
+    return true;
+}
 
-    std::sort(s->snap.begin(), s->snap.end(),
-              [](const Element &a, const Element &b) {
-                  return key_cmp(a.key, b.key) < 0;
-              });
+/* prefix[i] = combinable sum of the first i element hashes. */
+void build_prefix(const std::vector<Element> &snap,
+                  std::vector<Hash256> &prefix) {
+    prefix.resize(snap.size() + 1);
+    prefix[0] = Hash256{};
+    for (size_t i = 0; i < snap.size(); i++) {
+        prefix[i + 1] = prefix[i];
+        add256(prefix[i + 1], snap[i].hash);
+    }
+}
 
-    s->prefix.resize(s->snap.size() + 1);
-    s->prefix[0] = Hash256{};
-    for (size_t i = 0; i < s->snap.size(); i++) {
-        s->prefix[i + 1] = s->prefix[i];
-        add256(s->prefix[i + 1], s->snap[i].hash);
+/* The engine's cached full snapshot, rebuilt only when state_gen advanced since
+ * it was taken. Returns NULL on build failure. */
+std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e) {
+    if (e->recon_cache && e->recon_cache->gen == e->state_gen)
+        return e->recon_cache;
+    auto snap = std::make_shared<ReconSnapshot>();
+    snap->gen = e->state_gen;
+    if (!build_snapshot(e, nullptr, snap->snap)) return nullptr;
+    build_prefix(snap->snap, snap->prefix);
+    e->recon_cache = snap;
+    return snap;
+}
+
+/* Build a session, optionally read-scoped to peer (NULL == no scoping). The
+ * unscoped snapshot is cached on the engine and shared across sessions; a
+ * scoped session builds its own filtered snapshot (not cached — it's per-peer). */
+sync_session *begin_session(sync_engine *e, int as_initiator,
+                            const uint8_t *peer) {
+    if (!e) return nullptr;
+    sync_session *s = new (std::nothrow) sync_session();
+    if (!s) return nullptr;
+    s->engine = e;
+    s->initiator = as_initiator != 0;
+
+    if (peer) {
+        auto snap = std::make_shared<ReconSnapshot>();
+        if (!build_snapshot(e, peer, snap->snap)) { delete s; return nullptr; }
+        build_prefix(snap->snap, snap->prefix);
+        s->ss = snap;
+    } else {
+        s->ss = ensure_cache(e);
+        if (!s->ss) { delete s; return nullptr; }
     }
     return s;
 }
@@ -463,7 +510,7 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             f.mode = MODE_FP;
             f.lo.type = Bound::NEG_INF;
             f.hi.type = Bound::POS_INF;
-            f.fp = s->fingerprint(0, s->snap.size());
+            f.fp = s->fingerprint(0, s->snap().size());
             reply.push_back(std::move(f));
         } else {
             s->sent_initial = true;

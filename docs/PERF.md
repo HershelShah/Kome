@@ -89,12 +89,32 @@ edits) get dramatically cheaper; the genuinely-new-data path is untouched
 (there's nothing to skip). The remaining convergence cost is now dominated by
 the per-sync snapshot — exactly backlog item 2.
 
+## Chapter 3 — cache the reconciliation snapshot ✅
+
+`session_begin` used to re-`export` + re-encode + re-SHA-256 + re-sort the whole
+state every time. The engine now keeps that sorted, hashed snapshot in a
+`shared_ptr<const ReconSnapshot>`, rebuilt lazily only when a `state_gen`
+counter (bumped on every write/delete/accepted-apply) shows it's stale. A
+session holds the snapshot by `shared_ptr`, so it stays stable even as records
+applied mid-sync replace the engine's cached copy. (Invalidation pinned by
+`Reconcile.SnapshotCacheInvalidatesOnWrite`.)
+
+| Case (steady-state, syncs between writes) | Before | After @ N=1024 | @ N=16384 |
+|---|---:|---:|---:|
+| `session_begin` | O(N log N) | **15 ns** (was 2.5 ms, ~170,000×) | 21 ns (was 47 ms) |
+| converge **in-sync** | O(N log N) | **1.0 µs** (was 5.2 ms, ~5000×) | 1.4 µs (was 96 ms, ~68,000×) |
+
+Both dropped from O(N log N) to **O(1)** on the cache-hit (gossip) path: a sync
+that changes nothing is two refcount bumps plus one O(1) prefix-sum fingerprint
+compare. The first sync after a write still pays one O(N log N) rebuild, so a
+write→sync→write→sync workload is unchanged; a gossip mesh that syncs with many
+peers between writes is now essentially free. Full-transfer/all-conflict are
+unchanged (they mutate, so they rebuild — and are verify-bound anyway).
+
 ## Optimization backlog (data-driven, in priority order)
 
-1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2 above).
-2. **Cache the reconciliation snapshot** (sorted elements + per-element hashes +
-   prefix sums) on the engine, invalidated on write, so `session begin` is
-   O(changed) instead of O(N log N) per sync. Big for frequent gossip meshes.
+1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2).
+2. ~~**Cache the reconciliation snapshot.**~~ ✅ done (chapter 3).
 3. **One sign per new cell.** A fresh cell signs the existence assertion *and*
    the first register (86 µs). Explore deferring/coalescing.
 4. **Incremental digest** — maintain a running combinable digest so `digest` is
