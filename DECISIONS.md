@@ -491,3 +491,18 @@ One line of rationale per non-obvious choice, newest last.
   into a composite action. It's pure cosmetic dedup with no functional gain, and
   can't be verified locally — left for a CI-side change where it can be tested in
   a PR run.
+
+## Performance measurement (optimization story, chapter 1)
+
+- Benchmarks use **GoogleBenchmark** (fetched via FetchContent like GoogleTest,
+  dev-only, behind `-DSYNC_BENCH=ON` so normal builds don't fetch it). Chosen
+  over a hand-rolled harness for statistical sampling, `DoNotOptimize`, and
+  `Range()`+`Complexity()` big-O sweeps — which matter for an optimization story.
+- Profiling is **callgrind** (`tools/profile.sh`), not `perf`: the sandbox/CI
+  containers don't grant `perf_event` access, and callgrind counts instructions
+  so attribution is deterministic run-to-run.
+- Baseline + the prioritized, data-driven optimization backlog live in
+  `docs/PERF.md`. Finding: Ed25519 sign/verify (monocypher `fe_mul`/`fe_sq`)
+  is >99% of convergence/apply cost; the codec/maps/digest are noise beside it.
+  Top lever (next chapter): verify a record's signature only if it would change
+  state, so losing/duplicate records cost nothing.

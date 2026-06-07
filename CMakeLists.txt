@@ -246,6 +246,31 @@ if(SYNC_CHAOS)
         TIMEOUT 120)
 endif()
 
+# --- Benchmarks (optimization story) ---------------------------------------
+# GoogleBenchmark microbenchmarks over the hot paths (fetched like GoogleTest,
+# dev-only). For the truest numbers configure the whole tree Release so the
+# engine itself is optimized. Profile with tools/profile.sh (callgrind).
+option(SYNC_BENCH "Build the microbenchmark harness (fetches GoogleBenchmark)" OFF)
+if(SYNC_BENCH)
+    include(FetchContent)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG        v1.8.3
+    )
+    FetchContent_MakeAvailable(googlebenchmark)
+
+    add_executable(bench bench/bench_main.cpp)
+    target_link_libraries(bench PRIVATE sync_engine benchmark::benchmark_main)
+    target_include_directories(bench PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    # Always optimize the bench TU; for an honest baseline configure Release so
+    # the engine library is optimized too.
+    target_compile_options(bench PRIVATE -O2 -g -DNDEBUG -fno-omit-frame-pointer)
+endif()
+
 # --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
 option(SYNC_FUZZ "Build libFuzzer targets (requires clang + fuzzer runtime)" OFF)
 if(SYNC_FUZZ)

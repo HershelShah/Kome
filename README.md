@@ -186,6 +186,23 @@ Produces `coverage-html/` (browsable) and refreshes [`docs/COVERAGE.md`](docs/CO
 HTML as an artifact. (Coverage already paid off: it flagged dead code and an
 untested HMAC branch + missing `sync_strerror` cases, all since fixed.)
 
+## Benchmarks & profiling
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DSYNC_BENCH=ON   # fetches GoogleBenchmark
+cmake --build build --target bench
+./build/bench                       # microbenchmarks over the hot paths
+
+tools/profile.sh 'BM_ApplyRegister' 3000   # callgrind per-function attribution
+```
+
+`bench/bench_main.cpp` covers the crypto primitives, codec, engine ops, and
+range reconciliation (with `Range()`+`Complexity()` big-O for the scaling
+cases). The committed baseline and the data-driven optimization backlog live in
+[`docs/PERF.md`](docs/PERF.md). Headline: signature work (Ed25519
+sign/verify) dominates every write and every reconciled record — that's where
+the optimization story starts.
+
 ## Python binding
 
 ```bash
