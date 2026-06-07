@@ -164,6 +164,16 @@ One line of rationale per non-obvious choice, newest last.
   (re-verifying each signature). Enforcement now survives reopen. Internal
   `cap_encode`/`cap_decode` are shared by the public ABI and storage.
 
+- **Capabilities are exchanged during sync.** Each reconciliation message now
+  carries a capability section (delegations the sender holds), sent once per
+  session; the receiver ingests them before applying records, so an authorized
+  peer's records are accepted without any prior out-of-band `grant`. Safety: a
+  **root is never trusted over the wire** (`cap_ingest_delegations` skips roots
+  and re-verifies signatures) — authorization always roots chains at a
+  locally-established owner, so a peer cannot inject a fake owner for a
+  namespace you own. Ingested delegations are in-memory only (not persisted);
+  gossip re-propagates them. Duplicate caps are de-duplicated by signature.
+
 ## M6 — Hardening & productionization
 
 - **Fuzzing is dual-track.** Real libFuzzer targets live in `tests/fuzz/`

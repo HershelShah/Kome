@@ -185,16 +185,34 @@ bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
     return true;
 }
 
-std::string encode_message(const std::vector<Desc> &descs) {
+/* Wire form: [caps][descriptors]. caps carries delegation capabilities so the
+ * peer can authorize records authored by keys it hasn't been told about. */
+std::string encode_message(const std::vector<Desc> &descs,
+                           const std::vector<std::string> &caps) {
     std::string o;
+    put_varint(o, caps.size());
+    for (auto &c : caps) {
+        put_varint(o, c.size());
+        o += c;
+    }
     put_varint(o, descs.size());
     for (auto &d : descs) encode_desc(o, d);
     return o;
 }
 
-bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out) {
+bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
+                    std::vector<std::string> &caps) {
     const uint8_t *p = buf;
     const uint8_t *end = buf + len;
+    uint64_t nc = 0;
+    if (!get_varint(p, end, nc)) return false;
+    for (uint64_t i = 0; i < nc; i++) {
+        uint64_t cl = 0;
+        if (!get_varint(p, end, cl)) return false;
+        if ((uint64_t)(end - p) < cl) return false;
+        caps.emplace_back((const char *)p, (size_t)cl);
+        p += cl;
+    }
     uint64_t n = 0;
     if (!get_varint(p, end, n)) return false;
     for (uint64_t i = 0; i < n; i++) {
@@ -216,6 +234,7 @@ struct sync_session {
     sync_engine *engine = nullptr;
     bool         initiator = false;
     bool         sent_initial = false;
+    bool         sent_caps = false; /* delegation caps sent once */
 
     std::vector<Element> snap;   /* sorted local snapshot */
     std::vector<Hash256> prefix; /* prefix[i] = sum of snap[0..i).hash */
@@ -440,10 +459,13 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
         } else {
             s->sent_initial = true;
             std::vector<Desc> incoming;
+            std::vector<std::string> caps_in;
             if (in && in_len) {
-                if (!decode_message(in, in_len, incoming))
+                if (!decode_message(in, in_len, incoming, caps_in))
                     return SYNC_ERR_INVALID;
             }
+            /* Ingest the peer's delegations before applying its records. */
+            cap_ingest_delegations(s->engine, caps_in);
             for (auto &d : incoming) process_desc(s, d, reply);
         }
 
@@ -452,7 +474,13 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             return SYNC_OK;
         }
 
-        std::string msg = encode_message(reply);
+        /* Attach our delegation capabilities to the first message we send. */
+        std::vector<std::string> caps_out;
+        if (!s->sent_caps && s->engine->caps) {
+            s->engine->caps->export_blobs(caps_out);
+            s->sent_caps = true;
+        }
+        std::string msg = encode_message(reply, caps_out);
         uint8_t *buf = (uint8_t *)std::malloc(msg.size() ? msg.size() : 1);
         if (!buf) return SYNC_ERR_NOMEM;
         std::memcpy(buf, msg.data(), msg.size());

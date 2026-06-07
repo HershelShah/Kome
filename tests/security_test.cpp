@@ -197,6 +197,55 @@ TEST(Security, TamperDetection) {
     sync_engine_destroy(b);
 }
 
+/* Begin a session pair and drive them to convergence. */
+static void reconcile(sync_engine *a, sync_engine *b) {
+    sync_session *sa = sync_session_begin(a, 1);
+    sync_session *sb = sync_session_begin(b, 0);
+    drive(sa, sb);
+    sync_session_end(sa);
+    sync_session_end(sb);
+}
+
+/* ---- Capability exchange during sync (security follow-up) --------------- */
+TEST(Security, CapabilityExchangeDuringSync) {
+    sync_engine *owner = sync_engine_create(seed_from(0x80).data());
+    sync_engine *writer = sync_engine_create(seed_from(0x81).data());
+    sync_engine *stranger = sync_engine_create(seed_from(0x82).data());
+    sync_engine *v = sync_engine_create(seed_from(0x83).data());
+
+    uint8_t wpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(writer, wpk);
+
+    /* V owns nsA. The writer holds a delegated write cap (but V has NOT been
+     * told about it out-of-band). */
+    sync_capability *root =
+        sync_capability_root(owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    sync_capability *deleg =
+        sync_capability_delegate(owner, root, wpk, SYNC_ACCESS_WRITE, 0);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);    /* V trusts the root */
+    ASSERT_EQ(sync_engine_grant(writer, deleg), SYNC_OK); /* writer carries it */
+
+    /* Authorized writer's records flow: the delegation rides along the sync, so
+     * V can authorize them without a prior grant. */
+    set(writer, "nsA", "w1", "f", "hello");
+    set(writer, "nsA", "w2", "f", "world");
+    reconcile(writer, v);
+    EXPECT_EQ(exists(v, "nsA", "w1"), 1) << "cap was not exchanged during sync";
+    EXPECT_EQ(exists(v, "nsA", "w2"), 1);
+
+    /* A stranger with no capability is still rejected (records dropped). */
+    set(stranger, "nsA", "s1", "f", "nope");
+    reconcile(stranger, v);
+    EXPECT_EQ(exists(v, "nsA", "s1"), 0) << "unauthorized records leaked in";
+
+    sync_capability_free(root);
+    sync_capability_free(deleg);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(writer);
+    sync_engine_destroy(stranger);
+    sync_engine_destroy(v);
+}
+
 /* ---- Channel-to-identity binding (security follow-up) ------------------ */
 TEST(Security, ChannelIdentityBinding) {
     auto sa = seed_from(0x71), sb = seed_from(0x72);

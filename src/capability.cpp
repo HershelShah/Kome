@@ -58,6 +58,20 @@ bool cap_self_valid(const Capability &c, uint64_t now) {
     return cap_sig_valid(c);
 }
 
+void CapStore::add(const Capability &c) {
+    for (const auto &x : caps_)
+        if (x.sig == c.sig) return; /* duplicate */
+    caps_.push_back(c);
+}
+
+void CapStore::export_blobs(std::vector<std::string> &out) const {
+    for (const auto &c : caps_) {
+        std::string b;
+        cap_encode(c, b);
+        out.push_back(std::move(b));
+    }
+}
+
 bool CapStore::owned(const std::string &ns) const {
     for (const auto &c : caps_)
         if (c.is_root() && c.ns == ns) return true;
@@ -109,6 +123,18 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
         }
     }
     return false;
+}
+
+void cap_ingest_delegations(sync_engine *e,
+                            const std::vector<std::string> &blobs) {
+    for (const auto &blob : blobs) {
+        Capability c;
+        if (!cap_decode((const uint8_t *)blob.data(), blob.size(), c)) continue;
+        if (c.is_root()) continue;          /* never trust a wire root */
+        if (!cap_sig_valid(c)) continue;    /* re-verify the signature */
+        if (!e->caps) e->caps = new CapStore();
+        e->caps->add(c);
+    }
 }
 
 int cap_authorize_write(sync_engine *e, const uint8_t author[32],

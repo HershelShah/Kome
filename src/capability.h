@@ -49,7 +49,11 @@ bool cap_self_valid(const Capability &c, uint64_t now_ms);
 /* The set of capabilities an engine has been granted. */
 class CapStore {
 public:
-    void add(const Capability &c) { caps_.push_back(c); }
+    /* Add a capability, skipping exact duplicates (by signature). */
+    void add(const Capability &c);
+
+    /* Encode every held capability as a wire blob (for sync exchange). */
+    void export_blobs(std::vector<std::string> &out) const;
 
     /* True if the namespace has a known root (i.e. enforcement is active). */
     bool owned(const std::string &ns) const;
@@ -61,6 +65,14 @@ public:
 private:
     std::vector<Capability> caps_;
 };
+
+/* Ingest delegation capabilities learned during a sync session. Roots are
+ * never accepted over the wire (a namespace owner is established only locally),
+ * and signatures are re-verified; valid delegations are added to e->caps in
+ * memory (not persisted). Safe because authorization only ever roots chains at
+ * a locally-trusted root. */
+void cap_ingest_delegations(sync_engine *e,
+                            const std::vector<std::string> &blobs);
 
 /* Enforcement hooks used by the engine / reconciliation. Return SYNC_OK when
  * allowed (including the open, unowned-namespace case). */
