@@ -36,7 +36,7 @@ em++ -O2 -std=c++17 -w \
   -Iinclude -Isrc -Ithird_party/sqlite -Ithird_party/monocypher \
   $CPP "$OUT/sqlite3.o" "$OUT/monocypher.o" \
   -sMODULARIZE=1 -sEXPORT_NAME=createSyncEngine -sENVIRONMENT=web,node \
-  -sALLOW_MEMORY_GROWTH=1 -sEXPORTED_FUNCTIONS="$(echo "$EXPORTS" | tr -d '\n ')" \
+  -sALLOW_MEMORY_GROWTH=1 -sWASM_BIGINT -sEXPORTED_FUNCTIONS="$(echo "$EXPORTS" | tr -d '\n ')" \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","UTF8ToString","HEAPU8","HEAPU32"]' \
   -o "$OUT/sync_engine.js"
 

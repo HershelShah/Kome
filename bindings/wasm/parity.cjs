@@ -106,6 +106,62 @@ function check(name, cond, msg) {
     k.destroy(a); k.destroy(b);
   }
 
-  console.log(failed ? `\nWASM PARITY FAILED (${failed})` : "\nWASM PARITY OK (all scenarios converge in WASM)");
+  const READ = 1, WRITE = 2;
+
+  // StorageReopenIdentity: a durable engine survives close/reopen (M2). Storage
+  // is SQLite over MEMFS here; a browser mounts IDBFS/OPFS for cross-reload
+  // persistence, but the engine logic is the same.
+  {
+    const e = k.open("/p1.db", seed(s++));
+    for (let i = 0; i < 5; i++) k.set(e, "ns", "e" + i, "f", "v" + i);
+    const d1 = k.digest(e);
+    k.destroy(e);
+    const e2 = k.open("/p1.db", seed(0)); // existing file -> persisted identity
+    let ok = eqBytes(k.digest(e2), d1);
+    for (let i = 0; i < 5; i++) ok = ok && k.exists(e2, "ns", "e" + i);
+    check("StorageReopenIdentity", ok);
+    k.destroy(e2);
+  }
+
+  // StorageDurableConverge: two durable engines sync, then both reopen to the
+  // same converged state.
+  {
+    const a = k.open("/da.db", seed(s++)), b = k.open("/db.db", seed(s++));
+    k.set(a, "ns", "x", "f", "X");
+    k.set(b, "ns", "y", "f", "Y");
+    k.sync(a, b);
+    const conv = k.digest(a);
+    const ok1 = eqBytes(conv, k.digest(b));
+    k.destroy(a); k.destroy(b);
+    const a2 = k.open("/da.db", seed(0)), b2 = k.open("/db.db", seed(0));
+    const ok2 = eqBytes(k.digest(a2), conv) && eqBytes(k.digest(b2), conv) &&
+                k.exists(a2, "ns", "y") && k.exists(b2, "ns", "x");
+    check("StorageDurableConverge", ok1 && ok2);
+    k.destroy(a2); k.destroy(b2);
+  }
+
+  // CapabilityEnforcement: an enforcing node accepts an authorized writer's
+  // records (capability gossiped during sync) and drops a stranger's (M4).
+  {
+    const owner = eng(), writer = eng(), stranger = eng(), v = eng();
+    const wpk = k.identity(writer);
+    const root = k.capRoot(owner, "nsA", READ | WRITE);
+    const deleg = k.capDelegate(owner, root, wpk, WRITE, 0);
+    check("cap-grant-root", k.grant(v, root) === 0);
+    check("cap-grant-deleg", k.grant(writer, deleg) === 0);
+
+    k.set(writer, "nsA", "w1", "f", "hi");
+    k.sync(writer, v);
+    check("CapAuthorizedAccepted", k.exists(v, "nsA", "w1"));
+
+    k.set(stranger, "nsA", "s1", "f", "no");
+    k.sync(stranger, v);
+    check("CapUnauthorizedRejected", !k.exists(v, "nsA", "s1"));
+
+    k.capFree(root); k.capFree(deleg);
+    [owner, writer, stranger, v].forEach((e) => k.destroy(e));
+  }
+
+  console.log(failed ? `\nWASM PARITY FAILED (${failed})` : "\nWASM PARITY OK (sync, storage + reopen, and capability enforcement all in WASM)");
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

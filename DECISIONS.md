@@ -335,3 +335,18 @@ One line of rationale per non-obvious choice, newest last.
   is an in-page browser demo with the WebSocket pump sketched.
 - Node 22 exposes a global `fetch`, which trips Emscripten 3.1.6 into the web
   load path; the binding passes `wasmBinary` explicitly to avoid it.
+
+## WASM parity (storage + capabilities)
+
+- WASM is at **full engine parity**, not just in-memory sync: `bindings/wasm/
+  parity.cjs` runs the six transport scenarios *plus* durable storage
+  (reopen-identity and two-durable-engine convergence over SQLite) and
+  capability enforcement (authorized writer accepted via gossiped cap, stranger
+  rejected) — covering M1-M4 in WASM.
+- The build uses `-sWASM_BIGINT` (capability expiry is `uint64_t`; the only i64
+  in the ABI). Storage runs on Emscripten's in-memory MEMFS; a browser would
+  mount **IDBFS/OPFS** for persistence across page reloads — the engine/SQLite
+  logic is identical, only the FS backing differs.
+- Intentionally **not** in WASM: the native socket transports (UDP/TCP/WS),
+  STUN, and the relay/rendezvous daemons — a browser uses its own WebSocket and
+  reaches those as native server/relay peers, so they aren't a WASM concern.

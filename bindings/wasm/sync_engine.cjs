@@ -24,6 +24,13 @@ class Binding {
     return p;
   }
   _u32(ptr) { return this.M.HEAPU32[ptr >> 2]; }
+  _cstr(str) {
+    const u = bytes(str);
+    const p = this.M._malloc(u.length + 1);
+    this.M.HEAPU8.set(u, p);
+    this.M.HEAPU8[p + u.length] = 0;
+    return p;
+  }
 
   abiVersion() { return this.M._sync_abi_version(); }
 
@@ -36,7 +43,42 @@ class Binding {
     if (!e) throw new Error("create failed");
     return e;
   }
+  /* Durable engine backed by a SQLite file (in MEMFS under Node/browser; mount
+   * IDBFS/OPFS in a browser for persistence across reloads). */
+  open(path, seed) {
+    seed = bytes(seed);
+    const pp = this._cstr(path), sp = this._toHeap(seed);
+    const e = this.M._sync_engine_open(pp, sp);
+    this.M._free(pp); this.M._free(sp);
+    if (!e) throw new Error("open failed");
+    return e;
+  }
   destroy(e) { this.M._sync_engine_destroy(e); }
+
+  identity(e) {
+    const buf = this.M._malloc(PUBKEY_LEN);
+    this.M._sync_engine_identity(e, buf);
+    const pk = this.M.HEAPU8.slice(buf, buf + PUBKEY_LEN);
+    this.M._free(buf);
+    return pk;
+  }
+
+  /* Capabilities. capRoot/capDelegate return opaque pointers; free with capFree. */
+  capRoot(owner, ns, access) {
+    const pn = this._cstr(ns);
+    const c = this.M._sync_capability_root(owner, pn, access);
+    this.M._free(pn);
+    return c;
+  }
+  capDelegate(delegator, parent, subjectPubkey, access, expiryMs = 0) {
+    const sp = this._toHeap(bytes(subjectPubkey));
+    const c = this.M._sync_capability_delegate(delegator, parent, sp, access,
+                                               BigInt(expiryMs));
+    this.M._free(sp);
+    return c;
+  }
+  grant(e, cap) { return this.M._sync_engine_grant(e, cap); }
+  capFree(c) { this.M._sync_capability_free(c); }
 
   set(e, ns, ent, field, val) {
     ns = bytes(ns); ent = bytes(ent); field = bytes(field); val = bytes(val);
