@@ -3,6 +3,7 @@
 
 #include <cstring>
 
+#include "capability.h"
 #include "crypto.h"
 #include "sqlite3.h"
 
@@ -70,7 +71,11 @@ Storage *Storage::open(const char *path, sync_error *err) {
         "  ns BLOB NOT NULL, entity BLOB NOT NULL, field BLOB NOT NULL,"
         "  value BLOB, hlc_physical INTEGER NOT NULL, hlc_logical INTEGER NOT NULL,"
         "  author BLOB NOT NULL, sig BLOB NOT NULL, db_clock INTEGER NOT NULL,"
-        "  PRIMARY KEY(ns, entity, field));";
+        "  PRIMARY KEY(ns, entity, field));"
+        /* Additive (IF NOT EXISTS): granted capabilities, stored as wire blobs.
+         * Backward compatible with v2 files, so no schema bump needed. */
+        "CREATE TABLE IF NOT EXISTS capability ("
+        "  id INTEGER PRIMARY KEY, blob BLOB NOT NULL);";
     if (!s->exec(schema)) {
         if (err) *err = SYNC_ERR_INTERNAL;
         delete s;
@@ -104,6 +109,17 @@ bool Storage::put_meta_blob(const char *key, const uint8_t *data, size_t len) {
         return false;
     sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
     sqlite3_bind_blob(st, 2, data, (int)len, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool Storage::put_capability(const std::string &blob) {
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(db_, "INSERT INTO capability(blob) VALUES(?)", -1,
+                           &st, nullptr) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(st, 1, blob.data(), (int)blob.size(), SQLITE_TRANSIENT);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -267,6 +283,21 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         e->ns[ns][en].fields[fl] = std::move(r);
     }
     sqlite3_finalize(st);
+
+    /* Load granted capabilities (re-verifying each signature). */
+    if (sqlite3_prepare_v2(db_, "SELECT blob FROM capability ORDER BY id", -1,
+                           &st, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            std::string blob = col_blob(st, 0);
+            Capability cap;
+            if (cap_decode((const uint8_t *)blob.data(), blob.size(), cap) &&
+                cap_sig_valid(cap)) {
+                if (!e->caps) e->caps = new CapStore();
+                e->caps->add(cap);
+            }
+        }
+        sqlite3_finalize(st);
+    }
 
     return true;
 }

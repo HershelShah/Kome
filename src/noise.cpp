@@ -35,6 +35,8 @@ NoiseChannel::NoiseChannel(bool initiator, const KeyPair &id)
     : initiator_(initiator) {
     s_sk_ = id.dh_sk;
     s_pk_ = id.dh_pk;
+    sign_sk_ = id.sign_sk;
+    sign_pk_ = id.sign_pk;
     /* InitializeSymmetric("Noise_XX_25519_XChaChaPoly_SHA256"): name <= 32
      * bytes? It is 33, so h = SHA256(name). */
     static const char *name = "Noise_XX_25519_XChaChaPoly_SHA256";
@@ -102,6 +104,7 @@ bool NoiseChannel::decrypt_hash(const uint8_t *ct, size_t n, std::string &pt) {
 }
 
 void NoiseChannel::split() {
+    final_h_ = h_; /* transcript hash, identical on both ends */
     uint8_t o1[32], o2[32];
     hkdf2(ck_.data(), nullptr, 0, o1, o2);
     if (initiator_) {
@@ -219,6 +222,33 @@ bool NoiseChannel::decrypt(const std::string &ct, std::string &pt) {
                       (uint8_t *)body.data()))
         return false;
     pt = body;
+    return true;
+}
+
+namespace {
+const char *kBindLabel = "kome-channel-bind-v1";
+}
+
+bool NoiseChannel::make_identity_proof(std::string &out) {
+    if (!done_) return false;
+    std::string msg = kBindLabel;
+    msg.append((const char *)final_h_.data(), final_h_.size());
+    uint8_t sig[64];
+    sign(sign_sk_.data(), msg.data(), msg.size(), sig);
+    out.assign((const char *)sign_pk_.data(), sign_pk_.size());
+    out.append((const char *)sig, 64);
+    return true;
+}
+
+bool NoiseChannel::verify_identity_proof(const std::string &in,
+                                         uint8_t peer_sign_pk[32]) {
+    if (!done_ || in.size() != 96) return false;
+    const uint8_t *pk = (const uint8_t *)in.data();
+    const uint8_t *sig = pk + 32;
+    std::string msg = kBindLabel;
+    msg.append((const char *)final_h_.data(), final_h_.size());
+    if (!verify(pk, msg.data(), msg.size(), sig)) return false;
+    std::memcpy(peer_sign_pk, pk, 32);
     return true;
 }
 

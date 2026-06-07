@@ -37,6 +37,10 @@ struct Capability {
 
 /* Append the canonical signing bytes (everything but the signature). */
 void cap_signing_bytes(const Capability &c, std::string &out);
+/* Full wire form: signing bytes + signature. */
+void cap_encode(const Capability &c, std::string &out);
+/* Decode a full wire-form capability. Returns false on malformed input. */
+bool cap_decode(const uint8_t *buf, size_t len, Capability &out);
 /* Verify only a capability's signature (ignores expiry / access). */
 bool cap_sig_valid(const Capability &c);
 /* Verify signature AND that it is unexpired with non-empty access. */

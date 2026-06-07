@@ -34,6 +34,20 @@ public:
     /* The peer's authenticated X25519 static public key. */
     const uint8_t *remote_static() const { return rs_.data(); }
 
+    /* ---- channel-to-identity binding (M6 follow-up) --------------------
+     * The handshake only authenticates the X25519 static. These bind the
+     * channel to the long-term EdDSA signing identity: each side signs the
+     * unique final handshake hash with its signing key. A valid proof shows
+     * the signing-key holder participated in *this* handshake (so it can't be
+     * replayed across sessions or by a man-in-the-middle). */
+
+    /* Produce this side's proof: signing_pubkey(32) || signature(64). */
+    bool make_identity_proof(std::string &out);
+    /* Verify a peer's proof against this channel; on success copies the peer's
+     * authenticated signing public key into peer_sign_pk. */
+    bool verify_identity_proof(const std::string &in,
+                               uint8_t peer_sign_pk[32]);
+
 private:
     bool      initiator_;
     int       msgidx_ = 0;
@@ -46,8 +60,11 @@ private:
 
     /* Keys. */
     std::array<uint8_t, 32> s_sk_{}, s_pk_{}; /* local static (identity DH) */
+    std::array<uint8_t, 64> sign_sk_{};       /* local EdDSA signing secret */
+    std::array<uint8_t, 32> sign_pk_{};       /* local EdDSA signing public */
     std::array<uint8_t, 32> e_sk_{}, e_pk_{}; /* local ephemeral */
     std::array<uint8_t, 32> re_{}, rs_{};     /* remote ephemeral / static */
+    std::array<uint8_t, 32> final_h_{};       /* transcript hash at Split() */
 
     /* Transport keys after Split(). */
     std::array<uint8_t, 32> send_k_{}, recv_k_{};

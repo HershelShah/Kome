@@ -335,6 +335,65 @@ TEST(Storage, ScaleLoad) {
     sync_engine_destroy(mem);
 }
 
+/* ---- Capability persistence (security follow-up) ----------------------- */
+TEST(Storage, CapabilityPersistence) {
+    TempDir dir;
+    std::string db = dir.file("caps.db");
+
+    /* In-memory identities used to mint capabilities and author records. */
+    sync_engine *owner = sync_engine_create(site_from(0x70).data());
+    sync_engine *writer = sync_engine_create(site_from(0x71).data());
+    sync_engine *stranger = sync_engine_create(site_from(0x72).data());
+    uint8_t wpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(writer, wpk);
+
+    auto apply_all = [](sync_engine *target, sync_engine *src) {
+        sync_change *recs = nullptr; size_t n = 0;
+        EXPECT_EQ(sync_engine_export(src, &recs, &n), SYNC_OK);
+        int rc = SYNC_OK;
+        for (size_t i = 0; i < n; i++) {
+            int r = sync_engine_apply(target, &recs[i]);
+            if (r != SYNC_OK) { rc = r; break; }
+        }
+        sync_changes_free(recs, n);
+        return rc;
+    };
+
+    auto vseed = site_from(0x79);
+    /* Durable engine V owns nsA and is granted a delegation to `writer`. */
+    {
+        sync_engine *v = sync_engine_open(db.c_str(), vseed.data());
+        ASSERT_NE(v, nullptr);
+        sync_capability *root = sync_capability_root(
+            owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+        sync_capability *deleg =
+            sync_capability_delegate(owner, root, wpk, SYNC_ACCESS_WRITE, 0);
+        ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+        ASSERT_EQ(sync_engine_grant(v, deleg), SYNC_OK);
+        sync_capability_free(root);
+        sync_capability_free(deleg);
+        sync_engine_destroy(v); /* capabilities persisted */
+    }
+
+    /* Reopen: enforcement must still be active from the persisted caps. */
+    sync_engine *v = sync_engine_open(db.c_str(), vseed.data());
+    ASSERT_NE(v, nullptr);
+
+    sync_engine_set(writer, B(std::string("nsA")), 3, B(std::string("x")), 1,
+                    B(std::string("f")), 1, B(std::string("ok")), 2);
+    EXPECT_EQ(apply_all(v, writer), SYNC_OK) << "authorized writer rejected after reopen";
+
+    sync_engine_set(stranger, B(std::string("nsA")), 3, B(std::string("y")), 1,
+                    B(std::string("f")), 1, B(std::string("no")), 2);
+    EXPECT_EQ(apply_all(v, stranger), SYNC_ERR_UNAUTHORIZED)
+        << "unauthorized writer accepted after reopen";
+
+    sync_engine_destroy(v);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(writer);
+    sync_engine_destroy(stranger);
+}
+
 /* ---- T2.7 Oracle still green (convergence over persisted engines) ------ */
 TEST(Storage, OracleConvergesPersisted) {
     TempDir dir;

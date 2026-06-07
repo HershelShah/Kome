@@ -51,6 +51,7 @@ public:
                    uint64_t db_clock);
     bool put_meta_u64(const char *key, uint64_t v);
     bool put_meta_blob(const char *key, const uint8_t *data, size_t len);
+    bool put_capability(const std::string &blob);
 
 private:
     Storage() = default;

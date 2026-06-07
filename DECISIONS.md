@@ -148,6 +148,22 @@ One line of rationale per non-obvious choice, newest last.
   punching isn't runnable either; the simulator covers the traversal logic.
   These need a real multi-network host to exercise end to end.
 
+## Post-M6 — Security follow-ups
+
+- **Channel bound to the EdDSA identity.** After the Noise handshake each side
+  signs the unique final transcript hash with its signing key and sends
+  `signing_pubkey || signature` (`NoiseChannel::make/verify_identity_proof`).
+  A valid proof shows the signing-key holder ran *this* handshake with *this*
+  X25519 static — closing the earlier gap where the channel only authenticated
+  the DH static. It can't be replayed across sessions (the transcript hash
+  differs) or by a MITM (each leg has a different hash). Read-scoped sessions
+  can now feed the *bound* peer pubkey instead of a claimed one.
+- **Capabilities are persisted.** A `capability` table (added `IF NOT EXISTS`,
+  so v2 files stay compatible — no schema bump) stores granted caps as wire
+  blobs; `sync_engine_grant` write-throughs and `load` re-adds them
+  (re-verifying each signature). Enforcement now survives reopen. Internal
+  `cap_encode`/`cap_decode` are shared by the public ABI and storage.
+
 ## M6 — Hardening & productionization
 
 - **Fuzzing is dual-track.** Real libFuzzer targets live in `tests/fuzz/`

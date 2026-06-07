@@ -8,6 +8,7 @@
 
 #include "codec.h" /* put_varint / get_varint */
 #include "crypto.h"
+#include "storage.h"
 
 namespace ke {
 
@@ -19,6 +20,30 @@ void cap_signing_bytes(const Capability &c, std::string &out) {
     out.append(c.ns);
     out.push_back((char)c.access);
     for (int i = 0; i < 8; i++) out.push_back((char)(c.expiry >> (i * 8)));
+}
+
+void cap_encode(const Capability &c, std::string &out) {
+    cap_signing_bytes(c, out);
+    out.append((const char *)c.sig.data(), c.sig.size());
+}
+
+bool cap_decode(const uint8_t *buf, size_t len, Capability &out) {
+    const uint8_t *p = buf, *end = buf + len;
+    if (p >= end || *p++ != 0x01) return false; /* version */
+    if (end - p < 64) return false;
+    std::memcpy(out.issuer.data(), p, 32); p += 32;
+    std::memcpy(out.subject.data(), p, 32); p += 32;
+    uint64_t nslen = 0;
+    if (!get_varint(p, end, nslen) || (uint64_t)(end - p) < nslen) return false;
+    out.ns.assign((const char *)p, (size_t)nslen); p += nslen;
+    if (p >= end) return false;
+    out.access = *p++;
+    if (end - p < 8 + 64) return false;
+    out.expiry = 0;
+    for (int i = 0; i < 8; i++) out.expiry |= (uint64_t)p[i] << (i * 8);
+    p += 8;
+    std::memcpy(out.sig.data(), p, 64);
+    return true;
 }
 
 bool cap_sig_valid(const Capability &c) {
@@ -170,8 +195,7 @@ int sync_capability_encode(const sync_capability *c, uint8_t *buf,
     if (!c) return 0;
     try {
         std::string s;
-        cap_signing_bytes(*c, s);
-        s.append((const char *)c->sig.data(), c->sig.size());
+        cap_encode(*c, s);
         if (buf && buf_len >= s.size()) std::memcpy(buf, s.data(), s.size());
         return (int)s.size();
     } catch (...) {
@@ -182,25 +206,12 @@ int sync_capability_encode(const sync_capability *c, uint8_t *buf,
 sync_capability *sync_capability_decode(const uint8_t *buf, size_t len) {
     if (!buf) return nullptr;
     try {
-        const uint8_t *p = buf, *end = buf + len;
-        if (p >= end || *p++ != 0x01) return nullptr;
-        if (end - p < 64) return nullptr;
         sync_capability *c = new (std::nothrow) sync_capability();
         if (!c) return nullptr;
-        std::memcpy(c->issuer.data(), p, 32); p += 32;
-        std::memcpy(c->subject.data(), p, 32); p += 32;
-        uint64_t nslen = 0;
-        if (!get_varint(p, end, nslen) || (uint64_t)(end - p) < nslen) {
-            delete c; return nullptr;
+        if (!cap_decode(buf, len, *c)) {
+            delete c;
+            return nullptr;
         }
-        c->ns.assign((const char *)p, (size_t)nslen); p += nslen;
-        if (p >= end) { delete c; return nullptr; }
-        c->access = *p++;
-        if (end - p < 8 + 64) { delete c; return nullptr; }
-        c->expiry = 0;
-        for (int i = 0; i < 8; i++) c->expiry |= (uint64_t)p[i] << (i * 8);
-        p += 8;
-        std::memcpy(c->sig.data(), p, 64);
         return c;
     } catch (...) {
         return nullptr;
@@ -215,6 +226,12 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
         if (!cap_sig_valid(*c)) return SYNC_ERR_BADSIG;
         if (!e->caps) e->caps = new ke::CapStore();
         e->caps->add(*c);
+        /* Persist so the grant survives a reopen. */
+        if (e->store) {
+            std::string blob;
+            cap_encode(*c, blob);
+            if (!e->store->put_capability(blob)) return SYNC_ERR_INTERNAL;
+        }
         return SYNC_OK;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;

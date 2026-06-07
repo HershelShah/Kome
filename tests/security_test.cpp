@@ -197,6 +197,48 @@ TEST(Security, TamperDetection) {
     sync_engine_destroy(b);
 }
 
+/* ---- Channel-to-identity binding (security follow-up) ------------------ */
+TEST(Security, ChannelIdentityBinding) {
+    auto sa = seed_from(0x71), sb = seed_from(0x72);
+    sync_engine *a = sync_engine_create(sa.data());
+    sync_engine *b = sync_engine_create(sb.data());
+    ke::NoiseChannel ci(true, a->identity);
+    ke::NoiseChannel cr(false, b->identity);
+    ASSERT_TRUE(handshake(ci, cr));
+
+    /* Each side proves it holds its EdDSA signing key over this channel. */
+    std::string pa, pb;
+    ASSERT_TRUE(ci.make_identity_proof(pa));
+    ASSERT_TRUE(cr.make_identity_proof(pb));
+
+    uint8_t got_a[SYNC_PUBKEY_LEN], got_b[SYNC_PUBKEY_LEN];
+    ASSERT_TRUE(cr.verify_identity_proof(pa, got_a)); /* B learns A */
+    ASSERT_TRUE(ci.verify_identity_proof(pb, got_b)); /* A learns B */
+
+    uint8_t ida[SYNC_PUBKEY_LEN], idb[SYNC_PUBKEY_LEN];
+    sync_engine_identity(a, ida);
+    sync_engine_identity(b, idb);
+    /* The bound identity equals the peer's real signing identity — so a
+     * read-scoped session can trust this pubkey instead of a claimed one. */
+    EXPECT_EQ(0, std::memcmp(got_a, ida, SYNC_PUBKEY_LEN));
+    EXPECT_EQ(0, std::memcmp(got_b, idb, SYNC_PUBKEY_LEN));
+
+    /* A tampered proof is rejected. */
+    std::string bad = pa;
+    bad[40] ^= 0x01;
+    uint8_t tmp[SYNC_PUBKEY_LEN];
+    EXPECT_FALSE(cr.verify_identity_proof(bad, tmp));
+
+    /* A proof from one handshake does not verify on another (no replay). */
+    ke::NoiseChannel ci2(true, a->identity);
+    ke::NoiseChannel cr2(false, b->identity);
+    ASSERT_TRUE(handshake(ci2, cr2));
+    EXPECT_FALSE(cr2.verify_identity_proof(pa, tmp));
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
+
 /* ---- T4.4 Identity stability ------------------------------------------- */
 TEST(Security, IdentityStability) {
     auto seed = seed_from(0x21);
