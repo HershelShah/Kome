@@ -66,6 +66,12 @@ using Namespaces = std::map<std::string, Entities>;
 /* Current wall-clock time in milliseconds since the Unix epoch. */
 uint64_t now_ms();
 
+/* Apply one change. The public sync_engine_apply is a thin wrapper with
+ * already_verified=false; reconcile's parallel batch verifier calls it with
+ * already_verified=true after checking the signature out of band (the cheap
+ * "would this change state?" gate still runs either way). */
+int apply_change(sync_engine *e, const sync_change *c, bool already_verified);
+
 class Storage;          /* defined in storage.h (M2) */
 class CapStore;         /* defined in capability.h (M4) */
 struct ReconSnapshot;   /* defined in reconcile.cpp (M3): cached sync snapshot */

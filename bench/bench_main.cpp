@@ -310,7 +310,7 @@ void BM_ConvergeAllConflict(benchmark::State &st) {
     }
     st.SetComplexityN(n);
 }
-BENCHMARK(BM_ConvergeAllConflict)->RangeMultiplier(8)->Range(64, 4096)->Complexity();
+BENCHMARK(BM_ConvergeAllConflict)->RangeMultiplier(8)->Range(64, 4096)->Complexity()->UseRealTime();
 
 void BM_ConvergeFullTransfer(benchmark::State &st) {
     int n = (int)st.range(0);
@@ -328,7 +328,7 @@ void BM_ConvergeFullTransfer(benchmark::State &st) {
     }
     st.SetComplexityN(n);
 }
-BENCHMARK(BM_ConvergeFullTransfer)->RangeMultiplier(8)->Range(64, 4096)->Complexity();
+BENCHMARK(BM_ConvergeFullTransfer)->RangeMultiplier(8)->Range(64, 4096)->Complexity()->UseRealTime();
 
 } // namespace
 

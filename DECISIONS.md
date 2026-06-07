@@ -545,3 +545,31 @@ One line of rationale per non-obvious choice, newest last.
   rebuild per write). Invalidation pinned by
   `Reconcile.SnapshotCacheInvalidatesOnWrite`; scoped (per-peer read-filtered)
   sessions still build their own snapshot (not cached).
+
+## Parallel batch verification (optimization ch.4)
+
+- Bulk transfer is the one path still irreducibly verify-bound (every new record
+  must be verified once; ch.2/ch.3 only removed *avoidable* verifies). True batch
+  Ed25519 needs group-op primitives monocypher doesn't expose, and hand-rolling
+  EdDSA is a security non-starter — so reconcile's `apply_records` verifies a
+  large received batch across worker threads (`std::thread`), then applies the
+  valid records serially with `apply_change(..., already_verified=true)`.
+- **Correctness/safety:** every record is still signature-checked and the merge
+  still decides acceptance, so a forged record is dropped and cannot suppress a
+  legitimate record in the same batch (we verify all, then apply only the valid
+  — no "pick one candidate per cell" shortcut that a forgery could exploit). The
+  parallel region reads only const decoded records and writes per-index results,
+  so it is data-race-free (TSan-clean). monocypher verify is pure/stateless.
+- **Scope:** engages only at/above 16 records (small gossip-diff batches stay on
+  the serial verify-on-win path; thread-spawn would cost more than it saves) and
+  is `#ifndef __EMSCRIPTEN__` (WASM is single-threaded → serial). This keeps the
+  "one engine, one thread at a time" caller contract: the workers live and join
+  within a single `sync_session_step`, touch no engine state, and add no global
+  mutable state.
+- `sync_engine_apply` is now a thin wrapper over internal
+  `ke::apply_change(e, c, already_verified)`; `already_verified=true` skips only
+  the EdDSA check (the cheap state-change gate from ch.2 still runs).
+- Effect (4 cores): full-transfer convergence ~3.5× faster, scaling with core
+  count (docs/PERF.md). all-conflict is unchanged (its batches are ≤2 records,
+  below the threshold). Per-record verify cost is unchanged — we just run them
+  concurrently.

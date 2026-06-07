@@ -408,7 +408,15 @@ int sync_engine_exists(sync_engine *e,
     }
 }
 
-int sync_engine_apply(sync_engine *e, const sync_change *c) {
+} // extern "C"
+
+/* Internal apply, shared by the public ABI and reconcile's parallel batch
+ * verifier. already_verified=true skips only the EdDSA check (the caller
+ * verified the signature out of band); the cheap LWW/existence "would this
+ * change state?" gate still runs, so verify-on-win and every other invariant
+ * hold regardless. */
+int ke::apply_change(sync_engine *e, const sync_change *c,
+                     bool already_verified) {
     if (!e || !c) return SYNC_ERR_INVALID;
     if ((!c->ns && c->ns_len) || (!c->entity && c->entity_len))
         return SYNC_ERR_INVALID;
@@ -447,7 +455,7 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
                         : std::memcmp(c->author, cur_author, SYNC_PUBKEY_LEN);
             if (order <= 0) return SYNC_OK; /* dominated: no verify, no state */
 
-            if (!verify_change(c)) {
+            if (!already_verified && !verify_change(c)) {
                 engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
                 return SYNC_ERR_BADSIG;
             }
@@ -484,7 +492,7 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
                 return SYNC_OK; /* dominated: no verify, no clock, no state */
         }
 
-        if (!verify_change(c)) {
+        if (!already_verified && !verify_change(c)) {
             engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
             return SYNC_ERR_BADSIG;
         }
@@ -511,6 +519,12 @@ int sync_engine_apply(sync_engine *e, const sync_change *c) {
     } catch (...) {
         return SYNC_ERR_INTERNAL;
     }
+}
+
+extern "C" {
+
+int sync_engine_apply(sync_engine *e, const sync_change *c) {
+    return ke::apply_change(e, c, false);
 }
 
 int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {

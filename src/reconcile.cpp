@@ -27,10 +27,14 @@
 #include <new>
 #include <string>
 #include <vector>
+#ifndef __EMSCRIPTEN__
+#include <thread> /* parallel batch signature verification (native only) */
+#endif
 
 #include "byteorder.h"
 #include "capability.h"
 #include "codec.h"
+#include "crypto.h"
 #include "engine.hpp"
 #include "sha256.h"
 #include "sync_engine.h"
@@ -308,13 +312,67 @@ struct sync_session {
 
 namespace {
 
+#ifndef __EMSCRIPTEN__
+/* Verify a decoded record's signature. Pure (no engine/global state), so it is
+ * safe to run concurrently across worker threads. (Only the parallel path uses
+ * it; the serial path verifies inside apply_change.) */
+bool change_sig_ok(const sync_change &c) {
+    std::string signing;
+    encode_signing(c, signing);
+    return verify(c.author, signing.data(), signing.size(), c.signature);
+}
+
+/* Batches at/above this size verify in parallel (small batches — the steady-
+ * state gossip diff — stay serial; thread spawn would cost more than it saves).
+ * EdDSA verify is ~130us, so even a few-record batch dwarfs the spawn cost. */
+constexpr size_t kParallelVerifyMin = 16;
+constexpr unsigned kMaxVerifyThreads = 8;
+#endif
+
+/* Apply a batch of received records. For a large batch (a bulk transfer / big
+ * diff) the signatures are verified in parallel and the valid records applied
+ * with already_verified=true; small batches take the plain verify-on-win path.
+ * Either way every applied record is signature-checked and the merge decides
+ * acceptance, so a forged record is dropped and cannot suppress a legitimate
+ * one in the same batch. */
 void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
+    std::vector<DecodedChange> decoded;
+    decoded.reserve(recs.size());
     for (auto &r : recs) {
         DecodedChange d;
         size_t used = 0;
-        if (!decode_record((const uint8_t *)r.data(), r.size(), d, used)) continue;
+        if (decode_record((const uint8_t *)r.data(), r.size(), d, used))
+            decoded.push_back(std::move(d));
+    }
+
+#ifndef __EMSCRIPTEN__
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned workers = std::min<unsigned>(hw ? hw : 1, kMaxVerifyThreads);
+    if (decoded.size() >= kParallelVerifyMin && workers > 1) {
+        const size_t n = decoded.size();
+        std::vector<char> ok(n, 0); /* distinct index per worker: no races */
+        std::vector<std::thread> pool;
+        const size_t chunk = (n + workers - 1) / workers;
+        for (unsigned w = 0; w < workers; w++) {
+            size_t lo = (size_t)w * chunk, hi = std::min(n, lo + chunk);
+            if (lo >= hi) break;
+            pool.emplace_back([&decoded, &ok, lo, hi] {
+                for (size_t i = lo; i < hi; i++)
+                    ok[i] = change_sig_ok(decoded[i].view()) ? 1 : 0;
+            });
+        }
+        for (auto &t : pool) t.join();
+        for (size_t i = 0; i < n; i++) {
+            if (!ok[i]) continue;
+            sync_change c = decoded[i].view();
+            apply_change(e, &c, /*already_verified=*/true);
+        }
+        return;
+    }
+#endif
+    for (auto &d : decoded) {
         sync_change c = d.view();
-        sync_engine_apply(e, &c);
+        apply_change(e, &c, /*already_verified=*/false);
     }
 }
 

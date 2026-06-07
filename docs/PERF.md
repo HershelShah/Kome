@@ -111,17 +111,46 @@ write→sync→write→sync workload is unchanged; a gossip mesh that syncs with
 peers between writes is now essentially free. Full-transfer/all-conflict are
 unchanged (they mutate, so they rebuild — and are verify-bound anyway).
 
+## Chapter 4 — parallel batch verification ✅
+
+The one path still irreducibly verify-bound is bulk transfer: every genuinely-
+new record must be verified once, and chapters 2–3 can't skip work that's real.
+True batch Ed25519 (~2×) needs primitives monocypher doesn't expose, and hand-
+rolling EdDSA is a security non-starter — so we parallelize instead. A large
+received batch has all its signatures verified across worker threads (a pure,
+stateless monocypher call — no shared mutable state), then the valid records are
+applied serially with `already_verified=true`. Forgery-safe: every record is
+still verified and the merge still decides acceptance, so a forged record is
+dropped and can't suppress a legitimate one in the same batch. Small batches
+(the steady-state gossip diff) stay on the serial verify-on-win path; threads
+only engage at/above 16 records, where verify work dwarfs spawn cost. Compiled
+out under Emscripten (WASM is single-threaded).
+
+| Case (wall time, 4 cores) | ch.3 | ch.4 | |
+|---|---:|---:|--|
+| converge **full-transfer** N=4096 | 1076 ms | **309 ms** | ~3.5× (scales with cores) |
+| converge **full-transfer** N=512 | 134 ms | 36 ms | ~3.7× |
+| converge **all-conflict** | 275 µs/rec | 275 µs/rec | unchanged — batches are tiny (≤2 recs/leaf), stay serial |
+| full test suite wall-time | ~50 s | ~44 s | bulk syncs in multinode/resilience parallelize |
+
+Per-record `verify` is unchanged (130 µs); we just run N of them on all cores.
+Initial sync of a large dataset — the last expensive case — now scales with
+hardware. (TSan-clean: the parallel region touches only per-index outputs and
+const inputs.)
+
 ## Optimization backlog (data-driven, in priority order)
 
 1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2).
 2. ~~**Cache the reconciliation snapshot.**~~ ✅ done (chapter 3).
-3. **One sign per new cell.** A fresh cell signs the existence assertion *and*
+3. ~~**Faster verify** — parallel batch verification.~~ ✅ done (chapter 4).
+   (True batch-Ed25519 / a faster backend remain possible but need a different
+   vendored crypto lib; parallelism captured most of the win safely.)
+
+Remaining, lower-priority:
+4. **One sign per new cell.** A fresh cell signs the existence assertion *and*
    the first register (86 µs). Explore deferring/coalescing.
-4. **Incremental digest** — maintain a running combinable digest so `digest` is
+5. **Incremental digest** — maintain a running combinable digest so `digest` is
    O(changed) rather than O(N) SHA-256 each call.
-5. **Faster verify primitive** (last resort) — batch Ed25519 verification (~2×)
-   or a faster backend. monocypher is the vendored choice, so this is a bigger,
-   later lever than 1–4.
 
 Each subsequent chapter takes one item, re-runs `./build/bench` against this
 baseline, and records the delta here.
