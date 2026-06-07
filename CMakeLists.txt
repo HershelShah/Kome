@@ -51,6 +51,7 @@ set(SYNC_SOURCES
     src/transport/udp.cpp
     src/transport/stun.cpp
     src/transport/relay.cpp
+    src/transport/rendezvous.cpp
 )
 
 add_library(sync_engine STATIC ${SYNC_SOURCES})
@@ -92,6 +93,14 @@ add_executable(meshnode examples/meshnode.cpp)
 target_link_libraries(meshnode PRIVATE sync_engine monocypher)
 target_include_directories(meshnode PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+# Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
+add_executable(relayd services/relay/relay_main.cpp)
+target_link_libraries(relayd PRIVATE sync_engine)
+target_include_directories(relayd PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_executable(rendezvousd services/rendezvous/rendezvous_main.cpp)
+target_link_libraries(rendezvousd PRIVATE sync_engine)
+target_include_directories(rendezvousd PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # --- Tests -----------------------------------------------------------------
 if(SYNC_BUILD_TESTS)
@@ -149,6 +158,11 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(resilience_test tests/resilience_test.cpp)
 
     sync_add_test(scenario_test tests/scenario_test.cpp)
+
+    sync_add_test(service_test tests/service_test.cpp)
+    target_link_libraries(service_test PRIVATE monocypher)
+    target_include_directories(service_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 endif()
 
 # --- Multi-process chaos integration test (slow; opt in) -------------------

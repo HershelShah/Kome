@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "transport/udp.h"
+
 namespace ke {
 
 class Relay {
@@ -33,6 +35,21 @@ private:
     }
     std::map<std::string, std::deque<std::string>> mailbox_;
 };
+
+/* ---- UDP relay service (wraps the blind Relay core) -------------------- */
+
+/* Process one incoming relay request on sock (SEND queues; FETCH replies with
+ * the requester's queued blobs). Returns true if a datagram was handled. */
+bool relay_server_step(Relay &relay, UdpSocket &sock, int timeout_ms);
+
+/* Client: queue an opaque blob for dst at the relay `server`. */
+bool relay_client_send(UdpSocket &sock, const Endpoint &server,
+                       const uint8_t dst[32], const std::string &blob);
+
+/* Client: fetch blobs addressed to me from `server`; appends to out. */
+bool relay_client_fetch(UdpSocket &sock, const Endpoint &server,
+                        const uint8_t me[32], std::vector<std::string> &out,
+                        int timeout_ms);
 
 } // namespace ke
 
