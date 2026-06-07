@@ -316,3 +316,22 @@ One line of rationale per non-obvious choice, newest last.
   transport here is for native nodes and for a relay/server that speaks WS to
   such browser nodes. A WASM build is the natural next step for in-browser
   replicas.
+
+## WebAssembly build (browser as a full node)
+
+- **`tools/wasm_build.sh`** compiles the engine core (no transport/sockets) to
+  `build-wasm/sync_engine.{js,wasm}` with Emscripten, exporting the public C
+  ABI. The browser does I/O with its native `WebSocket` and drives the
+  transport-agnostic reconciliation **session** through the exported ABI, so a
+  browser tab is a real replica — not just a client.
+- `.c` deps (sqlite, monocypher) are compiled with `emcc` (C); `em++` would
+  treat `.c` as C++. sqlite is built `SQLITE_THREADSAFE=0` (single-threaded
+  WASM); in-memory engines don't touch it, and durable storage in-browser
+  (IDBFS/OPFS) is a later step.
+- **`bindings/wasm/sync_engine.cjs`** mirrors the Python binding over the WASM
+  heap; **`bindings/wasm/smoke.cjs`** runs in Node (identical to a browser for
+  the compute) and verifies two engines converge via the session + a
+  conflict resolves — wired into `.github/workflows/wasm.yml`. `examples/web/`
+  is an in-page browser demo with the WebSocket pump sketched.
+- Node 22 exposes a global `fetch`, which trips Emscripten 3.1.6 into the web
+  load path; the binding passes `wasmBinary` explicitly to avoid it.

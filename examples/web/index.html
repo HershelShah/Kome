@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- In-browser demo: the engine compiled to WASM runs as a full node.
+     Serve this directory alongside the built module:
+       tools/wasm_build.sh
+       cp build-wasm/sync_engine.{js,wasm} examples/web/
+       (cd examples/web && python3 -m http.server 8080)
+       open http://localhost:8080/
+     It creates two engines in the page, writes to each, reconciles them via
+     the session, and shows they converge — all in the browser. The commented
+     wsPump() shows how a real browser node drives the same session over its
+     native WebSocket to a remote peer. -->
+<html>
+<head><meta charset="utf-8"><title>P2P engine in the browser (WASM)</title>
+<style>body{font:14px/1.5 system-ui;margin:2rem;max-width:48rem}pre{background:#f4f4f4;padding:1rem;border-radius:6px;white-space:pre-wrap}</style>
+</head>
+<body>
+<h1>Replication engine running in the browser (WASM)</h1>
+<pre id="out">loading…</pre>
+<script src="sync_engine.js"></script>
+<script>
+const SEED=32, DIGEST=32, OK=0, NOTFOUND=3;
+const enc=s=>new TextEncoder().encode(s), dec=u=>new TextDecoder().decode(u);
+const log=(...a)=>{document.getElementById("out").textContent+=a.join(" ")+"\n";};
+
+createSyncEngine().then(M=>{
+  const toHeap=u=>{const p=M._malloc(u.length||1);M.HEAPU8.set(u,p);return p;};
+  const u32=p=>M.HEAPU32[p>>2];
+
+  const create=seed=>{const p=toHeap(seed);const e=M._sync_engine_create(p);M._free(p);return e;};
+  const set=(e,ns,en,f,v)=>{const a=enc(ns),b=enc(en),c=enc(f),d=enc(v);
+    const pa=toHeap(a),pb=toHeap(b),pc=toHeap(c),pd=toHeap(d);
+    M._sync_engine_set(e,pa,a.length,pb,b.length,pc,c.length,pd,d.length);
+    [pa,pb,pc,pd].forEach(M._free);};
+  const get=(e,ns,en,f)=>{const a=enc(ns),b=enc(en),c=enc(f);
+    const pa=toHeap(a),pb=toHeap(b),pc=toHeap(c),op=M._malloc(4),ol=M._malloc(4);
+    const rc=M._sync_engine_get(e,pa,a.length,pb,b.length,pc,c.length,op,ol);
+    let r=null; if(rc===OK){const dp=u32(op),n=u32(ol);r=dec(M.HEAPU8.slice(dp,dp+n));M._sync_free(dp);}
+    [pa,pb,pc,op,ol].forEach(M._free); return r;};
+  const digest=e=>{const b=M._malloc(DIGEST);M._sync_engine_digest(e,b);
+    const h=[...M.HEAPU8.slice(b,b+8)].map(x=>x.toString(16).padStart(2,"0")).join("");M._free(b);return h;};
+  const step=(s,inU8)=>{const ip=inU8.length?toHeap(inU8):0,op=M._malloc(4),ol=M._malloc(4),dp=M._malloc(4);
+    M._sync_session_step(s,ip,inU8.length,op,ol,dp);
+    let out=new Uint8Array(0);const n=u32(ol);if(n){const d=u32(op);out=M.HEAPU8.slice(d,d+n);M._sync_free(d);}
+    if(ip)M._free(ip);[op,ol,dp].forEach(M._free);return out;};
+  const sync=(a,b)=>{const sa=M._sync_session_begin(a,1),sb=M._sync_session_begin(b,0);
+    let msg=step(sa,new Uint8Array(0)),turn=sb,oth=sa,empty=msg.length?0:1;
+    for(let i=0;i<100000;i++){const o=step(turn,msg);empty=o.length?0:empty+1;if(empty>=2)break;msg=o;[turn,oth]=[oth,turn];}
+    M._sync_session_end(sa);M._sync_session_end(sb);};
+
+  document.getElementById("out").textContent="";
+  log("ABI version:", M._sync_abi_version());
+  const a=create(new Uint8Array(32).fill(1)), b=create(new Uint8Array(32).fill(2));
+  set(a,"people","alice","name","Alice");
+  set(b,"people","bob","name","Bob");
+  log("before sync:  A digest", digest(a), " B digest", digest(b));
+  sync(a,b);
+  log("A now sees people/bob/name =", get(a,"people","bob","name"));
+  log("B now sees people/alice/name =", get(b,"people","alice","name"));
+  log("after sync:   A digest", digest(a), " B digest", digest(b));
+  log("converged:", digest(a)===digest(b) ? "YES ✓" : "NO");
+  M._sync_engine_destroy(a); M._sync_engine_destroy(b);
+
+  // --- real peer sync over a browser WebSocket (sketch) ---------------------
+  // const ws = new WebSocket("wss://your-relay.example/peer");  // wss = TLS
+  // ws.binaryType = "arraybuffer";
+  // const s = M._sync_session_begin(engine, /*initiator=*/1);
+  // const first = step(s, new Uint8Array(0));
+  // if (first.length) ws.send(first);
+  // ws.onmessage = ev => { const reply = step(s, new Uint8Array(ev.data));
+  //                        if (reply.length) ws.send(reply); };
+});
+</script>
+</body>
+</html>

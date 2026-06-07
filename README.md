@@ -196,6 +196,22 @@ The ctypes wrapper (`bindings/python/sync_engine.py`) mirrors the C ABI; the
 smoke test reproduces `examples/example.c` (write → export → apply → read →
 digest match).
 
+## WebAssembly (browser as a full node)
+
+The engine compiles to WASM so a browser tab is a real replica, driving the
+transport-agnostic reconciliation session over its native WebSocket:
+
+```bash
+sudo apt-get install -y emscripten
+tools/wasm_build.sh                       # -> build-wasm/sync_engine.{js,wasm}
+node bindings/wasm/smoke.cjs              # two engines converge, in WASM
+```
+
+`bindings/wasm/sync_engine.cjs` is the JS binding (mirrors the Python one);
+`examples/web/index.html` is an in-page browser demo. A browser node reaches
+other nodes via a WebSocket-speaking peer/relay (the native `src/transport/ws.*`
+side). Verified in CI by `.github/workflows/wasm.yml`.
+
 ## Dependencies
 
 Vendored, permissively licensed:
