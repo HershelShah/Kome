@@ -110,6 +110,33 @@ std::vector<std::pair<int, int>> ring_edges(int n) {
     return e;
 }
 
+/* Set up an enforced namespace: node 0 owns `ns`, every node enforces it (holds
+ * the root) and carries its own write delegation. Each node then writes one
+ * record it is authorized for. Authorization for *other* nodes' records must be
+ * obtained purely by capabilities gossiped during sync. */
+void setup_enforced(Net &net, const char *ns) {
+    sync_engine *owner = net.nodes[0];
+    sync_capability *root =
+        sync_capability_root(owner, ns, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    for (int i = 0; i < net.size(); i++) {
+        EXPECT_EQ(sync_engine_grant(net.nodes[i], root), SYNC_OK); /* all enforce */
+        uint8_t pk[SYNC_PUBKEY_LEN];
+        sync_engine_identity(net.nodes[i], pk);
+        sync_capability *d =
+            sync_capability_delegate(owner, root, pk, SYNC_ACCESS_WRITE, 0);
+        EXPECT_EQ(sync_engine_grant(net.nodes[i], d), SYNC_OK); /* carries own cap */
+        sync_capability_free(d);
+    }
+    sync_capability_free(root);
+
+    std::string nss(ns);
+    for (int i = 0; i < net.size(); i++) {
+        std::string ent = "rec" + std::to_string(i);
+        sync_engine_set(net.nodes[i], B(nss), nss.size(), B(ent), ent.size(),
+                        B(std::string("f")), 1, B(ent), ent.size());
+    }
+}
+
 } // namespace
 
 /* ---- Ring topology, scaling N ------------------------------------------ */
@@ -140,6 +167,38 @@ TEST(MultiNode, RingScaling) {
             std::cout << "  [ring]   N=" << n << " converged in " << rounds
                       << " rounds (total records=" << (n * n * 2) << ")\n";
         }
+    }
+}
+
+/* ---- Enforced namespace at scale (capabilities gossiped during sync) --- */
+TEST(MultiNode, EnforcedRingWithCapabilities) {
+    std::vector<int> sizes = {5, 10, 25};
+    if (const char *env = getenv("SYNC_SCALE_N")) {
+        int n = atoi(env);
+        if (n > 1) sizes.push_back(n);
+    }
+    for (int n : sizes) {
+        Net net(n);
+        setup_enforced(net, "secure");
+
+        int rounds = net.gossip(ring_edges(n), n + 5);
+        EXPECT_TRUE(net.converged()) << "enforced ring n=" << n << " diverged";
+
+        /* Every node ended up with every node's record — all authorized purely
+         * via capabilities exchanged during gossip (no out-of-band grants). */
+        int total_present = 0;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++) {
+                std::string ent = "rec" + std::to_string(j);
+                int p = 0;
+                sync_engine_exists(net.nodes[i], B(std::string("secure")), 6,
+                                   B(ent), ent.size(), &p);
+                total_present += p;
+            }
+        EXPECT_EQ(total_present, n * n)
+            << "enforced ring n=" << n << ": some authorized records were dropped";
+        std::cout << "  [enforced] N=" << n << " converged in " << rounds
+                  << " rounds, all " << (n * n) << " (node x record) present\n";
     }
 }
 
