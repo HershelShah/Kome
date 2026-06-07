@@ -130,23 +130,33 @@ state (validated under ThreadSanitizer in `threading_test`).
 
 ## Fuzzing
 
-`tests/fuzz/` has libFuzzer targets for `sync_change_decode`,
-`sync_capability_decode`, and the reconciliation message parser. Build them
-with a clang that ships the fuzzer runtime:
+`tests/fuzz/` has coverage-guided libFuzzer targets over **every place the
+library parses externally-controlled bytes**:
+
+| Target | Surface |
+|--------|---------|
+| `fuzz_change_decode` | record codec |
+| `fuzz_capability_decode` | capability codec |
+| `fuzz_session` | reconciliation message parser |
+| `fuzz_apply` | decode → signature-verify → merge |
+| `fuzz_storage` | on-disk load (corrupt SQLite file) |
+| `fuzz_noise` | Noise XX handshake parser |
+| `fuzz_stun` | STUN request/response parser |
+| `fuzz_reliable` | reliability-layer datagram framing |
 
 ```bash
 sudo apt-get install -y clang libclang-rt-18-dev    # provides libclang_rt.fuzzer
-cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DSYNC_FUZZ=ON -DSYNC_BUILD_TESTS=OFF
+cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+      -DSYNC_FUZZ=ON -DSYNC_BUILD_TESTS=OFF
 cmake --build build-fuzz
-./build-fuzz/fuzz_change_decode -max_total_time=120 corpus_change/
+./build-fuzz/fuzz_change_decode corpus_change/      # runs until stopped
 ```
 
-A coverage-guided budget run (~30 s/target) executed ~34 M inputs through the
-decoders and reached 857 edges in the message parser with zero crashes/leaks;
-`.github/workflows/fuzz.yml` runs this nightly. `hardening_test` exercises the
-same parsers with tens of thousands of random/mutated inputs under
-AddressSanitizer, so the no-crash property is checked in regular CI even
-without the libFuzzer runtime.
+`.github/workflows/fuzz.yml` runs **all eight targets in parallel nightly**,
+each for the full runner window, with each corpus cached so coverage compounds
+night over night. Smoke runs found zero crashes/OOB/leaks/UB. `hardening_test`
+is the always-on ASan surrogate for regular per-PR CI (random/mutated inputs
+through the same parsers) where the libFuzzer runtime isn't installed.
 
 ## Python binding
 

@@ -1,56 +1,67 @@
 name: Fuzz
 
-# Coverage-guided libFuzzer budget run. Fuzzing is open-ended, so this runs on
-# a nightly schedule and on demand rather than on every push.
+# Coverage-guided libFuzzer over the whole untrusted-input surface of the
+# library. Each target runs on its own runner in parallel for the full
+# overnight window, and its corpus is cached so coverage compounds night over
+# night (real, accumulating coverage rather than a token budget).
 on:
   schedule:
-    - cron: "0 3 * * *"   # nightly 03:00 UTC
+    - cron: "0 2 * * *"   # nightly 02:00 UTC
   workflow_dispatch:
     inputs:
       seconds:
-        description: "Per-target time budget (seconds)"
-        default: "120"
+        description: "Per-target run length (seconds)"
+        default: "18000"   # 5h; the runner cap is 6h, so this fills the night
 
 jobs:
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        # every place the library parses externally-controlled bytes
+        target:
+          - change_decode      # record codec
+          - capability_decode  # capability codec
+          - session            # reconciliation message parser
+          - apply              # decode + signature-verify + merge
+          - storage            # on-disk load (corrupt SQLite file)
+          - noise              # Noise XX handshake parser
+          - stun               # STUN request/response parser
+          - reliable           # reliability-layer datagram framing
     steps:
       - uses: actions/checkout@v5
 
       - name: Install clang + libFuzzer runtime
         run: sudo apt-get update && sudo apt-get install -y clang libclang-rt-18-dev
 
-      - name: Build fuzz targets
+      - name: Build the ${{ matrix.target }} fuzzer
         run: |
           cmake -B build-fuzz \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DSYNC_FUZZ=ON -DSYNC_BUILD_TESTS=OFF
-          cmake --build build-fuzz -j"$(nproc)"
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_${{ matrix.target }}
 
-      - name: Restore corpora
+      - name: Restore corpus
         uses: actions/cache@v4
         with:
-          path: corpus
-          key: fuzz-corpus-${{ github.run_id }}
-          restore-keys: fuzz-corpus-
+          path: corpus/${{ matrix.target }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
 
-      - name: Run budget
+      - name: Fuzz ${{ matrix.target }}
         run: |
-          SECS="${{ github.event.inputs.seconds || '120' }}"
-          mkdir -p corpus/change corpus/capability corpus/session crashes
-          rc=0
-          for t in change_decode capability_decode session; do
-            d="${t%_decode}"
-            echo "::group::fuzz_$t ($SECS s)"
-            ./build-fuzz/fuzz_$t -max_total_time="$SECS" \
-              -artifact_prefix="crashes/${t}-" corpus/$d || rc=1
-            echo "::endgroup::"
-          done
-          exit $rc
+          mkdir -p corpus/${{ matrix.target }} crashes
+          ./build-fuzz/fuzz_${{ matrix.target }} \
+            -max_total_time="${{ github.event.inputs.seconds || '18000' }}" \
+            -print_final_stats=1 \
+            -artifact_prefix="crashes/${{ matrix.target }}-" \
+            corpus/${{ matrix.target }}
 
-      - name: Upload crashes (if any)
+      - name: Upload crashes (only if something was found)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-crashes
+          name: fuzz-crash-${{ matrix.target }}
           path: crashes/

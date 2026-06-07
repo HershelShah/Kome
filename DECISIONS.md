@@ -240,3 +240,18 @@ One line of rationale per non-obvious choice, newest last.
   (installs the runtime, caches corpora, uploads any crash artifacts).
 - `hardening_test` remains the always-on surrogate for regular CI (random +
   mutated inputs under ASan) where the fuzzer runtime isn't installed.
+
+## Fuzzing — whole-surface, overnight, compounding corpus
+
+- **Eight targets cover every untrusted-input boundary**, not just the codecs:
+  record decode, capability decode, reconciliation message parser, decode+apply
+  (signature verify + merge), on-disk storage load (corrupt SQLite), Noise XX
+  handshake parser, STUN parser, and reliability-layer framing.
+- **No token budget for the nightly run.** `.github/workflows/fuzz.yml` runs
+  each target on its own runner in parallel for the full window (default 5h,
+  the 6h runner cap leaving margin) and caches each corpus so coverage
+  accumulates night over night — real, growing coverage rather than a fixed
+  budget. Crashing inputs are uploaded as artifacts (and become regression
+  seeds).
+- Smoke runs of all eight (15-30s each here) executed tens of millions of
+  inputs total with zero findings.
