@@ -146,6 +146,8 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(multinode_test tests/multinode_test.cpp)
 
     sync_add_test(resilience_test tests/resilience_test.cpp)
+
+    sync_add_test(scenario_test tests/scenario_test.cpp)
 endif()
 
 # --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
