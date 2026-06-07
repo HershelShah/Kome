@@ -82,6 +82,24 @@ SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python \
               print(e.get(b'contacts', b'B-0', b'name'))"
 ```
 
+## Multi-node mesh demo
+
+`examples/meshnode` is a gossip daemon: one UDP socket, multiple peers, a Noise
+channel per peer, and a fresh reconciliation cycle every ~300 ms (so newly
+learned data propagates onward). `examples/mesh_demo.sh` launches N of them in a
+ring where each node talks only to its two neighbours:
+
+```bash
+cmake --build build --target meshnode
+examples/mesh_demo.sh 8 8      # 8 processes, 8 seconds
+```
+
+Each node starts with one local record and ends knowing all N — data travels
+multi-hop around the ring across separate processes — and all report a single
+identical digest. The in-process `multinode_test` pushes the same anti-entropy
+to far larger N (verified to 250 nodes / 125k records) over ring, star, and
+random-mesh topologies.
+
 ## Design
 
 - **Convergence is the law.** Every value type's merge is a semilattice join

@@ -86,6 +86,12 @@ target_link_libraries(node PRIVATE sync_engine monocypher)
 target_include_directories(node PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
+# Multi-peer gossip daemon for the multi-process mesh demo.
+add_executable(meshnode examples/meshnode.cpp)
+target_link_libraries(meshnode PRIVATE sync_engine monocypher)
+target_include_directories(meshnode PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
 # --- Tests -----------------------------------------------------------------
 if(SYNC_BUILD_TESTS)
     include(FetchContent)
