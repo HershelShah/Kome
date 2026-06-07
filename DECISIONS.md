@@ -197,3 +197,15 @@ One line of rationale per non-obvious choice, newest last.
   UBSan with zero errors; Valgrind reports zero leaks on the example and the
   deterministic convergence tests (the randomized 300-trial tests are
   leak-covered by ASan's LeakSanitizer, which is far faster).
+
+## Resilience scenarios (real-life operational tests)
+
+- **resilience_test** exercises combined failure/recovery situations, not just
+  the unit-level primitives: a network partition that diverges with a
+  conflicting edit then heals (deterministic LWW winner, all non-conflicting
+  edits survive); a node that drops offline — missing peers' edits and making
+  its own — then rejoins and catches up both ways; a durable node that crashes,
+  restarts from its file with no data loss, and rejoins; and 40 rounds of
+  random churn (nodes independently up/down + writing) that converges with
+  every record present on every node (no data loss). All in-process and
+  deterministic.

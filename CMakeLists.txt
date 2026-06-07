@@ -144,6 +144,8 @@ if(SYNC_BUILD_TESTS)
     target_link_libraries(threading_test PRIVATE Threads::Threads)
 
     sync_add_test(multinode_test tests/multinode_test.cpp)
+
+    sync_add_test(resilience_test tests/resilience_test.cpp)
 endif()
 
 # --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
