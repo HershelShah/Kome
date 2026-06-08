@@ -62,12 +62,26 @@ void populate(sync_engine *e, int n, const char *prefix = "e") {
     }
 }
 
-/* Drive two engines to convergence; returns step count. */
-int converge(sync_engine *a, sync_engine *b) {
+/* Wire metrics for one full convergence: how many messages crossed, how many
+ * total bytes (both directions), and the largest single message. The last one
+ * matters operationally: a reconcile message above the relay's 64 KiB blob cap
+ * (S6a kMaxBlobBytes) would be dropped, so relay-routed sync would fail at a
+ * scale where direct sync still works. */
+struct WireStats {
+    long messages = 0;     /* non-empty session messages exchanged */
+    long bytes = 0;        /* sum of all message sizes, both directions */
+    long max_msg = 0;      /* largest single message */
+};
+
+/* Drive two engines to convergence; returns step count, and (if `ws`) the
+ * bytes/messages/max-message that crossed the wire. */
+int converge(sync_engine *a, sync_engine *b, WireStats *ws = nullptr) {
     sync_session *sa = sync_session_begin(a, 1);
     sync_session *sb = sync_session_begin(b, 0);
     uint8_t *out = nullptr; size_t ol = 0; int done = 0;
     sync_session_step(sa, nullptr, 0, &out, &ol, &done);
+    if (ws && ol) { ws->messages++; ws->bytes += (long)ol;
+                    if ((long)ol > ws->max_msg) ws->max_msg = (long)ol; }
     std::vector<uint8_t> msg(out, out + ol);
     if (out) sync_free(out);
     sync_session *turn = sb, *other = sa;
@@ -75,6 +89,8 @@ int converge(sync_engine *a, sync_engine *b) {
     for (; steps < 100000; steps++) {
         out = nullptr; ol = 0; done = 0;
         sync_session_step(turn, msg.data(), msg.size(), &out, &ol, &done);
+        if (ws && ol) { ws->messages++; ws->bytes += (long)ol;
+                        if ((long)ol > ws->max_msg) ws->max_msg = (long)ol; }
         std::vector<uint8_t> next(out, out + ol);
         if (out) sync_free(out);
         empties = ol == 0 ? empties + 1 : 0;
@@ -85,6 +101,22 @@ int converge(sync_engine *a, sync_engine *b) {
     sync_session_end(sa);
     sync_session_end(sb);
     return steps;
+}
+
+/* Attach wire metrics from one convergence as GoogleBenchmark counters, so the
+ * report carries bytes/rounds/max-message alongside CPU time. `raw_diff_bytes`
+ * (if > 0) lets us also report the amplification factor: wire bytes divided by
+ * the raw payload that genuinely had to move. */
+void report_wire(benchmark::State &st, const WireStats &ws,
+                 long raw_diff_bytes = 0) {
+    st.counters["rounds"] = (double)ws.messages;
+    st.counters["wire_bytes"] = (double)ws.bytes;
+    st.counters["max_msg"] = (double)ws.max_msg;
+    /* Headroom under the 64 KiB relay blob cap (S6a). <1.0 would mean a single
+     * message is too big to relay. */
+    st.counters["relay_cap_frac"] = (double)ws.max_msg / 65536.0;
+    if (raw_diff_bytes > 0)
+        st.counters["amplification"] = (double)ws.bytes / (double)raw_diff_bytes;
 }
 
 /* ---- crypto primitives ------------------------------------------------- */
@@ -294,6 +326,15 @@ void BM_SessionBeginCold(benchmark::State &st) {
 }
 BENCHMARK(BM_SessionBeginCold)->RangeMultiplier(4)->Range(64, 4096)->Complexity();
 
+/* Canonical encoded size of one representative record (the shape populate()
+ * writes), used as the amplification denominator. */
+long record_wire_size() {
+    sync_change c = make_signed("ns", "e0", "f", "value-data", seed_of(1));
+    std::string o;
+    encode_record(c, o);
+    return (long)o.size();
+}
+
 void BM_ConvergeInSync(benchmark::State &st) {
     /* Already-converged engines: the fingerprint matches at the top, so this is
      * the "nothing to send" fast path (dominated by the two session snapshots).
@@ -307,6 +348,8 @@ void BM_ConvergeInSync(benchmark::State &st) {
     populate(b, n);
     converge(a, b); /* now identical */
     for (auto _ : st) benchmark::DoNotOptimize(converge(a, b));
+    WireStats ws; converge(a, b, &ws); /* in-sync poll: should be tiny & flat */
+    report_wire(st, ws);
     st.SetComplexityN(n);
     sync_engine_destroy(a);
     sync_engine_destroy(b);
@@ -331,6 +374,18 @@ void BM_ConvergeAllConflict(benchmark::State &st) {
         sync_engine_destroy(b);
         st.ResumeTiming();
     }
+    /* One un-timed run on a fresh all-conflict pair to capture wire metrics:
+     * every one of the n cells differs and is exchanged + LWW-merged both ways. */
+    {
+        sync_engine *a = sync_engine_create(seed_of(10).data());
+        sync_engine *b = sync_engine_create(seed_of(11).data());
+        populate(a, n);
+        populate(b, n);
+        WireStats ws; converge(a, b, &ws);
+        report_wire(st, ws, (long)n * record_wire_size());
+        sync_engine_destroy(a);
+        sync_engine_destroy(b);
+    }
     st.SetComplexityN(n);
 }
 BENCHMARK(BM_ConvergeAllConflict)->RangeMultiplier(8)->Range(64, 4096)->Complexity()->UseRealTime();
@@ -349,9 +404,63 @@ void BM_ConvergeFullTransfer(benchmark::State &st) {
         sync_engine_destroy(b);
         st.ResumeTiming();
     }
+    /* Un-timed run for wire metrics: a cold node pulling all n records. The
+     * amplification denominator is the raw payload that genuinely had to move. */
+    {
+        sync_engine *a = sync_engine_create(seed_of(20).data());
+        sync_engine *b = sync_engine_create(seed_of(21).data());
+        populate(a, n);
+        WireStats ws; converge(a, b, &ws);
+        report_wire(st, ws, (long)n * record_wire_size());
+        sync_engine_destroy(a);
+        sync_engine_destroy(b);
+    }
     st.SetComplexityN(n);
 }
 BENCHMARK(BM_ConvergeFullTransfer)->RangeMultiplier(8)->Range(64, 4096)->Complexity()->UseRealTime();
+
+/* ---- wire efficiency: bytes/rounds vs. divergence ---------------------- *
+ * The headline claim of range reconciliation is that cost tracks the *diff*,
+ * not the dataset. Hold N fixed and sweep D = number of differing records:
+ * both nodes start byte-identical with N records, then A overwrites D of them
+ * with a newer value (newer HLC), so exactly D cells differ. We expect
+ * wire_bytes ~ O(D * record_size) plus an O(log N) descent overhead, and rounds
+ * ~ O(log N) — NOT O(N). args: {N, D}. */
+void BM_WireSparseDiff(benchmark::State &st) {
+    int n = (int)st.range(0);
+    int d = (int)st.range(1);
+    const std::string ns = "ns", f = "f";
+    for (auto _ : st) {
+        st.PauseTiming();
+        sync_engine *a = sync_engine_create(seed_of(30).data());
+        sync_engine *b = sync_engine_create(seed_of(31).data());
+        populate(a, n);
+        populate(b, n);
+        converge(a, b); /* identical baseline of N records */
+        for (int i = 0; i < d; i++) { /* A diverges D cells with a newer write */
+            std::string ent = "e" + std::to_string(i);
+            std::string v = "updated-value";
+            sync_engine_set(a, B(ns), ns.size(), B(ent), ent.size(), B(f),
+                            f.size(), B(v), v.size());
+        }
+        st.ResumeTiming();
+        WireStats ws;
+        converge(a, b, &ws);
+        st.PauseTiming();
+        report_wire(st, ws, (long)d * record_wire_size());
+        st.counters["N"] = n;
+        st.counters["D"] = d;
+        sync_engine_destroy(a);
+        sync_engine_destroy(b);
+        st.ResumeTiming();
+    }
+}
+/* Fixed large N=4096, sweep D across three orders of magnitude (+ the D=0
+ * no-op and the D=N all-changed endpoints). */
+BENCHMARK(BM_WireSparseDiff)
+    ->Args({4096, 0})->Args({4096, 1})->Args({4096, 4})->Args({4096, 16})
+    ->Args({4096, 64})->Args({4096, 256})->Args({4096, 1024})->Args({4096, 4096})
+    ->UseRealTime();
 
 } // namespace
 
