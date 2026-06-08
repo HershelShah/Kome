@@ -715,3 +715,20 @@ Three contained fixes against remote denial-of-service:
   address string + optional embedded capability), which had no target.
 - Both run 200k iterations locally with zero crashes; wired into fuzz.yml's
   nightly matrix (now ten targets) and the README table.
+
+## Security S6a: relay resource caps + return-routability
+
+- The blind relay accepted SENDs from anyone into an unbounded `mailbox_` with
+  no expiry, and FETCH delivered the whole queue to the (spoofable) UDP source.
+  So a peer could OOM the relay, or use it as a reflection/amplification weapon
+  (store a big queue for a key, then FETCH with a spoofed source = victim).
+- The mailbox is now bounded: per-destination blob count + byte caps (oldest
+  evicted), a global byte budget, a distinct-key cap, and oversized/empty blobs
+  dropped. Relay blindness is unchanged (content stays Noise-encrypted).
+- FETCH is now a two-step return-routability handshake: the relay answers a
+  FETCH with a random nonce sent to the requester's claimed address, and only
+  delivers on a follow-up that echoes that nonce from the same endpoint. A
+  spoofed-source requester never receives the nonce, so it can't trigger a
+  delivery — the only reflected packet is the 16-byte challenge. The pending-
+  challenge set is bounded. Covered by `Relay.MemoryCapsBoundQueue` and
+  `Relay.FetchChallengeReturnRoutability`.

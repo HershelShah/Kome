@@ -302,3 +302,42 @@ TEST(Relay, Blindness) {
     sync_engine_destroy(a);
     sync_engine_destroy(b);
 }
+
+/* ---- S6a: relay resource caps + return-routability ---------------------- */
+
+/* A flooded mailbox stays bounded (oldest evicted); junk blobs are dropped. */
+TEST(Relay, MemoryCapsBoundQueue) {
+    ke::Relay relay;
+    uint8_t dst[SYNC_PUBKEY_LEN];
+    std::memset(dst, 0xAB, sizeof dst);
+    for (int i = 0; i < 1000; i++) relay.send(dst, "blob-" + std::to_string(i));
+    EXPECT_LE(relay.queued(dst), 256u) << "per-key queue not bounded";
+    EXPECT_GT(relay.queued(dst), 0u);
+
+    uint8_t other[SYNC_PUBKEY_LEN];
+    std::memset(other, 0xCD, sizeof other);
+    relay.send(other, "");                         /* empty -> dropped     */
+    relay.send(other, std::string(1u << 20, 'x')); /* > 64 KiB -> dropped  */
+    EXPECT_EQ(relay.queued(other), 0u);
+}
+
+/* A fetch challenge is answerable only from the endpoint that received it, with
+ * the right nonce, once — so a spoofed-source fetch can't trigger a delivery. */
+TEST(Relay, FetchChallengeReturnRoutability) {
+    ke::Relay relay;
+    std::string keyA(SYNC_PUBKEY_LEN, '\1');
+    uint8_t nonce[16], wrong[16];
+    std::memset(nonce, 0x42, sizeof nonce);
+    std::memset(wrong, 0x43, sizeof wrong);
+
+    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
+    EXPECT_FALSE(relay.consume_challenge("9.9.9.9:9", nonce, keyA)) << "wrong endpoint";
+    EXPECT_TRUE(relay.consume_challenge("1.2.3.4:5", nonce, keyA));
+
+    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
+    EXPECT_FALSE(relay.consume_challenge("1.2.3.4:5", wrong, keyA)) << "wrong nonce";
+
+    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
+    EXPECT_TRUE(relay.consume_challenge("1.2.3.4:5", nonce, keyA));
+    EXPECT_FALSE(relay.consume_challenge("1.2.3.4:5", nonce, keyA)) << "single-use";
+}
