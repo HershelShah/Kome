@@ -142,6 +142,16 @@ use one engine from one thread at a time, or guard it with your own lock.
 Distinct engines are fully independent — the library holds no global mutable
 state (validated under ThreadSanitizer in `threading_test`).
 
+## Security
+
+The threat model, guarantees, and known limitations are in
+[`SECURITY.md`](SECURITY.md): per-record Ed25519 signatures (authenticity is
+independent of the transport), an identity-bound Noise XX channel with
+capability read/write scoping, an authenticated reliability layer, hardened
+relay/rendezvous, and bounded resource use throughout — validated by sanitizers,
+fuzzers, and a regression test per fix. Report vulnerabilities privately (see
+`SECURITY.md`).
+
 ## Fuzzing
 
 `tests/fuzz/` has coverage-guided libFuzzer targets over **every place the
