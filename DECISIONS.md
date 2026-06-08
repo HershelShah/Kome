@@ -703,3 +703,15 @@ Three contained fixes against remote denial-of-service:
   embedder's responsibility (documented in load()).
 - **random_bytes** now wipes the buffer and returns false on a short read, so a
   partial/weak buffer can't be used as key material.
+
+## Security S8: fuzz coverage for the WS parser + invite codec
+
+- The WebSocket frame parser (where the S3 length-overflow lived) had no fuzz
+  target because it was embedded in `WsStream::recv_frame` (socket-coupled,
+  stateful). Extracted the frame decode into a pure `ke::ws_parse_frame(buf, len,
+  ...)` (returns ready/need-more/error) — `recv_frame` now drives it, and
+  `fuzz_ws` exercises it directly. Behavior-preserving (transport_parity green).
+- Added `fuzz_invite` for `sync_invite_decode` (parses an untrusted pubkey +
+  address string + optional embedded capability), which had no target.
+- Both run 200k iterations locally with zero crashes; wired into fuzz.yml's
+  nightly matrix (now ten targets) and the README table.

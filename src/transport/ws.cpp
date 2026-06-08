@@ -172,65 +172,88 @@ bool WsStream::send_frame(const std::string &msg) {
     return tcp.send_all(f.data(), f.size());
 }
 
+int ws_parse_frame(const uint8_t *buf, size_t len, bool &fin, uint8_t &op,
+                   std::string &payload, size_t &consumed) {
+    if (len < 2) return 0;
+    fin = buf[0] & 0x80;
+    op = buf[0] & 0x0f;
+    bool masked = buf[1] & 0x80;
+    uint64_t plen = buf[1] & 0x7f;
+    size_t hdr = 2;
+    if (plen == 126) {
+        if (len < 4) return 0;
+        plen = ((uint64_t)buf[2] << 8) | buf[3];
+        hdr = 4;
+    } else if (plen == 127) {
+        if (len < 10) return 0;
+        plen = 0;
+        for (int i = 0; i < 8; i++) plen = (plen << 8) | buf[2 + i];
+        hdr = 10;
+    }
+    /* Reject before the size math (hdr + masklen + plen) can overflow size_t. */
+    if (plen > kMaxMessageBytes) return -1;
+    size_t masklen = masked ? 4 : 0;
+    if (len < hdr + masklen + plen) return 0;
+    const uint8_t *mk = buf + hdr;
+    payload.assign((const char *)buf + hdr + masklen, (size_t)plen);
+    if (masked)
+        for (size_t i = 0; i < payload.size(); i++) payload[i] ^= mk[i % 4];
+    consumed = hdr + masklen + (size_t)plen;
+    return 1;
+}
+
 bool WsStream::recv_frame(std::string &out, int timeout_ms) {
     for (;;) {
-        /* Try to parse one frame from rx_. */
-        if (rx_.size() >= 2) {
-            const uint8_t *p = (const uint8_t *)rx_.data();
-            bool fin = p[0] & 0x80;
-            uint8_t op = p[0] & 0x0f;
-            bool masked = p[1] & 0x80;
-            uint64_t len = p[1] & 0x7f;
-            size_t hdr = 2;
-            if (len == 126) { if (rx_.size() < 4) goto need; len = (p[2]<<8)|p[3]; hdr = 4; }
-            else if (len == 127) {
-                if (rx_.size() < 10) goto need;
-                len = 0; for (int i = 0; i < 8; i++) len = (len<<8) | p[2+i];
-                hdr = 10;
-            }
-            /* Reject before the size math can overflow / over-allocate. */
-            if (len > kMaxMessageBytes) { tcp.close(); rx_.clear(); return false; }
-            size_t masklen = masked ? 4 : 0;
-            if (rx_.size() < hdr + masklen + len) goto need;
-            const uint8_t *mk = p + hdr;
-            std::string payload(rx_.data() + hdr + masklen, len);
-            if (masked) for (size_t i = 0; i < payload.size(); i++) payload[i] ^= mk[i % 4];
-            rx_.erase(0, hdr + masklen + (size_t)len);
-
-            if (op == 0x8) return false;          /* close */
-            if (op == 0x9) {                       /* ping -> pong */
-                std::string pong;
-                pong.push_back((char)0x8A);
-                uint8_t mb = is_client_ ? 0x80 : 0x00;
-                pong.push_back((char)(mb | payload.size()));
-                if (is_client_) {
-                    uint8_t m[4]; random_bytes(m, 4); pong.append((const char*)m,4);
-                    for (size_t i=0;i<payload.size();i++) pong.push_back(payload[i]^m[i%4]);
-                } else pong += payload;
-                tcp.send_all(pong.data(), pong.size());
-                continue;
-            }
-            if (op == 0xA) continue;               /* pong: ignore */
-
-            /* data: 0x1 text, 0x2 binary, 0x0 continuation */
-            if (op == 0x0) {
-                if (assembling_.size() + payload.size() > kMaxMessageBytes) {
-                    tcp.close(); rx_.clear(); assembling_.clear(); return false;
-                }
-                assembling_ += payload;
-            } else {
-                assembling_ = payload; assembling_op_ = op; in_message_ = true;
-            }
-            if (fin && in_message_) {
-                out.swap(assembling_);
-                assembling_.clear();
-                in_message_ = false;
-                return true;
-            }
-            continue; /* more fragments */
+        bool fin = false;
+        uint8_t op = 0;
+        std::string payload;
+        size_t consumed = 0;
+        int r = ws_parse_frame((const uint8_t *)rx_.data(), rx_.size(), fin, op,
+                               payload, consumed);
+        if (r < 0) { /* oversized / malformed: drop the connection */
+            tcp.close(); rx_.clear(); assembling_.clear();
+            return false;
         }
-    need:
-        if (!tcp.recv_into(rx_, timeout_ms)) return false;
+        if (r == 0) { /* need more bytes from the socket */
+            if (!tcp.recv_into(rx_, timeout_ms)) return false;
+            continue;
+        }
+        rx_.erase(0, consumed);
+
+        if (op == 0x8) return false; /* close */
+        if (op == 0x9) {             /* ping -> pong */
+            std::string pong;
+            pong.push_back((char)0x8A);
+            uint8_t mb = is_client_ ? 0x80 : 0x00;
+            pong.push_back((char)(mb | payload.size()));
+            if (is_client_) {
+                uint8_t m[4]; random_bytes(m, 4); pong.append((const char *)m, 4);
+                for (size_t i = 0; i < payload.size(); i++)
+                    pong.push_back(payload[i] ^ m[i % 4]);
+            } else {
+                pong += payload;
+            }
+            tcp.send_all(pong.data(), pong.size());
+            continue;
+        }
+        if (op == 0xA) continue; /* pong: ignore */
+
+        /* data: 0x1 text, 0x2 binary, 0x0 continuation */
+        if (op == 0x0) {
+            if (assembling_.size() + payload.size() > kMaxMessageBytes) {
+                tcp.close(); rx_.clear(); assembling_.clear();
+                return false;
+            }
+            assembling_ += payload;
+        } else {
+            assembling_ = payload; assembling_op_ = op; in_message_ = true;
+        }
+        if (fin && in_message_) {
+            out.swap(assembling_);
+            assembling_.clear();
+            in_message_ = false;
+            return true;
+        }
     }
 }
 

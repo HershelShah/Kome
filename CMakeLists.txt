@@ -274,7 +274,7 @@ endif()
 # --- Fuzz targets (libFuzzer; needs a clang with the fuzzer runtime) -------
 option(SYNC_FUZZ "Build libFuzzer targets (requires clang + fuzzer runtime)" OFF)
 if(SYNC_FUZZ)
-    foreach(fz change_decode capability_decode session apply storage noise stun reliable)
+    foreach(fz change_decode capability_decode session apply storage noise stun reliable ws invite)
         add_executable(fuzz_${fz} tests/fuzz/fuzz_${fz}.cc ${SYNC_SOURCES})
         target_include_directories(fuzz_${fz} PRIVATE
             ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src

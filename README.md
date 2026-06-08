@@ -157,6 +157,8 @@ library parses externally-controlled bytes**:
 | `fuzz_noise` | Noise XX handshake parser |
 | `fuzz_stun` | STUN request/response parser |
 | `fuzz_reliable` | reliability-layer datagram framing |
+| `fuzz_ws` | WebSocket frame parser |
+| `fuzz_invite` | invite codec |
 
 ```bash
 sudo apt-get install -y clang libclang-rt-18-dev    # provides libclang_rt.fuzzer
@@ -166,7 +168,7 @@ cmake --build build-fuzz
 ./build-fuzz/fuzz_change_decode corpus_change/      # runs until stopped
 ```
 
-`.github/workflows/fuzz.yml` runs **all eight targets in parallel nightly**,
+`.github/workflows/fuzz.yml` runs **all ten targets in parallel nightly**,
 each for the full runner window, with each corpus cached so coverage compounds
 night over night. Smoke runs found zero crashes/OOB/leaks/UB. `hardening_test`
 is the always-on ASan surrogate for regular per-PR CI (random/mutated inputs

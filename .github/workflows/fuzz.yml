@@ -30,6 +30,8 @@ jobs:
           - noise              # Noise XX handshake parser
           - stun               # STUN request/response parser
           - reliable           # reliability-layer datagram framing
+          - ws                 # WebSocket frame parser
+          - invite             # invite codec
     steps:
       - uses: actions/checkout@v5
 

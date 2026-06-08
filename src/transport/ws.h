@@ -40,6 +40,13 @@ private:
     bool      in_message_ = false;
 };
 
+/* Parse one WebSocket frame from buf[0,len). Returns 1 and fills fin/op,
+ * the unmasked payload, and consumed on a complete frame; 0 if more bytes are
+ * needed; -1 on a protocol violation (length exceeds the cap / would overflow
+ * the size math). Pure (no socket, no state) so it is unit- and fuzz-testable. */
+int ws_parse_frame(const uint8_t *buf, size_t len, bool &fin, uint8_t &op,
+                   std::string &payload, size_t &consumed);
+
 } // namespace ke
 
 #endif /* SYNC_WS_H */
