@@ -7,6 +7,7 @@
 #define SYNC_RECONCILE_H
 
 #include <cstddef>
+#include <cstdint>
 
 namespace ke {
 
@@ -17,6 +18,11 @@ constexpr size_t kBuckets = 16;
 /* When a range holds at most this many of the local elements, stop splitting
  * and exchange the records directly. */
 constexpr size_t kLeafThreshold = 2;
+
+/* A healthy reconcile converges in O(log n) rounds; cap a session's lifetime so
+ * a peer that never lets it quiesce can't run it unboundedly even if the caller
+ * drives without its own deadline. */
+constexpr uint64_t kMaxSessionSteps = 1u << 20;
 
 } // namespace ke
 

@@ -1,6 +1,8 @@
 /* storage.cpp — SQLite-backed persistence (M2). */
 #include "storage.h"
 
+#include <sys/stat.h> /* chmod: owner-only perms on the identity-bearing DB */
+
 #include <cstring>
 
 #include "capability.h"
@@ -64,6 +66,10 @@ Storage *Storage::open(const char *path, sync_error *err) {
         delete s;
         return nullptr;
     }
+    /* The DB holds this node's private identity (see load); make it owner-only,
+     * best-effort. Not the whole story (FS-level protection is the embedder's
+     * job), and a no-op on non-POSIX filesystems. */
+    chmod(path, S_IRUSR | S_IWUSR);
     /* WAL for crash-atomic, single-writer durability. busy_timeout so a
      * concurrent reader/writer waits rather than failing immediately. */
     s->exec("PRAGMA journal_mode=WAL;");
@@ -242,8 +248,14 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     }
     (void)have_seed;
 
-    /* Derive identity and apply clock to the engine. */
+    /* Derive identity and apply clock to the engine, then wipe the transient
+     * seed copy (the engine keeps only the derived secret key). NOTE: the seed
+     * is also persisted in the DB so reopen re-derives the same identity — i.e.
+     * the database file holds this node's private identity, like an SSH key.
+     * Protect it accordingly (file permissions / FS-level encryption); we set
+     * 0600 on the main file best-effort in open(). */
     e->identity = keypair_from_seed(loaded_seed);
+    secure_wipe(loaded_seed, sizeof loaded_seed);
     site_id_from_pubkey(e->identity.sign_pk.data(), e->site_id.data());
     e->clock.physical = hlc_physical;
     e->clock.logical = hlc_logical;

@@ -63,6 +63,9 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *msg,
  * Returns false if no entropy source is available. */
 bool random_bytes(uint8_t *buf, size_t len);
 
+/* Zero a buffer in a way the compiler won't optimize away (for secrets). */
+void secure_wipe(void *p, size_t n);
+
 } // namespace ke
 
 #endif /* SYNC_CRYPTO_H */

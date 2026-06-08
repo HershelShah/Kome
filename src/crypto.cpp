@@ -108,7 +108,13 @@ bool random_bytes(uint8_t *buf, size_t len) {
     if (!f) return false;
     size_t got = std::fread(buf, 1, len, f);
     std::fclose(f);
-    return got == len;
+    if (got != len) {
+        crypto_wipe(buf, len); /* don't leave a partial/weak buffer in use */
+        return false;
+    }
+    return true;
 }
+
+void secure_wipe(void *p, size_t n) { crypto_wipe(p, n); }
 
 } // namespace ke

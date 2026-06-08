@@ -683,3 +683,23 @@ Three contained fixes against remote denial-of-service:
 - Documented the `sync_engine_grant` contract (#4): it is the *local* trust API
   and deliberately accepts roots (unlike the wire path, which never does);
   callers must not pipe untrusted/network capabilities into it.
+
+## Security S7: hardening tail
+
+- **Reconcile DoS bounds.** A `sync_session` now counts processed messages and
+  gives up cleanly after `kMaxSessionSteps` (so a non-terminating peer can't run
+  it forever even without a caller deadline), and per step it stops producing
+  reply descriptors once they exceed `~kBuckets * (own element count)` — a legit
+  round never reaches that, but a peer flooding whole-range fingerprints can't
+  amplify beyond the receiver's own scale (its excess descriptors are dropped).
+- **Strict-length record decode.** `apply_records` and the LEAF diff now require
+  `decode_record` to consume the *entire* blob; trailing bytes would let a peer
+  craft distinct wire records that decode to the same logical record (evading
+  dedup, churning the fingerprint).
+- **Identity-at-rest hygiene.** The transient seed copy is `secure_wipe`d after
+  deriving the keypair; the DB file is `chmod 0600` best-effort. The seed is
+  still persisted (reopen re-derives the identity) — the DB *is* this node's
+  private key, like an SSH key; FS-level protection / at-rest encryption is the
+  embedder's responsibility (documented in load()).
+- **random_bytes** now wipes the buffer and returns false on a short read, so a
+  partial/weak buffer can't be used as key material.

@@ -275,6 +275,7 @@ struct sync_session {
     bool         initiator = false;
     bool         sent_initial = false;
     bool         sent_caps = false; /* delegation caps sent once */
+    uint64_t     steps = 0;          /* processed-message counter (DoS bound) */
 
     /* The point-in-time snapshot this session reconciles over. Held by
      * shared_ptr so it stays stable even as records applied mid-session bump
@@ -350,7 +351,11 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
     for (auto &r : recs) {
         DecodedChange d;
         size_t used = 0;
-        if (decode_record((const uint8_t *)r.data(), r.size(), d, used))
+        /* Require an exact (canonical) encoding: trailing bytes would let a peer
+         * craft distinct wire records that decode to the same logical record,
+         * evading dedup and churning the fingerprint. */
+        if (decode_record((const uint8_t *)r.data(), r.size(), d, used) &&
+            used == r.size())
             decoded.push_back(std::move(d));
     }
 
@@ -438,7 +443,8 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
         for (auto &r : d.records) {
             DecodedChange dc;
             size_t used = 0;
-            if (!decode_record((const uint8_t *)r.data(), r.size(), dc, used))
+            if (!decode_record((const uint8_t *)r.data(), r.size(), dc, used) ||
+                used != r.size())
                 continue;
             std::string kk = serialize_key(dc.ns, dc.entity,
                                            dc.kind == SYNC_CHANGE_EXISTENCE,
@@ -626,6 +632,11 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
     *out_len = 0;
     *done = 0;
     try {
+        /* Bound a non-terminating peer: give up cleanly after too many steps. */
+        if (++s->steps > kMaxSessionSteps) {
+            *done = 1;
+            return SYNC_OK;
+        }
         std::vector<Desc> reply;
 
         if (s->initiator && !s->sent_initial) {
@@ -647,7 +658,16 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             }
             /* Ingest the peer's delegations before applying its records. */
             cap_ingest_delegations(s->engine, caps_in);
-            for (auto &d : incoming) process_desc(s, d, reply);
+            /* Bound reply amplification: a legit round emits at most ~kBuckets
+             * descriptors per differing sub-range, so the reply never exceeds
+             * ~kBuckets * (our element count). A peer flooding many whole-range
+             * FPs can't force more than that — its excess descriptors are
+             * dropped (only that malicious connection fails to converge). */
+            const size_t reply_cap = (s->snap().size() + 1) * kBuckets + 64;
+            for (auto &d : incoming) {
+                if (reply.size() >= reply_cap) break;
+                process_desc(s, d, reply);
+            }
         }
 
         if (reply.empty()) {
