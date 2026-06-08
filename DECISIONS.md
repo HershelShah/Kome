@@ -788,3 +788,24 @@ Three contained fixes against remote denial-of-service:
   namespace rig (real kernel stack; needs a real host with iproute2).
 - Flagged honestly: the UDP layer is **IPv4-only** (`AF_INET`), so IPv6 (T5.9)
   needs `AF_INET6` support in `UdpSocket` before it can be validated.
+
+## Backlog: IPv6 (deferred), and the powers-of-two scaling sweep
+
+- **IPv6 (T5.9) is explicitly backlogged**, not abandoned. The work is bounded:
+  add `AF_INET6`/`sockaddr_in6` to `UdpSocket` (dual-stack or a parallel path),
+  extend `netnode`'s `ip:port` parser for `[v6]:port`, and validate T5.9 on a
+  v6-capable network. Deferred because it's a feature gap that doesn't block the
+  IPv4 real-network validation (M5 T5.1–T5.8) that comes first.
+- **Multi-node scaling is now in the automated suite**, not just the runbook.
+  Added a parameterized sweep `PowersOfTwo/MultiNodeScale` in
+  `tests/multinode_test.cpp` at **N = 2, 4, 8, 16, 32, 64** — one independently
+  reported case per network size. Each N drives convergence across all three
+  topologies (ring = worst-case diameter, star = hub fan-out, random connected
+  mesh) plus the **enforced-namespace** case, where every node holds the root
+  and its own write delegation and authorization for every peer's `n*n` records
+  must arrive purely via capabilities gossiped during sync (asserted present).
+  Runs natively and under WASM/Node (same scenarios both targets). The inline
+  star/mesh edge builders were factored into `star_edges`/`mesh_edges` helpers
+  shared with the existing `StarTopology`/`RandomMesh` cases. N=64 dominates
+  runtime (~26 s native / ~12 s WASM); kept in-suite since the sweep is the
+  multi-node acceptance gate.

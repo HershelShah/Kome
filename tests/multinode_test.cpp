@@ -107,6 +107,23 @@ std::vector<std::pair<int, int>> ring_edges(int n) {
     return e;
 }
 
+/* Hub-and-spokes: node 0 is the hub, reconciling with every other node. */
+std::vector<std::pair<int, int>> star_edges(int n) {
+    std::vector<std::pair<int, int>> e;
+    for (int i = 1; i < n; i++) e.push_back({0, i});
+    return e;
+}
+
+/* Connected random mesh: a spanning tree (guarantees connectivity) plus a
+ * sprinkling of extra random edges. Deterministic given `rng`. */
+std::vector<std::pair<int, int>> mesh_edges(int n, std::mt19937 &rng) {
+    std::vector<std::pair<int, int>> e;
+    for (int i = 1; i < n; i++) e.push_back({(int)(rng() % i), i});
+    for (int i = 0; i < n; i++)
+        e.push_back({(int)(rng() % n), (int)(rng() % n)});
+    return e;
+}
+
 /* Set up an enforced namespace: node 0 owns `ns`, every node enforces it (holds
  * the root) and carries its own write delegation. Each node then writes one
  * record it is authorized for. Authorization for *other* nodes' records must be
@@ -206,10 +223,7 @@ TEST(MultiNode, StarTopology) {
     Net net(n);
     net.seed_data(2, rng);
 
-    std::vector<std::pair<int, int>> edges;
-    for (int i = 1; i < n; i++) edges.push_back({0, i}); /* hub = node 0 */
-
-    int rounds = net.gossip(edges, 10);
+    int rounds = net.gossip(star_edges(n), 10);
     EXPECT_TRUE(net.converged());
     std::cout << "  [star]   N=" << n << " converged in " << rounds
               << " rounds\n";
@@ -222,13 +236,7 @@ TEST(MultiNode, RandomMesh) {
     Net net(n);
     net.seed_data(3, rng);
 
-    /* Spanning tree (guarantees connectivity) + extra random edges. */
-    std::vector<std::pair<int, int>> edges;
-    for (int i = 1; i < n; i++) edges.push_back({(int)(rng() % i), i});
-    for (int i = 0; i < n; i++)
-        edges.push_back({(int)(rng() % n), (int)(rng() % n)});
-
-    int rounds = net.gossip(edges, n + 5);
+    int rounds = net.gossip(mesh_edges(n, rng), n + 5);
     EXPECT_TRUE(net.converged());
     std::cout << "  [mesh]   N=" << n << " converged in " << rounds
               << " rounds\n";
@@ -258,3 +266,74 @@ TEST(MultiNode, ChurnThenConverge) {
     std::cout << "  [churn]  N=" << n << " settled in " << rounds
               << " rounds after writes stopped\n";
 }
+
+/* ---- Powers-of-two scaling sweep: N = 2, 4, 8, 16, 32, 64 -------------- *
+ * One parameterized case per N, so each network size is reported (and can
+ * fail) independently. At every N we drive convergence across all three
+ * topologies — ring (worst-case diameter), star (hub fan-out), and a random
+ * connected mesh — and the enforced-namespace case where authorization for
+ * every peer's writes must be obtained purely from capabilities gossiped
+ * during sync. This is the multi-node acceptance sweep up to 64 nodes. */
+class MultiNodeScale : public ::testing::TestWithParam<int> {};
+
+TEST_P(MultiNodeScale, AllTopologiesConverge) {
+    const int n = GetParam();
+
+    {
+        std::mt19937 rng(2000 + n);
+        Net net(n);
+        net.seed_data(2, rng);
+        ASSERT_FALSE(net.converged()) << "n=" << n << " trivially converged";
+        /* Ring diameter is ~n/2, so propagation needs ~n/2 rounds; cap at n+5. */
+        int rounds = net.gossip(ring_edges(n), n + 5);
+        EXPECT_TRUE(net.converged()) << "ring n=" << n << " did not converge";
+        std::cout << "  [ring]   N=" << n << " converged in " << rounds
+                  << " rounds\n";
+    }
+    {
+        std::mt19937 rng(3000 + n);
+        Net net(n);
+        net.seed_data(2, rng);
+        /* Star gathers at the hub then redistributes: ~2 rounds regardless of N. */
+        int rounds = net.gossip(star_edges(n), 8);
+        EXPECT_TRUE(net.converged()) << "star n=" << n << " did not converge";
+        std::cout << "  [star]   N=" << n << " converged in " << rounds
+                  << " rounds\n";
+    }
+    {
+        std::mt19937 rng(4000 + n);
+        Net net(n);
+        net.seed_data(2, rng);
+        int rounds = net.gossip(mesh_edges(n, rng), n + 5);
+        EXPECT_TRUE(net.converged()) << "mesh n=" << n << " did not converge";
+        std::cout << "  [mesh]   N=" << n << " converged in " << rounds
+                  << " rounds\n";
+    }
+    {
+        /* Enforced namespace: every node holds the root + its own write cap;
+         * authorization for other nodes' records arrives only via gossip. */
+        Net net(n);
+        setup_enforced(net, "secure");
+        int rounds = net.gossip(ring_edges(n), n + 5);
+        EXPECT_TRUE(net.converged()) << "enforced ring n=" << n << " diverged";
+        int total_present = 0;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++) {
+                std::string ent = "rec" + std::to_string(j);
+                int p = 0;
+                sync_engine_exists(net.nodes[i], B(std::string("secure")), 6,
+                                   B(ent), ent.size(), &p);
+                total_present += p;
+            }
+        EXPECT_EQ(total_present, n * n)
+            << "enforced n=" << n << ": some authorized records were dropped";
+        std::cout << "  [enforced] N=" << n << " converged in " << rounds
+                  << " rounds, all " << (n * n) << " (node x record) present\n";
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(PowersOfTwo, MultiNodeScale,
+                         ::testing::Values(2, 4, 8, 16, 32, 64),
+                         [](const ::testing::TestParamInfo<int> &info) {
+                             return "N" + std::to_string(info.param);
+                         });

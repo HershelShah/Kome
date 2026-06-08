@@ -111,13 +111,22 @@ script `ConnectionManager` against multiple peer keys.
 
 ---
 
-## Not yet supported
+## Multi-node scaling
+
+Cross-host convergence at scale (N = 2, 4, 8, 16, 32, 64) is covered
+deterministically in the automated suite by `PowersOfTwo/MultiNodeScale` in
+`tests/multinode_test.cpp` — ring, star, mesh, and enforced-namespace
+topologies at each N, run both natively and under WASM. To exercise the same
+scaling over *real* sockets, run that many `netnode` instances and wire each to
+its neighbours (Scenario 1 pairwise around a ring, or a star through one hub).
+
+## Backlog
 
 - **IPv6 (T5.9).** The UDP layer is currently IPv4-only (`AF_INET`/`sockaddr_in`
   in `src/transport/udp.cpp`); `--bind ::` won't work. IPv6 needs `AF_INET6`
   support added to `UdpSocket` (and `netnode`'s `ip:port` parser extended for
   `[v6]:port`) before T5.9 can be validated. This is a feature gap, not a test
-  gap.
+  gap, and is **deferred to the backlog** for now.
 
 ## Reporting results
 
