@@ -100,6 +100,18 @@ identical digest. The in-process `multinode_test` pushes the same anti-entropy
 to far larger N (verified to 250 nodes / 125k records) over ring, star, and
 random-mesh topologies.
 
+## Real-network testing
+
+`node`/`meshnode` are localhost demos. For cross-host validation, **`netnode`**
+is a deployable node that drives the production path (`connect_and_sync` — Noise
+XX + identity proof + capability-scoped reconcile + authenticated reliability)
+and, for NATed peers, `ConnectionManager` (rendezvous → direct/hole-punch →
+relay fallback), alongside the `relayd`/`rendezvousd` daemons. The runbook for
+two real hosts (LAN direct, NAT + relay, hole-punch, reconnection) and a
+single-box network-namespace rig are in
+[`docs/REAL_NETWORK_TESTING.md`](docs/REAL_NETWORK_TESTING.md). (IPv6 is not yet
+supported — the UDP layer is IPv4-only.)
+
 ## Design
 
 - **Convergence is the law.** Every value type's merge is a semilattice join

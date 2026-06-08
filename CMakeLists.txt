@@ -146,6 +146,13 @@ if(NOT EMSCRIPTEN)
     target_include_directories(meshnode PRIVATE
         ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
+    # Deployable node for real-network testing: the production connect_and_sync
+    # path + ConnectionManager (rendezvous -> direct/punch -> relay fallback).
+    add_executable(netnode examples/netnode.cpp)
+    target_link_libraries(netnode PRIVATE sync_engine monocypher)
+    target_include_directories(netnode PRIVATE
+        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
     # Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
     add_executable(relayd services/relay/relay_main.cpp)
     target_link_libraries(relayd PRIVATE sync_engine)

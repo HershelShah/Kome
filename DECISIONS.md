@@ -769,3 +769,22 @@ Three contained fixes against remote denial-of-service:
   plain handshake duplicates are still accepted and re-acked, so the last
   handshake frames settle across the boundary. A forged frame at the live
   sequence is rejected. Covered by `Reliable.MacRejectsForgedFrameOnceKeyed`.
+
+## Real-network testing harness (netnode)
+
+- `node`/`meshnode` are localhost demos that hand-roll the pre-security channel
+  (no S1 identity proof, no S6c MAC) and bind 127.0.0.1 — unsuitable for real
+  cross-host testing. Added **`examples/netnode.cpp`**, a deployable node on the
+  *production* path: `connect_and_sync` (Noise XX + transcript-bound identity
+  proof + capability-scoped reconcile + authenticated reliability) for a known
+  endpoint (`--peer`), and `ConnectionManager` (rendezvous discovery → direct/
+  hole-punch → relay fallback) for NATed peers (`--rendezvous`/`--relay`/
+  `--peer-key`). Binds a configurable address.
+- Validated on loopback over real UDP: direct converges; managed converges via
+  relay fallback; rendezvous register(+S6b proof)/lookup discovers the peer.
+  Cross-host / real-NAT / IPv6 can't run in the sandbox.
+- `docs/REAL_NETWORK_TESTING.md` is the two-host runbook (per M5 scenario, with
+  pass criteria); `tools/netns_real_net_test.sh` is a single-box network-
+  namespace rig (real kernel stack; needs a real host with iproute2).
+- Flagged honestly: the UDP layer is **IPv4-only** (`AF_INET`), so IPv6 (T5.9)
+  needs `AF_INET6` support in `UdpSocket` before it can be validated.
