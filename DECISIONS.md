@@ -748,3 +748,24 @@ Three contained fixes against remote denial-of-service:
 - Also fixed the `get_endpoint` `l+2` length-overflow (attacker varint).
 - Covered by `Service.RendezvousLoopback` (real keypairs) and
   `Service.RendezvousRejectsForgedRegistration`.
+
+## Security S6c: authenticate the reliability layer
+
+- The reliability framing ([type][seq]) rode *outside* Noise in cleartext and
+  was processed before decryption, so a forged DATA (at the live recv seq) or
+  ACK (at the live send seq) desynced the link — one injected datagram could
+  permanently wedge a connection.
+- Frames now carry an optional HMAC-SHA256 tag keyed by `reliability_key()` — a
+  symmetric key both peers derive from the shared handshake transcript hash.
+  `connect_and_sync` calls `link.enable_mac()` once the handshake completes, so
+  the proof exchange and all reconcile traffic are authenticated. The MAC is
+  opt-in (`enable_mac`), so the Noise-less drive paths (network/relay tests) are
+  unchanged.
+- Boundary handling: the handshake messages themselves are unauthenticated
+  (Noise authenticates them) since no session key exists yet, and the keying is
+  asymmetric (the initiator keys a step before the responder). To avoid wedging
+  at the transition, a keyed receiver rejects an unauthenticated frame only when
+  it would *change state* (advance recv_seq_ or clear the in-flight send); stale
+  plain handshake duplicates are still accepted and re-acked, so the last
+  handshake frames settle across the boundary. A forged frame at the live
+  sequence is rejected. Covered by `Reliable.MacRejectsForgedFrameOnceKeyed`.

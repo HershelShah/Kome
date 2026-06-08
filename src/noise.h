@@ -48,6 +48,10 @@ public:
     bool verify_identity_proof(const std::string &in,
                                uint8_t peer_sign_pk[32]);
 
+    /* A symmetric key both peers derive from the (shared) handshake transcript,
+     * for authenticating the reliability layer's framing. Valid once done(). */
+    void reliability_key(uint8_t out[32]) const;
+
 private:
     bool      initiator_;
     int       msgidx_ = 0;

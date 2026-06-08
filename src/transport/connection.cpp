@@ -82,8 +82,15 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
                     std::string out;
                     bool done = false;
                     if (!chan.step(msg, out, done)) { failed = true; break; }
-                    if (!out.empty()) link.send(out);
-                    if (chan.done()) send_proof();
+                    if (!out.empty()) link.send(out); /* handshake msg: plain */
+                    if (chan.done()) {
+                        /* Handshake complete: authenticate the reliability layer
+                         * from here on (the proof and all reconcile traffic). */
+                        uint8_t rk[32];
+                        chan.reliability_key(rk);
+                        link.enable_mac(rk);
+                        send_proof();
+                    }
                 } else {
                     std::string pt;
                     if (!chan.decrypt(msg, pt)) continue;

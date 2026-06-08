@@ -233,3 +233,45 @@ TEST(Network, ReliabilityOverLossyLink) {
     sync_engine_destroy(a);
     sync_engine_destroy(b);
 }
+
+/* ---- S6c: reliability-layer authentication ------------------------------ */
+/* Once keyed (post-handshake), an authenticated frame is delivered, but a
+ * forged/unauthenticated frame at the live sequence — the seq/ack-desync
+ * attack — is rejected. */
+TEST(Reliable, MacRejectsForgedFrameOnceKeyed) {
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)i;
+
+    ke::ReliableLink a, b;
+    a.enable_mac(key);
+    b.enable_mac(key);
+
+    a.send("hello");
+    std::vector<std::string> dgs;
+    a.poll(dgs, 0);
+    ASSERT_FALSE(dgs.empty());
+    std::string data = dgs.back(); /* authenticated DATA frame */
+
+    std::vector<std::string> del;
+    EXPECT_TRUE(b.on_datagram(data, del)); /* authentic -> delivered */
+    ASSERT_EQ(del.size(), 1u);
+    EXPECT_EQ(del[0], "hello");
+
+    /* Forged plain DATA at the live seq (flag=0,type=0,seq=0,payload). */
+    ke::ReliableLink victim;
+    victim.enable_mac(key);
+    std::string forged(6, '\0');
+    forged += "evil";
+    std::vector<std::string> d2;
+    EXPECT_FALSE(victim.on_datagram(forged, d2)) << "forged plain frame accepted";
+    EXPECT_TRUE(d2.empty());
+
+    /* A frame with a corrupted MAC is rejected. */
+    std::string tampered = data;
+    tampered[tampered.size() - 1] ^= 0x01;
+    ke::ReliableLink v2;
+    v2.enable_mac(key);
+    std::vector<std::string> d3;
+    EXPECT_FALSE(v2.on_datagram(tampered, d3)) << "bad-MAC frame accepted";
+    EXPECT_TRUE(d3.empty());
+}

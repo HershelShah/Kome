@@ -253,4 +253,13 @@ bool NoiseChannel::verify_identity_proof(const std::string &in,
     return true;
 }
 
+void NoiseChannel::reliability_key(uint8_t out[32]) const {
+    /* Both peers share final_h_ (the transcript hash at Split), so HMAC over a
+     * label yields the same key on both sides — independent of the directional
+     * transport keys. */
+    static const char *kRelLabel = "kome-reliability-mac-v1";
+    hmac_sha256(final_h_.data(), 32, (const uint8_t *)kRelLabel,
+                std::strlen(kRelLabel), out);
+}
+
 } // namespace ke
