@@ -7,10 +7,12 @@
 #ifndef SYNC_RENDEZVOUS_H
 #define SYNC_RENDEZVOUS_H
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <string>
 
+#include "crypto.h" /* KeyPair for the ownership-proof register */
 #include "transport/udp.h"
 
 namespace ke {
@@ -27,18 +29,32 @@ public:
         return true;
     }
 
+    /* Ownership-proof challenge: record a nonce issued to a registrant at
+     * `endpoint` for key `pkkey`, then check a presented nonce. Bounded. */
+    void issue_challenge(const std::string &endpoint, const uint8_t nonce[16],
+                         const std::string &pkkey);
+    bool consume_challenge(const std::string &endpoint, const uint8_t nonce[16],
+                           const std::string &pkkey);
+
 private:
     std::map<std::string, Endpoint> reg_;
+    struct Pending {
+        std::array<uint8_t, 16> nonce{};
+        std::string             pkkey;
+    };
+    std::map<std::string, Pending> pending_; /* endpoint -> challenge */
 };
 
-/* Process one request: REGISTER records the sender's observed endpoint;
- * LOOKUP replies with a target's endpoint (if known). Returns true if a
- * datagram was handled. */
+/* Process one request: REGISTER starts an ownership-proof challenge;
+ * REGISTER-AUTH (with a valid signature) records the sender's observed
+ * endpoint; LOOKUP replies with a target's endpoint (if known). Returns true if
+ * a datagram was handled. */
 bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms);
 
-/* Client: register our pubkey (server records our reflexive address). */
+/* Client: register our identity's endpoint, proving we own the key by signing
+ * the server's challenge with our signing secret. */
 bool rendezvous_register(UdpSocket &sock, const Endpoint &server,
-                         const uint8_t me[32], int timeout_ms);
+                         const KeyPair &id, int timeout_ms);
 
 /* Client: look up a peer's endpoint. Returns true and fills out on success. */
 bool rendezvous_lookup(UdpSocket &sock, const Endpoint &server,

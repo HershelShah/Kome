@@ -732,3 +732,19 @@ Three contained fixes against remote denial-of-service:
   delivery — the only reflected packet is the 16-byte challenge. The pending-
   challenge set is bounded. Covered by `Relay.MemoryCapsBoundQueue` and
   `Relay.FetchChallengeReturnRoutability`.
+
+## Security S6b: rendezvous key-ownership proof
+
+- `REGISTER` recorded any key -> endpoint with no proof of ownership, so an
+  attacker could bind a victim's key to an arbitrary endpoint (denial-of-
+  discovery; S1's identity proof then blocks actual impersonation, but the
+  victim is delisted).
+- Registration is now a challenge/response: the server replies to `REGISTER`
+  with a random nonce; the client must return a `REGISTER-AUTH` carrying a
+  signature of that nonce by the key's signing secret. The server records the
+  mapping only if the signature verifies under the registered key AND the nonce
+  matches the one it sent to that endpoint — so only the key's owner, at its
+  claimed address, can register it. `rendezvous_register` now takes the KeyPair.
+- Also fixed the `get_endpoint` `l+2` length-overflow (attacker varint).
+- Covered by `Service.RendezvousLoopback` (real keypairs) and
+  `Service.RendezvousRejectsForgedRegistration`.
