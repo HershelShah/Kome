@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <new>
 #include <set>
 
@@ -12,6 +13,13 @@
 #include "storage.h"
 
 namespace ke {
+
+/* Upper bound on capabilities learned over the wire (gossiped delegations). A
+ * peer can sign unlimited junk delegations from throwaway keys; without a cap
+ * the store — and the per-write authorization scan — grow without bound. Locally
+ * granted capabilities (sync_engine_grant) are a trust decision and not subject
+ * to this limit. */
+constexpr size_t kMaxIngestedCaps = 4096;
 
 void cap_signing_bytes(const Capability &c, std::string &out) {
     out.push_back((char)0x01); /* capability format version */
@@ -86,23 +94,27 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
         return c.access != 0 && (c.expiry == 0 || now <= c.expiry);
     };
 
-    /* Find a usable root for the namespace. */
+    /* Find a usable root for the namespace, and index the usable delegations for
+     * this ns by issuer in one pass, so the chain search below is O(N) total
+     * rather than re-scanning every capability at each hop (was O(N^2), a remote
+     * DoS once a peer gossips many delegations). */
     const Capability *root = nullptr;
-    for (const auto &c : caps_)
-        if (c.is_root() && c.ns == ns && usable(c)) {
-            root = &c;
-            break;
+    std::map<std::string, std::vector<const Capability *>> by_issuer;
+    for (const auto &c : caps_) {
+        if (!usable(c) || c.ns != ns) continue;
+        if (c.is_root()) {
+            if (!root) root = &c;
+        } else {
+            by_issuer[key_bytes(c.issuer)].push_back(&c);
         }
+    }
     if (!root) return true; /* unowned namespace == open */
 
     /* DFS from the owner, narrowing access at each hop. visited guards cycles. */
     std::set<std::string> visited;
     struct Frame { PubKey holder; uint8_t access; };
     std::vector<Frame> stack;
-    Frame start;
-    start.holder = root->issuer;
-    start.access = root->access;
-    stack.push_back(start);
+    stack.push_back({root->issuer, root->access});
     visited.insert(key_bytes(root->issuer));
 
     while (!stack.empty()) {
@@ -112,21 +124,14 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
         if (std::memcmp(f.holder.data(), author, SYNC_PUBKEY_LEN) == 0)
             return (f.access & need) == need;
 
-        for (const auto &c : caps_) {
-            if (c.is_root()) continue;
-            if (c.ns != ns) continue;
-            if (std::memcmp(c.issuer.data(), f.holder.data(), SYNC_PUBKEY_LEN) != 0)
-                continue;
+        auto it = by_issuer.find(key_bytes(f.holder));
+        if (it == by_issuer.end()) continue;
+        for (const Capability *c : it->second) {
             /* A delegation cannot widen the holder's access. */
-            if ((c.access & ~f.access) != 0) continue;
-            if (!usable(c)) continue;
-            std::string subj = key_bytes(c.subject);
-            if (visited.count(subj)) continue;
-            visited.insert(subj);
-            Frame nf;
-            nf.holder = c.subject;
-            nf.access = c.access;
-            stack.push_back(nf);
+            if ((c->access & ~f.access) != 0) continue;
+            std::string subj = key_bytes(c->subject);
+            if (!visited.insert(subj).second) continue; /* cycle guard */
+            stack.push_back({c->subject, c->access});
         }
     }
     return false;
@@ -135,6 +140,8 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
 void cap_ingest_delegations(sync_engine *e,
                             const std::vector<std::string> &blobs) {
     for (const auto &blob : blobs) {
+        if (e->caps && e->caps->size() >= kMaxIngestedCaps)
+            break; /* bound growth from a peer flooding signed junk */
         Capability c;
         if (!cap_decode((const uint8_t *)blob.data(), blob.size(), c)) continue;
         if (c.is_root()) continue;          /* never trust a wire root */
@@ -255,8 +262,14 @@ sync_capability *sync_capability_decode(const uint8_t *buf, size_t len) {
 int sync_engine_grant(sync_engine *e, const sync_capability *c) {
     if (!e || !c) return SYNC_ERR_INVALID;
     try {
-        /* A granted capability must carry a valid signature (expiry is checked
-         * at authorize time, so an expired-but-signed cap can still be held). */
+        /* grant is the *local* trust API: the application decides which roots and
+         * delegations to install (it accepts a root here, unlike the wire path
+         * cap_ingest, which never does). Do NOT feed untrusted/network-received
+         * capabilities here — that path is cap_ingest, which rejects roots and
+         * only ever extends chains anchored at a locally-granted root.
+         *
+         * A granted capability must carry a valid signature (expiry is checked at
+         * authorize time, so an expired-but-signed cap can still be held). */
         if (!cap_sig_valid(*c)) return SYNC_ERR_BADSIG;
         if (!e->caps) e->caps = new ke::CapStore();
         e->caps->add(*c);

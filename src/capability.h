@@ -63,6 +63,9 @@ public:
     bool authorized(const uint8_t author[32], const std::string &ns,
                     uint8_t need, uint64_t now_ms) const;
 
+    /* Number of capabilities held (used to bound growth from gossip). */
+    size_t size() const { return caps_.size(); }
+
 private:
     std::vector<Capability> caps_;
 };

@@ -668,3 +668,18 @@ Three contained fixes against remote denial-of-service:
   permanently desynced the channel (every later legit frame then failed). It now
   advances the counter only on a successful decrypt — covered by
   `Security.ForgedFrameDoesNotDesync`.
+
+## Security S5: capability DoS hardening
+
+- `CapStore::authorized` re-scanned every held capability at each chain hop —
+  O(N^2) per write once a peer gossips many delegations. It now indexes the
+  usable delegations for the namespace by issuer in one pass, so the chain
+  search is O(N). Same authorization result (covered by the existing chain/ring
+  capability tests + multinode enforced ring).
+- `cap_ingest_delegations` now stops adding once the store reaches
+  `kMaxIngestedCaps` (4096): a peer can sign unlimited junk delegations from
+  throwaway keys, so the gossip path must be bounded. Locally granted caps
+  (`sync_engine_grant`) are a trust decision and aren't subject to the cap.
+- Documented the `sync_engine_grant` contract (#4): it is the *local* trust API
+  and deliberately accepts roots (unlike the wire path, which never does);
+  callers must not pipe untrusted/network capabilities into it.
