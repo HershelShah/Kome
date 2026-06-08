@@ -160,6 +160,13 @@ if(NOT EMSCRIPTEN)
     add_executable(rendezvousd services/rendezvous/rendezvous_main.cpp)
     target_link_libraries(rendezvousd PRIVATE sync_engine)
     target_include_directories(rendezvousd PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+    # Real-internet STUN interop smoke test: drives the engine's STUN client
+    # against a public RFC 5389 server and prints the reflexive endpoint. A
+    # one-command check that UDP egress + reflexive discovery work from a host.
+    add_executable(stun_interop tools/stun_interop.cpp)
+    target_link_libraries(stun_interop PRIVATE sync_engine)
+    target_include_directories(stun_interop PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 
 # --- Tests -----------------------------------------------------------------
