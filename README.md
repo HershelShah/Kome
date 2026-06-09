@@ -12,7 +12,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 
 | Milestone | What | State |
 |-----------|------|-------|
-| **M1** | Convergent core (HLC, LWW register, causal-length set, export/apply, digest) | ✅ done |
+| **M1** | Convergent core (HLC, LWW register, LWW-existence, export/apply, digest) | ✅ done |
 | **M2** | Durable storage (append-only log, single file) | ✅ done |
 | **M3** | Incremental sync (range-based set reconciliation) | ✅ done |
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
@@ -62,7 +62,7 @@ See `examples/example.c` for a complete two-replica convergence demo.
 
 ## Two-node end-to-end demo
 
-A real two-process demo: two nodes, two SQLite files, syncing over UDP through
+A real two-process demo: two nodes, two log-backed databases, syncing over UDP through
 the full stack (Noise XX encryption → reliability layer → range
 reconciliation). Each writes records offline, then they connect and converge.
 
@@ -120,8 +120,9 @@ supported — the UDP layer is IPv4-only.)
   - **Hybrid Logical Clock** orders events causally without trusting wall clocks.
   - **LWW register** per field, resolved by a total order on
     `(hlc.physical, hlc.logical, site_id, value)`.
-  - **Causal-length set** per entity for existence/deletion: odd = present,
-    merge takes the max — so create/delete/re-create all converge.
+  - **LWW presence register** per entity for existence/deletion: present/absent
+    decided by the latest `(hlc, author)` assertion — so create/delete/re-create
+    all converge under the same LWW rule as fields (no counter to saturate).
 - **The full-state `export`/`apply` path is the oracle.** Later milestones'
   optimized sync is verified against it; it is never removed.
 - **Incremental sync without peer history.** `sync_session_*` reconciles two
@@ -175,7 +176,7 @@ library parses externally-controlled bytes**:
 | `fuzz_capability_decode` | capability codec |
 | `fuzz_session` | reconciliation message parser |
 | `fuzz_apply` | decode → signature-verify → merge |
-| `fuzz_storage` | on-disk load (corrupt SQLite file) |
+| `fuzz_storage` | on-disk load (corrupt log file) |
 | `fuzz_noise` | Noise XX handshake parser |
 | `fuzz_stun` | STUN request/response parser |
 | `fuzz_reliable` | reliability-layer datagram framing |

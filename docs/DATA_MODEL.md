@@ -1,11 +1,17 @@
 # Data model: current, evaluation, and the proposed model
 
-> Output of the data-model design loop. It states what Kome stores today, the
-> problems the audit found, the candidate designs considered (with prior art),
-> and a concrete recommended model with a migration path. Scope is Kome's actual
-> use case: a **private, offline-first, serverless P2P engine for personal /
-> structured records** synced across a user's own devices and with explicitly
-> trusted contacts — *not* collaborative rich-text editing.
+> **STATUS: the recommended model (§4) is now implemented** — entity existence
+> is an LWW presence register (codec v3), with tombstone GC on compaction.
+> Sections 1–3 below describe the *prior* causal-length model and the reasoning
+> that led to the change; they are kept as the design record. The "today" framing
+> is historical.
+>
+> Output of the data-model design loop. It states what Kome stored, the problems
+> the audit found, the candidate designs considered (with prior art), and the
+> chosen model. Scope is Kome's actual use case: a **private, offline-first,
+> serverless P2P engine for personal / structured records** synced across a
+> user's own devices and with explicitly trusted contacts — *not* collaborative
+> rich-text editing.
 
 ## 1. What we store today
 
@@ -132,7 +138,7 @@ namespace
   engine-enforced. Keeps the core simple; makes the API friendly.
 - **Query:** out of scope for the CRDT core. Add one ergonomic read primitive —
   **scan entities in a namespace** (prefix iteration over the sorted map) — so
-  apps can list a collection without exporting everything. SQLite backing already
+  apps can list a collection without exporting everything. The local store already
   supports app-level queries over materialized state.
 
 ## 6. Migration from today

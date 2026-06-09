@@ -90,7 +90,7 @@ fallback. Both must still converge.
 
 ## Scenario 4 — durability & reconnection (T5.6)
 
-Validates offline-first + that a restarted node resumes from its SQLite file.
+Validates offline-first + that a restarted node resumes from its log file.
 
 1. Run Scenario 1 to convergence; stop both nodes.
 2. On host A, write while "offline" (no peer running) — re-run with new local
