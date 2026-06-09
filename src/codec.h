@@ -15,8 +15,11 @@ namespace ke {
 
 /* 1-byte format version stamped at the head of every record.
  *   1 — M3 (ns/entity/field/value/hlc/site_id)
- *   2 — M4 (author public key + per-record signature) */
-constexpr uint8_t kCodecVersion = 2;
+ *   2 — M4 (author public key + per-record signature)
+ *   3 — LWW existence: an EXISTENCE record carries (present:u8, hlc) instead of
+ *       a causal_length counter. Not backward compatible (signatures cover the
+ *       new content); pre-1.0, so no migration. */
+constexpr uint8_t kCodecVersion = 3;
 
 /* Unsigned LEB128 varint. */
 void     put_varint(std::string &out, uint64_t v);

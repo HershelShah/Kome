@@ -239,7 +239,9 @@ TEST(Reconcile, CodecRoundTrip) {
             c.hlc.logical = rng();
         } else {
             c.kind = SYNC_CHANGE_EXISTENCE;
-            c.causal_length = ((uint64_t)rng() << 16) ^ rng();
+            c.causal_length = rng() % 2; /* present bit (0/1) */
+            c.hlc.physical = ((uint64_t)rng() << 20) ^ rng();
+            c.hlc.logical = rng();
         }
         for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) c.author[i] = (uint8_t)rng();
         for (int i = 0; i < (int)SYNC_SIG_LEN; i++) c.signature[i] = (uint8_t)rng();
@@ -263,7 +265,9 @@ TEST(Reconcile, CodecRoundTrip) {
             EXPECT_EQ(out.hlc.physical, c.hlc.physical);
             EXPECT_EQ(out.hlc.logical, c.hlc.logical);
         } else {
-            EXPECT_EQ(out.causal_length, c.causal_length);
+            EXPECT_EQ(out.causal_length, c.causal_length); /* present bit */
+            EXPECT_EQ(out.hlc.physical, c.hlc.physical);
+            EXPECT_EQ(out.hlc.logical, c.hlc.logical);
         }
         EXPECT_EQ(0, std::memcmp(out.author, c.author, SYNC_PUBKEY_LEN));
         EXPECT_EQ(0, std::memcmp(out.signature, c.signature, SYNC_SIG_LEN));
@@ -273,12 +277,14 @@ TEST(Reconcile, CodecRoundTrip) {
 
 /* ---- T3.2 Codec golden vector (endianness-stable) ---------------------- */
 TEST(Reconcile, CodecGoldenVector) {
-    /* Existence (codec v2): ver=02 kind=00 ns="n" ent="e" cl=3 (LE u64)
-     * author=0xAA*32 signature=0xCC*64. */
+    /* Existence (codec v3): ver=03 kind=00 ns="n" ent="e" present=01
+     * hlc.physical=2 (LE u64) hlc.logical=1 (LE u32) author=0xAA*32 sig=0xCC*64. */
     {
-        std::vector<uint8_t> golden = {0x02, 0x00, 0x01, 0x6E, 0x01, 0x65,
-                                       0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                       0x00, 0x00};
+        std::vector<uint8_t> golden = {0x03, 0x00, 0x01, 0x6E, 0x01, 0x65,
+                                       0x01, /* present */
+                                       0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                       0x00, /* hlc.physical = 2 */
+                                       0x01, 0x00, 0x00, 0x00}; /* hlc.logical = 1 */
         for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) golden.push_back(0xAA);
         for (int i = 0; i < (int)SYNC_SIG_LEN; i++) golden.push_back(0xCC);
 
@@ -287,7 +293,8 @@ TEST(Reconcile, CodecGoldenVector) {
         c.kind = SYNC_CHANGE_EXISTENCE;
         c.ns = (const uint8_t *)"n"; c.ns_len = 1;
         c.entity = (const uint8_t *)"e"; c.entity_len = 1;
-        c.causal_length = 3;
+        c.causal_length = 1; /* present */
+        c.hlc.physical = 2; c.hlc.logical = 1;
         std::memset(c.author, 0xAA, SYNC_PUBKEY_LEN);
         std::memset(c.signature, 0xCC, SYNC_SIG_LEN);
         std::vector<uint8_t> buf(256);
@@ -301,13 +308,15 @@ TEST(Reconcile, CodecGoldenVector) {
                                      &consumed),
                   SYNC_OK);
         EXPECT_EQ(out.kind, SYNC_CHANGE_EXISTENCE);
-        EXPECT_EQ(out.causal_length, 3u);
+        EXPECT_EQ(out.causal_length, 1u); /* present */
+        EXPECT_EQ(out.hlc.physical, 2u);
         sync_change_free_decoded(&out);
     }
-    /* Register (codec v2): ... field="f" value="v" phys=2 log=1
-     * author=0xAA*32 signature=0xCC*64. */
+    /* Register (codec v3): ... field="f" value="v" phys=2 log=1
+     * author=0xAA*32 signature=0xCC*64. (Register layout is unchanged from v2;
+     * only the version byte bumped.) */
     {
-        std::vector<uint8_t> golden = {0x02, 0x01, 0x01, 0x6E, 0x01, 0x65,
+        std::vector<uint8_t> golden = {0x03, 0x01, 0x01, 0x6E, 0x01, 0x65,
                                        0x01, 0x66, 0x01, 0x76,
                                        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                        0x01, 0x00, 0x00, 0x00};

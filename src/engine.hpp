@@ -49,15 +49,24 @@ struct Register {
 /* Total order on registers: (hlc, author, value). Larger wins on merge. */
 int register_cmp(const Register &a, const Register &b);
 
-/* An entity: a causal-length counter (odd == present), the author/signature of
- * the current existence assertion, and its field registers. */
+/* An entity: an LWW presence register (present/absent decided by the latest
+ * (hlc, author) assertion), the author/signature of that assertion, and the
+ * entity's field registers. Replacing the old causal-length counter removes the
+ * saturation attack (a peer could pin presence with causal_length = UINT64_MAX)
+ * and unifies the whole data model under one LWW-by-HLC rule. */
 struct Entity {
-    uint64_t                          causal_length = 0;
+    bool                              present_v = false; /* LWW presence value */
+    Hlc                               presence_hlc;      /* {0,0} == no assertion */
     PubKey                            ex_author{};
     Sig                               ex_sig{};
     std::map<std::string, Register>   fields;
 
-    bool present() const { return (causal_length & 1u) != 0; }
+    bool present() const { return present_v; }
+    /* True once a presence assertion (add or delete) exists; an entity that only
+     * holds fields (a register arrived before any existence record) has none. */
+    bool asserted() const {
+        return presence_hlc.physical != 0 || presence_hlc.logical != 0;
+    }
 };
 
 using Entities   = std::map<std::string, Entity>;

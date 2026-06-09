@@ -539,7 +539,7 @@ bool build_snapshot(sync_engine *e, const uint8_t *peer,
     size_t count = 0;
     for (const auto &np : e->ns)
         for (const auto &ep : np.second)
-            count += (ep.second.causal_length > 0 ? 1 : 0) + ep.second.fields.size();
+            count += (ep.second.asserted() ? 1 : 0) + ep.second.fields.size();
     out.reserve(count);
 
     for (const auto &np : e->ns) {
@@ -555,9 +555,11 @@ bool build_snapshot(sync_engine *e, const uint8_t *peer,
             c.ns = (const uint8_t *)nsk.data(); c.ns_len = nsk.size();
             c.entity = (const uint8_t *)entk.data(); c.entity_len = entk.size();
 
-            if (ent.causal_length > 0) { /* existence element (incl. tombstone) */
+            if (ent.asserted()) { /* existence element (present or tombstone) */
                 c.kind = SYNC_CHANGE_EXISTENCE;
-                c.causal_length = ent.causal_length;
+                c.causal_length = ent.present_v ? 1 : 0; /* present bit */
+                c.hlc.physical = ent.presence_hlc.physical;
+                c.hlc.logical = ent.presence_hlc.logical;
                 std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
                 std::memcpy(c.signature, ent.ex_sig.data(), SYNC_SIG_LEN);
                 emit_element(c, nsk, entk, kEmpty, true, out);

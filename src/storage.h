@@ -26,8 +26,9 @@ namespace ke {
 
 /* Current on-disk log-format version (stored in a meta record). Opening a file
  * with a newer/unknown version fails cleanly (no backward migration).
- *   1 — append-only log: meta + per-record (existence/register) + capability */
-constexpr uint64_t kSchemaVersion = 1;
+ *   1 — append-only log: meta + per-record (existence/register) + capability
+ *   2 — LWW existence: entity records carry (present, hlc) not causal_length */
+constexpr uint64_t kSchemaVersion = 2;
 
 class Storage {
 public:
@@ -53,7 +54,7 @@ public:
     bool rollback();
 
     bool put_entity(const std::string &ns, const std::string &ent,
-                    uint64_t causal_length, const PubKey &ex_author,
+                    bool present, const Hlc &presence_hlc, const PubKey &ex_author,
                     const Sig &ex_sig, uint64_t db_clock);
     bool put_field(const std::string &ns, const std::string &ent,
                    const std::string &field, const std::string &value,

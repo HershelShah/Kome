@@ -103,9 +103,9 @@ bool verify_change(const sync_change *c) {
     return ke::verify(c->author, signing.data(), signing.size(), c->signature);
 }
 
-/* Sign the entity's current existence assertion (the caller has already set
- * en.causal_length) and store the author/signature on the entity. Shared by
- * the add path (set) and the remove path (delete). */
+/* Sign the entity's current presence assertion (the caller has already set
+ * en.present_v and en.presence_hlc) and store the author/signature on the
+ * entity. Shared by the add path (set) and the remove path (delete). */
 void sign_existence(sync_engine *e, const std::string &ns,
                     const std::string &ent, Entity &en) {
     sync_change ec;
@@ -113,7 +113,9 @@ void sign_existence(sync_engine *e, const std::string &ns,
     ec.kind = SYNC_CHANGE_EXISTENCE;
     ec.ns = (const uint8_t *)ns.data(); ec.ns_len = ns.size();
     ec.entity = (const uint8_t *)ent.data(); ec.entity_len = ent.size();
-    ec.causal_length = en.causal_length;
+    ec.causal_length = en.present_v ? 1 : 0; /* present bit */
+    ec.hlc.physical = en.presence_hlc.physical;
+    ec.hlc.logical = en.presence_hlc.logical;
     author_sign(e, ec);
     std::memcpy(en.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
     std::memcpy(en.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
@@ -157,8 +159,8 @@ bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
                const Entity &en) {
     Storage *s = e->store;
     if (!s->begin()) return false;
-    bool ok = s->put_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig,
-                            e->db_clock) &&
+    bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                            en.ex_author, en.ex_sig, e->db_clock) &&
               persist_meta_clock(e);
     if (!ok) { s->rollback(); return false; }
     if (!s->commit()) return false;
@@ -172,8 +174,8 @@ bool tx_entity_field(sync_engine *e, const std::string &ns,
                      const Entity &en, const Register &reg) {
     Storage *s = e->store;
     if (!s->begin()) return false;
-    bool ok = s->put_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig,
-                            e->db_clock) &&
+    bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                            en.ex_author, en.ex_sig, e->db_clock) &&
               s->put_field(ns, ent, field, reg.value, reg.hlc, reg.author,
                            reg.sig, e->db_clock) &&
               persist_meta_clock(e);
@@ -289,7 +291,10 @@ int sync_engine_set(sync_engine *e,
         Entity &ent = e->ns[nsk][entk];
 
         if (!ent.present()) {
-            ent.causal_length += 1; /* causal-length add; sign the assertion */
+            /* Assert presence with a fresh LWW timestamp (strictly newer than
+             * any prior assertion this engine has seen, so it wins). */
+            ent.present_v = true;
+            ent.presence_hlc = e->clock.tick(now_ms());
             sign_existence(e, nsk, entk, ent);
         }
 
@@ -342,7 +347,9 @@ int sync_engine_delete(sync_engine *e,
         if (ei == ni->second.end()) return SYNC_OK;
         if (ei->second.present()) {
             Entity &ent = ei->second;
-            ent.causal_length += 1; /* remove; sign the new assertion */
+            /* Assert absence with a fresh LWW timestamp (a tombstone). */
+            ent.present_v = false;
+            ent.presence_hlc = e->clock.tick(now_ms());
             sign_existence(e, nsk, entk, ent);
             e->state_gen++; /* invalidate the reconciliation snapshot cache */
             if (e->store) {
@@ -451,12 +458,16 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
 
         if (c->kind == SYNC_CHANGE_EXISTENCE) {
             const Entity *cur = find_entity();
-            uint64_t cur_cl = cur ? cur->causal_length : 0;
+            /* LWW on the presence register: the later (hlc, author) wins. An
+             * entity with no assertion has hlc {0,0}, which any real assertion
+             * beats. No counter to saturate. */
+            Hlc inc_hlc = {c->hlc.physical, c->hlc.logical};
+            Hlc cur_hlc = cur ? cur->presence_hlc : Hlc{0, 0};
             const uint8_t *cur_author =
                 cur ? cur->ex_author.data() : kZeroAuthor;
-            int order = (c->causal_length > cur_cl) ? 1
-                        : (c->causal_length < cur_cl) ? -1
-                        : std::memcmp(c->author, cur_author, SYNC_PUBKEY_LEN);
+            int order = hlc_cmp(inc_hlc, cur_hlc);
+            if (order == 0)
+                order = std::memcmp(c->author, cur_author, SYNC_PUBKEY_LEN);
             if (order <= 0) return SYNC_OK; /* dominated: no verify, no state */
 
             if (!already_verified && !verify_change(c)) {
@@ -470,9 +481,12 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
                 return authz;
             }
             Entity &ent = e->ns[nsk][entk];
-            ent.causal_length = c->causal_length; /* (cl, author) max */
+            ent.present_v = (c->causal_length != 0); /* present bit */
+            ent.presence_hlc = inc_hlc;
             std::memcpy(ent.ex_author.data(), c->author, SYNC_PUBKEY_LEN);
             std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
+            /* Adopt the assertion's HLC so later local writes are strictly newer. */
+            e->clock.receive(inc_hlc, now_ms());
             e->state_gen++; /* invalidate the reconciliation snapshot cache */
             if (e->store) {
                 e->db_clock++;
@@ -540,7 +554,7 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
         size_t n = 0;
         for (auto &np : e->ns)
             for (auto &ep : np.second) {
-                if (ep.second.causal_length > 0) n++;       /* existence */
+                if (ep.second.asserted()) n++;              /* existence */
                 n += ep.second.fields.size();               /* registers */
             }
         if (n == 0) return SYNC_OK;
@@ -556,14 +570,16 @@ int sync_engine_export(sync_engine *e, sync_change **out, size_t *out_count) {
             for (auto &ep : np.second) {
                 const std::string &entk = ep.first;
                 Entity &ent = ep.second;
-                if (ent.causal_length > 0) {
+                if (ent.asserted()) {
                     sync_change &c = arr[i++];
                     c.kind = SYNC_CHANGE_EXISTENCE;
                     c.ns = dup_field(nsk, &oom); c.ns_len = nsk.size();
                     if (oom) goto fail;
                     c.entity = dup_field(entk, &oom); c.entity_len = entk.size();
                     if (oom) goto fail;
-                    c.causal_length = ent.causal_length;
+                    c.causal_length = ent.present_v ? 1 : 0; /* present bit */
+                    c.hlc.physical = ent.presence_hlc.physical;
+                    c.hlc.logical = ent.presence_hlc.logical;
                     std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
                     std::memcpy(c.signature, ent.ex_sig.data(), SYNC_SIG_LEN);
                 }
@@ -619,7 +635,10 @@ int sync_engine_digest(sync_engine *e, uint8_t out[SYNC_DIGEST_LEN]) {
                 h.update(&tagE, 1);
                 feed(h, nsk.data(), nsk.size());
                 feed(h, entk.data(), entk.size());
-                feed_u64(h, ent.causal_length);
+                const uint8_t present = ent.present_v ? 1 : 0;
+                h.update(&present, 1);
+                feed_u64(h, ent.presence_hlc.physical);
+                feed_u32(h, ent.presence_hlc.logical);
                 h.update(ent.ex_author.data(), SYNC_PUBKEY_LEN);
                 for (auto &fp : ent.fields) {
                     const std::string &fk = fp.first;

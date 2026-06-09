@@ -167,8 +167,8 @@ TEST(Storage, ForgedRowRejectedOnLoad) {
 
     /* Corrupt signatures directly in the log, then fix the frame checksums so
      * the per-record signature check (not the frame check) is what rejects them.
-     * Field entry layout after the value bytes: phys(8) log(4) author(32) sig(64).
-     * Entity entry after "<ent>"+causal_length(8): author(32) sig(64). */
+     * Field entry after the value bytes: phys(8) log(4) author(32) sig(64).
+     * Entity entry after "<ent>": present(1) phys(8) log(4) author(32) sig(64). */
     std::string buf = read_file(db);
     {
         size_t v = find_or_die(buf, "secret");      /* tamper's field value */
@@ -176,11 +176,16 @@ TEST(Storage, ForgedRowRejectedOnLoad) {
         for (int k = 0; k < (int)SYNC_SIG_LEN; k++) buf[sig + k] = 0;
     }
     {
-        /* Entity record for "ghost": "ghost" followed by causal_length=1 (LE). */
-        std::string needle = std::string("ghost") +
-                             std::string("\x01\x00\x00\x00\x00\x00\x00\x00", 8);
+        /* The ghost ENTITY record (not its field record): kEntity(2) ns="ns"
+         * ent="ghost". After "ghost": present(1) hlc(12) author(32) sig(64). */
+        std::string needle;
+        needle.push_back((char)0x02);  /* kEntity */
+        needle.push_back((char)0x02);  /* ns length = 2 */
+        needle += "ns";
+        needle.push_back((char)0x05);  /* entity length = 5 */
+        needle += "ghost";
         size_t g = find_or_die(buf, needle);
-        size_t sig = g + 13 /*ghost+cl*/ + 32 /*author*/;
+        size_t sig = g + needle.size() + 1 /*present*/ + 12 /*hlc*/ + 32 /*author*/;
         for (int k = 0; k < (int)SYNC_SIG_LEN; k++) buf[sig + k] = 0;
     }
     recompute_frames(buf);

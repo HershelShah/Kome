@@ -57,10 +57,10 @@ bool record_sig_ok(const sync_change &c) {
     return verify(c.author, signing.data(), signing.size(), c.signature);
 }
 
-/* (cl, author) order on existence assertions: same total order apply() uses. */
-int existence_cmp(uint64_t cl_a, const PubKey &au_a, uint64_t cl_b,
+/* (hlc, author) order on presence assertions: same total order apply() uses. */
+int existence_cmp(const Hlc &hlc_a, const PubKey &au_a, const Hlc &hlc_b,
                   const PubKey &au_b) {
-    if (cl_a != cl_b) return cl_a < cl_b ? -1 : 1;
+    if (int c = hlc_cmp(hlc_a, hlc_b)) return c;
     return std::memcmp(au_a.data(), au_b.data(), SYNC_PUBKEY_LEN);
 }
 
@@ -125,12 +125,15 @@ std::string build_meta_u64(const std::string &key, uint64_t v) {
     return build_meta(key, b, sizeof b);
 }
 std::string build_entity(const std::string &ns, const std::string &ent,
-                         uint64_t cl, const PubKey &au, const Sig &sg) {
+                         bool present, const Hlc &hlc, const PubKey &au,
+                         const Sig &sg) {
     std::string e;
     e.push_back((char)kEntity);
     put_bytes(e, ns);
     put_bytes(e, ent);
-    put_u64le(e, cl);
+    e.push_back((char)(present ? 1 : 0));
+    put_u64le(e, hlc.physical);
+    put_u32le(e, hlc.logical);
     put_raw(e, au.data(), au.size());
     put_raw(e, sg.data(), sg.size());
     return e;
@@ -278,9 +281,10 @@ bool Storage::put_capability(const std::string &blob) {
 }
 
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
-                         uint64_t causal_length, const PubKey &ex_author,
-                         const Sig &ex_sig, uint64_t /*db_clock*/) {
-    return emit(build_entity(ns, ent, causal_length, ex_author, ex_sig));
+                         bool present, const Hlc &presence_hlc,
+                         const PubKey &ex_author, const Sig &ex_sig,
+                         uint64_t /*db_clock*/) {
+    return emit(build_entity(ns, ent, present, presence_hlc, ex_author, ex_sig));
 }
 
 bool Storage::put_field(const std::string &ns, const std::string &ent,
@@ -332,35 +336,39 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
     }
     case kEntity: {
         std::string ns, ent;
-        uint64_t cl = 0;
         PubKey a{};
         Sig sg{};
-        if (!get_bytes(p, end, ns) || !get_bytes(p, end, ent) ||
-            !get_u64le(p, end, cl) || !get_raw(p, end, a.data(), a.size()) ||
+        if (!get_bytes(p, end, ns) || !get_bytes(p, end, ent)) return false;
+        if (p >= end) return false;
+        bool present = (*p++ != 0);
+        Hlc hlc{};
+        if (!get_u64le(p, end, hlc.physical) || !get_u32le(p, end, hlc.logical) ||
+            !get_raw(p, end, a.data(), a.size()) ||
             !get_raw(p, end, sg.data(), sg.size()))
             return false;
-        /* A present/tombstoned entity (cl>0) carries a signed existence
-         * assertion — re-verify; ignore if forged. cl==0 rows just hold a
-         * not-present entity for its fields (verified separately). */
-        if (cl > 0) {
+        bool asserted = (hlc.physical != 0 || hlc.logical != 0);
+        /* An asserted entity carries a signed presence record — re-verify;
+         * ignore if forged. An unasserted shell only holds fields. */
+        if (asserted) {
             sync_change c;
             std::memset(&c, 0, sizeof c);
             c.kind = SYNC_CHANGE_EXISTENCE;
             c.ns = (const uint8_t *)ns.data(); c.ns_len = ns.size();
             c.entity = (const uint8_t *)ent.data(); c.entity_len = ent.size();
-            c.causal_length = cl;
+            c.causal_length = present ? 1 : 0;
+            c.hlc.physical = hlc.physical;
+            c.hlc.logical = hlc.logical;
             std::memcpy(c.author, a.data(), SYNC_PUBKEY_LEN);
             std::memcpy(c.signature, sg.data(), SYNC_SIG_LEN);
             if (!record_sig_ok(c)) return true; /* skip forged, frame still valid */
         }
         Entity &en = e->ns[ns][ent];
-        /* LWW/existence merge so replay is order-independent and idempotent. */
-        if (existence_cmp(cl, a, en.causal_length, en.ex_author) > 0) {
-            en.causal_length = cl;
+        /* LWW presence merge so replay is order-independent and idempotent. */
+        if (existence_cmp(hlc, a, en.presence_hlc, en.ex_author) > 0) {
+            en.present_v = present;
+            en.presence_hlc = hlc;
             en.ex_author = a;
             en.ex_sig = sg;
-        } else if (en.causal_length == 0 && cl == 0) {
-            en.causal_length = 0; /* ensure the (shell) entity exists for fields */
         }
         return true;
     }
@@ -526,8 +534,9 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
         for (const auto &ep : np.second) {
             const std::string &ent = ep.first;
             const Entity &en = ep.second;
-            std::string body =
-                build_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig);
+            std::string body = build_entity(ns, ent, en.present_v,
+                                            en.presence_hlc, en.ex_author,
+                                            en.ex_sig);
             uint32_t c = 1;
             for (const auto &fp : en.fields) {
                 body += build_field(ns, ent, fp.first, fp.second);

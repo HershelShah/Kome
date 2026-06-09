@@ -70,7 +70,9 @@ void encode_signing(const sync_change &c, std::string &out) {
     put_bytes(out, c.ns, c.ns_len);
     put_bytes(out, c.entity, c.entity_len);
     if (c.kind == SYNC_CHANGE_EXISTENCE) {
-        put_u64le(out, c.causal_length);
+        out.push_back((char)(c.causal_length ? 1 : 0)); /* present bit */
+        put_u64le(out, c.hlc.physical);
+        put_u32le(out, c.hlc.logical);
     } else { /* REGISTER */
         put_bytes(out, c.field, c.field_len);
         put_bytes(out, c.value, c.value_len);
@@ -104,7 +106,10 @@ bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
     if (!get_bytes(p, end, out.ns)) return false;
     if (!get_bytes(p, end, out.entity)) return false;
     if (kind == SYNC_CHANGE_EXISTENCE) {
-        if (!get_u64le(p, end, out.causal_length)) return false;
+        if (p >= end) return false;
+        out.causal_length = (*p++ != 0) ? 1 : 0; /* present bit */
+        if (!get_u64le(p, end, out.hlc.physical)) return false;
+        if (!get_u32le(p, end, out.hlc.logical)) return false;
     } else {
         if (!get_bytes(p, end, out.field)) return false;
         if (!get_bytes(p, end, out.value)) return false;
