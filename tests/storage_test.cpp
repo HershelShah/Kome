@@ -22,8 +22,10 @@
 #include <string>
 #include <vector>
 
+#include "byteorder.h" /* T2.4 tampers with the log file directly */
 #include "cluster.hpp"
-#include "sqlite3.h" /* T2.4 tampers with the file directly */
+#include "sha256.h"
+#include "storage.h" /* kSchemaVersion */
 #include "tempdir.hpp"
 
 namespace {
@@ -31,6 +33,46 @@ namespace {
 using Digest = std::array<uint8_t, SYNC_DIGEST_LEN>;
 using cluster::B;
 using synctest::TempDir;
+
+/* ---- direct log-file manipulation (for the tamper/version tests) -------- *
+ * The store is an append-only log of length-prefixed, SHA-checksummed frames
+ * (storage.cpp). To corrupt a record on disk, edit its bytes in place then
+ * recompute the enclosing frames' checksums — otherwise the frame is rejected
+ * as a torn write before the per-record signature check we want to exercise. */
+std::string read_file(const std::string &p) {
+    FILE *f = fopen(p.c_str(), "rb");
+    if (!f) return {};
+    std::string b;
+    char tmp[4096];
+    size_t n;
+    while ((n = fread(tmp, 1, sizeof tmp, f)) > 0) b.append(tmp, n);
+    fclose(f);
+    return b;
+}
+void write_file(const std::string &p, const std::string &b) {
+    FILE *f = fopen(p.c_str(), "wb");
+    ASSERT_NE(f, nullptr);
+    ASSERT_EQ(fwrite(b.data(), 1, b.size(), f), b.size());
+    fclose(f);
+}
+/* Rewrite every frame's trailing 8-byte checksum to match its (edited) body. */
+void recompute_frames(std::string &buf) {
+    size_t pos = 8; /* skip the 8-byte magic header */
+    while (pos + 4 <= buf.size()) {
+        uint32_t blen = ke::read_u32le((const uint8_t *)buf.data() + pos);
+        size_t body = pos + 4;
+        if (body + blen + 8 > buf.size()) break;
+        uint8_t d[32];
+        sync_engine_detail::sha256(buf.data() + body, blen, d);
+        std::memcpy(&buf[body + blen], d, 8);
+        pos = body + blen + 8;
+    }
+}
+size_t find_or_die(const std::string &b, const std::string &needle) {
+    size_t i = b.find(needle);
+    EXPECT_NE(i, std::string::npos);
+    return i;
+}
 
 std::array<uint8_t, SYNC_SITE_ID_LEN> site_from(uint8_t seed) {
     std::array<uint8_t, SYNC_SITE_ID_LEN> s{};
@@ -123,18 +165,26 @@ TEST(Storage, ForgedRowRejectedOnLoad) {
     cluster::put(e, "ns", "ghost", "f", "boo");       /* existence sig corrupted */
     sync_engine_destroy(e);
 
-    /* Corrupt signatures directly in the file (zeroblob won't verify). */
-    sqlite3 *raw = nullptr;
-    ASSERT_EQ(sqlite3_open(db.c_str(), &raw), SQLITE_OK);
-    ASSERT_EQ(sqlite3_exec(raw,
-                  "UPDATE field SET sig = zeroblob(64) "
-                  "WHERE entity = CAST('tamper' AS BLOB)",
-                  nullptr, nullptr, nullptr), SQLITE_OK);
-    ASSERT_EQ(sqlite3_exec(raw,
-                  "UPDATE entity SET ex_sig = zeroblob(64) "
-                  "WHERE entity = CAST('ghost' AS BLOB)",
-                  nullptr, nullptr, nullptr), SQLITE_OK);
-    sqlite3_close(raw);
+    /* Corrupt signatures directly in the log, then fix the frame checksums so
+     * the per-record signature check (not the frame check) is what rejects them.
+     * Field entry layout after the value bytes: phys(8) log(4) author(32) sig(64).
+     * Entity entry after "<ent>"+causal_length(8): author(32) sig(64). */
+    std::string buf = read_file(db);
+    {
+        size_t v = find_or_die(buf, "secret");      /* tamper's field value */
+        size_t sig = v + 6 /*secret*/ + 8 + 4 + 32; /* -> field sig */
+        for (int k = 0; k < (int)SYNC_SIG_LEN; k++) buf[sig + k] = 0;
+    }
+    {
+        /* Entity record for "ghost": "ghost" followed by causal_length=1 (LE). */
+        std::string needle = std::string("ghost") +
+                             std::string("\x01\x00\x00\x00\x00\x00\x00\x00", 8);
+        size_t g = find_or_die(buf, needle);
+        size_t sig = g + 13 /*ghost+cl*/ + 32 /*author*/;
+        for (int k = 0; k < (int)SYNC_SIG_LEN; k++) buf[sig + k] = 0;
+    }
+    recompute_frames(buf);
+    write_file(db, buf);
 
     sync_engine *e2 = sync_engine_open(db.c_str(), site.data());
     ASSERT_NE(e2, nullptr);
@@ -257,27 +307,27 @@ TEST(Storage, SchemaGuard) {
                     B(std::string("f")), 1, B(std::string("v")), 1);
     sync_engine_destroy(e);
 
-    /* Forge a newer schema_version directly in the file. */
-    sqlite3 *raw = nullptr;
-    ASSERT_EQ(sqlite3_open(db.c_str(), &raw), SQLITE_OK);
-    ASSERT_EQ(sqlite3_exec(
-                  raw,
-                  "UPDATE meta SET value=9999 WHERE key='schema_version'",
-                  nullptr, nullptr, nullptr),
-              SQLITE_OK);
-    sqlite3_close(raw);
+    /* Forge a newer schema_version directly in the log. The meta entry is
+     * key="schema_version" then value = varint(8) + u64le; overwrite the 8
+     * value bytes, then fix the frame checksum. */
+    auto set_version = [&](uint64_t v) {
+        std::string buf = read_file(db);
+        size_t k = find_or_die(buf, "schema_version");
+        size_t val = k + 14 /*key*/ + 1 /*varint len=8*/;
+        uint8_t le[8];
+        ke::store_u64le(le, v);
+        for (int i = 0; i < 8; i++) buf[val + i] = (char)le[i];
+        recompute_frames(buf);
+        write_file(db, buf);
+    };
+    set_version(9999);
 
     /* Opening must fail cleanly (no crash, no corruption). */
     sync_engine *bad = sync_engine_open(db.c_str(), site.data());
     EXPECT_EQ(bad, nullptr);
 
     /* File is still intact and re-openable once the version is restored. */
-    ASSERT_EQ(sqlite3_open(db.c_str(), &raw), SQLITE_OK);
-    ASSERT_EQ(sqlite3_exec(raw,
-                           "UPDATE meta SET value=2 WHERE key='schema_version'",
-                           nullptr, nullptr, nullptr),
-              SQLITE_OK);
-    sqlite3_close(raw);
+    set_version(ke::kSchemaVersion);
     sync_engine *ok = sync_engine_open(db.c_str(), site.data());
     EXPECT_NE(ok, nullptr);
     sync_engine_destroy(ok);
