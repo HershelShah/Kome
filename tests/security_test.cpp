@@ -17,6 +17,7 @@
 
 #include "cluster.hpp"
 #include "engine.hpp" /* access to the engine's identity KeyPair */
+#include "capability.h"
 #include "noise.h"
 
 namespace {
@@ -541,6 +542,72 @@ TEST(Security, WriteAuthorization) {
     sync_engine_destroy(writer);
     sync_engine_destroy(stranger);
     sync_engine_destroy(late);
+    sync_engine_destroy(v);
+}
+
+/* An unauthorized far-future record must not advance the engine's HLC clock.
+ *
+ * The HLC physical adopts the max remote timestamp on receive, so a far-future
+ * value would pin the engine clock (and, because the clock is engine-global,
+ * degrade the wall-clock quality of conflict resolution across *all*
+ * namespaces). The verify-on-win path gates this: clock.receive runs only after
+ * signature + capability checks pass, so a record that is rejected for lack of
+ * authorization reaches neither state nor the clock. This locks that ordering
+ * in — a rejected far-future write leaves the engine's own subsequent writes
+ * stamped at real wall-clock time, not the attacker's far future. */
+TEST(Security, UnauthorizedFutureWriteDoesNotPoisonClock) {
+    const uint64_t kFarFuture = 4000000000000ull; /* ms, ~year 2096 */
+
+    /* v enforces "nsA": it holds a root owned by `owner` (the proven-enforcing
+     * pattern from WriteAuthorization). v is NOT a delegate, so v writes only to
+     * the open namespace "open" — which is what we use to observe v's clock. */
+    sync_engine *owner = sync_engine_create(seed_from(0x21).data());
+    sync_engine *v = sync_engine_create(seed_from(0x23).data());
+    sync_capability *root =
+        sync_capability_root(owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+
+    /* A stranger (no capability) forges a far-future register in enforced nsA.
+     * (Named locals: cluster::B borrows its argument, so the bytes must outlive
+     * every use of `ff` — a temporary would dangle.) */
+    const std::string ns = "nsA", ent = "x", field = "f", poison = "poison";
+    sync_change ff;
+    std::memset(&ff, 0, sizeof ff);
+    ff.kind = SYNC_CHANGE_REGISTER;
+    ff.ns = B(ns); ff.ns_len = ns.size();
+    ff.entity = B(ent); ff.entity_len = ent.size();
+    ff.field = B(field); ff.field_len = field.size();
+    ff.value = B(poison); ff.value_len = poison.size();
+    ff.hlc.physical = kFarFuture;
+    ff.hlc.logical = 0;
+    ASSERT_EQ(sync_change_sign(&ff, seed_from(0x22).data()), SYNC_OK);
+
+    /* It wins LWW (huge physical) so it is not dropped as dominated, but it is
+     * unauthorized, so apply must reject it before touching state or the clock. */
+    EXPECT_EQ(sync_engine_apply(v, &ff), SYNC_ERR_UNAUTHORIZED);
+
+    /* v now writes an open namespace. If the rejected record had poisoned the
+     * clock, this write's physical would be pinned at kFarFuture; it must
+     * instead carry a real (near-now) timestamp. */
+    set(v, "open", "y", "f", "honest");
+
+    sync_change *recs = nullptr;
+    size_t n = 0;
+    ASSERT_EQ(sync_engine_export(v, &recs, &n), SYNC_OK);
+    bool saw_register = false;
+    for (size_t i = 0; i < n; i++) {
+        if (recs[i].kind == SYNC_CHANGE_REGISTER) {
+            saw_register = true;
+            EXPECT_LT(recs[i].hlc.physical, kFarFuture)
+                << "engine clock was poisoned by a rejected far-future record";
+        }
+    }
+    EXPECT_TRUE(saw_register);
+    sync_changes_free(recs, n);
+
+    sync_capability_free(root);
+    sync_engine_destroy(owner);
     sync_engine_destroy(v);
 }
 
