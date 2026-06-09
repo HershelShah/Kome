@@ -33,6 +33,10 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <vector>
+#ifndef __EMSCRIPTEN__
+#include <thread> /* parallel signature re-verification on load (native only) */
+#endif
 
 #include "byteorder.h"
 #include "capability.h"
@@ -48,16 +52,12 @@ constexpr char kMagic[8] = {'K', 'O', 'M', 'E', 'L', 'O', 'G', '1'};
 
 enum EntryType : uint8_t { kMeta = 1, kEntity = 2, kField = 3, kCap = 4 };
 
-/* Re-verify a record's signature on load. Persisted rows are NOT trusted just
- * because they're on disk — a crafted/swapped file could otherwise inject forged
- * records that bypass the signature gate the network path enforces. */
-bool record_sig_ok(const sync_change &c) {
-    std::string signing;
-    encode_signing(c, signing);
-    return verify(c.author, signing.data(), signing.size(), c.signature);
-}
-
-/* (hlc, author) order on presence assertions: same total order apply() uses. */
+/* Persisted records are re-verified on load — a crafted/swapped file must not
+ * inject forged records that bypass the signature gate the network path
+ * enforces. The verification itself is inlined in verify_and_merge (below) so it
+ * can run in parallel across all collected records.
+ *
+ * (hlc, author) order on presence assertions: same total order apply() uses. */
 int existence_cmp(const Hlc &hlc_a, const PubKey &au_a, const Hlc &hlc_b,
                   const PubKey &au_b) {
     if (int c = hlc_cmp(hlc_a, hlc_b)) return c;
@@ -329,10 +329,73 @@ struct Replay {
     uint8_t seed[32];
 };
 
-/* Apply one decoded entry to engine state + replay accumulator. Returns false
- * only on a malformed entry (caller treats the frame as corrupt). */
+/* Merge one already-verified record into engine state by the same LWW rule the
+ * engine uses, so replay is order-independent and idempotent. */
+void merge_decoded(sync_engine *e, const DecodedChange &dc) {
+    Hlc hlc{dc.hlc.physical, dc.hlc.logical};
+    if (dc.kind == SYNC_CHANGE_EXISTENCE) {
+        Entity &en = e->ns[dc.ns][dc.entity];
+        if (existence_cmp(hlc, dc.author, en.presence_hlc, en.ex_author) > 0) {
+            en.present_v = (dc.causal_length != 0);
+            en.presence_hlc = hlc;
+            en.ex_author = dc.author;
+            en.ex_sig = dc.signature;
+        }
+    } else { /* REGISTER */
+        Register r;
+        r.value = dc.value;
+        r.hlc = hlc;
+        r.author = dc.author;
+        r.sig = dc.signature;
+        Register &cur = e->ns[dc.ns][dc.entity].fields[dc.field];
+        if (register_cmp(r, cur) > 0) cur = std::move(r);
+    }
+}
+
+/* Re-verify the signatures of the collected records in parallel (native) and
+ * merge the valid ones. Verification is the dominant load cost (~150 us each),
+ * so a many-record reopen is otherwise serial-bound. A forged record is dropped;
+ * the merge is order-independent so parallel verification is safe. */
+void verify_and_merge(sync_engine *e, std::vector<DecodedChange> &pending) {
+    const size_t n = pending.size();
+    if (n == 0) return;
+    std::vector<char> ok(n, 0);
+    auto verify_range = [&](size_t lo, size_t hi) {
+        for (size_t i = lo; i < hi; i++) {
+            std::string signing;
+            sync_change c = pending[i].view();
+            encode_signing(c, signing);
+            ok[i] = verify(c.author, signing.data(), signing.size(),
+                           c.signature) ? 1 : 0;
+        }
+    };
+#ifndef __EMSCRIPTEN__
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned workers = std::min<unsigned>(hw ? hw : 1, 8u);
+    if (n >= 64 && workers > 1) {
+        std::vector<std::thread> pool;
+        const size_t chunk = (n + workers - 1) / workers;
+        for (unsigned w = 0; w < workers; w++) {
+            size_t lo = (size_t)w * chunk, hi = std::min(n, lo + chunk);
+            if (lo >= hi) break;
+            pool.emplace_back([&, lo, hi] {
+                try { verify_range(lo, hi); } catch (...) {}
+            });
+        }
+        for (auto &t : pool) t.join();
+    } else
+#endif
+        verify_range(0, n);
+
+    for (size_t i = 0; i < n; i++)
+        if (ok[i]) merge_decoded(e, pending[i]);
+}
+
+/* Decode one entry. META/CAP are handled immediately; signed existence/register
+ * records are appended to `pending` for batched parallel verification. Returns
+ * false only on a malformed entry (caller treats the frame as corrupt). */
 bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
-                 const uint8_t *end) {
+                 const uint8_t *end, std::vector<DecodedChange> &pending) {
     if (p >= end) return false;
     uint8_t type = *p++;
     switch (type) {
@@ -367,58 +430,44 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
             !get_raw(p, end, sg.data(), sg.size()))
             return false;
         bool asserted = (hlc.physical != 0 || hlc.logical != 0);
-        /* An asserted entity carries a signed presence record — re-verify;
-         * ignore if forged. An unasserted shell only holds fields. */
         if (asserted) {
-            sync_change c;
-            std::memset(&c, 0, sizeof c);
-            c.kind = SYNC_CHANGE_EXISTENCE;
-            c.ns = (const uint8_t *)ns.data(); c.ns_len = ns.size();
-            c.entity = (const uint8_t *)ent.data(); c.entity_len = ent.size();
-            c.causal_length = present ? 1 : 0;
-            c.hlc.physical = hlc.physical;
-            c.hlc.logical = hlc.logical;
-            std::memcpy(c.author, a.data(), SYNC_PUBKEY_LEN);
-            std::memcpy(c.signature, sg.data(), SYNC_SIG_LEN);
-            if (!record_sig_ok(c)) return true; /* skip forged, frame still valid */
-        }
-        Entity &en = e->ns[ns][ent];
-        /* LWW presence merge so replay is order-independent and idempotent. */
-        if (existence_cmp(hlc, a, en.presence_hlc, en.ex_author) > 0) {
-            en.present_v = present;
-            en.presence_hlc = hlc;
-            en.ex_author = a;
-            en.ex_sig = sg;
+            /* Signed presence record — queue for parallel re-verification. */
+            DecodedChange dc;
+            dc.kind = SYNC_CHANGE_EXISTENCE;
+            dc.ns = std::move(ns);
+            dc.entity = std::move(ent);
+            dc.causal_length = present ? 1 : 0;
+            dc.hlc.physical = hlc.physical;
+            dc.hlc.logical = hlc.logical;
+            dc.author = a;
+            dc.signature = sg;
+            pending.push_back(std::move(dc));
+        } else {
+            /* Unasserted shell carries no signed content — just hold the entity
+             * for its (separately verified) fields. */
+            (void)e->ns[ns][ent];
         }
         return true;
     }
     case kField: {
         std::string ns, ent, field;
-        Register r;
+        DecodedChange dc;
         uint64_t phys = 0;
         uint32_t logi = 0;
-        if (!get_bytes(p, end, ns) || !get_bytes(p, end, ent) ||
-            !get_bytes(p, end, field) || !get_bytes(p, end, r.value) ||
+        PubKey a{};
+        Sig sg{};
+        if (!get_bytes(p, end, dc.ns) || !get_bytes(p, end, dc.entity) ||
+            !get_bytes(p, end, dc.field) || !get_bytes(p, end, dc.value) ||
             !get_u64le(p, end, phys) || !get_u32le(p, end, logi) ||
-            !get_raw(p, end, r.author.data(), r.author.size()) ||
-            !get_raw(p, end, r.sig.data(), r.sig.size()))
+            !get_raw(p, end, a.data(), a.size()) ||
+            !get_raw(p, end, sg.data(), sg.size()))
             return false;
-        r.hlc.physical = phys;
-        r.hlc.logical = logi;
-        sync_change c;
-        std::memset(&c, 0, sizeof c);
-        c.kind = SYNC_CHANGE_REGISTER;
-        c.ns = (const uint8_t *)ns.data(); c.ns_len = ns.size();
-        c.entity = (const uint8_t *)ent.data(); c.entity_len = ent.size();
-        c.field = (const uint8_t *)field.data(); c.field_len = field.size();
-        c.value = (const uint8_t *)r.value.data(); c.value_len = r.value.size();
-        c.hlc.physical = phys;
-        c.hlc.logical = logi;
-        std::memcpy(c.author, r.author.data(), SYNC_PUBKEY_LEN);
-        std::memcpy(c.signature, r.sig.data(), SYNC_SIG_LEN);
-        if (!record_sig_ok(c)) return true; /* skip forged */
-        Register &cur = e->ns[ns][ent].fields[field];
-        if (register_cmp(r, cur) > 0) cur = std::move(r);
+        dc.kind = SYNC_CHANGE_REGISTER;
+        dc.hlc.physical = phys;
+        dc.hlc.logical = logi;
+        dc.author = a;
+        dc.signature = sg;
+        pending.push_back(std::move(dc)); /* queued for parallel verification */
         return true;
     }
     case kCap: {
@@ -443,6 +492,7 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     if (err) *err = SYNC_OK;
     Replay rp;
     std::memcpy(rp.seed, seed, 32);
+    std::vector<DecodedChange> pending; /* signed records, verified after replay */
 
     /* Replay every good frame from just past the magic header. */
     if (::lseek(fd_, (off_t)sizeof kMagic, SEEK_SET) < 0) {
@@ -472,7 +522,7 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         p += 4;
         bool frame_ok = true;
         for (uint32_t i = 0; i < count && frame_ok; i++)
-            frame_ok = apply_entry(e, rp, p, bend);
+            frame_ok = apply_entry(e, rp, p, bend, pending);
         if (!frame_ok) break; /* malformed body → treat as tail, stop */
 
         good_end += 4 + (off_t)body_len + 8;
@@ -488,6 +538,9 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         ::fsync(fd_);
     }
     file_size_ = (uint64_t)good_end;
+
+    /* Re-verify all collected records in parallel, then merge the valid ones. */
+    verify_and_merge(e, pending);
 
     /* Version guard: unknown/newer format is rejected cleanly. */
     if (rp.have_schema && rp.schema_version != kSchemaVersion) {
