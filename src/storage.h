@@ -63,6 +63,14 @@ public:
     bool put_meta_blob(const char *key, const uint8_t *data, size_t len);
     bool put_capability(const std::string &blob);
 
+    /* Rewrite the log as one record per live cell when it has grown much larger
+     * than its live state (the Bitcask "merge"): bounds the file to O(state),
+     * keeps reopen O(state), and is where deleted-record purging will hook in.
+     * Best-effort — a failure leaves the (correct, larger) log in place. Needs
+     * the engine for the current state; called from the write path. */
+    void maybe_compact(sync_engine *e);
+    bool compact(sync_engine *e); /* force a rewrite now */
+
 private:
     Storage() = default;
 
@@ -70,12 +78,19 @@ private:
     bool emit(const std::string &entry);
     /* Append a complete frame (length + body + checksum) and fsync. */
     bool write_frame(const std::string &body, uint32_t entry_count);
+    /* Serialize the engine's current state to a complete log image. */
+    void serialize_state(sync_engine *e, std::string &out);
+    /* Durably replace the log file with `content` (temp + fsync + rename). */
+    bool atomic_replace(const std::string &content);
 
     int         fd_ = -1;
     std::string path_;
     std::string staging_;        /* entries buffered between begin()/commit() */
     uint32_t    staged_count_ = 0;
     bool        in_tx_ = false;
+    uint64_t    file_size_ = 0;       /* current log size in bytes */
+    uint64_t    compacted_size_ = 0;  /* log size just after the last compaction */
+    uint8_t     seed_[32] = {0};      /* identity seed, re-persisted on compaction */
 };
 
 } // namespace ke

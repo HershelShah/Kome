@@ -333,6 +333,38 @@ TEST(Storage, SchemaGuard) {
     sync_engine_destroy(ok);
 }
 
+/* Compaction bounds the append-only log: hammering one cell would grow the log
+ * without limit, but the Bitcask "merge" rewrites it to one record per live
+ * cell. The file must stay small and the state must be preserved across reopen. */
+TEST(Storage, CompactionBoundsLog) {
+    TempDir dir;
+    std::string db = dir.file("compact.db");
+    auto site = site_from(0x0C);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    const int kWrites = 5000;
+    for (int i = 0; i < kWrites; i++)
+        cluster::put(e, "ns", "k", "f", "v" + std::to_string(i));
+    Digest d0;
+    ASSERT_EQ(sync_engine_digest(e, d0.data()), SYNC_OK);
+    sync_engine_destroy(e);
+
+    /* One live cell, so the log must be tiny vs. the ~kWrites records it would
+     * hold uncompacted (each record is a few hundred bytes). */
+    size_t sz = read_file(db).size();
+    EXPECT_LT(sz, 256u * 1024u) << "log was not compacted (size=" << sz << ")";
+
+    /* Reopen: compaction preserved exactly the current state. */
+    sync_engine *e2 = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e2, nullptr);
+    Digest d1;
+    ASSERT_EQ(sync_engine_digest(e2, d1.data()), SYNC_OK);
+    EXPECT_EQ(d0, d1) << "compaction changed the engine state";
+    EXPECT_EQ(cluster::get(e2, "ns", "k", "f"), "v" + std::to_string(kWrites - 1));
+    sync_engine_destroy(e2);
+}
+
 /* ---- T2.5 Single file -------------------------------------------------- */
 TEST(Storage, SingleFile) {
     TempDir dir;

@@ -110,10 +110,71 @@ bool write_all(int fd, const void *buf, size_t n) {
     return true;
 }
 
+/* ---- entry + frame builders (shared by append and compaction) ---------- */
+
+std::string build_meta(const std::string &key, const uint8_t *data, size_t len) {
+    std::string e;
+    e.push_back((char)kMeta);
+    put_bytes(e, key);
+    put_bytes(e, std::string(reinterpret_cast<const char *>(data), len));
+    return e;
+}
+std::string build_meta_u64(const std::string &key, uint64_t v) {
+    uint8_t b[8];
+    store_u64le(b, v);
+    return build_meta(key, b, sizeof b);
+}
+std::string build_entity(const std::string &ns, const std::string &ent,
+                         uint64_t cl, const PubKey &au, const Sig &sg) {
+    std::string e;
+    e.push_back((char)kEntity);
+    put_bytes(e, ns);
+    put_bytes(e, ent);
+    put_u64le(e, cl);
+    put_raw(e, au.data(), au.size());
+    put_raw(e, sg.data(), sg.size());
+    return e;
+}
+std::string build_field(const std::string &ns, const std::string &ent,
+                        const std::string &field, const Register &r) {
+    std::string e;
+    e.push_back((char)kField);
+    put_bytes(e, ns);
+    put_bytes(e, ent);
+    put_bytes(e, field);
+    put_bytes(e, r.value);
+    put_u64le(e, r.hlc.physical);
+    put_u32le(e, r.hlc.logical);
+    put_raw(e, r.author.data(), r.author.size());
+    put_raw(e, r.sig.data(), r.sig.size());
+    return e;
+}
+std::string build_cap(const std::string &blob) {
+    std::string e;
+    e.push_back((char)kCap);
+    put_bytes(e, blob);
+    return e;
+}
+
+/* Wrap a body of `count` entries into a full on-disk frame. */
+std::string make_frame(const std::string &body, uint32_t count) {
+    std::string full;
+    put_u32le(full, count);
+    full += body;
+    uint8_t digest[32];
+    sync_engine_detail::sha256(full.data(), full.size(), digest);
+    std::string framed;
+    put_u32le(framed, (uint32_t)full.size());
+    framed += full;
+    framed.append(reinterpret_cast<const char *>(digest), 8);
+    return framed;
+}
+
 } // namespace
 
 Storage::~Storage() {
     if (fd_ >= 0) ::close(fd_);
+    secure_wipe(seed_, sizeof seed_);
 }
 
 Storage *Storage::open(const char *path, sync_error *err) {
@@ -148,6 +209,7 @@ Storage *Storage::open(const char *path, sync_error *err) {
             delete s;
             return nullptr;
         }
+        s->file_size_ = sizeof kMagic;
     } else {
         char magic[sizeof kMagic];
         ::lseek(fd, 0, SEEK_SET);
@@ -157,26 +219,18 @@ Storage *Storage::open(const char *path, sync_error *err) {
             delete s;
             return nullptr;
         }
+        s->file_size_ = (uint64_t)size;
     }
     return s;
 }
 
 bool Storage::write_frame(const std::string &body, uint32_t entry_count) {
-    std::string framed;
-    std::string full;
-    put_u32le(full, entry_count);
-    full += body;
-
-    uint8_t digest[32];
-    sync_engine_detail::sha256(full.data(), full.size(), digest);
-
-    put_u32le(framed, (uint32_t)full.size());
-    framed += full;
-    framed.append(reinterpret_cast<const char *>(digest), 8);
-
+    std::string framed = make_frame(body, entry_count);
     if (::lseek(fd_, 0, SEEK_END) < 0) return false;
     if (!write_all(fd_, framed.data(), framed.size())) return false;
-    return ::fsync(fd_) == 0;
+    if (::fsync(fd_) != 0) return false;
+    file_size_ += framed.size();
+    return true;
 }
 
 bool Storage::emit(const std::string &entry) {
@@ -212,54 +266,33 @@ bool Storage::rollback() {
 }
 
 bool Storage::put_meta_u64(const char *key, uint64_t v) {
-    uint8_t b[8];
-    store_u64le(b, v);
-    return put_meta_blob(key, b, sizeof b);
+    return emit(build_meta_u64(key, v));
 }
 
 bool Storage::put_meta_blob(const char *key, const uint8_t *data, size_t len) {
-    std::string e;
-    e.push_back((char)kMeta);
-    put_bytes(e, std::string(key));
-    put_bytes(e, std::string(reinterpret_cast<const char *>(data), len));
-    return emit(e);
+    return emit(build_meta(key, data, len));
 }
 
 bool Storage::put_capability(const std::string &blob) {
-    std::string e;
-    e.push_back((char)kCap);
-    put_bytes(e, blob);
-    return emit(e);
+    return emit(build_cap(blob));
 }
 
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
                          uint64_t causal_length, const PubKey &ex_author,
                          const Sig &ex_sig, uint64_t /*db_clock*/) {
-    std::string e;
-    e.push_back((char)kEntity);
-    put_bytes(e, ns);
-    put_bytes(e, ent);
-    put_u64le(e, causal_length);
-    put_raw(e, ex_author.data(), ex_author.size());
-    put_raw(e, ex_sig.data(), ex_sig.size());
-    return emit(e);
+    return emit(build_entity(ns, ent, causal_length, ex_author, ex_sig));
 }
 
 bool Storage::put_field(const std::string &ns, const std::string &ent,
                         const std::string &field, const std::string &value,
                         const Hlc &hlc, const PubKey &author, const Sig &sig,
                         uint64_t /*db_clock*/) {
-    std::string e;
-    e.push_back((char)kField);
-    put_bytes(e, ns);
-    put_bytes(e, ent);
-    put_bytes(e, field);
-    put_bytes(e, value);
-    put_u64le(e, hlc.physical);
-    put_u32le(e, hlc.logical);
-    put_raw(e, author.data(), author.size());
-    put_raw(e, sig.data(), sig.size());
-    return emit(e);
+    Register r;
+    r.value = value;
+    r.hlc = hlc;
+    r.author = author;
+    r.sig = sig;
+    return emit(build_field(ns, ent, field, r));
 }
 
 namespace {
@@ -426,12 +459,18 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         }
         ::fsync(fd_);
     }
+    file_size_ = (uint64_t)good_end;
 
     /* Version guard: unknown/newer format is rejected cleanly. */
     if (rp.have_schema && rp.schema_version != kSchemaVersion) {
         if (err) *err = SYNC_ERR_INVALID;
         return false;
     }
+
+    /* Keep the seed: the persistence layer re-writes it on every compaction
+     * (the file already holds it in plaintext, so this is not new exposure).
+     * Wiped in ~Storage. */
+    std::memcpy(seed_, rp.seed, 32);
 
     if (!rp.have_schema) {
         /* Fresh log: stamp the format version and identity seed atomically. */
@@ -452,7 +491,109 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     e->clock.physical = rp.hlc_physical;
     e->clock.logical = rp.hlc_logical;
     e->db_clock = rp.db_clock;
+
+    /* Compact a bloated log up front so reopen stays O(state): if the live
+     * image is much smaller than the file, rewrite it now. */
+    compacted_size_ = file_size_;
+    if (file_size_ > 65536) {
+        std::string fresh;
+        serialize_state(e, fresh);
+        if ((uint64_t)fresh.size() * 2 < file_size_ && atomic_replace(fresh))
+            compacted_size_ = file_size_;
+    }
     return true;
+}
+
+/* Build a complete log image (magic + frames) of the engine's current state:
+ * one meta frame, one frame per entity (its existence record + field
+ * registers), and one frame for granted capabilities. Replaying it reconstructs
+ * exactly the current state, so the digest is unchanged. */
+void Storage::serialize_state(sync_engine *e, std::string &out) {
+    out.assign(kMagic, sizeof kMagic);
+
+    std::string mbody;
+    uint32_t mc = 0;
+    auto add_meta = [&](const std::string &entry) { mbody += entry; mc++; };
+    add_meta(build_meta_u64("schema_version", kSchemaVersion));
+    add_meta(build_meta("seed", seed_, 32));
+    add_meta(build_meta_u64("hlc_physical", e->clock.physical));
+    add_meta(build_meta_u64("hlc_logical", e->clock.logical));
+    add_meta(build_meta_u64("db_clock", e->db_clock));
+    out += make_frame(mbody, mc);
+
+    for (const auto &np : e->ns) {
+        const std::string &ns = np.first;
+        for (const auto &ep : np.second) {
+            const std::string &ent = ep.first;
+            const Entity &en = ep.second;
+            std::string body =
+                build_entity(ns, ent, en.causal_length, en.ex_author, en.ex_sig);
+            uint32_t c = 1;
+            for (const auto &fp : en.fields) {
+                body += build_field(ns, ent, fp.first, fp.second);
+                c++;
+            }
+            out += make_frame(body, c);
+        }
+    }
+
+    if (e->caps) {
+        std::vector<std::string> blobs;
+        e->caps->export_blobs(blobs);
+        if (!blobs.empty()) {
+            std::string body;
+            for (const auto &b : blobs) body += build_cap(b);
+            out += make_frame(body, (uint32_t)blobs.size());
+        }
+    }
+}
+
+bool Storage::atomic_replace(const std::string &content) {
+    std::string tmp = path_ + ".tmp";
+    int t = ::open(tmp.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (t < 0) return false;
+    ::fchmod(t, S_IRUSR | S_IWUSR);
+    if (!write_all(t, content.data(), content.size()) || ::fsync(t) != 0) {
+        ::close(t);
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    ::close(t);
+    if (::rename(tmp.c_str(), path_.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    /* Reopen the now-replaced file for continued appends. */
+    if (fd_ >= 0) ::close(fd_);
+    fd_ = ::open(path_.c_str(), O_RDWR);
+    if (fd_ < 0) return false;
+    file_size_ = content.size();
+
+    /* Best-effort: fsync the directory so the rename is durable across a crash. */
+    std::string dir = path_;
+    size_t slash = dir.find_last_of('/');
+    dir = (slash == std::string::npos) ? std::string(".") : dir.substr(0, slash);
+    int d = ::open(dir.c_str(), O_RDONLY);
+    if (d >= 0) {
+        ::fsync(d);
+        ::close(d);
+    }
+    return true;
+}
+
+bool Storage::compact(sync_engine *e) {
+    if (in_tx_) return false; /* never rewrite mid-transaction */
+    std::string fresh;
+    serialize_state(e, fresh);
+    if (!atomic_replace(fresh)) return false;
+    compacted_size_ = file_size_;
+    return true;
+}
+
+void Storage::maybe_compact(sync_engine *e) {
+    uint64_t threshold = compacted_size_ * 2;
+    if (threshold < 65536) threshold = 65536; /* don't churn tiny logs */
+    if (file_size_ > threshold) compact(e); /* best-effort */
 }
 
 } // namespace ke

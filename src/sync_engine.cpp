@@ -161,7 +161,9 @@ bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
                             e->db_clock) &&
               persist_meta_clock(e);
     if (!ok) { s->rollback(); return false; }
-    return s->commit();
+    if (!s->commit()) return false;
+    s->maybe_compact(e); /* bound log growth (best-effort) */
+    return true;
 }
 
 /* Persist an entity row + one field register (and clock) in one transaction. */
@@ -176,7 +178,9 @@ bool tx_entity_field(sync_engine *e, const std::string &ns,
                            reg.sig, e->db_clock) &&
               persist_meta_clock(e);
     if (!ok) { s->rollback(); return false; }
-    return s->commit();
+    if (!s->commit()) return false;
+    s->maybe_compact(e); /* bound log growth (best-effort) */
+    return true;
 }
 
 } // namespace

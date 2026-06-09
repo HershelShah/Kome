@@ -887,3 +887,25 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   checksums). Builds native + WASM (Emscripten's POSIX layer covers
   open/fsync/ftruncate); 16/16 native + WASM suites green. **Compaction is the
   immediate follow-up** (the log currently grows until rewritten).
+
+## Storage: log compaction (Bitcask "merge")
+
+- **Compaction completes the append-only-log store.** Without it the log grew
+  with the number of writes; `Storage::compact` rewrites it to one record per
+  live cell (a meta frame + one frame per entity + a capability frame), bounding
+  the file to O(state) and keeping reopen O(state). Triggered from the write
+  path (`maybe_compact`) on a doubling threshold — compact when the log exceeds
+  max(64 KiB, 2× its size at the last compaction) — giving amortized O(1) write
+  amplification; also runs once at load if an existing log is >2× its live image.
+- **Atomicity:** compaction writes a full image to `<path>.tmp`, fsyncs it,
+  `rename()`s over the log (atomic), reopens, and fsyncs the directory. A crash
+  during compaction leaves the original log untouched (the rename is the commit
+  point), so it can never lose data. Serializing the in-RAM state reproduces the
+  exact current state, so the digest is unchanged across a compaction.
+- **Identity seed:** the store now retains the 32-byte seed (wiped in its
+  destructor) so it can re-persist identity on each rewrite. The file already
+  holds the seed in plaintext (chmod 0600), so this is not new exposure.
+- This is also where tombstone GC plugs in once the LWW-existence model lands
+  (drop tombstones past their TTL during the rewrite). Tested by
+  `Storage.CompactionBoundsLog` (5000 writes to one cell → file stays <256 KiB,
+  digest preserved across reopen); native + WASM + ASan clean, full suite green.
