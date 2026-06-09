@@ -39,6 +39,7 @@
 #include "crypto.h"
 #include "engine.hpp"
 #include "sha256.h"
+#include "storage.h"
 #include "sync_engine.h"
 
 using sync_engine_detail::Sha256;
@@ -377,6 +378,10 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
             decoded.push_back(std::move(d));
     }
 
+    /* Stage the whole batch into one fsync'd frame (one fsync instead of N). */
+    bool batched = e->store && decoded.size() > 1;
+    if (batched) e->store->batch_begin();
+
 #ifndef __EMSCRIPTEN__
     unsigned hw = std::thread::hardware_concurrency();
     unsigned workers = std::min<unsigned>(hw ? hw : 1, kMaxVerifyThreads);
@@ -405,6 +410,7 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
             sync_change c = decoded[i].view();
             apply_change(e, &c, /*already_verified=*/true);
         }
+        if (batched) e->store->batch_commit(e);
         return;
     }
 #endif
@@ -412,6 +418,7 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
         sync_change c = d.view();
         apply_change(e, &c, /*already_verified=*/false);
     }
+    if (batched) e->store->batch_commit(e);
 }
 
 /* Process one incoming descriptor, applying records and appending any reply

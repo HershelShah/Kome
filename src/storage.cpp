@@ -268,6 +268,26 @@ bool Storage::rollback() {
     return true;
 }
 
+bool Storage::batch_begin() {
+    if (batching_) return true;
+    if (!begin()) return false;
+    batching_ = true;
+    return true;
+}
+
+bool Storage::batch_commit(sync_engine *e) {
+    if (!batching_) return true;
+    batching_ = false;
+    /* One clock record for the whole batch, then a single fsync'd frame. */
+    bool ok = put_meta_u64("hlc_physical", e->clock.physical) &&
+              put_meta_u64("hlc_logical", e->clock.logical) &&
+              put_meta_u64("db_clock", e->db_clock);
+    if (!ok) { rollback(); return false; }
+    if (!commit()) return false;
+    maybe_compact(e);
+    return true;
+}
+
 bool Storage::put_meta_u64(const char *key, uint64_t v) {
     return emit(build_meta_u64(key, v));
 }

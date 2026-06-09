@@ -59,6 +59,14 @@ public:
     bool commit();
     bool rollback();
 
+    /* Bulk-apply batching: stage many records into one fsync'd frame. While a
+     * batch is open the per-mutation tx_* helpers skip their own begin/commit
+     * (and the clock/compaction), so a sync that ingests N records does one
+     * fsync instead of N. */
+    bool in_batch() const { return batching_; }
+    bool batch_begin();
+    bool batch_commit(sync_engine *e);
+
     bool put_entity(const std::string &ns, const std::string &ent,
                     bool present, const Hlc &presence_hlc, const PubKey &ex_author,
                     const Sig &ex_sig, uint64_t db_clock);
@@ -98,6 +106,7 @@ private:
     std::string staging_;        /* entries buffered between begin()/commit() */
     uint32_t    staged_count_ = 0;
     bool        in_tx_ = false;
+    bool        batching_ = false;     /* bulk-apply transaction open */
     uint64_t    file_size_ = 0;       /* current log size in bytes */
     uint64_t    compacted_size_ = 0;  /* log size just after the last compaction */
     uint8_t     seed_[32] = {0};      /* identity seed, re-persisted on compaction */

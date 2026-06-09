@@ -154,10 +154,15 @@ bool persist_meta_clock(sync_engine *e) {
            e->store->put_meta_u64("db_clock", e->db_clock);
 }
 
-/* Persist an entity row (and clock) in one transaction. */
+/* Persist an entity row (and clock) in one transaction. During a bulk-apply
+ * batch the record is only staged — the batch owns the transaction, clock, and
+ * compaction (one fsync for the whole batch). */
 bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
                const Entity &en) {
     Storage *s = e->store;
+    if (s->in_batch())
+        return s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                             en.ex_author, en.ex_sig, e->db_clock);
     if (!s->begin()) return false;
     bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
                             en.ex_author, en.ex_sig, e->db_clock) &&
@@ -173,6 +178,11 @@ bool tx_entity_field(sync_engine *e, const std::string &ns,
                      const std::string &ent, const std::string &field,
                      const Entity &en, const Register &reg) {
     Storage *s = e->store;
+    if (s->in_batch())
+        return s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                             en.ex_author, en.ex_sig, e->db_clock) &&
+               s->put_field(ns, ent, field, reg.value, reg.hlc, reg.author,
+                            reg.sig, e->db_clock);
     if (!s->begin()) return false;
     bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
                             en.ex_author, en.ex_sig, e->db_clock) &&
