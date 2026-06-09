@@ -6,6 +6,18 @@ incremental sync protocol, an encrypted/authenticated transport, and NAT
 traversal — built inside-out, milestone by milestone, each gated on its own
 test suite.
 
+**What it's for:** apps where each user owns their data and syncs it directly —
+across their own devices and with explicitly-trusted contacts — with **no central
+server**, end-to-end encryption, and per-namespace access control. Think
+encrypted contacts, notes, inventories, settings, small shared lists.
+
+**What it's not:** a collaborative rich-text/document editor (Google-Docs-style
+character-by-character merge) — that's [Yjs](https://github.com/yjs/yjs) /
+[Automerge](https://automerge.org) territory. Kome resolves conflicts per field
+by last-writer-wins, which is right for *records*, not co-edited prose. The
+single dependency is [monocypher](https://monocypher.org) (one vendored file);
+storage is a dependency-free append-only log.
+
 This is a ground-up rebuild following [the implementation plan](#milestones).
 
 ## Status
@@ -34,6 +46,37 @@ cmake -B build-asan -DSYNC_SANITIZER=address
 cmake --build build-asan
 ctest --test-dir build-asan
 ```
+
+## Quickstart (Python)
+
+```python
+import sync_engine as se
+
+# Two devices, each with its own identity (a 32-byte seed). `path=` makes the
+# engine durable (an append-only log on disk); omit it for in-memory.
+phone  = se.Engine(b"\x01" * 32, path="phone.db")
+laptop = se.Engine(b"\x02" * 32, path="laptop.db")
+
+# Write locally — offline-first, no server needed.
+phone.set(b"contacts", b"alice", b"phone", b"555-1234")
+laptop.set(b"contacts", b"bob",   b"email", b"bob@example.com")
+
+# Sync. Shown here in-process; over a network this is the secure
+# connect_and_sync path (Noise XX + identity proof + range reconciliation).
+phone.replicate_into(laptop)
+laptop.replicate_into(phone)
+
+assert phone.get(b"contacts", b"bob", b"email") == b"bob@example.com"
+assert phone.digest() == laptop.digest()   # converged to identical state
+```
+
+```bash
+cmake -B build && cmake --build build --target sync_engine   # builds libsync_engine.so
+SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python python3 quickstart.py
+```
+
+For a real two-process network demo (UDP + the full secure stack), see
+[Two-node end-to-end demo](#two-node-end-to-end-demo) below.
 
 ## Usage (C, M1)
 
