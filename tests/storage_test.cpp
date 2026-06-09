@@ -370,6 +370,61 @@ TEST(Storage, CompactionBoundsLog) {
     sync_engine_destroy(e2);
 }
 
+/* Compaction drops tombstones older than kTombstoneTtlMs (bounding delete-heavy
+ * growth) while keeping live entities and fresh tombstones. */
+TEST(Storage, TombstoneGcOnCompaction) {
+    TempDir dir;
+    std::string db = dir.file("gc.db");
+    auto site = site_from(0x0D);
+
+    /* Whether an entity appears in the exported state at all (a tombstone is
+     * still exported as an existence record; a GC'd entity is not). */
+    auto has_entity = [](sync_engine *e, const char *ent) {
+        sync_change *r = nullptr;
+        size_t n = 0;
+        sync_engine_export(e, &r, &n);
+        bool found = false;
+        for (size_t i = 0; i < n; i++)
+            if (std::string((char *)r[i].entity, r[i].entity_len) == ent)
+                found = true;
+        sync_changes_free(r, n);
+        return found;
+    };
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "ns", "live", "f", "v");      /* live -> kept */
+    cluster::put(e, "ns", "recent", "f", "v");
+    cluster::del(e, "ns", "recent");               /* fresh tombstone -> kept */
+
+    /* An expired tombstone: present=false at physical=1 (epoch), signed. */
+    const std::string ns = "ns", ent = "old";
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_EXISTENCE;
+    c.ns = B(ns); c.ns_len = ns.size();
+    c.entity = B(ent); c.entity_len = ent.size();
+    c.causal_length = 0; /* present = false */
+    c.hlc.physical = 1; c.hlc.logical = 0;
+    ASSERT_EQ(sync_change_sign(&c, site_from(0x0E).data()), SYNC_OK);
+    ASSERT_EQ(sync_engine_apply(e, &c), SYNC_OK);
+    EXPECT_TRUE(has_entity(e, "old")); /* present before GC */
+
+    ASSERT_TRUE(e->store->compact(e)); /* forces gc_tombstones */
+
+    EXPECT_TRUE(has_entity(e, "live"));
+    EXPECT_TRUE(has_entity(e, "recent")); /* fresh tombstone survives */
+    EXPECT_FALSE(has_entity(e, "old"));   /* expired tombstone purged */
+    sync_engine_destroy(e);
+
+    /* Reopen: the purge persisted. */
+    sync_engine *e2 = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e2, nullptr);
+    EXPECT_TRUE(has_entity(e2, "live"));
+    EXPECT_FALSE(has_entity(e2, "old"));
+    sync_engine_destroy(e2);
+}
+
 /* ---- T2.5 Single file -------------------------------------------------- */
 TEST(Storage, SingleFile) {
     TempDir dir;

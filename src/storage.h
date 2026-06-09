@@ -30,6 +30,12 @@ namespace ke {
  *   2 — LWW existence: entity records carry (present, hlc) not causal_length */
 constexpr uint64_t kSchemaVersion = 2;
 
+/* Tombstones (present=false assertions) older than this are dropped during
+ * compaction, bounding delete-heavy growth. The horizon is generous because
+ * deletion in open P2P is best-effort: a peer offline longer than this may
+ * resurrect a deleted entity (the same bound Earthstar documents). 30 days. */
+constexpr uint64_t kTombstoneTtlMs = 30ull * 24 * 3600 * 1000;
+
 class Storage {
 public:
     /* Open (creating if needed) the log at path and validate its header. On
@@ -79,6 +85,9 @@ private:
     bool emit(const std::string &entry);
     /* Append a complete frame (length + body + checksum) and fsync. */
     bool write_frame(const std::string &body, uint32_t entry_count);
+    /* Drop expired tombstones (present=false older than kTombstoneTtlMs) from
+     * the engine's state before a compaction rewrites it. */
+    void gc_tombstones(sync_engine *e);
     /* Serialize the engine's current state to a complete log image. */
     void serialize_state(sync_engine *e, std::string &out);
     /* Durably replace the log file with `content` (temp + fsync + rename). */

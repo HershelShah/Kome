@@ -590,8 +590,32 @@ bool Storage::atomic_replace(const std::string &content) {
     return true;
 }
 
+void Storage::gc_tombstones(sync_engine *e) {
+    uint64_t now = now_ms();
+    uint64_t cutoff = now > kTombstoneTtlMs ? now - kTombstoneTtlMs : 0;
+    bool removed = false;
+    for (auto &np : e->ns) {
+        auto &ents = np.second;
+        for (auto it = ents.begin(); it != ents.end();) {
+            const Entity &en = it->second;
+            /* An asserted absence (tombstone) past the horizon: drop the entity
+             * and its hidden field registers. Live entities, unasserted shells,
+             * and fresh tombstones are kept. */
+            if (en.asserted() && !en.present_v &&
+                en.presence_hlc.physical < cutoff) {
+                it = ents.erase(it);
+                removed = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (removed) e->state_gen++; /* invalidate the cached reconcile snapshot */
+}
+
 bool Storage::compact(sync_engine *e) {
     if (in_tx_) return false; /* never rewrite mid-transaction */
+    gc_tombstones(e); /* purge expired tombstones before rewriting */
     std::string fresh;
     serialize_state(e, fresh);
     if (!atomic_replace(fresh)) return false;

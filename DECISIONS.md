@@ -909,3 +909,18 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   (drop tombstones past their TTL during the rewrite). Tested by
   `Storage.CompactionBoundsLog` (5000 writes to one cell → file stays <256 KiB,
   digest preserved across reopen); native + WASM + ASan clean, full suite green.
+
+## P1 landed: LWW-existence + tombstone GC
+
+- **LWW-existence implemented** (codec v3, storage v2): entity presence is an LWW
+  register (present:bool by latest (hlc, author)), replacing the causal-length
+  counter. Removes the saturation attack and unifies the model to one LWW rule.
+  Format break (signatures cover the new content); pre-1.0, no migration.
+- **Tombstone GC** runs during compaction (`gc_tombstones`): an asserted absence
+  older than `kTombstoneTtlMs` (30 days) is dropped with its hidden fields,
+  bounding delete-heavy growth. Live entities, unasserted shells, and fresh
+  tombstones are kept. Best-effort by design — a peer offline past the horizon
+  may resurrect a delete (the Earthstar bound). Tested by
+  `Storage.TombstoneGcOnCompaction`.
+- All oracle tests (convergence/scenario/multinode) pass unchanged: the merge is
+  still SEC, order-independent, idempotent. Native 16/16 + WASM + ASan green.
