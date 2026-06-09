@@ -2,18 +2,25 @@
  *
  * On-disk format
  * --------------
- *   file   = MAGIC(8) frame*
- *   MAGIC  = "KOMELOG1"
- *   frame  = body_len:u32le  body(body_len)  checksum(8)
+ *   file   = HEADER  frame*
+ *   HEADER = "KOMELOG1"(8)                              (plaintext), or
+ *            "KOMEENC1"(8) keycheck_ct(16) keycheck_mac(16)  (encrypted at rest)
+ *   frame  = plaintext : body_len:u32le  body(body_len)  sha8(body)
+ *            encrypted : body_len:u32le  nonce(24)  ciphertext(body_len)  mac(16)
  *   body   = entry_count:u32le  entry*
  *   entry  = type:u8  payload
  *     META(1)   : key:bytes  value:bytes
- *     ENTITY(2) : ns:bytes ent:bytes  causal_length:u64le  ex_author[32] ex_sig[64]
+ *     ENTITY(2) : ns:bytes ent:bytes  present:u8  hlc_physical:u64le
+ *                 hlc_logical:u32le  ex_author[32] ex_sig[64]
  *     FIELD(3)  : ns:bytes ent:bytes field:bytes value:bytes
  *                 hlc_physical:u64le hlc_logical:u32le  author[32] sig[64]
  *     CAP(4)    : blob:bytes
  *   bytes  = varint(len) raw
- *   checksum = SHA-256(body)[0:8]
+ *
+ * When opened with a key (sync_engine_open_encrypted), every frame is sealed
+ * with XChaCha20-Poly1305 — the AEAD tag both authenticates and detects torn
+ * writes (replacing the SHA checksum). A header key-check rejects a wrong key
+ * up front so it can't be mistaken for corruption and truncate the log.
  *
  * A frame is one mutation (or a standalone put_*), written and fsync'd as a
  * unit. A crash mid-append leaves at most a torn trailing frame; load() detects
@@ -48,7 +55,13 @@ namespace ke {
 
 namespace {
 
-constexpr char kMagic[8] = {'K', 'O', 'M', 'E', 'L', 'O', 'G', '1'};
+constexpr char kMagic[8] = {'K', 'O', 'M', 'E', 'L', 'O', 'G', '1'};    /* plaintext */
+constexpr char kMagicEnc[8] = {'K', 'O', 'M', 'E', 'E', 'N', 'C', '1'}; /* sealed */
+
+/* Fixed plaintext sealed into the encrypted header so a wrong key fails the open
+ * cleanly (rather than being mistaken for a torn frame and truncating data). */
+constexpr uint8_t kKeyCheck[16] = {'K', 'O', 'M', 'E', 'k', 'e', 'y', 'c',
+                                   'h', 'e', 'c', 'k', '0', '0', '0', '1'};
 
 enum EntryType : uint8_t { kMeta = 1, kEntity = 2, kField = 3, kCap = 4 };
 
@@ -159,11 +172,9 @@ std::string build_cap(const std::string &blob) {
     return e;
 }
 
-/* Wrap a body of `count` entries into a full on-disk frame. */
-std::string make_frame(const std::string &body, uint32_t count) {
-    std::string full;
-    put_u32le(full, count);
-    full += body;
+/* Wrap an assembled body ([count][entries]) into a plaintext on-disk frame:
+ * [len:u32le][full][sha8]. */
+std::string make_frame_full(const std::string &full) {
     uint8_t digest[32];
     sync_engine_detail::sha256(full.data(), full.size(), digest);
     std::string framed;
@@ -178,9 +189,10 @@ std::string make_frame(const std::string &body, uint32_t count) {
 Storage::~Storage() {
     if (fd_ >= 0) ::close(fd_);
     secure_wipe(seed_, sizeof seed_);
+    secure_wipe(key_, sizeof key_);
 }
 
-Storage *Storage::open(const char *path, sync_error *err) {
+Storage *Storage::open(const char *path, sync_error *err, const uint8_t *key) {
     if (err) *err = SYNC_OK;
     if (!path) {
         if (err) *err = SYNC_ERR_INVALID;
@@ -192,6 +204,10 @@ Storage *Storage::open(const char *path, sync_error *err) {
         return nullptr;
     }
     s->path_ = path;
+    if (key) {
+        s->encrypted_ = true;
+        std::memcpy(s->key_, key, 32);
+    }
 
     /* The log holds this node's private identity seed; make it owner-only,
      * best-effort (FS-level protection is the embedder's job). */
@@ -206,29 +222,83 @@ Storage *Storage::open(const char *path, sync_error *err) {
 
     off_t size = ::lseek(fd, 0, SEEK_END);
     if (size == 0) {
-        /* Fresh file: write the magic header and fsync. */
-        if (!write_all(fd, kMagic, sizeof kMagic) || ::fsync(fd) != 0) {
+        /* Fresh file: write the header (magic [+ key-check]) and fsync. */
+        std::string hdr = s->header_bytes();
+        if (!write_all(fd, hdr.data(), hdr.size()) || ::fsync(fd) != 0) {
             if (err) *err = SYNC_ERR_INTERNAL;
             delete s;
             return nullptr;
         }
-        s->file_size_ = sizeof kMagic;
+        s->file_size_ = hdr.size();
     } else {
-        char magic[sizeof kMagic];
+        const char *want = s->encrypted_ ? kMagicEnc : kMagic;
+        char magic[8];
         ::lseek(fd, 0, SEEK_SET);
         if (!read_exact(fd, magic, sizeof magic) ||
-            std::memcmp(magic, kMagic, sizeof kMagic) != 0) {
-            if (err) *err = SYNC_ERR_INVALID; /* not our format (e.g. a SQLite db) */
+            std::memcmp(magic, want, sizeof magic) != 0) {
+            /* Wrong format / mode mismatch (plaintext-vs-encrypted, or a SQLite
+             * db). */
+            if (err) *err = SYNC_ERR_INVALID;
             delete s;
             return nullptr;
+        }
+        if (s->encrypted_) {
+            /* Verify the key against the header key-check before reading any
+             * frame, so a wrong key fails the open instead of truncating data. */
+            uint8_t ct[16], mac[16], pt[16], nonce[24] = {0};
+            if (!read_exact(fd, ct, sizeof ct) ||
+                !read_exact(fd, mac, sizeof mac) ||
+                !aead_decrypt(s->key_, nonce, nullptr, 0, ct, sizeof ct, mac, pt) ||
+                std::memcmp(pt, kKeyCheck, sizeof kKeyCheck) != 0) {
+                if (err) *err = SYNC_ERR_INVALID; /* wrong key / corrupt header */
+                delete s;
+                return nullptr;
+            }
         }
         s->file_size_ = (uint64_t)size;
     }
     return s;
 }
 
+/* Wrap a body+count into one on-disk frame. Plaintext: [plen][full][sha8].
+ * Encrypted: [plen][nonce:24][ciphertext:plen][mac:16] — the AEAD tag both
+ * authenticates and detects torn writes, replacing the SHA checksum. */
+std::string Storage::seal_frame(const std::string &body, uint32_t count) const {
+    std::string full;
+    put_u32le(full, count);
+    full += body;
+    if (!encrypted_) return make_frame_full(full);
+
+    uint8_t nonce[24];
+    random_bytes(nonce, sizeof nonce);
+    std::string ct(full.size(), '\0');
+    uint8_t mac[16];
+    aead_encrypt(key_, nonce, nullptr, 0, (const uint8_t *)full.data(),
+                 full.size(), (uint8_t *)ct.data(), mac);
+    std::string framed;
+    put_u32le(framed, (uint32_t)full.size());
+    framed.append((const char *)nonce, sizeof nonce);
+    framed += ct;
+    framed.append((const char *)mac, sizeof mac);
+    return framed;
+}
+
+/* File header: the magic, plus (encrypted) a key-check block = a fixed plaintext
+ * sealed under the key so the wrong key is detected up front. */
+std::string Storage::header_bytes() const {
+    std::string h(kMagic, sizeof kMagic);
+    if (!encrypted_) return h;
+    h.assign(kMagicEnc, sizeof kMagicEnc);
+    uint8_t nonce[24] = {0}; /* fixed nonce; frames use random ones */
+    uint8_t ct[16], mac[16];
+    aead_encrypt(key_, nonce, nullptr, 0, kKeyCheck, sizeof kKeyCheck, ct, mac);
+    h.append((const char *)ct, sizeof ct);
+    h.append((const char *)mac, sizeof mac);
+    return h;
+}
+
 bool Storage::write_frame(const std::string &body, uint32_t entry_count) {
-    std::string framed = make_frame(body, entry_count);
+    std::string framed = seal_frame(body, entry_count);
     if (::lseek(fd_, 0, SEEK_END) < 0) return false;
     if (!write_all(fd_, framed.data(), framed.size())) return false;
     if (::fsync(fd_) != 0) return false;
@@ -494,25 +564,41 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     std::memcpy(rp.seed, seed, 32);
     std::vector<DecodedChange> pending; /* signed records, verified after replay */
 
-    /* Replay every good frame from just past the magic header. */
-    if (::lseek(fd_, (off_t)sizeof kMagic, SEEK_SET) < 0) {
+    /* Replay every good frame from just past the header. */
+    off_t hdr = (off_t)header_size();
+    if (::lseek(fd_, hdr, SEEK_SET) < 0) {
         if (err) *err = SYNC_ERR_INTERNAL;
         return false;
     }
-    off_t good_end = (off_t)sizeof kMagic;
+    off_t good_end = hdr;
     for (;;) {
         uint8_t lenbuf[4];
         if (!read_exact(fd_, lenbuf, 4)) break; /* clean EOF or torn length */
         uint32_t body_len = read_u32le(lenbuf);
+        if (body_len == 0) break;
         std::string body(body_len, '\0');
-        uint8_t sum[8];
-        if (body_len == 0 || !read_exact(fd_, &body[0], body_len) ||
-            !read_exact(fd_, sum, 8))
-            break; /* torn trailing frame */
-
-        uint8_t digest[32];
-        sync_engine_detail::sha256(body.data(), body.size(), digest);
-        if (std::memcmp(digest, sum, 8) != 0) break; /* corrupt/torn tail */
+        off_t frame_bytes;
+        if (encrypted_) {
+            /* [nonce:24][ciphertext:body_len][mac:16]; the AEAD tag verifies. */
+            uint8_t nonce[24], mac[16];
+            std::string ct(body_len, '\0');
+            if (!read_exact(fd_, nonce, sizeof nonce) ||
+                !read_exact(fd_, &ct[0], body_len) ||
+                !read_exact(fd_, mac, sizeof mac))
+                break; /* torn trailing frame */
+            if (!aead_decrypt(key_, nonce, nullptr, 0, (const uint8_t *)ct.data(),
+                              body_len, mac, (uint8_t *)&body[0]))
+                break; /* tampered/torn tail */
+            frame_bytes = 4 + 24 + (off_t)body_len + 16;
+        } else {
+            uint8_t sum[8];
+            if (!read_exact(fd_, &body[0], body_len) || !read_exact(fd_, sum, 8))
+                break; /* torn trailing frame */
+            uint8_t digest[32];
+            sync_engine_detail::sha256(body.data(), body.size(), digest);
+            if (std::memcmp(digest, sum, 8) != 0) break; /* corrupt/torn tail */
+            frame_bytes = 4 + (off_t)body_len + 8;
+        }
 
         /* Frame is intact: apply its entries. */
         const uint8_t *p = (const uint8_t *)body.data();
@@ -525,7 +611,7 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
             frame_ok = apply_entry(e, rp, p, bend, pending);
         if (!frame_ok) break; /* malformed body → treat as tail, stop */
 
-        good_end += 4 + (off_t)body_len + 8;
+        good_end += frame_bytes;
     }
 
     /* Drop any torn trailing bytes so future appends start clean. */
@@ -590,7 +676,7 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
  * registers), and one frame for granted capabilities. Replaying it reconstructs
  * exactly the current state, so the digest is unchanged. */
 void Storage::serialize_state(sync_engine *e, std::string &out) {
-    out.assign(kMagic, sizeof kMagic);
+    out = header_bytes();
 
     std::string mbody;
     uint32_t mc = 0;
@@ -600,7 +686,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
     add_meta(build_meta_u64("hlc_physical", e->clock.physical));
     add_meta(build_meta_u64("hlc_logical", e->clock.logical));
     add_meta(build_meta_u64("db_clock", e->db_clock));
-    out += make_frame(mbody, mc);
+    out += seal_frame(mbody, mc);
 
     for (const auto &np : e->ns) {
         const std::string &ns = np.first;
@@ -615,7 +701,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
                 body += build_field(ns, ent, fp.first, fp.second);
                 c++;
             }
-            out += make_frame(body, c);
+            out += seal_frame(body, c);
         }
     }
 
@@ -625,7 +711,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
         if (!blobs.empty()) {
             std::string body;
             for (const auto &b : blobs) body += build_cap(b);
-            out += make_frame(body, (uint32_t)blobs.size());
+            out += seal_frame(body, (uint32_t)blobs.size());
         }
     }
 }

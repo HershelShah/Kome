@@ -145,11 +145,14 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
 ## Known limitations & residual risks
 
 - **Identity secret at rest.** A durable node stores its seed (its private
-  identity) in the database so reopen re-derives the same identity — like an SSH
-  private key on disk. We wipe transient copies in memory and set `0600`, but
-  there is no at-rest encryption: protect the DB file with filesystem
-  permissions / full-disk or filesystem encryption. Anyone who can read the file
-  controls the identity.
+  identity) in the log so reopen re-derives the same identity — like an SSH
+  private key on disk. Transient copies are wiped and the file is `0600`. For
+  defence in depth, **`sync_engine_open_encrypted` seals every frame** (the seed,
+  all record values, capabilities) with XChaCha20-Poly1305 under a caller-supplied
+  32-byte key (derive it from a passphrase or an OS keystore — the engine does
+  not manage key derivation). A wrong key fails the open via a header key-check.
+  Without encryption, anyone who can read the file controls the identity, so
+  protect it with filesystem permissions / full-disk encryption.
 - **Additive set-fingerprint.** The reconciliation range fingerprint is an
   additive sum of per-element hashes, which is not collision-resistant against
   an adversary who can get chosen signed records accepted into a namespace.

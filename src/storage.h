@@ -38,9 +38,14 @@ constexpr uint64_t kTombstoneTtlMs = 30ull * 24 * 3600 * 1000;
 
 class Storage {
 public:
-    /* Open (creating if needed) the log at path and validate its header. On
-     * success returns a Storage*; on failure returns nullptr and sets *err. */
-    static Storage *open(const char *path, sync_error *err);
+    /* Open (creating if needed) the log at path and validate its header. If
+     * key != nullptr the log is encrypted at rest: each frame is sealed with
+     * XChaCha20-Poly1305 under the 32-byte key (the embedder derives it from a
+     * passphrase / OS keystore). A header key-check rejects a wrong key cleanly
+     * instead of mistaking it for corruption. On success returns a Storage*; on
+     * failure (incl. wrong key / mode mismatch) returns nullptr and sets *err. */
+    static Storage *open(const char *path, sync_error *err,
+                         const uint8_t *key = nullptr);
     ~Storage();
 
     Storage(const Storage &) = delete;
@@ -96,10 +101,17 @@ private:
     /* Drop expired tombstones (present=false older than kTombstoneTtlMs) from
      * the engine's state before a compaction rewrites it. */
     void gc_tombstones(sync_engine *e);
-    /* Serialize the engine's current state to a complete log image. */
+    /* Serialize the engine's current state to a complete log image (header +
+     * frames), sealed if encrypted. */
     void serialize_state(sync_engine *e, std::string &out);
     /* Durably replace the log file with `content` (temp + fsync + rename). */
     bool atomic_replace(const std::string &content);
+
+    /* Wrap a body into one on-disk frame (plaintext + SHA, or AEAD-sealed). */
+    std::string seal_frame(const std::string &body, uint32_t count) const;
+    /* The file header (magic, plus a key-check for encrypted logs). */
+    std::string header_bytes() const;
+    size_t      header_size() const { return encrypted_ ? 8 + 32 : 8; }
 
     int         fd_ = -1;
     std::string path_;
@@ -110,6 +122,8 @@ private:
     uint64_t    file_size_ = 0;       /* current log size in bytes */
     uint64_t    compacted_size_ = 0;  /* log size just after the last compaction */
     uint8_t     seed_[32] = {0};      /* identity seed, re-persisted on compaction */
+    bool        encrypted_ = false;   /* frames sealed with key_ at rest */
+    uint8_t     key_[32] = {0};       /* at-rest encryption key (wiped on destroy) */
 };
 
 } // namespace ke

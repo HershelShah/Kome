@@ -924,3 +924,20 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   `Storage.TombstoneGcOnCompaction`.
 - All oracle tests (convergence/scenario/multinode) pass unchanged: the merge is
   still SEC, order-independent, idempotent. Native 16/16 + WASM + ASan green.
+
+## T3: at-rest encryption
+
+- **`sync_engine_open_encrypted(path, seed, key)`** seals the append-only log at
+  rest. Each frame is `[len][nonce:24][ciphertext][mac:16]` under
+  XChaCha20-Poly1305 with a random per-frame nonce; the AEAD tag both
+  authenticates and detects torn writes, so it replaces the SHA checksum. The
+  encrypted file uses a distinct magic (`KOMEENC1`) plus a header **key-check**
+  (a fixed plaintext sealed under the key) so a wrong key fails the open up front
+  rather than being mistaken for a torn frame and truncating data. Compaction
+  re-seals; the digest is unchanged across encrypt/reopen/compact.
+- The engine takes a raw 32-byte key, not a passphrase — key derivation
+  (Argon2/scrypt) or an OS keystore is the embedder's choice, keeping the core
+  minimal. The key is wiped from memory on destroy. Plaintext logs are unchanged
+  (`sync_engine_open`); the two modes are mutually exclusive (mode mismatch fails
+  cleanly). Tested by `Storage.AtRestEncryption` (round-trip, wrong-key/mode
+  rejection, no plaintext leak, encrypted compaction). Native 16/16 + WASM + ASan.

@@ -581,3 +581,54 @@ TEST(Storage, OracleConvergesPersisted) {
         sync_engine_destroy(b);
     }
 }
+
+/* At-rest encryption: the log is sealed with a caller key; a wrong key (or a
+ * mode mismatch) fails the open cleanly, and an encrypted log round-trips
+ * (including across a compaction). */
+TEST(Storage, AtRestEncryption) {
+    TempDir dir;
+    std::string db = dir.file("enc.db");
+    auto site = site_from(0x0F);
+    uint8_t key[32];  for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i + 1);
+    uint8_t wrong[32]; for (int i = 0; i < 32; i++) wrong[i] = (uint8_t)(i + 2);
+
+    /* Write some data into an encrypted log, then close. */
+    sync_engine *e = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "ns", "alice", "name", "Alice");
+    cluster::put(e, "ns", "bob", "name", "Bob");
+    Digest d0;
+    ASSERT_EQ(sync_engine_digest(e, d0.data()), SYNC_OK);
+    sync_engine_destroy(e);
+
+    /* The raw file must not contain the plaintext value. */
+    std::string raw = read_file(db);
+    EXPECT_EQ(raw.find("Alice"), std::string::npos) << "value leaked in plaintext";
+    EXPECT_EQ(raw.compare(0, 8, "KOMEENC1"), 0) << "missing encrypted magic";
+
+    /* Wrong key: open must fail cleanly (and not truncate the file). */
+    EXPECT_EQ(sync_engine_open_encrypted(db.c_str(), site.data(), wrong), nullptr);
+    /* Opening an encrypted log as plaintext (no key) must also fail. */
+    EXPECT_EQ(sync_engine_open(db.c_str(), site.data()), nullptr);
+    EXPECT_EQ(read_file(db).size(), raw.size()) << "failed open mutated the file";
+
+    /* Right key: reopens, decrypts, and matches. */
+    sync_engine *e2 = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e2, nullptr);
+    Digest d1;
+    ASSERT_EQ(sync_engine_digest(e2, d1.data()), SYNC_OK);
+    EXPECT_EQ(d0, d1);
+    EXPECT_EQ(cluster::get(e2, "ns", "alice", "name"), "Alice");
+
+    /* Force a compaction and confirm the rewritten log stays encrypted + valid. */
+    ASSERT_TRUE(e2->store->compact(e2));
+    sync_engine_destroy(e2);
+    EXPECT_EQ(read_file(db).compare(0, 8, "KOMEENC1"), 0) << "compaction lost encryption";
+
+    sync_engine *e3 = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e3, nullptr);
+    Digest d2;
+    ASSERT_EQ(sync_engine_digest(e3, d2.data()), SYNC_OK);
+    EXPECT_EQ(d0, d2) << "compaction changed encrypted state";
+    sync_engine_destroy(e3);
+}

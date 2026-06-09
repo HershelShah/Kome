@@ -111,13 +111,24 @@ typedef struct sync_engine sync_engine;
  * Returns NULL on allocation failure or if seed is NULL. */
 sync_engine *sync_engine_create(const uint8_t seed[SYNC_SEED_LEN]);
 
-/* Open (creating if needed) a durable engine backed by the SQLite file at
+/* Open (creating if needed) a durable engine backed by the append-only log at
  * path. State is loaded on open and written through on every mutation. For a
  * fresh file, seed establishes the persisted identity; for an existing file
  * the persisted identity is used and seed is ignored. Returns NULL on failure
  * (including an unknown/newer on-disk schema version). */
 sync_engine *sync_engine_open(const char *path,
                               const uint8_t seed[SYNC_SEED_LEN]);
+
+/* Like sync_engine_open, but the log is encrypted at rest: every frame is
+ * sealed with XChaCha20-Poly1305 under the caller-supplied 32-byte key (derive
+ * it from a passphrase via a KDF, or fetch it from an OS keystore — the engine
+ * does not manage key derivation). Opening an existing encrypted log with the
+ * wrong key fails cleanly (returns NULL); opening a plaintext log as encrypted
+ * (or vice versa) also fails. The key is held in memory for the engine's
+ * lifetime and wiped on destroy. */
+sync_engine *sync_engine_open_encrypted(const char *path,
+                                        const uint8_t seed[SYNC_SEED_LEN],
+                                        const uint8_t key[32]);
 
 /* Flush durable state to disk. With write-through this is a no-op safety net;
  * a no-op for in-memory engines. Returns SYNC_OK on success. */

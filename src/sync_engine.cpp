@@ -235,12 +235,12 @@ sync_engine *sync_engine_create(const uint8_t seed[SYNC_SEED_LEN]) {
     }
 }
 
-sync_engine *sync_engine_open(const char *path,
-                              const uint8_t seed[SYNC_SEED_LEN]) {
+static sync_engine *open_impl(const char *path, const uint8_t *seed,
+                              const uint8_t *key) {
     if (!path || !seed) return nullptr;
     try {
         sync_error err = SYNC_OK;
-        Storage *store = Storage::open(path, &err);
+        Storage *store = Storage::open(path, &err, key);
         if (!store) return nullptr;
 
         sync_engine *e = new (std::nothrow) sync_engine();
@@ -258,6 +258,18 @@ sync_engine *sync_engine_open(const char *path,
     } catch (...) {
         return nullptr;
     }
+}
+
+sync_engine *sync_engine_open(const char *path,
+                              const uint8_t seed[SYNC_SEED_LEN]) {
+    return open_impl(path, seed, nullptr);
+}
+
+sync_engine *sync_engine_open_encrypted(const char *path,
+                                        const uint8_t seed[SYNC_SEED_LEN],
+                                        const uint8_t key[32]) {
+    if (!key) return nullptr;
+    return open_impl(path, seed, key);
 }
 
 int sync_engine_flush(sync_engine *e) {
