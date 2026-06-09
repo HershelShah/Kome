@@ -809,3 +809,35 @@ Three contained fixes against remote denial-of-service:
   shared with the existing `StarTopology`/`RandomMesh` cases. N=64 dominates
   runtime (~26 s native / ~12 s WASM); kept in-suite since the sweep is the
   multi-node acceptance gate.
+
+## Wire-cost measurement: bytes/rounds vs. divergence (and a relay-cap bug)
+
+Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
+`relay_cap_frac` (= max_msg / 64 KiB S6a cap), and `amplification`
+(wire_bytes / raw-diff payload). Measured (Release, 4 vCPU):
+
+- **In-sync poll is constant**: 37 bytes, 1 round, *flat from N=64 to N=16384*.
+  The fingerprint short-circuit works — a no-op sync costs a fixed 37 B no
+  matter the dataset. Round-trips to converge stay bounded (~3 RTT / 6 messages)
+  for *any* divergence, so latency is O(1)-ish, not O(N) or O(log N).
+- **Bandwidth tracks the diff, not the dataset** (the headline claim, confirmed):
+  at fixed N=4096, wire grows with D (changed records): D=1 → 3.1 KB, D=16 →
+  27 KB, D=256 → 274 KB, D=4096 → 2.0 MB. A 4096-record node syncing one change
+  sends ~3 KB, not 1 MB. Amplification falls from ~24× at D=1 (fixed
+  fingerprint-tree descent overhead dominates a tiny diff) to ~3.9× at D=N.
+- **BUG — reconcile messages are not chunked, so `max_msg` blows past the
+  64 KiB relay blob cap (S6a `kMaxBlobBytes`).** A single HAVE/transfer message
+  packs *all* differing records, growing unboundedly: max_msg hits 64 KiB at
+  **~90 changed records per sync** and reaches ~1.1 MB at D=4096 (17× the cap).
+  Consequence: **relay-routed sync silently fails once two peers diverge by more
+  than ~90 records**, while direct sync still works — and the relay path is
+  exactly the NAT-fallback the real-network testing targets. It also forces
+  massive UDP fragmentation (a ~1 MB message is 700+ fragments under a 1400 B
+  MTU; one lost fragment loses the datagram, and the reliability layer is
+  stop-and-wait). Full-transfer max_msg ≈ wire_bytes confirms it's essentially
+  one giant message.
+- **Fix direction**: cap a single reconcile/transfer message below the relay
+  blob limit (and ideally near the UDP MTU), emitting the diff as a bounded,
+  pipelined sequence of messages instead of one blob. No data model change —
+  a session-layer framing change. Tracked as the top pre-ship item; it gates
+  the relay fallback path at any non-trivial scale.
