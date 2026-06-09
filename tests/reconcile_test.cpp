@@ -6,6 +6,7 @@
  * reordered/duplicated messages. */
 #include "sync_engine.h"
 
+#include "codec.h"
 #include "cluster.hpp"
 
 #include <gtest/gtest.h>
@@ -337,6 +338,53 @@ TEST(Reconcile, CodecGoldenVector) {
         EXPECT_EQ(out.hlc.physical, 2u);
         sync_change_free_decoded(&out);
     }
+}
+
+/* Varints must decode in exactly one (minimal) form. A non-minimal encoding
+ * would let a peer craft distinct wire bytes that decode to the same logical
+ * record: convergence-safe, but it mismatches the content fingerprint (hashed
+ * over the raw bytes in reconcile) and forces redundant re-transmission — a
+ * bandwidth-amplification vector. Decoding must reject the non-minimal form. */
+TEST(Reconcile, VarintsAreCanonical) {
+    /* Minimal encodings round-trip. */
+    std::vector<uint64_t> vals = {0u,     1u,      127u, 128u, 300u,
+                                  16384u, (uint64_t)1 << 40, ~(uint64_t)0};
+    for (uint64_t v : vals) {
+        std::string enc;
+        ke::put_varint(enc, v);
+        const uint8_t *p = (const uint8_t *)enc.data();
+        uint64_t got = 0;
+        ASSERT_TRUE(ke::get_varint(p, p + enc.size(), got)) << v;
+        EXPECT_EQ(got, v);
+        EXPECT_EQ(p, (const uint8_t *)enc.data() + enc.size());
+    }
+
+    /* Non-minimal forms are rejected. */
+    auto rejects = [](std::vector<uint8_t> bytes) {
+        const uint8_t *p = bytes.data();
+        uint64_t v = 0;
+        return !ke::get_varint(p, p + bytes.size(), v);
+    };
+    EXPECT_TRUE(rejects({0x80, 0x00}));        /* 0 padded to two bytes */
+    EXPECT_TRUE(rejects({0x81, 0x00}));        /* 1 padded to two bytes */
+    EXPECT_TRUE(rejects({0xFF, 0x00}));        /* 127 padded */
+    EXPECT_TRUE(rejects({0x80, 0x80, 0x00}));  /* 0 padded to three bytes */
+    /* Overflow: an 11th byte / extra high bits on the 10th are rejected. */
+    EXPECT_TRUE(rejects({0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                         0x7F}));
+
+    /* A whole record with a non-minimal length prefix is rejected by decode.
+     * Golden existence vector, but ns_len (0x01) rewritten as {0x81,0x00}. */
+    std::vector<uint8_t> rec = {0x02, 0x00, /*ns_len*/ 0x81, 0x00, 0x6E,
+                                /*ent_len*/ 0x01, 0x65,
+                                0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) rec.push_back(0xAA);
+    for (int i = 0; i < (int)SYNC_SIG_LEN; i++) rec.push_back(0xCC);
+    sync_change out;
+    size_t consumed = 0;
+    EXPECT_NE(sync_change_decode(rec.data(), rec.size(), &out, &consumed),
+              SYNC_OK)
+        << "decode accepted a non-minimal varint length prefix";
 }
 
 /* ---- T3.3 Correctness vs oracle ---------------------------------------- */

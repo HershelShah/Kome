@@ -25,8 +25,20 @@ bool get_varint(const uint8_t *&p, const uint8_t *end, uint64_t &v) {
     while (p < end) {
         uint8_t b = *p++;
         if (shift > 63) return false;            /* overflow guard */
+        /* On the 10th byte (shift==63) only bit 63 is representable; reject any
+         * higher bits rather than silently truncating them (a malleability: two
+         * byte strings decoding to the same value). */
+        if (shift == 63 && (b & 0x7e)) return false;
         v |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) return true;
+        if (!(b & 0x80)) {
+            /* Reject non-minimal encodings: a terminating 0x00 group at a
+             * non-zero shift is padding that put_varint never emits. Requiring
+             * the unique minimal form keeps the wire record canonical — distinct
+             * byte strings can't decode to the same logical record and churn the
+             * content fingerprint / evade dedup (see reconcile apply_records). */
+            if (b == 0 && shift != 0) return false;
+            return true;
+        }
         shift += 7;
     }
     return false; /* truncated */
