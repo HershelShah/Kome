@@ -841,3 +841,26 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   pipelined sequence of messages instead of one blob. No data model change —
   a session-layer framing change. Tracked as the top pre-ship item; it gates
   the relay fallback path at any non-trivial scale.
+
+## Data-model audit (loop): findings
+
+- **Iteration 1 — HLC far-future / clock poisoning.** No engine bug: clock.receive
+  runs only after signature + capability checks, so a rejected far-future record
+  can't advance the engine clock. Locked in by
+  `Security.UnauthorizedFutureWriteDoesNotPoisonClock`. The authorized far-future
+  case (physical pinned, honest writes recover via logical) is an intentional,
+  pre-existing tradeoff (`Convergence.HlcReceiveMonotonicity`). Engine-global
+  clock blast radius documented in SECURITY.md.
+- **Iteration 2 — non-canonical varints (FIXED).** `get_varint` accepted
+  non-minimal encodings, so a peer could craft non-canonical wire records that
+  apply to the right logical state but mismatch the raw-bytes fingerprint
+  (`reconcile.cpp:453`) → forced re-transmission (bandwidth amplification). Made
+  `get_varint` strictly minimal (+ reject 10th-byte overflow bits). Regression:
+  `Reconcile.VarintsAreCanonical`.
+- **Iteration 3 — causal-length saturation (documented, design-level).** A peer
+  can pin entity presence with `causal_length≈UINT64_MAX`; honest deletes (`+=1`)
+  wrap and lose the merge, so the entity is permanently undeletable and
+  resurrects on sync. No-auth in open namespaces; WRITE-delegate-vs-owner in
+  enforced ones. Convergence-safe rejection isn't possible (clock/history-free
+  max-counter), so documented in SECURITY.md with the design-level fix
+  (history-validated existence / OR-Set tags). Confirmed empirically.

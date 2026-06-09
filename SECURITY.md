@@ -171,6 +171,36 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   amplification but a determined attacker with bandwidth can still degrade
   service. Rate-limiting at the deployment layer is recommended.
 
+## Known data-model limitations (residual, design-level)
+
+These are properties of the CRDT itself, surfaced by the data-model audit. They
+do not break convergence or authorization, but they degrade integrity in ways a
+deployment should understand. Each is hard to fix without a convergence-breaking,
+clock-/history-dependent accept/reject decision, so they are documented rather
+than patched, with the design-level fix noted.
+
+- **Causal-length saturation makes an entity undeletable.** Entity existence is
+  a bare max-counter (`Entity::causal_length`: odd = present), merged by taking
+  the max. A peer can send an existence record with `causal_length` near
+  `UINT64_MAX`. Honest deletes only do `+= 1`, which cannot exceed (and wraps
+  past) `MAX`, so the delete always loses the merge and the entity resurrects on
+  the next sync — permanently present, deletable by no one. In an **open**
+  namespace this needs no authorization; in an **enforced** one a mere WRITE
+  delegate can use it to deny deletion to the namespace owner. Mitigation today:
+  only grant WRITE to trusted parties, and enforce namespaces whose presence
+  must be controlled. Design-level fix: replace the bare counter with a
+  history-validated existence record (e.g. an OR-Set with unique tags, or a
+  signed predecessor chain) so the counter cannot jump.
+- **HLC physical is engine-global and adopts the max remote timestamp.** An
+  authorized far-future write (or any write in an open namespace) pins the
+  engine's wall-clock component network-wide, degrading the *quality* of
+  conflict resolution (writes resolve by the logical counter instead of real
+  time) across all namespaces — though convergence is preserved and unauthorized
+  far-future writes are rejected before they can touch the clock (regression:
+  `UnauthorizedFutureWriteDoesNotPoisonClock`). Bounded-drift rejection is
+  deliberately not done because a clock-dependent accept/reject would break
+  deterministic convergence. Design-level fix: per-namespace clock domains.
+
 ## Deployment guidance
 
 - Treat the database file as a private key: restrictive permissions, encrypted
