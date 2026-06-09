@@ -13,7 +13,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | Milestone | What | State |
 |-----------|------|-------|
 | **M1** | Convergent core (HLC, LWW register, causal-length set, export/apply, digest) | ✅ done |
-| **M2** | Durable storage (SQLite, single file) | ✅ done |
+| **M2** | Durable storage (append-only log, single file) | ✅ done |
 | **M3** | Incremental sync (range-based set reconciliation) | ✅ done |
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
 | **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
@@ -282,7 +282,7 @@ chaos/resilience, and OOM/defensive — is exercised either per-PR or overnight.
 ## Dependencies
 
 Vendored, permissively licensed:
-- **SQLite** (public domain) — single-file durable storage (M2).
+- (storage is a dependency-free append-only log; SQLite was removed.)
 - **monocypher 4.0.2** (BSD-2 / CC0) — X25519, BLAKE2b, ChaCha20-Poly1305,
   EdDSA for identity, signatures, capabilities, and the Noise channel (M4).
 - **GoogleTest** — fetched at build time, tests only.

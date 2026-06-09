@@ -65,16 +65,6 @@ if(EMSCRIPTEN)
     )
 endif()
 
-# --- Vendored SQLite (M2) --------------------------------------------------
-add_library(sqlite3 STATIC third_party/sqlite/sqlite3.c)
-set_target_properties(sqlite3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(sqlite3 PUBLIC third_party/sqlite)
-target_compile_definitions(sqlite3 PRIVATE
-    SQLITE_THREADSAFE=1
-    SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
-    SQLITE_OMIT_LOAD_EXTENSION
-)
-target_compile_options(sqlite3 PRIVATE -w)
 
 # --- Vendored monocypher (M4) ----------------------------------------------
 add_library(monocypher STATIC third_party/monocypher/monocypher.c)
@@ -109,10 +99,10 @@ add_library(sync_engine_obj OBJECT ${SYNC_SOURCES})
 set_target_properties(sync_engine_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(sync_engine_obj
     PUBLIC  ${CMAKE_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/sqlite
+    PRIVATE ${CMAKE_SOURCE_DIR}/src
             ${CMAKE_SOURCE_DIR}/third_party/monocypher
 )
-target_link_libraries(sync_engine_obj PUBLIC sqlite3 monocypher)
+target_link_libraries(sync_engine_obj PUBLIC monocypher)
 if(UNIX AND NOT APPLE)
     target_link_libraries(sync_engine_obj PUBLIC pthread dl)
 endif()
@@ -292,9 +282,8 @@ if(SYNC_FUZZ)
         add_executable(fuzz_${fz} tests/fuzz/fuzz_${fz}.cc ${SYNC_SOURCES})
         target_include_directories(fuzz_${fz} PRIVATE
             ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
-            ${CMAKE_SOURCE_DIR}/third_party/sqlite
             ${CMAKE_SOURCE_DIR}/third_party/monocypher)
-        target_link_libraries(fuzz_${fz} PRIVATE sqlite3 monocypher)
+        target_link_libraries(fuzz_${fz} PRIVATE monocypher)
         target_compile_options(fuzz_${fz} PRIVATE -fsanitize=fuzzer,address)
         target_link_options(fuzz_${fz} PRIVATE -fsanitize=fuzzer,address)
     endforeach()

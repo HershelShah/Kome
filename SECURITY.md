@@ -122,9 +122,12 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   receive-nonce advanced only on successful auth (S4).
 - **Transport (`udp/tcp/ws/reliable/stun/relay/rendezvous`):** bounded buffers,
   authenticated reliability, hardened relay/rendezvous (above).
-- **Storage (`storage.cpp`, SQLite WAL):** all queries parameterized (no
-  injection); rows re-verified on load; identity-bearing DB chmod'd `0600`
-  best-effort.
+- **Storage (`storage.cpp`, append-only log):** single-file log of
+  length-prefixed, SHA-checksummed frames; one mutation = one fsync'd frame; a
+  torn trailing frame is detected by its checksum and truncated on reopen.
+  Records are re-verified (signatures) on load — an on-disk row is not trusted
+  just because it is on disk. The identity-bearing file is chmod'd `0600`
+  best-effort. No SQL, no second dependency.
 
 ## Hardening & testing
 

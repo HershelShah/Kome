@@ -864,3 +864,26 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   enforced ones. Convergence-safe rejection isn't possible (clock/history-free
   max-counter), so documented in SECURITY.md with the design-level fix
   (history-validated existence / OR-Set tags). Confirmed empirically.
+
+## Storage: SQLite → append-only log
+
+- **Replaced the SQLite persistence layer with a dependency-free append-only
+  log** (`storage.cpp`). SQLite was used only as a durable KV store (full state
+  in RAM; load-on-open + write-through), never as a query engine — so a ~250K-LOC
+  (9.3 MB vendored) SQL B-tree was overkill in the trusted path. The log is a
+  single file of length-prefixed, SHA-checksummed frames; one mutation is one
+  fsync'd frame; a crash leaves at most a torn trailing frame, detected by its
+  checksum and truncated on reopen. Replay merges each record by the engine's own
+  LWW/existence rule, so it is order-independent and idempotent — a duplicated or
+  partially-written tail cannot corrupt state (the same property that makes a CRDT
+  converge makes log replay safe).
+- **Why:** smallest possible TCB for a security engine, smaller WASM/mobile
+  binary, one encoding for disk and wire, and straightforward at-rest encryption.
+  It also sets up compaction-as-GC (rewrite the log as one record per live cell),
+  which pairs with the proposed LWW-existence model (see `docs/DATA_MODEL.md`).
+- The `Storage` class API is unchanged, so the engine/capability code did not
+  change; only `storage.{h,cpp}` and the two format-level storage tests
+  (forged-sig rejection, version guard — now corrupt the log + recompute frame
+  checksums). Builds native + WASM (Emscripten's POSIX layer covers
+  open/fsync/ftruncate); 16/16 native + WASM suites green. **Compaction is the
+  immediate follow-up** (the log currently grows until rewritten).
