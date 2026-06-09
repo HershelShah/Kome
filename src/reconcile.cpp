@@ -23,6 +23,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <new>
@@ -195,6 +196,18 @@ void encode_desc(std::string &o, const Desc &d) {
     }
 }
 
+/* Approximate encoded size of a descriptor, for per-message budgeting. */
+size_t desc_size(const Desc &d) {
+    size_t n = 1 + 18; /* mode + two bounds (generous) */
+    if (d.mode == MODE_FP) {
+        n += 32;
+    } else {
+        n += 5; /* record count varint */
+        for (const auto &r : d.records) n += 5 + r.size();
+    }
+    return n;
+}
+
 bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
     if (p >= end) return false;
     uint8_t m = *p++;
@@ -276,6 +289,11 @@ struct sync_session {
     bool         sent_initial = false;
     bool         sent_caps = false; /* delegation caps sent once */
     uint64_t     steps = 0;          /* processed-message counter (DoS bound) */
+
+    /* Descriptors produced but not yet sent: a step emits at most
+     * kMaxMessageBytes of them and keeps the rest here for the next round, so no
+     * single message exceeds the relay/UDP size bound. */
+    std::deque<Desc> outq;
 
     /* The point-in-time snapshot this session reconciles over. Held by
      * shared_ptr so it stays stable even as records applied mid-session bump
@@ -454,16 +472,30 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
             peer[kk] = hh;
         }
 
+        /* Reply with the records the peer is missing or has staler. Split into
+         * several HAVE descriptors so no one of them (and so no one message)
+         * exceeds the size bound: a cold peer's empty LEAF over the whole range
+         * would otherwise produce a single HAVE carrying every record. */
         Desc have;
         have.mode = MODE_HAVE;
         have.lo = d.lo;
         have.hi = d.hi;
+        size_t bytes = 0;
         for (size_t i = lo; i < hi; i++) {
-            const SortKey &k = s->snap()[i].key;
-            std::string kk = serialize_key(k);
+            std::string kk = serialize_key(s->snap()[i].key);
             auto it = peer.find(kk);
-            if (it == peer.end() || it->second != s->snap()[i].hash)
-                have.records.push_back(s->snap()[i].bytes);
+            if (it != peer.end() && it->second == s->snap()[i].hash) continue;
+            const std::string &rec = s->snap()[i].bytes;
+            if (!have.records.empty() && bytes + rec.size() > kMaxMessageBytes) {
+                out.push_back(std::move(have)); /* flush this chunk */
+                have = Desc{};
+                have.mode = MODE_HAVE;
+                have.lo = d.lo;
+                have.hi = d.hi;
+                bytes = 0;
+            }
+            have.records.push_back(rec);
+            bytes += rec.size();
         }
         if (!have.records.empty()) out.push_back(std::move(have));
         return;
@@ -670,7 +702,11 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             }
         }
 
-        if (reply.empty()) {
+        /* Queue this round's descriptors, then emit at most kMaxMessageBytes of
+         * them — the rest drain on later steps, so no single message exceeds the
+         * relay/UDP size bound (P0). When nothing is queued, we're done. */
+        for (auto &d : reply) s->outq.push_back(std::move(d));
+        if (s->outq.empty()) {
             *done = 1;
             return SYNC_OK;
         }
@@ -681,7 +717,17 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             s->engine->caps->export_blobs(caps_out);
             s->sent_caps = true;
         }
-        std::string msg = encode_message(reply, caps_out);
+
+        std::vector<Desc> batch;
+        size_t used = 0;
+        while (!s->outq.empty()) {
+            size_t sz = desc_size(s->outq.front());
+            if (!batch.empty() && used + sz > kMaxMessageBytes) break;
+            used += sz;
+            batch.push_back(std::move(s->outq.front()));
+            s->outq.pop_front();
+        }
+        std::string msg = encode_message(batch, caps_out);
         uint8_t *buf = (uint8_t *)std::malloc(msg.size() ? msg.size() : 1);
         if (!buf) return SYNC_ERR_NOMEM;
         std::memcpy(buf, msg.data(), msg.size());

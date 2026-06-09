@@ -27,18 +27,28 @@ bool connect_and_sync(sync_engine *e, PeerTransport &t, bool initiator,
     bool peer_ok = false;      /* peer's identity proof verified */
     uint8_t peer_pk[SYNC_PUBKEY_LEN]{};
 
-    /* Step the reconcile session with in[0,in_len) and, if it produced a reply,
-     * encrypt it onto the reliable link. (sync_free(nullptr) is a no-op.) */
+    /* Step the reconcile session with in[0,in_len), encrypt any reply onto the
+     * reliable link, then keep stepping with empty input to drain the session's
+     * outbound queue — a large reply is split across several size-bounded
+     * messages (P0), and a terminal HAVE elicits no peer reply to pull the rest,
+     * so the sender must flush them itself. The reliable link queues them and
+     * delivers in order. (sync_free(nullptr) is a no-op.) */
     auto pump = [&](const uint8_t *in, size_t in_len) {
         if (!sess) return;
-        uint8_t *o = nullptr; size_t ol = 0; int d = 0;
-        sync_session_step(sess, in, in_len, &o, &ol, &d);
-        if (ol) {
-            std::string ct;
-            chan.encrypt(std::string((char *)o, ol), ct);
-            link.send(ct);
+        const uint8_t *p = in;
+        size_t pl = in_len;
+        for (;;) {
+            uint8_t *o = nullptr; size_t ol = 0; int d = 0;
+            sync_session_step(sess, p, pl, &o, &ol, &d);
+            p = nullptr; pl = 0; /* subsequent steps just drain the queue */
+            if (ol) {
+                std::string ct;
+                chan.encrypt(std::string((char *)o, ol), ct);
+                link.send(ct);
+            }
+            sync_free(o);
+            if (!ol) break; /* queue drained, nothing more to send */
         }
-        sync_free(o);
     };
 
     /* The Noise XX handshake authenticates only the X25519 static. Bind the

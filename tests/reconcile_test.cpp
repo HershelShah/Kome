@@ -7,6 +7,7 @@
 #include "sync_engine.h"
 
 #include "codec.h"
+#include "reconcile.h"
 #include "cluster.hpp"
 
 #include <gtest/gtest.h>
@@ -467,9 +468,13 @@ TEST(Reconcile, RoundTripsLogarithmic) {
         EXPECT_EQ(digest(a), digest(b));
 
         double log16 = std::log((double)n) / std::log(16.0);
-        /* Generous bound: a small constant times the recursion depth. */
-        EXPECT_LT(dr.rounds, (int)(8 * log16 + 30))
-            << "n=" << n << " rounds=" << dr.rounds;
+        /* Rounds split into O(log n) recursion to *locate* the differences plus
+         * O(transfer / message-cap) to *drain* the records: messages are bounded
+         * to kMaxMessageBytes (P0), so a fully-disjoint transfer of ~2n records
+         * spills across several bounded messages. Bound each component. */
+        int drain = (int)(dr.bytes / ke::kMaxMessageBytes);
+        EXPECT_LT(dr.rounds, (int)(8 * log16 + 30) + drain)
+            << "n=" << n << " rounds=" << dr.rounds << " bytes=" << dr.bytes;
 
         sync_engine_destroy(a);
         sync_engine_destroy(b);
