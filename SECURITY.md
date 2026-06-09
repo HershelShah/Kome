@@ -182,18 +182,13 @@ deployment should understand. Each is hard to fix without a convergence-breaking
 clock-/history-dependent accept/reject decision, so they are documented rather
 than patched, with the design-level fix noted.
 
-- **Causal-length saturation makes an entity undeletable.** Entity existence is
-  a bare max-counter (`Entity::causal_length`: odd = present), merged by taking
-  the max. A peer can send an existence record with `causal_length` near
-  `UINT64_MAX`. Honest deletes only do `+= 1`, which cannot exceed (and wraps
-  past) `MAX`, so the delete always loses the merge and the entity resurrects on
-  the next sync — permanently present, deletable by no one. In an **open**
-  namespace this needs no authorization; in an **enforced** one a mere WRITE
-  delegate can use it to deny deletion to the namespace owner. Mitigation today:
-  only grant WRITE to trusted parties, and enforce namespaces whose presence
-  must be controlled. Design-level fix: replace the bare counter with a
-  history-validated existence record (e.g. an OR-Set with unique tags, or a
-  signed predecessor chain) so the counter cannot jump.
+- **Causal-length saturation — FIXED.** Entity existence used to be a bare
+  max-counter that a peer could pin with `causal_length = UINT64_MAX` (making the
+  entity undeletable). Existence is now an **LWW presence register** (present
+  decided by the latest `(hlc, author)`, codec v3) — there is no counter to
+  saturate. The residual is the same HLC far-future property below (a malicious
+  *authorized* writer can pin `present=true@hlc=MAX`), consolidated into one
+  limitation instead of two.
 - **HLC physical is engine-global and adopts the max remote timestamp.** An
   authorized far-future write (or any write in an open namespace) pins the
   engine's wall-clock component network-wide, degrading the *quality* of
