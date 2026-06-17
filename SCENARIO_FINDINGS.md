@@ -167,3 +167,18 @@ convergence scenario above, so only the perf comparison is outstanding.
   (load with a drain phase), `--write-key` (contended cell), `--delete-interval`, `--key` (encrypted).
 - Harness note: drive a background proxy/daemon with `wait <pids>` not bare `wait` (bare `wait` blocks
   on the immortal daemon); avoid `pkill -f <pattern>` where the pattern matches the running shell.
+
+### Robustness extras (beyond the 14 — all ✅)
+- **Severe loss:** 50% packet loss + 150 ms jitter → converged (54 recs, `5349294a`). Reliability
+  layer just retransmits more.
+- **Connection flapping:** drop toggled 0↔1 every 1.5 s for 18 s (12 partitions) during writes → after
+  settle, converged (90 recs, `40622f27`). Reset-storm resilient.
+
+### Overall verdict
+The Kome **engine** is robust across architectures and adverse networks — every correctness scenario
+converged (crash, partition, 50% loss, reorder, clock skew, deletes, large divergence, multi-hop,
+encryption). The two bugs are both in the **driver/transport layer**: FINDING-1 (gossip wedge on a
+contended hot cell, medium) and FINDING-2 (netnode single-shot cross-host failure, high). Neither
+touches the CRDT core. Recommended priorities: (1) FINDING-2 handshake retry (unblocks the documented
+real-network vehicle), (2) FINDING-1 snapshot refresh under concurrent writes, (3) ship the netmesh
+test-driver flags. No data-corruption or convergence-correctness bug was found in the engine itself.
