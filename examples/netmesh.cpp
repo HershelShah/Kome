@@ -81,8 +81,10 @@ struct Peer {
 };
 
 int main(int argc, char **argv) {
-    std::string db, bind = "0.0.0.0", peers_arg;
+    std::string db, bind = "0.0.0.0", peers_arg, write_key, key_hex;
     int seed_v = 0, seconds = 8, interval = 300;
+    int write_interval = 0, delete_interval = 0; /* test drivers (0 = off) */
+    int write_for = 0; /* stop writing after N s (then drain/gossip); 0 = whole run */
     uint16_t port = 0;
     bool print_key = false, daemon = false;
     for (int i = 1; i < argc; i++) {
@@ -97,14 +99,29 @@ int main(int argc, char **argv) {
         else if (k == "--interval") interval = atoi(v().c_str());
         else if (k == "--daemon") daemon = true;
         else if (k == "--print-key") print_key = true;
+        /* --- test drivers --- */
+        else if (k == "--write-interval") write_interval = atoi(v().c_str());
+        else if (k == "--write-key") write_key = v();   /* shared key => LWW conflict */
+        else if (k == "--delete-interval") delete_interval = atoi(v().c_str());
+        else if (k == "--write-for") write_for = atoi(v().c_str());
+        else if (k == "--key") key_hex = v();           /* hex => at-rest encryption */
     }
     if (seconds == 0) daemon = true;
 
     uint8_t seed[SYNC_SEED_LEN];
     memset(seed, (uint8_t)seed_v, sizeof seed);
-    sync_engine *e = db.empty() ? sync_engine_create(seed)
-                                : sync_engine_open(db.c_str(), seed);
-    if (!e) { fprintf(stderr, "engine open failed\n"); return 1; }
+    sync_engine *e;
+    if (!key_hex.empty()) {
+        uint8_t key[32];
+        if (db.empty() || !parse_key(key_hex, key)) {
+            fprintf(stderr, "--key needs 64 hex chars and a --db path\n");
+            return 1;
+        }
+        e = sync_engine_open_encrypted(db.c_str(), seed, key);
+    } else {
+        e = db.empty() ? sync_engine_create(seed) : sync_engine_open(db.c_str(), seed);
+    }
+    if (!e) { fprintf(stderr, "engine open failed (wrong key/mode?)\n"); return 1; }
 
     uint8_t my_pk[SYNC_PUBKEY_LEN];
     sync_engine_identity(e, my_pk);
@@ -168,7 +185,11 @@ int main(int argc, char **argv) {
     std::vector<std::string> out;
     for (auto &p : peers) { p->sps->start(start, out); send_out(*p, out); }
 
-    uint64_t last_status = start;
+    uint64_t last_status = start, last_write = start, last_delete = start;
+    int wcounter = 0;
+    std::vector<std::string> created;   /* entities we created (for --delete-interval) */
+    size_t del_idx = 0;
+    std::string lns = "load";
     while (daemon || wall_ms() - start < (uint64_t)seconds * 1000) {
         uint64_t now = wall_ms();
 
@@ -188,6 +209,28 @@ int main(int argc, char **argv) {
             if (it == by_addr.end()) continue; /* not a configured peer */
             it->second->sps->on_datagram(dg, now, out);
             send_out(*it->second, out);
+        }
+
+        /* --- test drivers: synthetic write/delete load --- */
+        bool writing = write_for == 0 || now - start < (uint64_t)write_for * 1000;
+        if (writing && write_interval > 0 && now - last_write >= (uint64_t)write_interval) {
+            std::string ent, val = std::to_string(port) + "-" + std::to_string(wcounter);
+            if (!write_key.empty()) {
+                ent = write_key; /* both nodes hammer one key => LWW conflict */
+            } else {
+                ent = "w-" + std::to_string(port) + "-" + std::to_string(wcounter);
+                created.push_back(ent);
+            }
+            sync_engine_set(e, B(lns), lns.size(), B(ent), ent.size(),
+                            B(std::string("v")), 1, B(val), val.size());
+            wcounter++;
+            last_write = now;
+        }
+        if (writing && delete_interval > 0 &&
+            now - last_delete >= (uint64_t)delete_interval && del_idx < created.size()) {
+            const std::string &ent = created[del_idx++];
+            sync_engine_delete(e, B(lns), lns.size(), B(ent), ent.size());
+            last_delete = now;
         }
 
         if (daemon && now - last_status >= 3000) {
