@@ -941,3 +941,32 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   (`sync_engine_open`); the two modes are mutually exclusive (mode mismatch fails
   cleanly). Tested by `Storage.AtRestEncryption` (round-trip, wrong-key/mode
   rejection, no plaintext leak, encrypted compaction). Native 16/16 + WASM + ASan.
+
+## Secure mesh daemon (netmesh) + SecurePeerSession
+
+- The secure per-peer state machine (Noise XX handshake → transcript-bound
+  identity proof → capability-scoped reconcile) was extracted out of
+  `connect_and_sync`'s blocking loop into a reusable, non-blocking
+  **`SecurePeerSession`** (consumes/emits opaque datagrams; the caller routes
+  them). `connect_and_sync` is now a thin blocking driver over one such session
+  with `gossip_interval_ms == 0` (one cycle, then quiesce) — behaviour and ABI
+  unchanged, verified by the existing `connection`/`network`/`transport_parity`/
+  `relay` suites. One knob (`gossip_interval_ms > 0`) turns it into a repeating
+  gossip session (initiator re-snapshots and re-kicks each interval; responder
+  re-snapshots per cycle), which is what multi-hop propagation needs.
+- **`netmesh`** (examples/) is the deployable, real-network counterpart to the
+  localhost-only `meshnode`: one UDP socket, N peers, a `SecurePeerSession` each,
+  inbound demuxed by sender address. Unlike `meshnode` (raw `NoiseChannel`, no
+  identity proof, no read-scoping) it drives the **production secure path** at
+  mesh scale. Initiator per edge is decided by identity-key compare (strict order
+  → exactly one initiator per edge); a silence detector re-handshakes a restarted
+  peer (`reset()`). Time-bounded report mode and a long-running `--daemon` mode.
+- **Scope:** flat reachable substrate only (Tailscale/VMs/LAN) — demux-by-sender
+  assumes no NAT rewriting between peers. NAT traversal (hole-punch/relay) stays
+  validated pairwise by `netnode`; folding relay into the mesh would need inbound
+  demux (relay fetch carries no sender tag) and is deferred.
+- Tested in-process (no sockets → CI + WASM) by `securemesh_test`: ring +
+  full-mesh convergence, read-scoping enforced, no-sync-without-authentication,
+  and restart/`reset()` re-convergence. End-to-end over real sockets by
+  `examples/netmesh_demo.sh` (secure ring) + `tools/netmesh_verify.sh`. Native
+  17/17 + ASan green; `connect_and_sync` path TSan-clean.

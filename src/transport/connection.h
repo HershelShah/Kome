@@ -11,10 +11,13 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "noise.h"
 #include "transport/relay.h"
+#include "transport/reliable.h"
 #include "transport/udp.h"
 #include "sync_engine.h"
 
@@ -26,6 +29,68 @@ struct PeerTransport {
     virtual bool send(const std::string &dg) = 0;
     /* Receive one datagram (false on timeout). */
     virtual bool recv(std::string &dg, int timeout_ms) = 0;
+};
+
+/* The per-peer secure state machine: a Noise XX handshake, the transcript-bound
+ * identity proof, and capability-scoped range reconciliation, over one peer.
+ * Non-blocking and transport-agnostic — it consumes opaque inbound datagrams
+ * and emits opaque outbound datagrams; the caller owns the socket and routes
+ * them. Both connect_and_sync (one peer, one cycle) and the mesh daemon (N
+ * peers, repeated cycles) drive instances of this.
+ *
+ * gossip_interval_ms == 0: run one reconcile cycle, then quiesce (the
+ *   connect_and_sync semantics — settle once the link goes idle).
+ * gossip_interval_ms  > 0: keep gossiping — the initiator starts a fresh,
+ *   re-snapshotted reconcile cycle every interval; the responder re-snapshots
+ *   each cycle. This is how newly-learned data propagates multi-hop. */
+class SecurePeerSession {
+public:
+    SecurePeerSession(sync_engine *e, bool initiator,
+                      uint32_t gossip_interval_ms);
+    ~SecurePeerSession();
+
+    SecurePeerSession(const SecurePeerSession &) = delete;
+    SecurePeerSession &operator=(const SecurePeerSession &) = delete;
+
+    /* Initiator: produce the first handshake datagram (no-op for a responder). */
+    void start(uint64_t now_mono, std::vector<std::string> &out);
+    /* Feed one inbound datagram; append any outbound datagrams to `out`.
+     * Advances handshake -> identity proof -> reconcile as appropriate. */
+    void on_datagram(const std::string &dg, uint64_t now_mono,
+                     std::vector<std::string> &out);
+    /* Time-driven work: reliability retransmits/acks, and (in gossip mode) start
+     * a fresh reconcile cycle when idle and the interval has elapsed. */
+    void poll(uint64_t now_mono, std::vector<std::string> &out);
+    /* Re-handshake from scratch (use when a peer is detected to have restarted). */
+    void reset(uint64_t now_mono, std::vector<std::string> &out);
+
+    bool handshake_done() const;   /* Noise XX complete on this side */
+    bool authenticated() const;    /* peer's identity proof verified */
+    bool idle() const;             /* reliability link fully drained */
+    bool failed() const;           /* handshake step or proof verification failed */
+    uint64_t last_progress() const { return last_progress_; }
+    const uint8_t *peer_pk() const { return peer_pk_.data(); } /* valid once authenticated */
+
+private:
+    bool pump_(const uint8_t *in, size_t in_len); /* step+drain session; true if it emitted */
+    void send_proof_();
+    void enable_after_handshake_();
+    void kick_(uint64_t now);                      /* begin a fresh reconcile cycle */
+    void drain_(uint64_t now, std::vector<std::string> &out);
+
+    sync_engine                  *e_;
+    bool                          initiator_;
+    uint32_t                      interval_;
+    std::unique_ptr<NoiseChannel> chan_;
+    ReliableLink                  link_;
+    sync_session                 *sess_ = nullptr;
+    bool                          proof_sent_ = false;
+    bool                          peer_ok_ = false;
+    bool                          failed_ = false;
+    bool                          sess_done_ = false; /* current cycle drained to empty */
+    std::array<uint8_t, 32>       peer_pk_{};
+    uint64_t                      last_kick_ = 0;
+    uint64_t                      last_progress_ = 0;
 };
 
 /* Handshake (Noise XX) + run one reconciliation cycle over t to convergence.

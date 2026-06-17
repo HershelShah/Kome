@@ -149,9 +149,12 @@ random-mesh topologies.
 is a deployable node that drives the production path (`connect_and_sync` — Noise
 XX + identity proof + capability-scoped reconcile + authenticated reliability)
 and, for NATed peers, `ConnectionManager` (rendezvous → direct/hole-punch →
-relay fallback), alongside the `relayd`/`rendezvousd` daemons. The runbook for
-two real hosts (LAN direct, NAT + relay, hole-punch, reconnection) and a
-single-box network-namespace rig are in
+relay fallback), alongside the `relayd`/`rendezvousd` daemons. For mesh-scale
+validation across many hosts, **`netmesh`** drives that same secure path to N
+peers at once over one socket (the deployable counterpart to localhost-only
+`meshnode`); `examples/netmesh_demo.sh` runs a secure ring of them. The runbook
+for two real hosts (LAN direct, NAT + relay, hole-punch, reconnection), the
+secure mesh at scale, and a single-box network-namespace rig are in
 [`docs/REAL_NETWORK_TESTING.md`](docs/REAL_NETWORK_TESTING.md). (IPv6 is not yet
 supported — the UDP layer is IPv4-only.)
 
