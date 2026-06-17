@@ -14,10 +14,12 @@ degraded links (loss+reorder), clock skew, deletion/tombstones, large divergence
 at-rest encryption all converge correctly. Two real issues found, **both in the networking/gossip
 driver layer, not the engine**:
 
-- **FINDING-1 (medium):** a single *contended* cell written faster than the gossip interval makes a
-  long-running netmesh node wedge — permanently diverged on that cell until restart. Distinct-key
-  workloads always heal on drain; only same-cell-faster-than-gossip wedges. Engine/reconcile/scoping
-  are all correct (proven in-process); the bug is the `SecurePeerSession` repeated-cycle logic.
+- **FINDING-1 (medium):** a single *contended* cell written faster than the gossip interval can make a
+  long-running netmesh node wedge — permanently diverged on that cell until restart. **Intermittent
+  (~50% — a timing race).** Distinct-key workloads always heal on drain; only same-cell-faster-than-
+  gossip wedges. Engine/reconcile/scoping are all correct (proven in-process); the bug is in the
+  `SecurePeerSession`/`ReliableLink` gossip-driver layer (likely a stop-and-wait desync under rapid
+  re-kick).
 - **FINDING-2 (high):** `netnode` (the documented production real-network vehicle, single-shot
   `connect_and_sync`) **fails to establish cross-host** (desktop↔Pi) — direct and relay. `netmesh`
   (gossip, with reset-on-silence) converges cross-host every time. Not latency-triggered (proxy 150ms
@@ -64,6 +66,16 @@ A keeps `7301-75`, B keeps `7302-75`, different digests, no recovery in a 10 s s
 
 **Write-rate sweep (gossip interval 300 ms):** 50 ms / 150 ms → DIVERGED; 400 ms / 1000 ms → converged.
 The trigger is **write period < gossip period on a contended cell.**
+
+**It is a probabilistic timing RACE, not deterministic.** 4 clean repeats of the 50 ms repro gave
+DIVERGED / CONVERGED / CONVERGED / DIVERGED (~50%). Adding an `fprintf` to the initiator's `poll()`
+made it converge every time (Heisenbug) — perturbing the timing hides it, which is itself strong
+evidence of a race rather than a logic error. When it does *not* trigger, the contended cell converges
+normally; when it does, the divergence is permanent (until restart). The initiator keeps kicking fresh
+cycles fine (`idle=1 -> KICK` every ~300 ms in the instrumented run), so the wedge is **not** a stuck
+kick — most likely the per-connection `ReliableLink` (stop-and-wait, lives across reconcile cycles)
+desyncs its seq/ack under rapid re-kick in a losing interleaving. `reset()`/fresh process rebuilds the
+link and heals.
 
 **Localization (what is NOT broken):**
 - Pure-engine reconcile of the identical conflicting state (`/tmp/repro2`, plain *and* scoped sessions)
