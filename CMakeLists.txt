@@ -143,6 +143,15 @@ if(NOT EMSCRIPTEN)
     target_include_directories(netnode PRIVATE
         ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
+    # Secure multi-peer mesh daemon for real-network scale testing: drives N
+    # SecurePeerSession links (Noise XX + identity proof + cap-scoped reconcile)
+    # over one socket, gossiping to convergence. Real-network counterpart to the
+    # localhost-only meshnode.
+    add_executable(netmesh examples/netmesh.cpp)
+    target_link_libraries(netmesh PRIVATE sync_engine monocypher)
+    target_include_directories(netmesh PRIVATE
+        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
     # Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
     add_executable(relayd services/relay/relay_main.cpp)
     target_link_libraries(relayd PRIVATE sync_engine)
@@ -207,6 +216,7 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(resilience_test tests/resilience_test.cpp)
     sync_add_test(scenario_test tests/scenario_test.cpp)
     sync_add_test(defensive_test tests/defensive_test.cpp)
+    sync_add_test(securemesh_test tests/securemesh_test.cpp)
 
     # --- Native-only suites ------------------------------------------------
     # These depend on host facilities WASM doesn't provide: real sockets

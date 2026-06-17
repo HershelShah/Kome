@@ -82,7 +82,7 @@ Run it from behind real consumer routers (full-cone is common) to see `direct`;
 run it from behind a symmetric NAT (some mobile carriers) to see the relay
 fallback. Both must still converge.
 
-> Reproducible single-box version: `tools/netns_nat_test.sh` builds two NATed
+> Reproducible single-box version: `tools/netns_real_net_test.sh` builds two NATed
 > network namespaces + a public segment on one Linux host (root + iproute2) and
 > runs this scenario through the real kernel network stack. See that script.
 
@@ -101,13 +101,49 @@ Validates offline-first + that a restarted node resumes from its log file.
 
 ---
 
-## Multi-hop mesh
+## Scenario 5 — secure mesh at scale (T5 multi-node)
 
-`meshnode` (the gossip-ring demo) is **localhost-only** (binds `127.0.0.1`,
-addresses peers by port) and hand-rolls the pre-security channel — use it only
-for the local `examples/mesh_demo.sh`. For a real multi-node mesh, run several
-`netnode` instances and point each at its neighbours (Scenario 1 pairwise), or
-script `ConnectionManager` against multiple peer keys.
+`netmesh` is the deployable multi-peer counterpart to `netnode`: one UDP socket,
+N peers, a `SecurePeerSession` per peer (the same Noise XX + identity proof +
+capability-scoped reconcile `netnode` uses), gossiping each link periodically so
+data propagates multi-hop. Use it to validate convergence/multi-hop/durability
+**at scale** across several machines on a **flat reachable substrate** — a
+Tailscale tailnet, cloud VMs, or a LAN. (NAT traversal — hole-punch/relay —
+stays validated pairwise by `netnode`, Scenarios 2–3; `netmesh` demuxes peers by
+sender address, which assumes no NAT rewriting between peers.)
+
+**Localhost smoke first** (real sockets, multi-process, no remote hosts):
+
+```bash
+cmake --build build --target netmesh
+examples/netmesh_demo.sh 8 8     # 8 processes in a ring, 8 seconds
+```
+
+Expected: all 8 nodes print the *same* `digest=` and `knows 8 records` — data
+travelled multi-hop around the ring (each node has only its two neighbours), and
+`tools/netmesh_verify.sh` reports `PASS`.
+
+**Cross-host:** keys are deterministic from `--seed`, so each node can print its
+neighbours' keys offline (`netmesh --seed N --print-key`). On each host run:
+
+```bash
+netmesh --db nodeX.db --seed X --port 7000 --seconds 30 \
+        --peers <ip>:<port>=<neighbourKey>[,<ip>:<port>=<neighbourKey>...] \
+        | tee nodeX.log
+```
+
+Wire a ring (each node lists its two neighbours), a star (every node lists one
+hub; the hub lists all), or a full mesh. Collect every `nodeX.log` onto one
+machine, then:
+
+```bash
+tools/netmesh_verify.sh <N> node*.log
+```
+
+`PASS` = every node reports the same digest and `knows N records`. For durability
+(T5.6), reuse a `--db` across a restart: stop a node, restart it with the same
+`--db`/`--seed`, and confirm it rejoins and re-converges (the secure session's
+silence detector re-handshakes a restarted peer automatically).
 
 ---
 
@@ -116,9 +152,11 @@ script `ConnectionManager` against multiple peer keys.
 Cross-host convergence at scale (N = 2, 4, 8, 16, 32, 64) is covered
 deterministically in the automated suite by `PowersOfTwo/MultiNodeScale` in
 `tests/multinode_test.cpp` — ring, star, mesh, and enforced-namespace
-topologies at each N, run both natively and under WASM. To exercise the same
-scaling over *real* sockets, run that many `netnode` instances and wire each to
-its neighbours (Scenario 1 pairwise around a ring, or a star through one hub).
+topologies at each N, run both natively and under WASM. The secure multiplexed
+path is covered in-process (no sockets, so it runs in CI/WASM) by
+`tests/securemesh_test.cpp` (ring + full-mesh convergence, read-scoping,
+authentication-required, and restart/`reset()`). To exercise the same scaling
+over *real* sockets, deploy that many `netmesh` instances (Scenario 5).
 
 ## Backlog
 
