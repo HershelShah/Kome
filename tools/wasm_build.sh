@@ -10,9 +10,7 @@ cd "$ROOT"
 OUT=build-wasm
 mkdir -p "$OUT"
 
-# C deps compiled as C (em++ would treat .c as C++).
-emcc -O2 -w -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
-     -Ithird_party/sqlite -c third_party/sqlite/sqlite3.c -o "$OUT/sqlite3.o"
+# C dep compiled as C (em++ would treat .c as C++).
 emcc -O2 -w -Ithird_party/monocypher -c third_party/monocypher/monocypher.c \
      -o "$OUT/monocypher.o"
 
@@ -33,8 +31,8 @@ EXPORTS='["_sync_engine_create","_sync_engine_open","_sync_engine_destroy",
 "_sync_invite_decode","_sync_engine_set_logger","_malloc","_free"]'
 
 em++ -O2 -std=c++17 -w \
-  -Iinclude -Isrc -Ithird_party/sqlite -Ithird_party/monocypher \
-  $CPP "$OUT/sqlite3.o" "$OUT/monocypher.o" \
+  -Iinclude -Isrc -Ithird_party/monocypher \
+  $CPP "$OUT/monocypher.o" \
   -sMODULARIZE=1 -sEXPORT_NAME=createSyncEngine -sENVIRONMENT=web,node \
   -sALLOW_MEMORY_GROWTH=1 -sWASM_BIGINT -sEXPORTED_FUNCTIONS="$(echo "$EXPORTS" | tr -d '\n ')" \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","UTF8ToString","HEAPU8","HEAPU32"]' \
