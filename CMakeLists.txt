@@ -217,6 +217,16 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(scenario_test tests/scenario_test.cpp)
     sync_add_test(defensive_test tests/defensive_test.cpp)
     sync_add_test(securemesh_test tests/securemesh_test.cpp)
+    sync_add_test(circles_test tests/circles_test.cpp)
+    sync_add_test(messaging_test tests/messaging_test.cpp)
+
+    # Opt-in adversarial / large-scale stress suite (slow; in-process). OFF by
+    # default so it stays out of the normal/CI run; enable with -DSYNC_STRESS=ON.
+    option(SYNC_STRESS "Build the stress-test suite" OFF)
+    if(SYNC_STRESS)
+        sync_add_test(stress_test tests/stress_test.cpp)
+        set_tests_properties(stress_test PROPERTIES TIMEOUT 600)
+    endif()
 
     # --- Native-only suites ------------------------------------------------
     # These depend on host facilities WASM doesn't provide: real sockets

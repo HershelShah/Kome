@@ -148,7 +148,13 @@ int sync_engine_site_id(sync_engine *e, uint8_t out[SYNC_SITE_ID_LEN]);
 
 /* Set field=value on (ns, entity). Creates/ensures the entity is present
  * (causal-length set add when absent) and updates the field's LWW register
- * with a freshly ticked HLC. value may be empty (value_len == 0). */
+ * with a freshly ticked HLC. value may be empty (value_len == 0).
+ *
+ * Value size and transport: a record is replicated atomically, so a single value
+ * must fit one transport message. Over UDP that ceiling is ~60 KB (a 64 KB
+ * datagram minus framing) and a larger value will not sync — chunk large media
+ * into multiple sub-60 KB records app-side. TCP/WebSocket transports frame up to
+ * 64 MB and have no practical per-value limit. */
 int sync_engine_set(sync_engine *e,
                     const uint8_t *ns, size_t ns_len,
                     const uint8_t *entity, size_t entity_len,

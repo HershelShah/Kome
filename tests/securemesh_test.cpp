@@ -172,6 +172,53 @@ TEST(SecureMesh, ReadScopingEnforced) {
         << "read-scoping bypassed: peer received a restricted namespace";
 }
 
+/* ---- A grant must take effect on a live gossip link --------------------- */
+/* The scoped snapshot is cached per peer (reconcile.cpp ensure_scoped_cache). A
+ * capability grant bumps the engine's state_gen (capability.cpp), clearing that
+ * cache so a newly-readable namespace is included on the next cycle. Without the
+ * bump, A would keep serving B its stale cached scope and the grant would never
+ * propagate over an established link. */
+TEST(SecureMesh, GrantMidSyncInvalidatesScopeCache) {
+    Mesh m(/*interval=*/200);
+    sync_engine *a = m.add_engine(31);
+    sync_engine *b = m.add_engine(32);
+
+    sync_capability *root =
+        sync_capability_root(a, "secret", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(a, root), SYNC_OK); /* A owns "secret" */
+    cluster::put(a, "secret", "s1", "f", "v");
+    cluster::put(a, "open", "p1", "f", "v");
+
+    m.connect(0, 1);
+    m.start();
+    m.run_rounds(120); /* converge the readable slice; A caches B's scope */
+
+    ASSERT_TRUE(cluster::exists(b, "open", "p1")) << "open record should sync";
+    ASSERT_FALSE(cluster::exists(b, "secret", "s1"))
+        << "read-scoping bypassed before grant";
+
+    /* A grants B a permanent read delegation for "secret". */
+    uint8_t bpk[32];
+    sync_engine_identity(b, bpk);
+    sync_capability *readB =
+        sync_capability_delegate(a, root, bpk, SYNC_ACCESS_READ, 0);
+    ASSERT_NE(readB, nullptr);
+    ASSERT_EQ(sync_engine_grant(a, readB), SYNC_OK);
+
+    /* The grant must reach B over the live link — the state_gen bump dropped the
+     * cached scope, so the next cycle re-snapshots with "secret" included. */
+    bool got = false;
+    for (int r = 0; r < 400; r++) {
+        m.round();
+        if (cluster::exists(b, "secret", "s1")) { got = true; break; }
+    }
+    EXPECT_TRUE(got) << "granted namespace did not propagate after mid-sync grant";
+
+    sync_capability_free(root);
+    sync_capability_free(readB);
+}
+
 /* ---- Security: no data flows without a completed secure handshake -------- */
 /* If a peer never completes the authenticated handshake (here: the initiator's
  * post-handshake traffic — its identity proof and reconcile data — is dropped),
