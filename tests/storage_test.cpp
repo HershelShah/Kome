@@ -632,3 +632,43 @@ TEST(Storage, AtRestEncryption) {
     EXPECT_EQ(d0, d2) << "compaction changed encrypted state";
     sync_engine_destroy(e3);
 }
+
+/* F2: every sealed frame must carry a fresh random 24-byte nonce. A zero/reused
+ * nonce (what an unchecked random_bytes() failure would leave behind) is
+ * catastrophic for XChaCha20-Poly1305. Parse the raw encrypted log
+ * ([magic 8][keycheck 32] header, then [plen:4][nonce:24][ct:plen][mac:16]
+ * frames) and assert all per-frame nonces are distinct and non-zero. */
+TEST(Storage, EncryptedFramesUseDistinctNonces) {
+    TempDir dir;
+    std::string db = dir.file("enc_nonce.db");
+    auto site = site_from(0x2F);
+    uint8_t key[32]; for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i * 3 + 1);
+
+    sync_engine *e = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e, nullptr);
+    /* Several distinct mutations -> several sealed frames. */
+    for (int i = 0; i < 8; i++)
+        cluster::put(e, "ns", "e" + std::to_string(i), "f", "v" + std::to_string(i));
+    sync_engine_destroy(e);
+
+    std::string raw = read_file(db);
+    ASSERT_EQ(raw.compare(0, 8, "KOMEENC1"), 0);
+    const size_t header = 8 + 16 + 16; /* magic + key-check ct + mac */
+    std::vector<std::string> nonces;
+    size_t off = header;
+    while (off + 4 <= raw.size()) {
+        uint32_t plen = (uint8_t)raw[off] | ((uint8_t)raw[off + 1] << 8) |
+                        ((uint8_t)raw[off + 2] << 16) |
+                        ((uint32_t)(uint8_t)raw[off + 3] << 24);
+        if (plen == 0) break;
+        size_t frame = 4 + 24 + (size_t)plen + 16;
+        if (off + frame > raw.size()) break;
+        std::string nonce = raw.substr(off + 4, 24);
+        EXPECT_NE(nonce, std::string(24, '\0')) << "zero nonce on disk";
+        nonces.push_back(nonce);
+        off += frame;
+    }
+    ASSERT_GE(nonces.size(), 3u) << "expected several sealed frames";
+    std::set<std::string> uniq(nonces.begin(), nonces.end());
+    EXPECT_EQ(uniq.size(), nonces.size()) << "nonce reuse across frames";
+}

@@ -275,3 +275,67 @@ TEST(Reliable, MacRejectsForgedFrameOnceKeyed) {
     EXPECT_FALSE(v2.on_datagram(tampered, d3)) << "bad-MAC frame accepted";
     EXPECT_TRUE(d3.empty());
 }
+
+/* Helper: assemble a reliability frame [auth:1][type:1][seq:u32le][payload]. */
+static std::string mk_frame(uint8_t auth, uint8_t type, uint32_t seq,
+                            const std::string &payload = "") {
+    std::string d;
+    d.push_back((char)auth);
+    d.push_back((char)type);
+    for (int i = 0; i < 4; i++) d.push_back((char)(seq >> (i * 8)));
+    d += payload;
+    return d;
+}
+
+/* F7: once keyed, an unauthenticated DATA frame at or ahead of the live seq is
+ * forgery/noise — it must be dropped WITHOUT eliciting an ACK, so a spoofing
+ * injector can't farm one ACK per datagram (amplification). A genuine stale
+ * plain duplicate (seq < recv_seq_) is still re-acked so the handshake settles. */
+TEST(Reliable, KeyedLinkDoesNotAckUnauthenticatedFutureFrame) {
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i + 3);
+
+    ke::ReliableLink b;
+    b.enable_mac(key);
+
+    /* Forged plain DATA at a FUTURE seq (type=0/kData, seq=7, recv_seq_==0). */
+    std::vector<std::string> del;
+    EXPECT_FALSE(b.on_datagram(mk_frame(0, 0, 7, "evil"), del));
+    EXPECT_TRUE(del.empty());
+
+    /* No ACK may be queued for it (no amplification). */
+    std::vector<std::string> out;
+    b.poll(out, 0);
+    EXPECT_TRUE(out.empty()) << "keyed link acked an unauthenticated future frame";
+}
+
+/* F8: a non-advancing DATA arriving before any in-order data (recv_seq_==0) must
+ * NOT produce a cumulative ack at all. The old code underflowed recv_seq_-1 to
+ * 0xFFFFFFFF (a harmless never-matching sentinel); naively clamping that to 0
+ * would instead ack seq 0, which a sender at send_seq_==0 reads as delivery of
+ * its first (never-delivered) frame — silent data loss. The fix is to stay
+ * silent until something is delivered in order. */
+TEST(Reliable, NoAckBeforeAnyInOrderDelivery) {
+    ke::ReliableLink b; /* not keyed (settling phase) */
+    std::vector<std::string> del;
+    /* Plain DATA at a future seq=5 while recv_seq_==0: non-advancing. */
+    EXPECT_FALSE(b.on_datagram(mk_frame(0, 0, 5, "x"), del));
+    EXPECT_TRUE(del.empty());
+
+    std::vector<std::string> out;
+    b.poll(out, 0);
+    EXPECT_TRUE(out.empty()) << "acked before any in-order delivery (spurious ack)";
+
+    /* The in-order frame (seq=0) is delivered and now legitimately acked at 0. */
+    EXPECT_TRUE(b.on_datagram(mk_frame(0, 0, 0, "hi"), del));
+    ASSERT_EQ(del.size(), 1u);
+    out.clear();
+    b.poll(out, 0);
+    ASSERT_FALSE(out.empty());
+    const std::string &ack = out.front();
+    ASSERT_GE(ack.size(), 6u);
+    EXPECT_EQ((uint8_t)ack[1], 1); /* kAck */
+    uint32_t ack_seq = (uint8_t)ack[2] | ((uint8_t)ack[3] << 8) |
+                       ((uint8_t)ack[4] << 16) | ((uint32_t)(uint8_t)ack[5] << 24);
+    EXPECT_EQ(ack_seq, 0u);
+}

@@ -32,6 +32,24 @@ constexpr uint64_t kMaxSessionSteps = 1u << 20;
  * message envelope, attached capabilities, and channel-encryption overhead. */
 constexpr size_t kMaxMessageBytes = 48u * 1024u;
 
+/* Bounds on a *received* reconcile message (F3). A stream transport (TCP/WS)
+ * accepts frames up to 64 MiB, and the decoder turns each ~1 input byte into a
+ * heap object — a std::string record/cap, or a Desc with several owned strings —
+ * so an unbounded message amplifies into GiBs of vector entries. We bound the
+ * three growth axes directly (rather than via a tight byte cap that would also
+ * reject a legitimately large capabilities blob, which is attached whole to the
+ * first message):
+ *   - kMaxRecvMessageBytes: coarse early reject, set well above any legitimate
+ *     message (descriptors ≤ kMaxMessageBytes + all attached caps).
+ *   - kMaxWireElements: total records + caps across the message (each is a
+ *     std::string in a growing vector).
+ *   - kMaxWireDescriptors: number of descriptors (each a multi-string Desc).
+ * Together these cap the decoder's peak allocation to tens of MiB regardless of
+ * input size, while leaving >10x headroom for real traffic. */
+constexpr size_t kMaxRecvMessageBytes = 8u << 20;  /* 8 MiB */
+constexpr uint64_t kMaxWireElements   = 1u << 20;  /* records + caps */
+constexpr uint64_t kMaxWireDescriptors = 1u << 16; /* Desc objects */
+
 } // namespace ke
 
 #endif /* SYNC_RECONCILE_H */

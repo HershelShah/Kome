@@ -79,7 +79,7 @@ bool Relay::consume_challenge(const std::string &endpoint,
     auto it = pending_.find(endpoint);
     if (it == pending_.end()) return false;
     bool ok = it->second.dstkey == dstkey &&
-              std::memcmp(it->second.nonce.data(), nonce, 16) == 0;
+              ct_eq16(it->second.nonce.data(), nonce); /* constant-time (F4) */
     pending_.erase(it); /* single-use */
     return ok;
 }

@@ -209,7 +209,8 @@ size_t desc_size(const Desc &d) {
     return n;
 }
 
-bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
+bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d,
+                 uint64_t &elem_budget) {
     if (p >= end) return false;
     uint8_t m = *p++;
     if (m > 2) return false;
@@ -226,6 +227,10 @@ bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
         /* Each record needs >=1 byte, so a count beyond the remaining buffer is
          * bogus — reject before reserving/allocating (allocation-DoS guard). */
         if (cnt > (uint64_t)(end - p)) return false;
+        /* Charge records against the message-wide element budget so a flood of
+         * tiny records can't amplify into a huge vector (F3). */
+        if (cnt > elem_budget) return false;
+        elem_budget -= cnt;
         for (uint64_t i = 0; i < cnt; i++) {
             uint64_t rl = 0;
             if (!get_varint(p, end, rl)) return false;
@@ -254,11 +259,18 @@ std::string encode_message(const std::vector<Desc> &descs,
 
 bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
                     std::vector<std::string> &caps) {
+    /* Reject an over-large message before parsing: each input byte can expand to
+     * a heap object, so an unbounded message is a memory amplifier (F3). */
+    if (len > kMaxRecvMessageBytes) return false;
     const uint8_t *p = buf;
     const uint8_t *end = buf + len;
+    /* Shared element budget across caps + all descriptors' records. */
+    uint64_t elem_budget = kMaxWireElements;
     uint64_t nc = 0;
     if (!get_varint(p, end, nc)) return false;
     if (nc > (uint64_t)(end - p)) return false; /* each cap >=1 byte */
+    if (nc > elem_budget) return false;         /* element-count amplifier (F3) */
+    elem_budget -= nc;
     for (uint64_t i = 0; i < nc; i++) {
         uint64_t cl = 0;
         if (!get_varint(p, end, cl)) return false;
@@ -268,10 +280,11 @@ bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
     }
     uint64_t n = 0;
     if (!get_varint(p, end, n)) return false;
-    if (n > (uint64_t)(end - p)) return false; /* each descriptor >=1 byte */
+    if (n > (uint64_t)(end - p)) return false;       /* each descriptor >=1 byte */
+    if (n > kMaxWireDescriptors) return false;        /* Desc-object amplifier (F3) */
     for (uint64_t i = 0; i < n; i++) {
         Desc d;
-        if (!decode_desc(p, end, d)) return false;
+        if (!decode_desc(p, end, d, elem_budget)) return false;
         out.push_back(std::move(d));
     }
     return true;

@@ -66,6 +66,12 @@ bool random_bytes(uint8_t *buf, size_t len);
 /* Zero a buffer in a way the compiler won't optimize away (for secrets). */
 void secure_wipe(void *p, size_t n);
 
+/* Constant-time equality for two 16-byte buffers (MAC/nonce/cookie compares):
+ * runs in time independent of where the first differing byte is, so it leaks no
+ * timing oracle an attacker could use to forge a tag byte-by-byte. Returns true
+ * iff the buffers are equal. */
+bool ct_eq16(const uint8_t a[16], const uint8_t b[16]);
+
 } // namespace ke
 
 #endif /* SYNC_CRYPTO_H */
