@@ -75,7 +75,8 @@ private:
     bool pump_(const uint8_t *in, size_t in_len); /* step+drain session; true if it emitted */
     void send_proof_();
     void enable_after_handshake_();
-    void kick_(uint64_t now);                      /* begin a fresh reconcile cycle */
+    void begin_cycle_();                           /* (re)begin a scoped reconcile session */
+    void kick_(uint64_t now);                      /* initiator: begin a cycle + send first FP */
     void drain_(uint64_t now, std::vector<std::string> &out);
 
     sync_engine                  *e_;
@@ -88,6 +89,7 @@ private:
     bool                          peer_ok_ = false;
     bool                          failed_ = false;
     bool                          sess_done_ = false; /* current cycle drained to empty */
+    uint64_t                      sess_gen_ = 0;      /* engine state_gen when sess_ began */
     std::array<uint8_t, 32>       peer_pk_{};
     uint64_t                      last_kick_ = 0;
     uint64_t                      last_progress_ = 0;

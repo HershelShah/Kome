@@ -8,7 +8,10 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +37,42 @@ std::array<uint8_t, SYNC_DIGEST_LEN> digest(sync_engine *e) {
     sync_engine_digest(e, d.data());
     return d;
 }
+
+uint64_t steady_ms() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<milliseconds>(
+               steady_clock::now().time_since_epoch()).count();
+}
+
+/* In-memory paired transport with a startup blackout (datagrams dropped until
+ * `open_at`). Used to exercise connect_and_sync's handshake-retry path. */
+struct Chan {
+    std::mutex m;
+    std::deque<std::string> a2b, b2a;
+    uint64_t open_at = 0;
+};
+struct MemTransport : PeerTransport {
+    Chan *ch = nullptr;
+    bool is_a = false;
+    bool send(const std::string &dg) override {
+        if (steady_ms() < ch->open_at) return true; /* blackout: silently drop */
+        std::lock_guard<std::mutex> lk(ch->m);
+        (is_a ? ch->a2b : ch->b2a).push_back(dg);
+        return true;
+    }
+    bool recv(std::string &dg, int timeout_ms) override {
+        uint64_t deadline = steady_ms() + (uint64_t)timeout_ms;
+        do {
+            {
+                std::lock_guard<std::mutex> lk(ch->m);
+                auto &q = is_a ? ch->b2a : ch->a2b;
+                if (!q.empty()) { dg = q.front(); q.pop_front(); return true; }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (steady_ms() < deadline);
+        return false;
+    }
+};
 } // namespace
 
 /* ---- Direct path ------------------------------------------------------- */
@@ -59,6 +98,64 @@ TEST(Connection, DirectPath) {
     int present = 0;
     sync_engine_exists(a, B(std::string("ns")), 2, B(std::string("b1")), 2, &present);
     EXPECT_EQ(present, 1); /* A learned B's record over the direct path */
+    sync_engine_destroy(a); sync_engine_destroy(b);
+}
+
+/* A field value that fits in one UDP datagram (~60 KB ceiling: 64 KB minus
+ * Noise + reliability framing) syncs over the real UDP transport. NOTE: a single
+ * value larger than that cannot be carried in one datagram and currently wedges
+ * the stop-and-wait reliable link — no further records reach that peer. Large
+ * media must be chunked app-side (or sent over TCP/WS, which frame up to 64 MB). */
+TEST(Connection, LargeValueWithinDatagramSyncs) {
+    sync_engine *a = make(1), *b = make(2);
+    put(a, "big", std::string(48 * 1024, 'x')); /* ~48 KB: under the datagram ceiling */
+
+    UdpSocket sa, sb;
+    ASSERT_TRUE(sa.open("127.0.0.1", 0));
+    ASSERT_TRUE(sb.open("127.0.0.1", 0));
+    DirectTransport ta; ta.sock = &sa; ta.peer = sb.local();
+    DirectTransport tb; tb.sock = &sb; tb.peer = sa.local();
+
+    std::atomic<bool> ra{false}, rb{false};
+    std::thread A([&] { ra = connect_and_sync(a, ta, true, 5000); });
+    std::thread Bt([&] { rb = connect_and_sync(b, tb, false, 5000); });
+    A.join(); Bt.join();
+
+    EXPECT_TRUE(ra.load());
+    EXPECT_TRUE(rb.load());
+    EXPECT_EQ(digest(a), digest(b)) << "a 48 KB value failed to sync over UDP";
+    sync_engine_destroy(a); sync_engine_destroy(b);
+}
+
+/* FINDING-2 (scenario campaign): connect_and_sync must re-handshake when the
+ * handshake stalls, not just rely on reliability-layer retransmit. Cross-host,
+ * a stalled handshake could wait out the whole timeout; the fix adds a
+ * reset-on-silence during the pre-auth phase (mirroring the gossip loop).
+ *
+ * The cross-host trigger itself is not reproducible in-process (retransmit masks
+ * plain loss, so this would pass with or without the fix); this test instead
+ * guards the new reset path: a startup blackout longer than kStallResetMs
+ * forces >=1 in-handshake reset(), and the sync must still converge once the link
+ * opens (catching a broken reset / wrong gating that would loop or corrupt).
+ * The definitive FINDING-2 check is the cross-host re-run (see SCENARIO_FINDINGS.md). */
+TEST(Connection, HandshakeRetryConvergesAfterBlackout) {
+    sync_engine *a = make(1), *b = make(2);
+    put(a, "a1", "x");
+    put(b, "b1", "y");
+
+    Chan ch;
+    ch.open_at = steady_ms() + 2500; /* > kStallResetMs (2000): forces a reset */
+    MemTransport ta; ta.ch = &ch; ta.is_a = true;
+    MemTransport tb; tb.ch = &ch; tb.is_a = false;
+
+    std::atomic<bool> ra{false}, rb{false};
+    std::thread A([&] { ra = connect_and_sync(a, ta, true, 15000); });
+    std::thread Bt([&] { rb = connect_and_sync(b, tb, false, 15000); });
+    A.join(); Bt.join();
+
+    EXPECT_TRUE(ra.load());
+    EXPECT_TRUE(rb.load());
+    EXPECT_EQ(digest(a), digest(b)); /* converged despite the in-handshake reset */
     sync_engine_destroy(a); sync_engine_destroy(b);
 }
 
