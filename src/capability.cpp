@@ -87,54 +87,82 @@ bool CapStore::owned(const std::string &ns) const {
 }
 
 bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
-                          uint8_t need, uint64_t now) const {
+                          uint8_t need, uint64_t now, bool *time_bound) const {
+    if (time_bound) *time_bound = false;
     /* Capabilities in the store are signature-verified on insertion, so the
      * hot path only checks access/expiry (no EdDSA here). */
     auto usable = [now](const Capability &c) {
         return c.access != 0 && (c.expiry == 0 || now <= c.expiry);
     };
 
-    /* Find a usable root for the namespace, and index the usable delegations for
-     * this ns by issuer in one pass, so the chain search below is O(N) total
-     * rather than re-scanning every capability at each hop (was O(N^2), a remote
-     * DoS once a peer gossips many delegations). */
-    const Capability *root = nullptr;
-    std::map<std::string, std::vector<const Capability *>> by_issuer;
-    for (const auto &c : caps_) {
-        if (!usable(c) || c.ns != ns) continue;
-        if (c.is_root()) {
-            if (!root) root = &c;
-        } else {
-            by_issuer[key_bytes(c.issuer)].push_back(&c);
+    /* Maximal-access fixpoint for `author` over this namespace's capability graph,
+     * optionally restricted to permanent (never-expiring) caps. Returns {open,
+     * access}: `open` means the namespace has no usable root (unowned == world-
+     * readable); otherwise `access` is the largest mask `author` can prove.
+     * best[holder] is the union of access reachable via any chain from the owner,
+     * each hop attenuated to what the issuer actually holds (granted = c->access &
+     * issuer's best). Indexing usable delegations by issuer once keeps the walk
+     * O(N) total (not O(N^2) — a remote DoS once a peer gossips many delegations).
+     * Iterating to a fixpoint (rather than returning at the first chain to reach
+     * the author) means a subject holding several delegations gets the union, so a
+     * role upgrade that adds a second, broader grant is honored. Masks only gain
+     * bits (<=2), so it terminates and is cycle-safe. */
+    struct Result { bool open; uint8_t access; };
+    auto solve = [&](bool permanent_only, bool *saw_expiring) -> Result {
+        const Capability *root = nullptr;
+        std::map<std::string, std::vector<const Capability *>> by_issuer;
+        for (const auto &c : caps_) {
+            if (!usable(c) || c.ns != ns) continue;
+            if (saw_expiring && c.expiry != 0) *saw_expiring = true;
+            if (permanent_only && c.expiry != 0) continue;
+            if (c.is_root()) {
+                if (!root) root = &c;
+            } else {
+                by_issuer[key_bytes(c.issuer)].push_back(&c);
+            }
         }
-    }
-    if (!root) return true; /* unowned namespace == open */
+        if (!root) return {true, 0};
 
-    /* DFS from the owner, narrowing access at each hop. visited guards cycles. */
-    std::set<std::string> visited;
-    struct Frame { PubKey holder; uint8_t access; };
-    std::vector<Frame> stack;
-    stack.push_back({root->issuer, root->access});
-    visited.insert(key_bytes(root->issuer));
-
-    while (!stack.empty()) {
-        Frame f = stack.back();
-        stack.pop_back();
-
-        if (std::memcmp(f.holder.data(), author, SYNC_PUBKEY_LEN) == 0)
-            return (f.access & need) == need;
-
-        auto it = by_issuer.find(key_bytes(f.holder));
-        if (it == by_issuer.end()) continue;
-        for (const Capability *c : it->second) {
-            /* A delegation cannot widen the holder's access. */
-            if ((c->access & ~f.access) != 0) continue;
-            std::string subj = key_bytes(c->subject);
-            if (!visited.insert(subj).second) continue; /* cycle guard */
-            stack.push_back({c->subject, c->access});
+        std::map<std::string, uint8_t> best;
+        std::vector<std::string> work;
+        std::string rk = key_bytes(root->issuer);
+        best[rk] = root->access;
+        work.push_back(rk);
+        while (!work.empty()) {
+            std::string h = std::move(work.back());
+            work.pop_back();
+            uint8_t ha = best[h];
+            auto it = by_issuer.find(h);
+            if (it == by_issuer.end()) continue;
+            for (const Capability *c : it->second) {
+                uint8_t granted = (uint8_t)(c->access & ha); /* can't exceed issuer's */
+                if (!granted) continue;
+                std::string subj = key_bytes(c->subject);
+                auto sit = best.find(subj);
+                uint8_t cur = sit == best.end() ? 0 : sit->second;
+                uint8_t next = (uint8_t)(cur | granted);
+                if (next != cur) { best[subj] = next; work.push_back(subj); }
+            }
         }
+        std::string akey((const char *)author, SYNC_PUBKEY_LEN);
+        auto ait = best.find(akey);
+        return {false, ait == best.end() ? (uint8_t)0 : ait->second};
+    };
+
+    bool saw_expiring = false;
+    Result all = solve(/*permanent_only=*/false, &saw_expiring);
+    if (all.open) return true; /* unowned namespace == open (time-independent) */
+    bool ok = (all.access & need) == need;
+    /* Time-bound only if `need` cannot be proven from permanent caps alone — i.e.
+     * the answer genuinely depends on a finite-expiry cap. With no expiring cap in
+     * the namespace the permanent-only pass is identical, so skip it. (A permanent
+     * member in a namespace that merely also holds some unrelated expiring cap is
+     * thus correctly NOT flagged time-bound, keeping its scoped snapshot cacheable.) */
+    if (ok && time_bound && saw_expiring) {
+        Result perm = solve(/*permanent_only=*/true, nullptr);
+        *time_bound = (perm.access & need) != need;
     }
-    return false;
+    return ok;
 }
 
 void cap_ingest_delegations(sync_engine *e,
@@ -149,6 +177,10 @@ void cap_ingest_delegations(sync_engine *e,
         if (!cap_sig_valid(c)) continue;    /* verify once, on first sight */
         if (!e->caps) e->caps = new CapStore();
         e->caps->add(c);
+        e->state_gen++; /* a new delegation can change read-scope: invalidate
+                         * cached snapshots. Only genuinely-new caps reach here
+                         * (known sigs are skipped above), so a converged session
+                         * re-ingesting the same caps does not bump. */
     }
 }
 
@@ -162,10 +194,11 @@ int cap_authorize_write(sync_engine *e, const uint8_t author[32],
 }
 
 bool cap_authorize_read(sync_engine *e, const uint8_t reader[32],
-                        const std::string &ns) {
+                        const std::string &ns, bool *time_bound) {
+    if (time_bound) *time_bound = false;
     if (!e->caps) return true;
     if (!e->caps->owned(ns)) return true;
-    return e->caps->authorized(reader, ns, kAccessRead, now_ms());
+    return e->caps->authorized(reader, ns, kAccessRead, now_ms(), time_bound);
 }
 
 } // namespace ke
@@ -273,6 +306,7 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
         if (!cap_sig_valid(*c)) return SYNC_ERR_BADSIG;
         if (!e->caps) e->caps = new ke::CapStore();
         e->caps->add(*c);
+        e->state_gen++; /* read-scope changed: invalidate cached snapshots */
         /* Persist so the grant survives a reopen. */
         if (e->store) {
             std::string blob;

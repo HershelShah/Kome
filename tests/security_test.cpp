@@ -9,8 +9,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "monocypher.h" /* crypto_blake2b for the T4.4 identity check */
@@ -666,6 +668,322 @@ TEST(Security, ReadScoping) {
     sync_engine_destroy(owner);
     sync_engine_destroy(v);
     sync_engine_destroy(p);
+}
+
+/* The read-scope cache (reconcile.cpp ensure_scoped_cache) may cache a peer's
+ * scoped snapshot only when its scope cannot change with time alone.
+ * cap_authorize_read reports that via `time_bound`: open/unowned namespaces and
+ * permanent-cap grants are stable (cacheable); a finite-expiry read cap makes
+ * inclusion time-bound (not cacheable), so capability expiry stays exact even
+ * with caching. This locks the predicate the cache relies on. */
+TEST(Security, ReadScopeTimeBoundFlag) {
+    sync_engine *owner = sync_engine_create(seed_from(0x31).data());
+    sync_engine *v = sync_engine_create(seed_from(0x32).data());
+    sync_engine *p = sync_engine_create(seed_from(0x33).data());
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(p, ppk);
+
+    /* Open (unowned) namespace: no caps consulted → stable, cacheable. */
+    bool tb = true;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "open", &tb));
+    EXPECT_FALSE(tb) << "open namespace must not be time-bound";
+
+    /* v owns "ns"; grant P a *permanent* (expiry==0) read delegation → stable. */
+    sync_capability *root =
+        sync_capability_root(owner, "ns", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    sync_capability *perm =
+        sync_capability_delegate(owner, root, ppk, SYNC_ACCESS_READ, 0);
+    ASSERT_EQ(sync_engine_grant(v, perm), SYNC_OK);
+    tb = true;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", &tb));
+    EXPECT_FALSE(tb) << "permanent read cap must not be time-bound";
+
+    /* Peer Q holds a *finite-expiry* (still-usable) read cap → time-bound. */
+    sync_engine *q = sync_engine_create(seed_from(0x34).data());
+    uint8_t qpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(q, qpk);
+    const uint64_t kFarFuture = 4000000000000ull; /* ~2096, still usable */
+    sync_capability *temp =
+        sync_capability_delegate(owner, root, qpk, SYNC_ACCESS_READ, kFarFuture);
+    ASSERT_EQ(sync_engine_grant(v, temp), SYNC_OK);
+    tb = false;
+    EXPECT_TRUE(ke::cap_authorize_read(v, qpk, "ns", &tb));
+    EXPECT_TRUE(tb) << "finite-expiry read cap must be flagged time-bound";
+
+    /* Peer R holds only an *expired* cap → filtered out, R excluded. Exclusion is
+     * stable (access only decreases as caps expire), so it is not time-bound. */
+    sync_engine *r = sync_engine_create(seed_from(0x35).data());
+    uint8_t rpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(r, rpk);
+    sync_capability *expd =
+        sync_capability_delegate(owner, root, rpk, SYNC_ACCESS_READ, 1 /* ms */);
+    ASSERT_EQ(sync_engine_grant(v, expd), SYNC_OK);
+    tb = true;
+    EXPECT_FALSE(ke::cap_authorize_read(v, rpk, "ns", &tb));
+    EXPECT_FALSE(tb) << "an excluded (expired-cap) peer is stable, not time-bound";
+
+    sync_capability_free(root);
+    sync_capability_free(perm);
+    sync_capability_free(temp);
+    sync_capability_free(expd);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(v);
+    sync_engine_destroy(p);
+    sync_engine_destroy(q);
+    sync_engine_destroy(r);
+}
+
+/* Promoting a member's role — granting a second, broader delegation to a subject
+ * who already holds a narrower one — must take effect regardless of grant order.
+ * Regression for the first-match chain walk that honored only whichever single
+ * delegation it reached first, so a READ-then-READ|WRITE upgrade was denied. */
+TEST(Security, RoleUpgradeBroadensAccess) {
+    for (int rw_first = 0; rw_first <= 1; rw_first++) {
+        sync_engine *owner = sync_engine_create(seed_from(0x41).data());
+        sync_engine *v = sync_engine_create(seed_from(0x49).data()); /* enforcer */
+        sync_engine *carol = sync_engine_create(seed_from(0x43).data());
+        uint8_t cpk[SYNC_PUBKEY_LEN];
+        sync_engine_identity(carol, cpk);
+
+        sync_capability *root = sync_capability_root(
+            owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+        ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+        sync_capability *rd =
+            sync_capability_delegate(owner, root, cpk, SYNC_ACCESS_READ, 0);
+        sync_capability *rw = sync_capability_delegate(
+            owner, root, cpk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);
+        if (rw_first) {
+            ASSERT_EQ(sync_engine_grant(v, rw), SYNC_OK);
+            ASSERT_EQ(sync_engine_grant(v, rd), SYNC_OK);
+        } else {
+            ASSERT_EQ(sync_engine_grant(v, rd), SYNC_OK);
+            ASSERT_EQ(sync_engine_grant(v, rw), SYNC_OK);
+        }
+
+        /* Carol writes; the enforcing replica must accept it (she holds R|W). */
+        set(carol, "nsA", "c1", "f", "hi");
+        EXPECT_EQ(apply_all(v, carol), SYNC_OK)
+            << "role upgrade denied with rw_first=" << rw_first;
+
+        sync_capability_free(root);
+        sync_capability_free(rd);
+        sync_capability_free(rw);
+        sync_engine_destroy(owner);
+        sync_engine_destroy(v);
+        sync_engine_destroy(carol);
+    }
+}
+
+/* Two independent delegation chains to the same subject union their access:
+ * holding READ via one chain and WRITE via another means holding both. The old
+ * walk reached the subject via a single chain and used only that chain's access
+ * for every query, so one of the two rights was always denied. */
+TEST(Security, DiamondDelegationUnionsAccess) {
+    sync_engine *owner = sync_engine_create(seed_from(0x51).data());
+    sync_engine *x = sync_engine_create(seed_from(0x52).data());
+    sync_engine *y = sync_engine_create(seed_from(0x53).data());
+    sync_engine *carol = sync_engine_create(seed_from(0x54).data());
+    sync_engine *v = sync_engine_create(seed_from(0x59).data()); /* enforcer */
+    uint8_t xpk[SYNC_PUBKEY_LEN], ypk[SYNC_PUBKEY_LEN], cpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(x, xpk);
+    sync_engine_identity(y, ypk);
+    sync_engine_identity(carol, cpk);
+
+    sync_capability *root = sync_capability_root(
+        owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    /* owner -> X (R|W), owner -> Y (R|W). */
+    sync_capability *ox = sync_capability_delegate(
+        owner, root, xpk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);
+    sync_capability *oy = sync_capability_delegate(
+        owner, root, ypk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);
+    /* X -> Carol (READ only); Y -> Carol (WRITE only). */
+    sync_capability *xc = sync_capability_delegate(x, ox, cpk, SYNC_ACCESS_READ, 0);
+    sync_capability *yc = sync_capability_delegate(y, oy, cpk, SYNC_ACCESS_WRITE, 0);
+    for (sync_capability *c : {root, ox, oy, xc, yc})
+        ASSERT_EQ(sync_engine_grant(v, c), SYNC_OK);
+
+    /* WRITE via the Y chain. */
+    set(carol, "nsA", "c1", "f", "hi");
+    EXPECT_EQ(apply_all(v, carol), SYNC_OK) << "WRITE via the Y chain not honored";
+    /* READ via the X chain. */
+    EXPECT_TRUE(ke::cap_authorize_read(v, cpk, "nsA"))
+        << "READ via the X chain not honored";
+
+    for (sync_capability *c : {root, ox, oy, xc, yc}) sync_capability_free(c);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(x);
+    sync_engine_destroy(y);
+    sync_engine_destroy(carol);
+    sync_engine_destroy(v);
+}
+
+/* An expired delegation in the middle of a chain revokes everything downstream:
+ * owner -> A (permanent) -> B (expired) leaves A authorized but cuts off B, since
+ * the expired link is filtered before the chain is walked. */
+TEST(Security, ExpiredMidChainDelegationRevokes) {
+    sync_engine *owner = sync_engine_create(seed_from(0x61).data());
+    sync_engine *a = sync_engine_create(seed_from(0x62).data());
+    sync_engine *bd = sync_engine_create(seed_from(0x63).data());
+    sync_engine *v = sync_engine_create(seed_from(0x69).data()); /* enforcer */
+    uint8_t apk[SYNC_PUBKEY_LEN], bpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(a, apk);
+    sync_engine_identity(bd, bpk);
+
+    sync_capability *root = sync_capability_root(
+        owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    sync_capability *oa = sync_capability_delegate(
+        owner, root, apk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);     /* permanent */
+    sync_capability *ab = sync_capability_delegate(
+        a, oa, bpk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 1 /* expired */);
+    for (sync_capability *c : {root, oa, ab})
+        ASSERT_EQ(sync_engine_grant(v, c), SYNC_OK);
+
+    set(a, "nsA", "x", "f", "ok");
+    EXPECT_EQ(apply_all(v, a), SYNC_OK) << "A holds a permanent cap";
+    set(bd, "nsA", "y", "f", "stale");
+    EXPECT_EQ(apply_all(v, bd), SYNC_ERR_UNAUTHORIZED)
+        << "an expired mid-chain link must revoke the downstream subject";
+
+    for (sync_capability *c : {root, oa, ab}) sync_capability_free(c);
+    sync_engine_destroy(owner); sync_engine_destroy(a);
+    sync_engine_destroy(bd); sync_engine_destroy(v);
+}
+
+/* Capability expiry takes effect as wall-clock time passes: a delegation valid
+ * now becomes unusable once its expiry deadline is reached, with no event other
+ * than the clock advancing. (Real-time test with a short sleep; the deadline and
+ * sleep are chosen with a wide margin so it is not timing-fragile.) */
+TEST(Security, ExpiryTransitionRevokesOverTime) {
+    sync_engine *owner = sync_engine_create(seed_from(0x71).data());
+    sync_engine *v = sync_engine_create(seed_from(0x79).data()); /* enforcer */
+    sync_engine *peer = sync_engine_create(seed_from(0x72).data());
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(peer, ppk);
+
+    sync_capability *root = sync_capability_root(
+        owner, "ns", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    sync_capability *d = sync_capability_delegate(
+        owner, root, ppk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, ke::now_ms() + 250);
+    ASSERT_EQ(sync_engine_grant(v, d), SYNC_OK);
+
+    set(peer, "ns", "before", "f", "v1");
+    EXPECT_EQ(apply_all(v, peer), SYNC_OK) << "authorized before expiry";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400)); /* cross the deadline */
+
+    set(peer, "ns", "after", "f", "v2");
+    EXPECT_EQ(apply_all(v, peer), SYNC_ERR_UNAUTHORIZED) << "revoked once expired";
+
+    sync_capability_free(root);
+    sync_capability_free(d);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(v);
+    sync_engine_destroy(peer);
+}
+
+/* Capability attenuation: a delegation confers at most what its issuer can
+ * currently prove, not what the delegation nominally claims. When a holder's
+ * broader cap expires, delegations it issued narrow to the holder's remaining
+ * (permanent) access rather than being voided entirely. */
+TEST(Security, AttenuatedDelegationConfersProvableSubset) {
+    sync_engine *owner = sync_engine_create(seed_from(0x81).data());
+    sync_engine *holder = sync_engine_create(seed_from(0x82).data());
+    sync_engine *x = sync_engine_create(seed_from(0x83).data());
+    sync_engine *v = sync_engine_create(seed_from(0x89).data()); /* enforcer */
+    uint8_t hpk[SYNC_PUBKEY_LEN], xpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(holder, hpk);
+    sync_engine_identity(x, xpk);
+
+    sync_capability *root = sync_capability_root(
+        owner, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    /* Holder gets an EXPIRED R|W and a PERMANENT READ from the owner. */
+    sync_capability *exp_rw = sync_capability_delegate(
+        owner, root, hpk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 1 /* expired */);
+    sync_capability *perm_r = sync_capability_delegate(
+        owner, root, hpk, SYNC_ACCESS_READ, 0 /* permanent */);
+    ASSERT_EQ(sync_engine_grant(v, exp_rw), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(v, perm_r), SYNC_OK);
+    /* Holder delegates R|W to X from its (now-expired) R|W cap. */
+    sync_capability *to_x =
+        sync_capability_delegate(holder, exp_rw, xpk, SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);
+    ASSERT_NE(to_x, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, to_x), SYNC_OK);
+
+    /* Holder can now only prove READ (its R|W expired), so X is attenuated to
+     * READ: readable, NOT writable, and crucially NOT denied entirely. */
+    EXPECT_TRUE(ke::cap_authorize_read(v, xpk, "nsA"))
+        << "attenuated delegation must still confer the issuer's provable READ";
+    set(x, "nsA", "rec", "f", "v");
+    EXPECT_EQ(apply_all(v, x), SYNC_ERR_UNAUTHORIZED)
+        << "X must not gain WRITE the issuer cannot currently prove";
+
+    sync_capability_free(root);
+    sync_capability_free(exp_rw);
+    sync_capability_free(perm_r);
+    sync_capability_free(to_x);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(holder);
+    sync_engine_destroy(x);
+    sync_engine_destroy(v);
+}
+
+/* A scope whose readable set depends on a finite-expiry cap must never be cached,
+ * even when an EARLIER-sorted namespace is denied. Regression for a pre-scan that
+ * stopped at the first denied namespace and so missed a later expiring one,
+ * caching the scope and serving it after the cap expired. */
+TEST(Security, ExpiringScopeNotCachedPastExpiry) {
+    sync_engine *owner = sync_engine_create(seed_from(0x91).data());
+    sync_engine *v = sync_engine_create(seed_from(0x99).data()); /* enforcer/sender */
+    sync_engine *p = sync_engine_create(seed_from(0x92).data());
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(p, ppk);
+
+    /* v owns "a" (P will be denied) and "z" (P gets a soon-expiring READ). "a" < "z"
+     * so a pre-scan that breaks on the denied "a" would never see z's expiry. */
+    sync_capability *ra = sync_capability_root(owner, "a", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    sync_capability *rz = sync_capability_root(owner, "z", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_EQ(sync_engine_grant(v, ra), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(v, rz), SYNC_OK);
+    sync_capability *dz = sync_capability_delegate(owner, rz, ppk, SYNC_ACCESS_READ,
+                                                   ke::now_ms() + 400 /* expires soon */);
+    ASSERT_EQ(sync_engine_grant(v, dz), SYNC_OK);
+    set(owner, "a", "arec", "f", "x");
+    set(owner, "z", "zrec", "f", "secret");
+    ASSERT_EQ(apply_all(v, owner), SYNC_OK);
+
+    /* While the cap is valid, P syncs and receives z (and not a). This populates
+     * v's per-peer scoped cache for P. */
+    {
+        sync_session *sv = sync_session_begin_scoped(v, 1, ppk);
+        sync_session *sp = sync_session_begin(p, 0);
+        EXPECT_TRUE(drive(sv, sp));
+        sync_session_end(sv); sync_session_end(sp);
+    }
+    EXPECT_EQ(exists(p, "z", "zrec"), 1) << "P should read z while the cap is valid";
+    EXPECT_EQ(exists(p, "a", "arec"), 0) << "P is denied a";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(550)); /* cross expiry */
+
+    /* A fresh peer with P's identity syncs after expiry. With no write to bump
+     * state_gen, a wrongly-cached scope would still serve z. */
+    sync_engine *p2 = sync_engine_create(seed_from(0x92).data()); /* same identity as p */
+    {
+        sync_session *sv = sync_session_begin_scoped(v, 1, ppk);
+        sync_session *sp = sync_session_begin(p2, 0);
+        EXPECT_TRUE(drive(sv, sp));
+        sync_session_end(sv); sync_session_end(sp);
+    }
+    EXPECT_EQ(exists(p2, "z", "zrec"), 0)
+        << "z served after its read cap expired (scope was cached despite being time-bound)";
+
+    sync_capability_free(ra); sync_capability_free(rz); sync_capability_free(dz);
+    sync_engine_destroy(owner); sync_engine_destroy(v);
+    sync_engine_destroy(p); sync_engine_destroy(p2);
 }
 
 /* ---- T4.8 Cross-namespace misuse --------------------------------------- */

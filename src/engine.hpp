@@ -106,6 +106,18 @@ struct sync_engine {
      * even as later writes replace the engine's cached one. */
     uint64_t                                  state_gen = 0;
     std::shared_ptr<const ke::ReconSnapshot>  recon_cache;
+
+    /* Per-peer read-scoped snapshot cache (steady-state perf). A scoped session
+     * filters the snapshot to what one peer may read, so unlike recon_cache it
+     * cannot be shared across peers — but for a converged, idle gossip link it
+     * was being rebuilt (encode + hash every record) every cycle. Cache one
+     * snapshot per peer, keyed by raw pubkey bytes, valid at scoped_cache_gen;
+     * cleared wholesale when state_gen advances (a write, apply, or capability
+     * change). Snapshots whose scope is time-bound (a finite-expiry cap) are not
+     * cached — see reconcile.cpp ensure_scoped_cache. */
+    uint64_t                                  scoped_cache_gen = UINT64_MAX;
+    std::map<std::string,
+             std::shared_ptr<const ke::ReconSnapshot>> scoped_cache;
 };
 
 #endif /* SYNC_ENGINE_INTERNAL_HPP */

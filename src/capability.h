@@ -59,9 +59,14 @@ public:
     /* True if the namespace has a known root (i.e. enforcement is active). */
     bool owned(const std::string &ns) const;
 
-    /* True if `author` holds a valid chain granting `need` access to `ns`. */
+    /* True if `author` holds a valid chain granting `need` access to `ns`.
+     * If `time_bound` is non-null, it is set to true when the granting decision
+     * depended on a capability with a finite expiry — i.e. the answer can change
+     * with the passage of time alone. (An open/unowned namespace or a chain of
+     * permanent caps is not time-bound.) Lets callers cache the result safely. */
     bool authorized(const uint8_t author[32], const std::string &ns,
-                    uint8_t need, uint64_t now_ms) const;
+                    uint8_t need, uint64_t now_ms,
+                    bool *time_bound = nullptr) const;
 
     /* Number of capabilities held (used to bound growth from gossip). */
     size_t size() const { return caps_.size(); }
@@ -83,7 +88,7 @@ void cap_ingest_delegations(sync_engine *e,
 int cap_authorize_write(sync_engine *e, const uint8_t author[32],
                         const std::string &ns);
 bool cap_authorize_read(sync_engine *e, const uint8_t reader[32],
-                        const std::string &ns);
+                        const std::string &ns, bool *time_bound = nullptr);
 
 } // namespace ke
 

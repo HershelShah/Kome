@@ -608,16 +608,83 @@ void build_prefix(const std::vector<Element> &snap,
     }
 }
 
+/* Build a fresh snapshot stamped at the current state_gen — full when peer==NULL,
+ * else read-scoped to peer. NULL on build failure. Shared by the unscoped
+ * (ensure_cache) and per-peer (ensure_scoped_cache) paths. */
+std::shared_ptr<ReconSnapshot> build_filtered(sync_engine *e, const uint8_t *peer) {
+    auto snap = std::make_shared<ReconSnapshot>();
+    snap->gen = e->state_gen;
+    if (!build_snapshot(e, peer, snap->snap)) return nullptr;
+    build_prefix(snap->snap, snap->prefix);
+    return snap;
+}
+
 /* The engine's cached full snapshot, rebuilt only when state_gen advanced since
  * it was taken. Returns NULL on build failure. */
 std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e) {
     if (e->recon_cache && e->recon_cache->gen == e->state_gen)
         return e->recon_cache;
-    auto snap = std::make_shared<ReconSnapshot>();
-    snap->gen = e->state_gen;
-    if (!build_snapshot(e, nullptr, snap->snap)) return nullptr;
-    build_prefix(snap->snap, snap->prefix);
-    e->recon_cache = snap;
+    auto snap = build_filtered(e, nullptr);
+    if (snap) e->recon_cache = snap;
+    return snap;
+}
+
+/* The per-peer read-scoped snapshot, cached on the engine (engine.hpp
+ * scoped_cache) the same way ensure_cache caches the unscoped one: rebuilt only
+ * when state_gen advanced since it was taken — which now includes capability
+ * grants/ingest (capability.cpp). A converged, idle gossip link therefore stops
+ * re-encoding and re-hashing every record each cycle. Snapshots whose scope is
+ * time-bound (a finite-expiry read cap) are returned but NOT cached, so capability
+ * expiry stays exact (that peer rebuilds each cycle, as before). Returns NULL on
+ * build failure. */
+/* Upper bound on cached per-peer scoped snapshots. Cleared wholesale on every
+ * state change, so this only matters for a burst of distinct restricted peers
+ * between writes; fully-open peers cache a cheap shared alias, so the expensive
+ * (distinct O(N) snapshot) entries are the few genuinely read-restricted peers. */
+constexpr size_t kMaxScopedCache = 256;
+
+std::shared_ptr<const ReconSnapshot> ensure_scoped_cache(sync_engine *e,
+                                                         const uint8_t *peer) {
+    /* No capability system engaged → every namespace is open → the scoped
+     * snapshot is exactly the unscoped one. */
+    if (!e->caps) return ensure_cache(e);
+
+    /* Cache-first: a hit is one map lookup and skips the per-namespace
+     * authorization pre-scan below — so a converged, idle link costs O(1) per
+     * cycle regardless of how the peer is scoped. The cache holds both restricted
+     * peers (a distinct filtered snapshot) and fully-open peers (an alias to the
+     * shared unscoped snapshot). It is cleared whenever engine state advances —
+     * writes, applies, and capability grants/ingest all bump state_gen. */
+    if (e->scoped_cache_gen != e->state_gen) {
+        e->scoped_cache.clear();
+        e->scoped_cache_gen = e->state_gen;
+    }
+    std::string key((const char *)peer, SYNC_PUBKEY_LEN);
+    auto it = e->scoped_cache.find(key);
+    if (it != e->scoped_cache.end()) return it->second;
+
+    /* Miss: classify the peer's scope. The O(namespaces) pre-scan (each
+     * cap_authorize_read is O(caps)) runs only here, not on cache hits.
+     *   fully_open  -> snapshot equals the unscoped one; alias the shared cache.
+     *   time_bound  -> scope depends on a finite-expiry cap; rebuild every cycle
+     *                  (never cached) so expiry stays exact. */
+    /* Scan EVERY namespace (no early break): a readable, time-bound namespace
+     * sorted after a denied one must still set time_bound, or its scope would be
+     * wrongly cached and served past the cap's expiry. Only readable namespaces
+     * (those that end up in the snapshot) contribute time_bound. */
+    bool fully_open = true, time_bound = false;
+    for (const auto &np : e->ns) {
+        bool tb = false;
+        if (!cap_authorize_read(e, peer, np.first, &tb)) fully_open = false;
+        else time_bound = time_bound || tb;
+    }
+
+    if (time_bound) return build_filtered(e, peer); /* exact expiry: never cache */
+
+    std::shared_ptr<const ReconSnapshot> snap =
+        fully_open ? ensure_cache(e) : build_filtered(e, peer);
+    if (snap && e->scoped_cache.size() < kMaxScopedCache)
+        e->scoped_cache[key] = snap;
     return snap;
 }
 
@@ -633,14 +700,11 @@ sync_session *begin_session(sync_engine *e, int as_initiator,
     s->initiator = as_initiator != 0;
 
     if (peer) {
-        auto snap = std::make_shared<ReconSnapshot>();
-        if (!build_snapshot(e, peer, snap->snap)) { delete s; return nullptr; }
-        build_prefix(snap->snap, snap->prefix);
-        s->ss = snap;
+        s->ss = ensure_scoped_cache(e, peer);
     } else {
         s->ss = ensure_cache(e);
-        if (!s->ss) { delete s; return nullptr; }
     }
+    if (!s->ss) { delete s; return nullptr; }
     return s;
 }
 
