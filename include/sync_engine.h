@@ -293,6 +293,22 @@ void sync_capability_subject(const sync_capability *c, uint8_t out[SYNC_PUBKEY_L
  * a root for a namespace switches that namespace into enforced mode. */
 int sync_engine_grant(sync_engine *e, const sync_capability *c);
 
+/* Permanently revoke all access for subject_pubkey in namespace `ns` — the
+ * "remove a lost/stolen device" primitive. The caller must own `ns` (hold its
+ * root), else SYNC_ERR_UNAUTHORIZED. The revocation is signed, propagates to
+ * other replicas via the normal sync path, and survives a reopen. It cuts off
+ * the subject key *and* every capability that key sub-delegated. Revocation is
+ * permanent (a compromised key is burned); to restore a device, grant a fresh
+ * capability to a new key. Returns SYNC_OK or an error code. */
+int sync_engine_revoke(sync_engine *e, const char *ns,
+                       const uint8_t subject_pubkey[SYNC_PUBKEY_LEN]);
+
+/* Set *out_revoked to 1 if subject_pubkey is revoked in `ns` by the namespace
+ * owner (as known to this replica), else 0. Returns SYNC_OK or an error. */
+int sync_engine_is_revoked(sync_engine *e, const char *ns,
+                           const uint8_t subject_pubkey[SYNC_PUBKEY_LEN],
+                           int *out_revoked);
+
 /* Release a capability. Safe with NULL. */
 void sync_capability_free(sync_capability *c);
 

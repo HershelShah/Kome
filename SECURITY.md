@@ -41,6 +41,16 @@ for connectivity.
   trust API** (the embedder decides which roots/delegations to install); the
   network path (`cap_ingest`) never accepts roots and only extends chains
   anchored at a locally-trusted root.
+- **Revocation** (`sync_engine_revoke`) is the owner's signed, permanent
+  withdrawal of a key's access in a namespace — the "remove a lost/stolen
+  device" primitive. Revocations are a grow-only set (a CRDT, like the data),
+  gossiped and persisted alongside capabilities. A revocation is effective only
+  where its signer is known to hold the namespace root, so a stolen *delegated*
+  key cannot forge one and cannot un-revoke it. Revoking a key also voids every
+  capability that key sub-delegated, because the chain walk refuses to pass
+  access through a revoked key. Enforcement (like all capability enforcement)
+  happens at root-holding replicas — the owner's own devices — which is exactly
+  where a lost device must be cut off.
 
 ## Guarantees
 
@@ -155,6 +165,16 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   not manage key derivation). A wrong key fails the open via a header key-check.
   Without encryption, anyone who can read the file controls the identity, so
   protect it with filesystem permissions / full-disk encryption.
+- **Device lifecycle: revocation yes, root recovery not yet.** Removing a
+  *delegated* device is supported (`sync_engine_revoke`, above). Two related
+  pieces remain: (1) **root-key recovery/rotation** — if the *owner's* root
+  signing key is lost or compromised, there is no recovery or rotation mechanism
+  (you would re-found the namespace under a new root); designs like multiple
+  roots or social/threshold recovery are future work. (2) **Revocation
+  propagation is eventually-consistent** — a revoked device is cut off at each
+  replica only once that replica has synced the revocation (and only at replicas
+  that hold the root and therefore enforce); there is no global instant
+  cut-off, which is inherent to a serverless, offline-first model.
 - **Additive set-fingerprint.** The reconciliation range fingerprint is an
   additive sum of per-element hashes, which is not collision-resistant against
   an adversary who can get chosen signed records accepted into a namespace.

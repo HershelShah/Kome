@@ -394,3 +394,130 @@ TEST(Circles, ClockSkewConverges) {
     EXPECT_EQ(digest(a), digest(b)) << "skewed clocks failed to converge";
     sync_engine_destroy(a); sync_engine_destroy(b);
 }
+
+/* ---- Revocation: the "remove a lost/stolen device" primitive ------------ */
+
+/* A revoked key loses both read and write at the owner (who enforces): it is
+ * scoped out of new content and its writes are rejected. Only the namespace
+ * owner may revoke. */
+TEST(Circles, RevokeCutsOffReadAndWrite) {
+    sync_engine *alice = make(40), *bob = make(41), *mallory = make(42);
+    const char *C = "circle:team";
+    sync_capability *root = own(alice, C);
+    invite(alice, root, idof(bob), SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0, alice);
+
+    put(alice, C, "p1", "body", "before");
+    sync_scoped(alice, bob);
+    ASSERT_TRUE(exists(bob, C, "p1")); /* bob could read while authorized */
+
+    /* A non-owner cannot revoke; the owner can. */
+    Pk pb = idof(bob);
+    EXPECT_EQ(sync_engine_revoke(mallory, C, pb.data()), SYNC_ERR_UNAUTHORIZED);
+    EXPECT_EQ(sync_engine_revoke(alice, C, pb.data()), SYNC_OK);
+    int rv = 0;
+    EXPECT_EQ(sync_engine_is_revoked(alice, C, pb.data(), &rv), SYNC_OK);
+    EXPECT_EQ(rv, 1);
+
+    /* New owner content is no longer shared with the revoked key. */
+    put(alice, C, "p2", "body", "after-revoke secret");
+    sync_scoped(alice, bob);
+    EXPECT_FALSE(exists(bob, C, "p2")) << "revoked key still received new content";
+
+    /* The revoked key's writes are rejected by the owner. */
+    put(bob, C, "evil", "body", "should not land");
+    sync_scoped(alice, bob);
+    EXPECT_FALSE(exists(alice, C, "evil")) << "revoked key's write was accepted";
+
+    sync_capability_free(root);
+    sync_engine_destroy(alice); sync_engine_destroy(bob); sync_engine_destroy(mallory);
+}
+
+/* Revoking a key also kills everything that key sub-delegated: carol, whose only
+ * access chains through bob, loses access when bob is revoked. */
+TEST(Circles, RevokeKillsSubDelegations) {
+    sync_engine *alice = make(43), *bob = make(44), *carol = make(45);
+    const char *C = "circle:chain";
+    sync_capability *root = own(alice, C);
+
+    /* alice -> bob (read+write), kept so bob can sub-delegate. */
+    sync_capability *d_bob = sync_capability_delegate(
+        alice, root, idof(bob).data(), SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0);
+    ASSERT_NE(d_bob, nullptr);
+    ASSERT_EQ(sync_engine_grant(alice, d_bob), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(bob, d_bob), SYNC_OK);
+
+    /* bob -> carol (read), installed at alice (so her store holds the chain). */
+    sync_capability *d_carol = sync_capability_delegate(
+        bob, d_bob, idof(carol).data(), SYNC_ACCESS_READ, 0);
+    ASSERT_NE(d_carol, nullptr);
+    ASSERT_EQ(sync_engine_grant(alice, d_carol), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(carol, d_carol), SYNC_OK);
+
+    put(alice, C, "p1", "body", "hi carol");
+    sync_scoped(alice, carol);
+    ASSERT_TRUE(exists(carol, C, "p1")) << "carol should read via bob's chain";
+
+    /* Revoke bob — carol's access derived from bob must vanish too. */
+    EXPECT_EQ(sync_engine_revoke(alice, C, idof(bob).data()), SYNC_OK);
+    put(alice, C, "p2", "body", "post-revoke");
+    sync_scoped(alice, carol);
+    EXPECT_FALSE(exists(carol, C, "p2"))
+        << "sub-delegatee kept access after its issuer was revoked";
+
+    sync_capability_free(d_carol);
+    sync_capability_free(d_bob);
+    sync_capability_free(root);
+    sync_engine_destroy(alice); sync_engine_destroy(bob); sync_engine_destroy(carol);
+}
+
+/* A revocation propagates to another device that shares the owner identity (and
+ * thus holds the root): it learns the cut-off purely via sync and enforces it. */
+TEST(Circles, RevocationPropagatesToOwnerDevice) {
+    sync_engine *phone = make(46), *laptop = make(46); /* same identity */
+    sync_engine *bob = make(47);
+    const char *C = "circle:mine";
+    sync_capability *r1 = own(phone, C);
+    sync_capability *r2 = own(laptop, C); /* same key: identical root, both enforce */
+    invite(phone, r1, idof(bob), SYNC_ACCESS_READ | SYNC_ACCESS_WRITE, 0, phone);
+
+    /* phone revokes bob, then syncs with laptop. */
+    EXPECT_EQ(sync_engine_revoke(phone, C, idof(bob).data()), SYNC_OK);
+    sync_scoped(phone, laptop);
+
+    int rv = 0;
+    EXPECT_EQ(sync_engine_is_revoked(laptop, C, idof(bob).data(), &rv), SYNC_OK);
+    EXPECT_EQ(rv, 1) << "second device did not learn the revocation";
+
+    /* laptop now enforces it independently: bob's write to laptop is rejected. */
+    put(bob, C, "x", "body", "nope");
+    sync_scoped(laptop, bob);
+    EXPECT_FALSE(exists(laptop, C, "x")) << "propagated revocation not enforced";
+
+    sync_capability_free(r1); sync_capability_free(r2);
+    sync_engine_destroy(phone); sync_engine_destroy(laptop); sync_engine_destroy(bob);
+}
+
+/* A revocation is durable: after the owner reopens its database, the cut-off is
+ * still in force. */
+TEST(Circles, RevocationSurvivesReopen) {
+    TempDir dir;
+    std::string db = dir.file("rev.db");
+    auto s = cluster::seed_from(48);
+    sync_engine *bob = make(49);
+    Pk pb = idof(bob); /* we only need bob's key */
+    sync_engine_destroy(bob);
+
+    sync_engine *alice = sync_engine_open(db.c_str(), s.data());
+    ASSERT_NE(alice, nullptr);
+    sync_capability *root = own(alice, "C");
+    EXPECT_EQ(sync_engine_revoke(alice, "C", pb.data()), SYNC_OK);
+    sync_capability_free(root);
+    sync_engine_destroy(alice);
+
+    sync_engine *re = sync_engine_open(db.c_str(), s.data());
+    ASSERT_NE(re, nullptr);
+    int rv = 0;
+    EXPECT_EQ(sync_engine_is_revoked(re, "C", pb.data(), &rv), SYNC_OK);
+    EXPECT_EQ(rv, 1) << "revocation did not survive reopen";
+    sync_engine_destroy(re);
+}

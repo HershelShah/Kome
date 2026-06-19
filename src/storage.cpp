@@ -63,7 +63,9 @@ constexpr char kMagicEnc[8] = {'K', 'O', 'M', 'E', 'E', 'N', 'C', '1'}; /* seale
 constexpr uint8_t kKeyCheck[16] = {'K', 'O', 'M', 'E', 'k', 'e', 'y', 'c',
                                    'h', 'e', 'c', 'k', '0', '0', '0', '1'};
 
-enum EntryType : uint8_t { kMeta = 1, kEntity = 2, kField = 3, kCap = 4 };
+enum EntryType : uint8_t {
+    kMeta = 1, kEntity = 2, kField = 3, kCap = 4, kRev = 5
+};
 
 /* Persisted records are re-verified on load — a crafted/swapped file must not
  * inject forged records that bypass the signature gate the network path
@@ -168,6 +170,12 @@ std::string build_field(const std::string &ns, const std::string &ent,
 std::string build_cap(const std::string &blob) {
     std::string e;
     e.push_back((char)kCap);
+    put_bytes(e, blob);
+    return e;
+}
+std::string build_rev(const std::string &blob) {
+    std::string e;
+    e.push_back((char)kRev);
     put_bytes(e, blob);
     return e;
 }
@@ -375,6 +383,10 @@ bool Storage::put_capability(const std::string &blob) {
     return emit(build_cap(blob));
 }
 
+bool Storage::put_revocation(const std::string &blob) {
+    return emit(build_rev(blob));
+}
+
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
                          bool present, const Hlc &presence_hlc,
                          const PubKey &ex_author, const Sig &ex_sig,
@@ -556,6 +568,17 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
         }
         return true;
     }
+    case kRev: {
+        std::string blob;
+        if (!get_bytes(p, end, blob)) return false;
+        Revocation rev;
+        if (rev_decode((const uint8_t *)blob.data(), blob.size(), rev) &&
+            rev_sig_valid(rev)) {
+            if (!e->caps) e->caps = new CapStore();
+            e->caps->add_rev(rev);
+        }
+        return true;
+    }
     default:
         return false; /* unknown entry type → corrupt frame */
     }
@@ -730,6 +753,13 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
             std::string body;
             for (const auto &b : blobs) body += build_cap(b);
             add_frame(body, (uint32_t)blobs.size());
+        }
+        std::vector<std::string> rblobs;
+        e->caps->export_rev_blobs(rblobs);
+        if (!rblobs.empty()) {
+            std::string body;
+            for (const auto &b : rblobs) body += build_rev(b);
+            add_frame(body, (uint32_t)rblobs.size());
         }
     }
 

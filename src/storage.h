@@ -82,6 +82,7 @@ public:
     bool put_meta_u64(const char *key, uint64_t v);
     bool put_meta_blob(const char *key, const uint8_t *data, size_t len);
     bool put_capability(const std::string &blob);
+    bool put_revocation(const std::string &blob);
 
     /* Rewrite the log as one record per live cell when it has grown much larger
      * than its live state (the Bitcask "merge"): bounds the file to O(state),
