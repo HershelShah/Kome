@@ -45,7 +45,9 @@ bool parse(const std::string &dg, bool keyed, const uint8_t key[32],
         body = dg.size() - kMacLen;
         uint8_t tag[32];
         hmac_sha256(key, 32, (const uint8_t *)dg.data(), body, tag);
-        if (std::memcmp(tag, dg.data() + body, kMacLen) != 0) return false;
+        /* Constant-time compare: a byte-by-byte memcmp would leak a timing
+         * oracle for forging the 16-byte tag (F4). */
+        if (!ct_eq16(tag, (const uint8_t *)dg.data() + body)) return false;
     }
     authed = macd;
     type = (uint8_t)dg[1];
@@ -78,16 +80,26 @@ bool ReliableLink::on_datagram(const std::string &dg,
         bool advances = (seq == recv_seq_);
         /* Once keyed, only an authenticated frame may advance our stream; an
          * unauthenticated frame at the live seq could be forged. Stale plain
-         * duplicates (seq != recv_seq_) are still accepted and re-acked, which
-         * lets the last handshake-phase frames settle across the key boundary. */
-        if (keyed_ && !authed && advances) return false;
+         * duplicates (seq < recv_seq_) are still accepted and re-acked, which
+         * lets the last handshake-phase frames settle across the key boundary —
+         * but an unauthenticated frame at or ahead of the live seq once keyed is
+         * forgery/noise: drop it without acking, so an injector can't farm an ACK
+         * per spoofed datagram (F7). */
+        if (keyed_ && !authed && seq >= recv_seq_) return false;
         if (advances) {
             delivered.push_back(payload);
             recv_seq_++;
             progress = true;
         }
-        ack_pending_ = true;
-        ack_seq_ = recv_seq_ - 1;
+        /* Only emit a cumulative ack once something has actually been delivered
+         * in order. When recv_seq_ == 0 there is nothing to acknowledge, so we
+         * stay silent rather than (a) underflowing recv_seq_-1 to 0xFFFFFFFF or
+         * (b) acking seq 0, which a sender at send_seq_==0 would wrongly read as
+         * delivery of its first, never-delivered frame (F8). */
+        if (recv_seq_ > 0) {
+            ack_pending_ = true;
+            ack_seq_ = recv_seq_ - 1;
+        }
     } else if (type == kAck) {
         bool clears = (in_flight_ && seq == send_seq_);
         if (keyed_ && !authed && clears) return false; /* forged ack */

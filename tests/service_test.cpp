@@ -145,3 +145,46 @@ TEST(Service, RendezvousRejectsForgedRegistration) {
     stop.store(true);
     th.join();
 }
+
+/* F1: a bare LOOKUP must NOT be answered with an immediate endpoint reply — that
+ * made the rendezvous a spoofed-source reflector/amplifier. The server must first
+ * challenge the requester at its claimed address (return-routability), exactly as
+ * REGISTER and the relay FETCH already do. Here we send a raw 'L'|target and
+ * assert the reply is a challenge ('C'|16), never a peer reply ('P'). */
+TEST(Service, RendezvousLookupRequiresReturnRoutability) {
+    UdpSocket server;
+    ASSERT_TRUE(server.open("127.0.0.1", 0));
+    Endpoint sep = server.local();
+    Rendezvous rdv;
+    std::atomic<bool> stop{false};
+    std::thread th([&] { while (!stop.load()) rendezvous_server_step(rdv, server, 50); });
+
+    /* Register a real key so a target actually exists to (not) reflect. */
+    uint8_t seedV[32];
+    fill(seedV, 0x3C);
+    KeyPair victim = keypair_from_seed(seedV);
+    UdpSocket v;
+    ASSERT_TRUE(v.open("127.0.0.1", 0));
+    ASSERT_TRUE(rendezvous_register(v, sep, victim, 500));
+
+    /* Raw, single-shot LOOKUP (what a spoofed-source reflector would send). */
+    UdpSocket atk;
+    ASSERT_TRUE(atk.open("127.0.0.1", 0));
+    std::string lk(1, 'L');
+    lk.append((const char *)victim.sign_pk.data(), 32);
+    ASSERT_TRUE(atk.send_to(sep, lk));
+
+    std::string dg;
+    Endpoint from;
+    ASSERT_TRUE(atk.recv(dg, from, 500));
+    EXPECT_EQ(dg[0], 'C') << "LOOKUP reflected an endpoint without return-routability";
+    EXPECT_EQ(dg.size(), 1u + 16u); /* challenge nonce only — no endpoint bytes */
+
+    /* The honest two-phase client still resolves the endpoint. */
+    Endpoint outV;
+    EXPECT_TRUE(rendezvous_lookup(atk, sep, victim.sign_pk.data(), outV, 500));
+    EXPECT_EQ(outV.port, v.local().port);
+
+    stop.store(true);
+    th.join();
+}

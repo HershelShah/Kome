@@ -3,8 +3,7 @@
 
 #include <cstring>
 
-#include "codec.h"  /* ke::put_varint / ke::get_varint */
-#include "crypto.h" /* random_bytes for the return-routability nonce */
+#include "codec.h" /* ke::put_varint / ke::get_varint */
 
 namespace ke {
 
@@ -15,15 +14,44 @@ constexpr size_t kMaxKeyBytes   = 1u << 20;   /* 1 MiB queued per destination */
 constexpr size_t kMaxKeyBlobs   = 256;        /* blobs queued per destination */
 constexpr size_t kMaxTotalBytes = 64u << 20;  /* 64 MiB across all mailboxes  */
 constexpr size_t kMaxKeys       = 4096;       /* distinct destinations        */
-constexpr size_t kMaxPending    = 4096;       /* outstanding fetch challenges */
+
+/* Cookie context for a FETCH: purpose 'F', the destination key (fixed 32), then
+ * the requester's observed endpoint (variable, last). */
+std::string fetch_ctx(const std::string &endpoint, const uint8_t key[32]) {
+    std::string c;
+    c.reserve(1 + 32 + endpoint.size());
+    c.push_back('F');
+    c.append((const char *)key, 32);
+    c += endpoint;
+    return c;
+}
 } // namespace
+
+void Relay::touch(std::map<std::string, Mailbox>::iterator it) {
+    if (it->second.seq) lru_.erase(it->second.seq);
+    it->second.seq = ++access_seq_;
+    lru_[it->second.seq] = it->first;
+}
 
 void Relay::send(const uint8_t dst[32], const std::string &blob) {
     if (blob.empty() || blob.size() > kMaxBlobBytes) return;
     std::string k = key(dst);
     auto it = mailbox_.find(k);
     if (it == mailbox_.end()) {
-        if (mailbox_.size() >= kMaxKeys) return; /* too many destinations */
+        if (mailbox_.size() >= kMaxKeys) {
+            /* Evict the least-recently-used mailbox (O(log n) via lru_) so a
+             * one-time spray of junk keys can't permanently refuse new peers
+             * (F6). Actively-used mailboxes have a higher seq and survive. */
+            auto oldest = lru_.begin();
+            if (oldest != lru_.end()) {
+                auto mit = mailbox_.find(oldest->second);
+                if (mit != mailbox_.end()) {
+                    total_bytes_ -= mit->second.bytes;
+                    mailbox_.erase(mit);
+                }
+                lru_.erase(oldest);
+            }
+        }
         it = mailbox_.emplace(k, Mailbox{}).first;
     }
     Mailbox &mb = it->second;
@@ -38,12 +66,16 @@ void Relay::send(const uint8_t dst[32], const std::string &blob) {
     }
     if (mb.bytes + blob.size() > kMaxKeyBytes ||
         total_bytes_ + blob.size() > kMaxTotalBytes) {
-        if (mb.blobs.empty()) mailbox_.erase(it);
+        if (mb.blobs.empty()) {
+            if (mb.seq) lru_.erase(mb.seq);
+            mailbox_.erase(it);
+        }
         return;
     }
     mb.bytes += blob.size();
     total_bytes_ += blob.size();
     mb.blobs.push_back(blob);
+    touch(it);
 }
 
 void Relay::fetch(const uint8_t pk[32], std::vector<std::string> &out) {
@@ -55,6 +87,7 @@ void Relay::fetch(const uint8_t pk[32], std::vector<std::string> &out) {
         mb.blobs.pop_front();
     }
     total_bytes_ -= mb.bytes;
+    if (mb.seq) lru_.erase(mb.seq);
     mailbox_.erase(it); /* empty mailbox: reclaim */
 }
 
@@ -63,25 +96,14 @@ size_t Relay::queued(const uint8_t dst[32]) const {
     return it == mailbox_.end() ? 0 : it->second.blobs.size();
 }
 
-void Relay::issue_challenge(const std::string &endpoint, const uint8_t nonce[16],
-                            const std::string &dstkey) {
-    if (pending_.size() >= kMaxPending && !pending_.count(endpoint))
-        pending_.erase(pending_.begin()); /* bound the pending set */
-    Pending p;
-    std::memcpy(p.nonce.data(), nonce, 16);
-    p.dstkey = dstkey;
-    pending_[endpoint] = p;
+bool Relay::fetch_cookie(const std::string &endpoint, const uint8_t key[32],
+                         uint8_t out[16]) {
+    return cookies_.issue(fetch_ctx(endpoint, key), out);
 }
 
-bool Relay::consume_challenge(const std::string &endpoint,
-                              const uint8_t nonce[16],
-                              const std::string &dstkey) {
-    auto it = pending_.find(endpoint);
-    if (it == pending_.end()) return false;
-    bool ok = it->second.dstkey == dstkey &&
-              std::memcmp(it->second.nonce.data(), nonce, 16) == 0;
-    pending_.erase(it); /* single-use */
-    return ok;
+bool Relay::fetch_cookie_valid(const std::string &endpoint, const uint8_t key[32],
+                               const uint8_t presented[16]) {
+    return cookies_.verify(fetch_ctx(endpoint, key), presented);
 }
 
 namespace {
@@ -119,19 +141,18 @@ bool relay_server_step(Relay &relay, UdpSocket &sock, int timeout_ms) {
         relay.send((const uint8_t *)dg.data() + 1, dg.substr(33));
     } else if (dg[0] == kFetch && dg.size() >= 1 + 32) {
         /* Don't deliver yet: challenge the requester at its claimed address so a
-         * spoofed source can't trigger a (large) reflected delivery. */
-        uint8_t nonce[16];
-        if (!random_bytes(nonce, 16)) return true;
-        relay.issue_challenge(endpoint_key(from), nonce,
-                              std::string((const char *)dg.data() + 1, 32));
+         * spoofed source can't trigger a (large) reflected delivery. The cookie
+         * is stateless (no per-request table to exhaust — F5). */
+        const uint8_t *me = (const uint8_t *)dg.data() + 1;
+        uint8_t cookie[16];
+        if (!relay.fetch_cookie(endpoint_key(from), me, cookie)) return true;
         std::string ch(1, kChallenge);
-        ch.append((const char *)nonce, 16);
+        ch.append((const char *)cookie, 16);
         sock.send_to(from, ch);
     } else if (dg[0] == kFetchAuth && dg.size() >= 1 + 32 + 16) {
         const uint8_t *me = (const uint8_t *)dg.data() + 1;
-        const uint8_t *nonce = me + 32;
-        if (relay.consume_challenge(endpoint_key(from), nonce,
-                                    std::string((const char *)me, 32)))
+        const uint8_t *cookie = me + 32;
+        if (relay.fetch_cookie_valid(endpoint_key(from), me, cookie))
             deliver(relay, sock, from, me);
     }
     return true;

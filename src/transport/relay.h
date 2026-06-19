@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "transport/cookie.h"
 #include "transport/udp.h"
 
 namespace ke {
@@ -23,7 +24,9 @@ class Relay {
 public:
     /* Queue an opaque blob for delivery to dst (32-byte public key). Oversized
      * blobs are dropped; per-destination and global caps bound memory (oldest
-     * queued blobs are evicted to make room). */
+     * queued blobs are evicted to make room). When the distinct-destination cap
+     * is hit, the least-recently-used mailbox is evicted so a one-time spray of
+     * junk destination keys can't permanently block new peers (F6). */
     void send(const uint8_t dst[32], const std::string &blob);
 
     /* Drain (in order) the blobs waiting for pk; appends to out. */
@@ -32,15 +35,18 @@ public:
     /* Number of blobs currently queued for dst. */
     size_t queued(const uint8_t dst[32]) const;
 
-    /* Return-routability: record a challenge nonce issued to a requester at
-     * `endpoint` (for destination key dstkey), and later check a presented
-     * nonce. Only a requester that actually receives the challenge (i.e. is at
-     * the endpoint it claimed) can present it back, which defeats spoofed-source
-     * reflection. The pending set is bounded. */
-    void issue_challenge(const std::string &endpoint, const uint8_t nonce[16],
-                         const std::string &dstkey);
-    bool consume_challenge(const std::string &endpoint, const uint8_t nonce[16],
-                           const std::string &dstkey);
+    /* Number of distinct destination mailboxes currently held (for tests). */
+    size_t mailboxes() const { return mailbox_.size(); }
+
+    /* Stateless return-routability cookie for a FETCH from `endpoint` for key
+     * `key`. `issue` returns the cookie to send as the challenge; `valid` checks
+     * a presented cookie. Only a requester that received the challenge at the
+     * endpoint it claimed can echo a valid cookie, defeating spoofed-source
+     * reflection — with no server-side per-request state to exhaust (F5). */
+    bool fetch_cookie(const std::string &endpoint, const uint8_t key[32],
+                      uint8_t out[16]);
+    bool fetch_cookie_valid(const std::string &endpoint, const uint8_t key[32],
+                            const uint8_t presented[16]);
 
 private:
     static std::string key(const uint8_t pk[32]) {
@@ -49,15 +55,17 @@ private:
     struct Mailbox {
         std::deque<std::string> blobs;
         size_t                  bytes = 0;
+        uint64_t                seq = 0; /* last-access order; 0 == not in lru_ */
     };
+    /* Mark a mailbox most-recently-used (maintains the lru_ index). */
+    void touch(std::map<std::string, Mailbox>::iterator it);
+
     std::map<std::string, Mailbox> mailbox_;
+    std::map<uint64_t, std::string> lru_; /* seq -> mailbox key, ascending */
+    uint64_t                       access_seq_ = 0;
     size_t                         total_bytes_ = 0;
 
-    struct Pending {
-        std::array<uint8_t, 16> nonce{};
-        std::string             dstkey;
-    };
-    std::map<std::string, Pending> pending_; /* endpoint -> challenge */
+    Cookies cookies_;
 };
 
 /* ---- UDP relay service (wraps the blind Relay core) -------------------- */

@@ -63,7 +63,9 @@ constexpr char kMagicEnc[8] = {'K', 'O', 'M', 'E', 'E', 'N', 'C', '1'}; /* seale
 constexpr uint8_t kKeyCheck[16] = {'K', 'O', 'M', 'E', 'k', 'e', 'y', 'c',
                                    'h', 'e', 'c', 'k', '0', '0', '0', '1'};
 
-enum EntryType : uint8_t { kMeta = 1, kEntity = 2, kField = 3, kCap = 4 };
+enum EntryType : uint8_t {
+    kMeta = 1, kEntity = 2, kField = 3, kCap = 4, kRev = 5
+};
 
 /* Persisted records are re-verified on load — a crafted/swapped file must not
  * inject forged records that bypass the signature gate the network path
@@ -171,6 +173,12 @@ std::string build_cap(const std::string &blob) {
     put_bytes(e, blob);
     return e;
 }
+std::string build_rev(const std::string &blob) {
+    std::string e;
+    e.push_back((char)kRev);
+    put_bytes(e, blob);
+    return e;
+}
 
 /* Wrap an assembled body ([count][entries]) into a plaintext on-disk frame:
  * [len:u32le][full][sha8]. */
@@ -270,7 +278,11 @@ std::string Storage::seal_frame(const std::string &body, uint32_t count) const {
     if (!encrypted_) return make_frame_full(full);
 
     uint8_t nonce[24];
-    random_bytes(nonce, sizeof nonce);
+    /* Fail closed on RNG failure: random_bytes wipes the buffer to all-zeros on a
+     * short read, which would reuse a zero nonce under key_ (catastrophic for
+     * XChaCha20-Poly1305, and colliding with the fixed-nonce header key-check that
+     * seals a known constant). Return "" so the caller aborts the write (F2). */
+    if (!random_bytes(nonce, sizeof nonce)) return std::string();
     std::string ct(full.size(), '\0');
     uint8_t mac[16];
     aead_encrypt(key_, nonce, nullptr, 0, (const uint8_t *)full.data(),
@@ -299,6 +311,7 @@ std::string Storage::header_bytes() const {
 
 bool Storage::write_frame(const std::string &body, uint32_t entry_count) {
     std::string framed = seal_frame(body, entry_count);
+    if (framed.empty()) return false; /* seal failed (RNG); never write a bad frame (F2) */
     if (::lseek(fd_, 0, SEEK_END) < 0) return false;
     if (!write_all(fd_, framed.data(), framed.size())) return false;
     if (::fsync(fd_) != 0) return false;
@@ -368,6 +381,10 @@ bool Storage::put_meta_blob(const char *key, const uint8_t *data, size_t len) {
 
 bool Storage::put_capability(const std::string &blob) {
     return emit(build_cap(blob));
+}
+
+bool Storage::put_revocation(const std::string &blob) {
+    return emit(build_rev(blob));
 }
 
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
@@ -551,6 +568,17 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
         }
         return true;
     }
+    case kRev: {
+        std::string blob;
+        if (!get_bytes(p, end, blob)) return false;
+        Revocation rev;
+        if (rev_decode((const uint8_t *)blob.data(), blob.size(), rev) &&
+            rev_sig_valid(rev)) {
+            if (!e->caps) e->caps = new CapStore();
+            e->caps->add_rev(rev);
+        }
+        return true;
+    }
     default:
         return false; /* unknown entry type → corrupt frame */
     }
@@ -665,7 +693,8 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     if (file_size_ > 65536) {
         std::string fresh;
         serialize_state(e, fresh);
-        if ((uint64_t)fresh.size() * 2 < file_size_ && atomic_replace(fresh))
+        if (!fresh.empty() && (uint64_t)fresh.size() * 2 < file_size_ &&
+            atomic_replace(fresh))
             compacted_size_ = file_size_;
     }
     return true;
@@ -678,6 +707,18 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
 void Storage::serialize_state(sync_engine *e, std::string &out) {
     out = header_bytes();
 
+    /* Append one sealed frame; on a seal failure (RNG, encrypted path) clear out
+     * to signal the whole image is invalid so callers don't write a partial /
+     * zero-nonce file (F2). A valid image always has at least the header + meta
+     * frame, so empty is an unambiguous failure sentinel. */
+    bool failed = false;
+    auto add_frame = [&](const std::string &body, uint32_t count) {
+        if (failed) return;
+        std::string f = seal_frame(body, count);
+        if (f.empty()) { failed = true; return; }
+        out += f;
+    };
+
     std::string mbody;
     uint32_t mc = 0;
     auto add_meta = [&](const std::string &entry) { mbody += entry; mc++; };
@@ -686,7 +727,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
     add_meta(build_meta_u64("hlc_physical", e->clock.physical));
     add_meta(build_meta_u64("hlc_logical", e->clock.logical));
     add_meta(build_meta_u64("db_clock", e->db_clock));
-    out += seal_frame(mbody, mc);
+    add_frame(mbody, mc);
 
     for (const auto &np : e->ns) {
         const std::string &ns = np.first;
@@ -701,7 +742,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
                 body += build_field(ns, ent, fp.first, fp.second);
                 c++;
             }
-            out += seal_frame(body, c);
+            add_frame(body, c);
         }
     }
 
@@ -711,9 +752,18 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
         if (!blobs.empty()) {
             std::string body;
             for (const auto &b : blobs) body += build_cap(b);
-            out += seal_frame(body, (uint32_t)blobs.size());
+            add_frame(body, (uint32_t)blobs.size());
+        }
+        std::vector<std::string> rblobs;
+        e->caps->export_rev_blobs(rblobs);
+        if (!rblobs.empty()) {
+            std::string body;
+            for (const auto &b : rblobs) body += build_rev(b);
+            add_frame(body, (uint32_t)rblobs.size());
         }
     }
+
+    if (failed) out.clear();
 }
 
 bool Storage::atomic_replace(const std::string &content) {
@@ -777,6 +827,7 @@ bool Storage::compact(sync_engine *e) {
     gc_tombstones(e); /* purge expired tombstones before rewriting */
     std::string fresh;
     serialize_state(e, fresh);
+    if (fresh.empty()) return false; /* seal failed (RNG); keep the existing log (F2) */
     if (!atomic_replace(fresh)) return false;
     compacted_size_ = file_size_;
     return true;

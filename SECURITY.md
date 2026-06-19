@@ -41,6 +41,16 @@ for connectivity.
   trust API** (the embedder decides which roots/delegations to install); the
   network path (`cap_ingest`) never accepts roots and only extends chains
   anchored at a locally-trusted root.
+- **Revocation** (`sync_engine_revoke`) is the owner's signed, permanent
+  withdrawal of a key's access in a namespace — the "remove a lost/stolen
+  device" primitive. Revocations are a grow-only set (a CRDT, like the data),
+  gossiped and persisted alongside capabilities. A revocation is effective only
+  where its signer is known to hold the namespace root, so a stolen *delegated*
+  key cannot forge one and cannot un-revoke it. Revoking a key also voids every
+  capability that key sub-delegated, because the chain walk refuses to pass
+  access through a revoked key. Enforcement (like all capability enforcement)
+  happens at root-holding replicas — the owner's own devices — which is exactly
+  where a lost device must be cut off.
 
 ## Guarantees
 
@@ -95,8 +105,10 @@ We bound the amplification:
 | Reconcile descriptor amplification / non-termination | reply capped at ~`kBuckets × own element count`; per-session step cap (S7) |
 | Gossiped-capability flood | `CapStore` bounded; chain check O(N) not O(N²) (S5) |
 | Relay mailbox OOM | per-key + global byte caps, oldest-evicted; oversized blobs dropped (S6a) |
-| Relay spoofed-source reflection/amplification | return-routability cookie on FETCH (S6a) |
-| Rendezvous registry flood / victim-key redirection | key-ownership proof + bounded pending set (S6b) |
+| Relay destination-slot exhaustion | LRU mailbox eviction admits new peers when the key table is full (F6) |
+| Relay/rendezvous spoofed-source reflection/amplification | return-routability cookie on FETCH **and LOOKUP** (F1) |
+| Reflection-cookie table exhaustion by spoofed sources | **stateless** (SYN-cookie style) cookies — no per-request server state to evict (F5) |
+| Rendezvous registry flood / victim-key redirection | key-ownership proof (signature over the cookie) |
 | Parallel verify worker exception → `std::terminate` | worker wrapped, fail-closed (S4) |
 
 **Out of scope.** Endpoint compromise (an attacker who can read process memory
@@ -153,6 +165,16 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   not manage key derivation). A wrong key fails the open via a header key-check.
   Without encryption, anyone who can read the file controls the identity, so
   protect it with filesystem permissions / full-disk encryption.
+- **Device lifecycle: revocation yes, root recovery not yet.** Removing a
+  *delegated* device is supported (`sync_engine_revoke`, above). Two related
+  pieces remain: (1) **root-key recovery/rotation** — if the *owner's* root
+  signing key is lost or compromised, there is no recovery or rotation mechanism
+  (you would re-found the namespace under a new root); designs like multiple
+  roots or social/threshold recovery are future work. (2) **Revocation
+  propagation is eventually-consistent** — a revoked device is cut off at each
+  replica only once that replica has synced the revocation (and only at replicas
+  that hold the root and therefore enforce); there is no global instant
+  cut-off, which is inherent to a serverless, offline-first model.
 - **Additive set-fingerprint.** The reconciliation range fingerprint is an
   additive sum of per-element hashes, which is not collision-resistant against
   an adversary who can get chosen signed records accepted into a namespace.
@@ -168,6 +190,15 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
 - **Handshake-phase reliability frames** are unauthenticated (no session key
   exists yet); they are the Noise handshake itself, which Noise authenticates,
   so the worst case is a handshake-time DoS, not a compromise.
+- **Return-routability cookies are not single-use.** Relay/rendezvous challenges
+  are now stateless cookies (so a spoofed-source flood can't exhaust a pending
+  table — F5). The trade-off is that a cookie is replayable for its short
+  validity window (~10–20 s): an *on-path* attacker who captures a valid auth
+  can re-trigger the response. This grants no new power against the threat model
+  — the cookie binds the server-observed source, so any reply goes only to that
+  source (never an attacker-chosen victim) and an off-path spoofer never receives
+  the cookie — but it does mean delivery/lookup is at-least-once within the window
+  for an on-path replayer rather than exactly-once.
 - **No wire-protocol version negotiation yet.** Cross-version peers are not
   guaranteed to interoperate or fail gracefully; this is tracked separately.
 - **M5 connectivity is a subset.** IPv6 preference and kernel-NAT hole punching

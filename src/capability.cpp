@@ -60,10 +60,54 @@ bool cap_sig_valid(const Capability &c) {
     return verify(c.issuer.data(), s.data(), s.size(), c.sig.data());
 }
 
+/* ---- revocations ------------------------------------------------------- */
+
+void rev_signing_bytes(const Revocation &r, std::string &out) {
+    out.push_back((char)0x01); /* revocation format version */
+    out.append((const char *)r.revoker.data(), r.revoker.size());
+    out.append((const char *)r.subject.data(), r.subject.size());
+    put_varint(out, r.ns.size());
+    out.append(r.ns);
+    put_u64le(out, r.issued_ms);
+}
+
+void rev_encode(const Revocation &r, std::string &out) {
+    rev_signing_bytes(r, out);
+    out.append((const char *)r.sig.data(), r.sig.size());
+}
+
+bool rev_decode(const uint8_t *buf, size_t len, Revocation &out) {
+    const uint8_t *p = buf, *end = buf + len;
+    if (p >= end || *p++ != 0x01) return false; /* version */
+    if (end - p < (long)(2 * SYNC_PUBKEY_LEN)) return false; /* revoker+subject */
+    std::memcpy(out.revoker.data(), p, SYNC_PUBKEY_LEN); p += SYNC_PUBKEY_LEN;
+    std::memcpy(out.subject.data(), p, SYNC_PUBKEY_LEN); p += SYNC_PUBKEY_LEN;
+    uint64_t nslen = 0;
+    if (!get_varint(p, end, nslen) || (uint64_t)(end - p) < nslen) return false;
+    out.ns.assign((const char *)p, (size_t)nslen); p += nslen;
+    if (end - p < (long)(8 + SYNC_SIG_LEN)) return false; /* issued + sig */
+    out.issued_ms = read_u64le(p);
+    p += 8;
+    std::memcpy(out.sig.data(), p, SYNC_SIG_LEN);
+    return true;
+}
+
+bool rev_sig_valid(const Revocation &r) {
+    std::string s;
+    rev_signing_bytes(r, s);
+    return verify(r.revoker.data(), s.data(), s.size(), r.sig.data());
+}
+
 void CapStore::add(const Capability &c) {
     for (const auto &x : caps_)
         if (x.sig == c.sig) return; /* duplicate */
     caps_.push_back(c);
+}
+
+void CapStore::add_rev(const Revocation &r) {
+    for (const auto &x : revs_)
+        if (x.sig == r.sig) return; /* duplicate */
+    revs_.push_back(r);
 }
 
 void CapStore::export_blobs(std::vector<std::string> &out) const {
@@ -74,9 +118,54 @@ void CapStore::export_blobs(std::vector<std::string> &out) const {
     }
 }
 
+void CapStore::export_rev_blobs(std::vector<std::string> &out) const {
+    for (const auto &r : revs_) {
+        std::string b;
+        rev_encode(r, b);
+        out.push_back(std::move(b));
+    }
+}
+
 bool CapStore::has(const Sig &sig) const {
     for (const auto &c : caps_)
         if (c.sig == sig) return true;
+    return false;
+}
+
+bool CapStore::has_rev(const Sig &sig) const {
+    for (const auto &r : revs_)
+        if (r.sig == sig) return true;
+    return false;
+}
+
+/* Subjects with an *effective* revocation in `ns` — one whose revoker is known
+ * here to hold the namespace root. (A revocation signed by a non-owner, or by an
+ * owner we don't recognize, is inert: it stays for relaying but grants nothing.) */
+void CapStore::revoked_in(const std::string &ns,
+                          std::vector<std::string> &out) const {
+    if (revs_.empty()) return;
+    std::set<std::string> roots;
+    for (const auto &c : caps_)
+        if (c.is_root() && c.ns == ns) roots.insert(key_bytes(c.issuer));
+    if (roots.empty()) return;
+    for (const auto &r : revs_)
+        if (r.ns == ns && roots.count(key_bytes(r.revoker)))
+            out.push_back(key_bytes(r.subject));
+}
+
+bool CapStore::is_revoked(const uint8_t subject[32], const std::string &ns) const {
+    std::vector<std::string> revoked;
+    revoked_in(ns, revoked);
+    std::string sk((const char *)subject, SYNC_PUBKEY_LEN);
+    for (const auto &s : revoked)
+        if (s == sk) return true;
+    return false;
+}
+
+bool CapStore::is_root_owner(const uint8_t me[32], const std::string &ns) const {
+    std::string mk((const char *)me, SYNC_PUBKEY_LEN);
+    for (const auto &c : caps_)
+        if (c.is_root() && c.ns == ns && key_bytes(c.issuer) == mk) return true;
     return false;
 }
 
@@ -94,6 +183,16 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
     auto usable = [now](const Capability &c) {
         return c.access != 0 && (c.expiry == 0 || now <= c.expiry);
     };
+
+    /* Keys the namespace owner has revoked. A revoked key is given no access and
+     * cannot pass access onward, so revoking a (lost/stolen) key also cuts off
+     * every capability that key sub-delegated. Computed once for both passes. */
+    std::set<std::string> revoked;
+    {
+        std::vector<std::string> rv;
+        revoked_in(ns, rv);
+        revoked.insert(rv.begin(), rv.end());
+    }
 
     /* Maximal-access fixpoint for `author` over this namespace's capability graph,
      * optionally restricted to permanent (never-expiring) caps. Returns {open,
@@ -126,11 +225,13 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
         std::map<std::string, uint8_t> best;
         std::vector<std::string> work;
         std::string rk = key_bytes(root->issuer);
+        if (revoked.count(rk)) return {false, 0}; /* owner revoked itself */
         best[rk] = root->access;
         work.push_back(rk);
         while (!work.empty()) {
             std::string h = std::move(work.back());
             work.pop_back();
+            if (revoked.count(h)) continue; /* a revoked key passes on nothing */
             uint8_t ha = best[h];
             auto it = by_issuer.find(h);
             if (it == by_issuer.end()) continue;
@@ -138,6 +239,7 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
                 uint8_t granted = (uint8_t)(c->access & ha); /* can't exceed issuer's */
                 if (!granted) continue;
                 std::string subj = key_bytes(c->subject);
+                if (revoked.count(subj)) continue; /* a revoked key gets nothing */
                 auto sit = best.find(subj);
                 uint8_t cur = sit == best.end() ? 0 : sit->second;
                 uint8_t next = (uint8_t)(cur | granted);
@@ -181,6 +283,37 @@ void cap_ingest_delegations(sync_engine *e,
                          * cached snapshots. Only genuinely-new caps reach here
                          * (known sigs are skipped above), so a converged session
                          * re-ingesting the same caps does not bump. */
+    }
+}
+
+/* Upper bound on revocations learned over the wire (same rationale as caps). */
+constexpr size_t kMaxIngestedRevs = 4096;
+
+void rev_ingest(sync_engine *e, const std::vector<std::string> &blobs) {
+    for (const auto &blob : blobs) {
+        Revocation r;
+        if (!rev_decode((const uint8_t *)blob.data(), blob.size(), r)) continue;
+        if (e->caps && e->caps->has_rev(r.sig)) continue; /* known: skip re-verify */
+        if (!rev_sig_valid(r)) continue;                  /* verify once, on first sight */
+        if (!e->caps) e->caps = new CapStore();
+        /* An *authoritative* revocation (signed by a key we trust as this
+         * namespace's root) is the security payload this gossip exists to carry,
+         * and is self-limited (only the real owner can mint it). Bound only the
+         * relay-only (not-yet-authoritative) revocations, so a peer flooding
+         * signed junk can't fill the store and block a genuine cut-off from
+         * propagating through this node. */
+        bool authoritative = e->caps->is_root_owner(r.revoker.data(), r.ns);
+        if (!authoritative && e->caps->rev_count() >= kMaxIngestedRevs)
+            continue;
+        e->caps->add_rev(r);
+        e->state_gen++; /* a revocation changes read-scope: invalidate snapshots */
+        /* Persist authoritative revocations so the cut-off survives a reopen
+         * without persisting unrelated/junk ones. */
+        if (e->store && authoritative) {
+            std::string b;
+            rev_encode(r, b);
+            e->store->put_revocation(b);
+        }
     }
 }
 
@@ -316,6 +449,48 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
         return SYNC_OK;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+int sync_engine_revoke(sync_engine *e, const char *ns,
+                       const uint8_t subject_pubkey[32]) {
+    if (!e || !ns || !subject_pubkey) return SYNC_ERR_INVALID;
+    try {
+        /* Only the namespace owner (holder of its root) may revoke. */
+        if (!e->caps ||
+            !e->caps->is_root_owner(e->identity.sign_pk.data(), ns))
+            return SYNC_ERR_UNAUTHORIZED;
+        ke::Revocation r;
+        r.revoker = e->identity.sign_pk;
+        std::memcpy(r.subject.data(), subject_pubkey, SYNC_PUBKEY_LEN);
+        r.ns = ns;
+        r.issued_ms = now_ms();
+        std::string s;
+        rev_signing_bytes(r, s);
+        sign(e->identity.sign_sk.data(), s.data(), s.size(), r.sig.data());
+        e->caps->add_rev(r);
+        e->state_gen++; /* read-scope changed: invalidate cached snapshots */
+        if (e->store) {
+            std::string blob;
+            rev_encode(r, blob);
+            if (!e->store->put_revocation(blob)) return SYNC_ERR_INTERNAL;
+        }
+        return SYNC_OK;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+int sync_engine_is_revoked(sync_engine *e, const char *ns,
+                           const uint8_t subject_pubkey[32], int *out_revoked) {
+    if (!e || !ns || !subject_pubkey || !out_revoked) return SYNC_ERR_INVALID;
+    try {
+        *out_revoked = (e->caps && e->caps->is_revoked(subject_pubkey, ns)) ? 1 : 0;
+        return SYNC_OK;
     } catch (...) {
         return SYNC_ERR_INTERNAL;
     }

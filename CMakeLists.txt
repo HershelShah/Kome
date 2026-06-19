@@ -86,6 +86,7 @@ set(SYNC_SOURCES
     src/transport/reliable.cpp
     src/transport/udp.cpp
     src/transport/stun.cpp
+    src/transport/cookie.cpp
     src/transport/relay.cpp
     src/transport/rendezvous.cpp
     src/transport/connection.cpp

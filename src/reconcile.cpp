@@ -209,7 +209,8 @@ size_t desc_size(const Desc &d) {
     return n;
 }
 
-bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
+bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d,
+                 uint64_t &elem_budget) {
     if (p >= end) return false;
     uint8_t m = *p++;
     if (m > 2) return false;
@@ -226,6 +227,10 @@ bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
         /* Each record needs >=1 byte, so a count beyond the remaining buffer is
          * bogus — reject before reserving/allocating (allocation-DoS guard). */
         if (cnt > (uint64_t)(end - p)) return false;
+        /* Charge records against the message-wide element budget so a flood of
+         * tiny records can't amplify into a huge vector (F3). */
+        if (cnt > elem_budget) return false;
+        elem_budget -= cnt;
         for (uint64_t i = 0; i < cnt; i++) {
             uint64_t rl = 0;
             if (!get_varint(p, end, rl)) return false;
@@ -237,15 +242,23 @@ bool decode_desc(const uint8_t *&p, const uint8_t *end, Desc &d) {
     return true;
 }
 
-/* Wire form: [caps][descriptors]. caps carries delegation capabilities so the
- * peer can authorize records authored by keys it hasn't been told about. */
+/* Wire form: [caps][revocations][descriptors]. caps carries delegation
+ * capabilities so the peer can authorize records authored by keys it hasn't been
+ * told about; revocations carry the owner's signed cut-offs for lost/stolen
+ * keys, propagating them replica-to-replica the same way. */
 std::string encode_message(const std::vector<Desc> &descs,
-                           const std::vector<std::string> &caps) {
+                           const std::vector<std::string> &caps,
+                           const std::vector<std::string> &revs) {
     std::string o;
     put_varint(o, caps.size());
     for (auto &c : caps) {
         put_varint(o, c.size());
         o += c;
+    }
+    put_varint(o, revs.size());
+    for (auto &r : revs) {
+        put_varint(o, r.size());
+        o += r;
     }
     put_varint(o, descs.size());
     for (auto &d : descs) encode_desc(o, d);
@@ -253,12 +266,20 @@ std::string encode_message(const std::vector<Desc> &descs,
 }
 
 bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
-                    std::vector<std::string> &caps) {
+                    std::vector<std::string> &caps,
+                    std::vector<std::string> &revs) {
+    /* Reject an over-large message before parsing: each input byte can expand to
+     * a heap object, so an unbounded message is a memory amplifier (F3). */
+    if (len > kMaxRecvMessageBytes) return false;
     const uint8_t *p = buf;
     const uint8_t *end = buf + len;
+    /* Shared element budget across caps + revocations + all descriptors' records. */
+    uint64_t elem_budget = kMaxWireElements;
     uint64_t nc = 0;
     if (!get_varint(p, end, nc)) return false;
     if (nc > (uint64_t)(end - p)) return false; /* each cap >=1 byte */
+    if (nc > elem_budget) return false;         /* element-count amplifier (F3) */
+    elem_budget -= nc;
     for (uint64_t i = 0; i < nc; i++) {
         uint64_t cl = 0;
         if (!get_varint(p, end, cl)) return false;
@@ -266,12 +287,25 @@ bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
         caps.emplace_back((const char *)p, (size_t)cl);
         p += cl;
     }
+    uint64_t nr = 0;
+    if (!get_varint(p, end, nr)) return false;
+    if (nr > (uint64_t)(end - p)) return false; /* each revocation >=1 byte */
+    if (nr > elem_budget) return false;         /* element-count amplifier (F3) */
+    elem_budget -= nr;
+    for (uint64_t i = 0; i < nr; i++) {
+        uint64_t rl = 0;
+        if (!get_varint(p, end, rl)) return false;
+        if ((uint64_t)(end - p) < rl) return false;
+        revs.emplace_back((const char *)p, (size_t)rl);
+        p += rl;
+    }
     uint64_t n = 0;
     if (!get_varint(p, end, n)) return false;
-    if (n > (uint64_t)(end - p)) return false; /* each descriptor >=1 byte */
+    if (n > (uint64_t)(end - p)) return false;       /* each descriptor >=1 byte */
+    if (n > kMaxWireDescriptors) return false;        /* Desc-object amplifier (F3) */
     for (uint64_t i = 0; i < n; i++) {
         Desc d;
-        if (!decode_desc(p, end, d)) return false;
+        if (!decode_desc(p, end, d, elem_budget)) return false;
         out.push_back(std::move(d));
     }
     return true;
@@ -756,13 +790,21 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
         } else {
             s->sent_initial = true;
             std::vector<Desc> incoming;
-            std::vector<std::string> caps_in;
+            std::vector<std::string> caps_in, revs_in;
             if (in && in_len) {
-                if (!decode_message(in, in_len, incoming, caps_in))
+                if (!decode_message(in, in_len, incoming, caps_in, revs_in))
                     return SYNC_ERR_INVALID;
             }
-            /* Ingest the peer's delegations before applying its records. */
+            /* Ingest the peer's delegations and revocations before applying its
+             * records, so a revoked key's *writes* in this very message are
+             * rejected (write authorization is re-checked live per record). Read-
+             * scope is bound to this session's snapshot and refreshes at the next
+             * reconcile cycle (SecurePeerSession::poll rebuilds when state_gen
+             * advances) — i.e. read cut-off is eventually consistent, not mid-
+             * session, because re-snapshotting mid-protocol would break the
+             * in-flight reconcile (see SECURITY.md and transport/connection.cpp). */
             cap_ingest_delegations(s->engine, caps_in);
+            rev_ingest(s->engine, revs_in);
             /* Bound reply amplification: a legit round emits at most ~kBuckets
              * descriptors per differing sub-range, so the reply never exceeds
              * ~kBuckets * (our element count). A peer flooding many whole-range
@@ -784,10 +826,12 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             return SYNC_OK;
         }
 
-        /* Attach our delegation capabilities to the first message we send. */
-        std::vector<std::string> caps_out;
+        /* Attach our delegation capabilities and revocations to the first message
+         * we send. */
+        std::vector<std::string> caps_out, revs_out;
         if (!s->sent_caps && s->engine->caps) {
             s->engine->caps->export_blobs(caps_out);
+            s->engine->caps->export_rev_blobs(revs_out);
             s->sent_caps = true;
         }
 
@@ -800,7 +844,7 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             batch.push_back(std::move(s->outq.front()));
             s->outq.pop_front();
         }
-        std::string msg = encode_message(batch, caps_out);
+        std::string msg = encode_message(batch, caps_out, revs_out);
         uint8_t *buf = (uint8_t *)std::malloc(msg.size() ? msg.size() : 1);
         if (!buf) return SYNC_ERR_NOMEM;
         std::memcpy(buf, msg.data(), msg.size());

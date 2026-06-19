@@ -13,6 +13,7 @@
 #include <string>
 
 #include "crypto.h" /* KeyPair for the ownership-proof register */
+#include "transport/cookie.h"
 #include "transport/udp.h"
 
 namespace ke {
@@ -29,20 +30,24 @@ public:
         return true;
     }
 
-    /* Ownership-proof challenge: record a nonce issued to a registrant at
-     * `endpoint` for key `pkkey`, then check a presented nonce. Bounded. */
-    void issue_challenge(const std::string &endpoint, const uint8_t nonce[16],
-                         const std::string &pkkey);
-    bool consume_challenge(const std::string &endpoint, const uint8_t nonce[16],
-                           const std::string &pkkey);
+    /* Stateless return-routability cookies for REGISTER and LOOKUP. `issue`
+     * returns the cookie to send as the challenge; `valid` checks a presented
+     * one. Binding the cookie to the requester's observed endpoint defeats
+     * spoofed-source reflection, with no per-request server state to exhaust
+     * (F5). REGISTER and LOOKUP cookies are domain-separated so one can't be
+     * redeemed as the other. */
+    bool register_cookie(const std::string &endpoint, const uint8_t key[32],
+                         uint8_t out[16]);
+    bool register_cookie_valid(const std::string &endpoint, const uint8_t key[32],
+                               const uint8_t presented[16]);
+    bool lookup_cookie(const std::string &endpoint, const uint8_t key[32],
+                       uint8_t out[16]);
+    bool lookup_cookie_valid(const std::string &endpoint, const uint8_t key[32],
+                             const uint8_t presented[16]);
 
 private:
     std::map<std::string, Endpoint> reg_;
-    struct Pending {
-        std::array<uint8_t, 16> nonce{};
-        std::string             pkkey;
-    };
-    std::map<std::string, Pending> pending_; /* endpoint -> challenge */
+    Cookies                         cookies_;
 };
 
 /* Process one request: REGISTER starts an ownership-proof challenge;

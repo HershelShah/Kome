@@ -263,6 +263,29 @@ TEST(Defensive, SessionInvalid) {
     EXPECT_EQ(sync_session_step(r, junk.data(), junk.size(), &out, &ol, &done),
               SYNC_ERR_INVALID);
     sync_session_end(r);
+
+    /* F3: a reconcile message can't be amplified into GiBs of vector entries.
+     * (a) An over-large message (> 8 MiB byte cap) is rejected before parsing. */
+    sync_session *r2 = sync_session_begin(e, 0);
+    ASSERT_NE(r2, nullptr);
+    std::vector<uint8_t> huge(9u * 1024 * 1024, 0x00);
+    EXPECT_EQ(sync_session_step(r2, huge.data(), huge.size(), &out, &ol, &done),
+              SYNC_ERR_INVALID);
+    sync_session_end(r2);
+
+    /* (b) A message that *declares* more elements than the per-message budget
+     * (1<<20) is rejected before allocating them. Hand-encode a cap-count varint
+     * of 1,050,000 (> 1,048,576) followed by enough filler that the cheap
+     * "count > remaining bytes" guard doesn't fire first — so it is the element
+     * budget that rejects it. Must not OOM/crash (ASan-clean). */
+    sync_session *r3 = sync_session_begin(e, 0);
+    ASSERT_NE(r3, nullptr);
+    std::vector<uint8_t> amp;
+    amp.push_back(0x90); amp.push_back(0x8B); amp.push_back(0x40); /* varint 1050000 */
+    amp.resize(amp.size() + 1050000, 0x00);
+    EXPECT_EQ(sync_session_step(r3, amp.data(), amp.size(), &out, &ol, &done),
+              SYNC_ERR_INVALID);
+    sync_session_end(r3);
     sync_engine_destroy(e);
 }
 

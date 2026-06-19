@@ -117,4 +117,9 @@ bool random_bytes(uint8_t *buf, size_t len) {
 
 void secure_wipe(void *p, size_t n) { crypto_wipe(p, n); }
 
+bool ct_eq16(const uint8_t a[16], const uint8_t b[16]) {
+    /* monocypher's crypto_verify16 is constant-time and returns 0 on equal. */
+    return crypto_verify16(a, b) == 0;
+}
+
 } // namespace ke

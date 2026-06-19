@@ -160,3 +160,18 @@ TEST(Crypto, AeadRoundTripAndTamper) {
                                   ad.size(), ct.data(), ct.size(), mac2,
                                   rt.data()));
 }
+
+/* F4: constant-time 16-byte equality used for MAC/nonce/cookie compares. We
+ * can't assert timing here, but pin the functional contract — equal vs. a
+ * difference in any position (notably the last byte, where a short-circuiting
+ * memcmp would diverge most). */
+TEST(Crypto, ConstantTimeEq16) {
+    uint8_t a[16], b[16];
+    for (int i = 0; i < 16; i++) a[i] = b[i] = (uint8_t)(i * 7 + 1);
+    EXPECT_TRUE(ke::ct_eq16(a, b));
+    b[0] ^= 0x80; /* first-byte difference */
+    EXPECT_FALSE(ke::ct_eq16(a, b));
+    b[0] = a[0];
+    b[15] ^= 0x01; /* last-byte difference */
+    EXPECT_FALSE(ke::ct_eq16(a, b));
+}
