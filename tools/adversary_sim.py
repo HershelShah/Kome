@@ -149,6 +149,50 @@ def scenario_rendezvous_reflection():
 
 
 # ===========================================================================
+# Scenario 2b — F5: a challenge flood from many distinct source ports (stand-in
+# for spoofed sources) must not exhaust/starve the cookie path. With the old
+# bounded pending table this evicted honest challenges; stateless cookies hold
+# no per-request state, so an honest two-phase REGISTER+LOOKUP still completes.
+# ===========================================================================
+def scenario_rendezvous_no_starvation():
+    port = free_port()
+    d = launch([f"{BUILD}/rendezvousd", "--listen", str(port)], "/tmp/sim_starve.log")
+    time.sleep(0.3)
+    # Flood REGISTER/LOOKUP challenge requests from ~600 distinct source sockets.
+    floods = []
+    for i in range(600):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.bind(("127.0.0.1", 0))  # distinct ephemeral src port == distinct endpoint
+            op = b"R" if (i & 1) else b"L"
+            s.sendto(op + bytes(32), ("127.0.0.1", port))
+        except OSError:
+            pass
+        floods.append(s)
+    time.sleep(0.3)
+    for s in floods:
+        s.close()
+    # Now an honest two-phase REGISTER then LOOKUP of an unknown key must work.
+    ok = False
+    try:
+        c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        c.settimeout(1.0)
+        target = bytes([5]) * 32
+        c.sendto(b"L" + target, ("127.0.0.1", port))
+        chal = c.recv(4096)
+        if len(chal) == 17 and chal[0:1] == b"C":
+            c.sendto(b"M" + target + chal[1:17], ("127.0.0.1", port))
+            peer = c.recv(4096)
+            ok = peer[0:1] == b"P"
+        c.close()
+    except socket.timeout:
+        pass
+    d.send_signal(signal.SIGTERM); d.wait()
+    record("rendezvous serves honest client after spoofed-source flood (F5)",
+           ok and not crashed(d), f"served={ok} rc={d.returncode}")
+
+
+# ===========================================================================
 # Scenario 3 — relay garbage flood: stays alive and still serves a valid FETCH.
 # ===========================================================================
 def scenario_relay_robustness():
@@ -207,6 +251,7 @@ def scenario_parser_fuzz():
 if __name__ == "__main__":
     print(f"== adversarial simulation (build={BUILD}) ==")
     scenario_rendezvous_reflection()
+    scenario_rendezvous_no_starvation()
     scenario_relay_robustness()
     scenario_parser_fuzz()
     scenario_node_flood(heavy=False)

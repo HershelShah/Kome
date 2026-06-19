@@ -11,30 +11,29 @@ namespace ke {
 
 namespace {
 constexpr char kRegister = 'R';   /* 'R' | 32 me                          */
-constexpr char kChallenge = 'C';  /* 'C' | 16 nonce         (server->me)  */
-constexpr char kRegAuth = 'U';    /* 'U' | 32 me | 16 nonce | 64 sig      */
+constexpr char kChallenge = 'C';  /* 'C' | 16 cookie        (server->me)  */
+constexpr char kRegAuth = 'U';    /* 'U' | 32 me | 16 cookie | 64 sig     */
 constexpr char kAck = 'A';        /* 'A'                                  */
 constexpr char kLookup = 'L';     /* 'L' | 32 target                      */
-constexpr char kLookupAuth = 'M'; /* 'M' | 32 target | 16 nonce           */
+constexpr char kLookupAuth = 'M'; /* 'M' | 32 target | 16 cookie          */
 constexpr char kPeer = 'P';       /* 'P' | found(1) | varint ip | port(2) */
-constexpr size_t kMaxPending = 4096;
 
 std::string endpoint_key(const Endpoint &e) {
     return e.ip + ":" + std::to_string(e.port);
 }
 
-/* A pending challenge is bound to its *purpose* as well as its key, so a nonce
- * issued for a LOOKUP can't be redeemed as a REGISTER (or vice versa) even from
- * the same endpoint. */
-std::string purpose_tag(char purpose, const uint8_t key[32]) {
-    std::string s;
-    s.reserve(33);
-    s.push_back(purpose);
-    s.append((const char *)key, 32);
-    return s;
+/* Cookie context: purpose byte (domain-separates REGISTER from LOOKUP so one
+ * cookie can't be redeemed as the other), the key (fixed 32), then the observed
+ * endpoint (variable, last). */
+std::string cookie_ctx(char purpose, const std::string &endpoint,
+                       const uint8_t key[32]) {
+    std::string c;
+    c.reserve(1 + 32 + endpoint.size());
+    c.push_back(purpose);
+    c.append((const char *)key, 32);
+    c += endpoint;
+    return c;
 }
-std::string register_tag(const uint8_t key[32]) { return purpose_tag('R', key); }
-std::string lookup_tag(const uint8_t key[32]) { return purpose_tag('L', key); }
 
 void put_endpoint(std::string &o, const Endpoint &ep) {
     put_varint(o, ep.ip.size());
@@ -56,26 +55,23 @@ bool get_endpoint(const uint8_t *&p, const uint8_t *end, Endpoint &ep) {
 }
 } // namespace
 
-void Rendezvous::issue_challenge(const std::string &endpoint,
-                                 const uint8_t nonce[16],
-                                 const std::string &pkkey) {
-    if (pending_.size() >= kMaxPending && !pending_.count(endpoint))
-        pending_.erase(pending_.begin());
-    Pending pe;
-    std::memcpy(pe.nonce.data(), nonce, 16);
-    pe.pkkey = pkkey;
-    pending_[endpoint] = pe;
+bool Rendezvous::register_cookie(const std::string &endpoint,
+                                 const uint8_t key[32], uint8_t out[16]) {
+    return cookies_.issue(cookie_ctx('R', endpoint, key), out);
 }
-
-bool Rendezvous::consume_challenge(const std::string &endpoint,
-                                   const uint8_t nonce[16],
-                                   const std::string &pkkey) {
-    auto it = pending_.find(endpoint);
-    if (it == pending_.end()) return false;
-    bool ok = it->second.pkkey == pkkey &&
-              ct_eq16(it->second.nonce.data(), nonce); /* constant-time (F4) */
-    pending_.erase(it);
-    return ok;
+bool Rendezvous::register_cookie_valid(const std::string &endpoint,
+                                       const uint8_t key[32],
+                                       const uint8_t presented[16]) {
+    return cookies_.verify(cookie_ctx('R', endpoint, key), presented);
+}
+bool Rendezvous::lookup_cookie(const std::string &endpoint, const uint8_t key[32],
+                               uint8_t out[16]) {
+    return cookies_.issue(cookie_ctx('L', endpoint, key), out);
+}
+bool Rendezvous::lookup_cookie_valid(const std::string &endpoint,
+                                     const uint8_t key[32],
+                                     const uint8_t presented[16]) {
+    return cookies_.verify(cookie_ctx('L', endpoint, key), presented);
 }
 
 bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
@@ -87,23 +83,23 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
     if (dg[0] == kRegister && dg.size() >= 1 + 32) {
         /* Challenge the registrant to prove it owns this key (and is at this
          * address) before recording the mapping — otherwise anyone could point
-         * a victim's key at an arbitrary endpoint. */
-        uint8_t nonce[16];
-        if (!random_bytes(nonce, 16)) return true;
-        rdv.issue_challenge(endpoint_key(from), nonce,
-                            register_tag((const uint8_t *)dg.data() + 1));
+         * a victim's key at an arbitrary endpoint. The cookie is stateless (F5). */
+        const uint8_t *me = (const uint8_t *)dg.data() + 1;
+        uint8_t cookie[16];
+        if (!rdv.register_cookie(endpoint_key(from), me, cookie)) return true;
         std::string ch(1, kChallenge);
-        ch.append((const char *)nonce, 16);
+        ch.append((const char *)cookie, 16);
         sock.send_to(from, ch);
     } else if (dg[0] == kRegAuth && dg.size() >= 1 + 32 + 16 + 64) {
         const uint8_t *me = (const uint8_t *)dg.data() + 1;
-        const uint8_t *nonce = me + 32;
-        const uint8_t *sig = nonce + 16;
-        /* The nonce must match the one we sent to this endpoint, and the
-         * signature must verify under `me` — so the registrant holds me's
-         * signing secret and received the challenge at its claimed address. */
-        if (rdv.consume_challenge(endpoint_key(from), nonce, register_tag(me)) &&
-            verify(me, nonce, 16, sig)) {
+        const uint8_t *cookie = me + 32;
+        const uint8_t *sig = cookie + 16;
+        /* The cookie must be one we'd issue for this endpoint+key (return-
+         * routability), and the signature must verify under `me` over that
+         * cookie — so the registrant holds me's signing secret and received the
+         * challenge at its claimed address. */
+        if (rdv.register_cookie_valid(endpoint_key(from), me, cookie) &&
+            verify(me, cookie, 16, sig)) {
             rdv.set(me, from);
             std::string ack(1, kAck);
             sock.send_to(from, ack);
@@ -111,21 +107,19 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
     } else if (dg[0] == kLookup && dg.size() >= 1 + 32) {
         /* Return-routability: challenge the requester at its claimed address
          * before revealing/reflecting any endpoint, so a spoofed source can't use
-         * the rendezvous as a reflector/amplifier (F1). REGISTER and FETCH already
-         * do this; LOOKUP previously replied immediately. */
-        uint8_t nonce[16];
-        if (!random_bytes(nonce, 16)) return true;
-        rdv.issue_challenge(endpoint_key(from), nonce,
-                            lookup_tag((const uint8_t *)dg.data() + 1));
+         * the rendezvous as a reflector/amplifier (F1). Stateless cookie (F5). */
+        const uint8_t *target = (const uint8_t *)dg.data() + 1;
+        uint8_t cookie[16];
+        if (!rdv.lookup_cookie(endpoint_key(from), target, cookie)) return true;
         std::string ch(1, kChallenge);
-        ch.append((const char *)nonce, 16);
+        ch.append((const char *)cookie, 16);
         sock.send_to(from, ch);
     } else if (dg[0] == kLookupAuth && dg.size() >= 1 + 32 + 16) {
         const uint8_t *target = (const uint8_t *)dg.data() + 1;
-        const uint8_t *nonce = target + 32;
-        /* Only a requester that actually received the challenge at its claimed
-         * address can echo the nonce, so we now answer it (no reflection). */
-        if (rdv.consume_challenge(endpoint_key(from), nonce, lookup_tag(target))) {
+        const uint8_t *cookie = target + 32;
+        /* Only a requester that received the challenge at its claimed address can
+         * echo a valid cookie, so we now answer it (no reflection). */
+        if (rdv.lookup_cookie_valid(endpoint_key(from), target, cookie)) {
             Endpoint ep;
             bool found = rdv.get(target, ep);
             std::string reply(1, kPeer);

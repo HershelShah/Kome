@@ -321,23 +321,90 @@ TEST(Relay, MemoryCapsBoundQueue) {
     EXPECT_EQ(relay.queued(other), 0u);
 }
 
-/* A fetch challenge is answerable only from the endpoint that received it, with
- * the right nonce, once — so a spoofed-source fetch can't trigger a delivery. */
+/* A fetch challenge cookie is answerable only from the endpoint that received it
+ * and only for the key it was issued for — so a spoofed-source fetch can't
+ * trigger a delivery. The cookie is now stateless (F5): no per-request table. */
 TEST(Relay, FetchChallengeReturnRoutability) {
     ke::Relay relay;
     std::string keyA(SYNC_PUBKEY_LEN, '\1');
-    uint8_t nonce[16], wrong[16];
-    std::memset(nonce, 0x42, sizeof nonce);
+    std::string keyB(SYNC_PUBKEY_LEN, '\2');
+    const uint8_t *kA = (const uint8_t *)keyA.data();
+    const uint8_t *kB = (const uint8_t *)keyB.data();
+
+    uint8_t cookie[16];
+    ASSERT_TRUE(relay.fetch_cookie("1.2.3.4:5", kA, cookie));
+    EXPECT_TRUE(relay.fetch_cookie_valid("1.2.3.4:5", kA, cookie));
+
+    /* Bound to the observed endpoint: a spoofed source can't redeem it. */
+    EXPECT_FALSE(relay.fetch_cookie_valid("9.9.9.9:9", kA, cookie)) << "wrong endpoint";
+
+    /* A forged/garbage cookie does not verify. */
+    uint8_t wrong[16];
     std::memset(wrong, 0x43, sizeof wrong);
+    EXPECT_FALSE(relay.fetch_cookie_valid("1.2.3.4:5", kA, wrong)) << "forged cookie";
 
-    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
-    EXPECT_FALSE(relay.consume_challenge("9.9.9.9:9", nonce, keyA)) << "wrong endpoint";
-    EXPECT_TRUE(relay.consume_challenge("1.2.3.4:5", nonce, keyA));
+    /* Bound to the key: a cookie issued for keyB can't fetch keyA's mail. */
+    uint8_t cookieB[16];
+    ASSERT_TRUE(relay.fetch_cookie("1.2.3.4:5", kB, cookieB));
+    EXPECT_FALSE(relay.fetch_cookie_valid("1.2.3.4:5", kA, cookieB)) << "wrong key";
+}
 
-    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
-    EXPECT_FALSE(relay.consume_challenge("1.2.3.4:5", wrong, keyA)) << "wrong nonce";
+/* F5: the cookie is stateless, so a spoofed-source flood of challenge requests
+ * holds no server memory and cannot evict/starve an honest peer's outstanding
+ * challenge (the old bounded pending table evicted the lexicographically
+ * smallest endpoint, which an attacker could target). */
+TEST(Relay, StatelessCookieSurvivesSpoofedFlood) {
+    ke::Relay relay;
+    std::string key(SYNC_PUBKEY_LEN, '\7');
+    const uint8_t *k = (const uint8_t *)key.data();
 
-    relay.issue_challenge("1.2.3.4:5", nonce, keyA);
-    EXPECT_TRUE(relay.consume_challenge("1.2.3.4:5", nonce, keyA));
-    EXPECT_FALSE(relay.consume_challenge("1.2.3.4:5", nonce, keyA)) << "single-use";
+    uint8_t honest[16];
+    ASSERT_TRUE(relay.fetch_cookie("10.0.0.1:1000", k, honest));
+
+    /* Flood 100k distinct spoofed-source challenge issuances. */
+    for (int i = 0; i < 100000; i++) {
+        uint8_t junk[16];
+        std::string ep = "1.2." + std::to_string(i & 0xff) + "." +
+                         std::to_string((i >> 8) & 0xff) + ":" + std::to_string(i);
+        relay.fetch_cookie(ep, k, junk);
+    }
+
+    /* The honest cookie still verifies — nothing was evicted. */
+    EXPECT_TRUE(relay.fetch_cookie_valid("10.0.0.1:1000", k, honest))
+        << "honest cookie evicted by spoofed flood (F5)";
+}
+
+/* F6: once the distinct-destination table is full, a new peer is admitted by
+ * evicting the least-recently-used mailbox — not refused outright — so a
+ * one-time spray of junk destination keys can't permanently lock out new peers.
+ * Recently-active mailboxes survive; the oldest is the one dropped. */
+TEST(Relay, MailboxLruEvictionAdmitsNewPeers) {
+    ke::Relay relay;
+    auto kkey = [](uint32_t i) {
+        std::string s(SYNC_PUBKEY_LEN, '\0');
+        s[0] = (char)(i & 0xff); s[1] = (char)((i >> 8) & 0xff);
+        s[2] = (char)((i >> 16) & 0xff); s[3] = (char)((i >> 24) & 0xff);
+        return s;
+    };
+    const size_t kMaxKeys = 4096; /* mirrors relay.cpp */
+    for (uint32_t i = 0; i < kMaxKeys; i++) {
+        std::string k = kkey(i);
+        relay.send((const uint8_t *)k.data(), "blob");
+    }
+    ASSERT_EQ(relay.mailboxes(), kMaxKeys);
+
+    /* Touch key 1 so it is recently used (and thus not the eviction victim). */
+    std::string k1 = kkey(1);
+    relay.send((const uint8_t *)k1.data(), "more");
+
+    /* A brand-new destination is admitted (table stays bounded), not refused. */
+    std::string knew = kkey(0xABCDEF);
+    relay.send((const uint8_t *)knew.data(), "hello");
+    EXPECT_EQ(relay.mailboxes(), kMaxKeys) << "table not bounded";
+    EXPECT_GT(relay.queued((const uint8_t *)knew.data()), 0u) << "new peer refused (F6)";
+
+    /* The recently-used mailbox survived; the LRU (key 0) was the one evicted. */
+    EXPECT_GT(relay.queued((const uint8_t *)k1.data()), 0u) << "recently-used evicted";
+    std::string k0 = kkey(0);
+    EXPECT_EQ(relay.queued((const uint8_t *)k0.data()), 0u) << "LRU not evicted";
 }

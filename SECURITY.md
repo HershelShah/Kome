@@ -95,8 +95,10 @@ We bound the amplification:
 | Reconcile descriptor amplification / non-termination | reply capped at ~`kBuckets × own element count`; per-session step cap (S7) |
 | Gossiped-capability flood | `CapStore` bounded; chain check O(N) not O(N²) (S5) |
 | Relay mailbox OOM | per-key + global byte caps, oldest-evicted; oversized blobs dropped (S6a) |
-| Relay spoofed-source reflection/amplification | return-routability cookie on FETCH (S6a) |
-| Rendezvous registry flood / victim-key redirection | key-ownership proof + bounded pending set (S6b) |
+| Relay destination-slot exhaustion | LRU mailbox eviction admits new peers when the key table is full (F6) |
+| Relay/rendezvous spoofed-source reflection/amplification | return-routability cookie on FETCH **and LOOKUP** (F1) |
+| Reflection-cookie table exhaustion by spoofed sources | **stateless** (SYN-cookie style) cookies — no per-request server state to evict (F5) |
+| Rendezvous registry flood / victim-key redirection | key-ownership proof (signature over the cookie) |
 | Parallel verify worker exception → `std::terminate` | worker wrapped, fail-closed (S4) |
 
 **Out of scope.** Endpoint compromise (an attacker who can read process memory
@@ -168,6 +170,15 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
 - **Handshake-phase reliability frames** are unauthenticated (no session key
   exists yet); they are the Noise handshake itself, which Noise authenticates,
   so the worst case is a handshake-time DoS, not a compromise.
+- **Return-routability cookies are not single-use.** Relay/rendezvous challenges
+  are now stateless cookies (so a spoofed-source flood can't exhaust a pending
+  table — F5). The trade-off is that a cookie is replayable for its short
+  validity window (~10–20 s): an *on-path* attacker who captures a valid auth
+  can re-trigger the response. This grants no new power against the threat model
+  — the cookie binds the server-observed source, so any reply goes only to that
+  source (never an attacker-chosen victim) and an off-path spoofer never receives
+  the cookie — but it does mean delivery/lookup is at-least-once within the window
+  for an on-path replayer rather than exactly-once.
 - **No wire-protocol version negotiation yet.** Cross-version peers are not
   guaranteed to interoperate or fail gracefully; this is tracked separately.
 - **M5 connectivity is a subset.** IPv6 preference and kernel-NAT hole punching
