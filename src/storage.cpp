@@ -594,7 +594,8 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
 
     /* Replay every good frame from just past the header. */
     off_t hdr = (off_t)header_size();
-    if (::lseek(fd_, hdr, SEEK_SET) < 0) {
+    off_t file_end = ::lseek(fd_, 0, SEEK_END);
+    if (file_end < 0 || ::lseek(fd_, hdr, SEEK_SET) < 0) {
         if (err) *err = SYNC_ERR_INTERNAL;
         return false;
     }
@@ -604,6 +605,14 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         if (!read_exact(fd_, lenbuf, 4)) break; /* clean EOF or torn length */
         uint32_t body_len = read_u32le(lenbuf);
         if (body_len == 0) break;
+        /* A whole, intact frame must physically fit in the remaining file: the
+         * body plus its trailer (sha8, or nonce+mac when encrypted). A length
+         * larger than that is a torn/corrupt trailing frame — or a crafted file
+         * trying to make us allocate gigabytes for bytes that aren't there — so
+         * stop here rather than sizing the buffer off the untrusted length. */
+        off_t avail = file_end - good_end - 4; /* bytes after this length field */
+        off_t need = (off_t)body_len + (encrypted_ ? 24 + 16 : 8);
+        if (need > avail) break;
         std::string body(body_len, '\0');
         off_t frame_bytes;
         if (encrypted_) {
