@@ -338,6 +338,48 @@ TEST(Storage, SchemaGuard) {
     sync_engine_destroy(ok);
 }
 
+/* Regression: a frame's length prefix is untrusted bytes off disk. A crafted
+ * (or torn) frame claiming a body far larger than the file must not make load()
+ * size a buffer off that length — the nightly storage fuzzer found a 2.7 GB
+ * allocation (malloc(2857319244)) from the input "KOMELOG1" + a bogus u32 len.
+ * The frame must be treated as a torn tail: open cleanly, prior data intact, no
+ * gigabyte allocation / OOM. */
+TEST(Storage, HugeFrameLengthRejectedOnLoad) {
+    TempDir dir;
+    std::string db = dir.file("hugeframe.db");
+    auto site = site_from(0x11);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    sync_engine_set(e, B(std::string("n")), 1, B(std::string("x")), 1,
+                    B(std::string("f")), 1, B(std::string("v")), 1);
+    sync_engine_destroy(e);
+
+    /* Append a frame whose length prefix claims ~4 GiB of body, backed by only a
+     * handful of bytes — exactly the shape the fuzzer hit. */
+    std::string buf = read_file(db);
+    std::string forged;
+    ke::put_u32le(forged, 0xFFFFFFF0u);
+    forged.append(8, '\xaa'); /* far fewer bytes than the length claims */
+    write_file(db, buf + forged);
+
+    /* Must open without OOM/crash; the forged trailing frame is dropped and the
+     * committed key survives. */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    int exists = 0;
+    EXPECT_EQ(sync_engine_exists(r, B(std::string("n")), 1, B(std::string("x")), 1,
+                                 &exists),
+              SYNC_OK);
+    EXPECT_EQ(exists, 1);
+    sync_engine_destroy(r);
+
+    /* The torn tail was truncated, so the file is clean and re-openable. */
+    sync_engine *r2 = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r2, nullptr);
+    sync_engine_destroy(r2);
+}
+
 /* Compaction bounds the append-only log: hammering one cell would grow the log
  * without limit, but the Bitcask "merge" rewrites it to one record per live
  * cell. The file must stay small and the state must be preserved across reopen. */
