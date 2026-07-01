@@ -1,0 +1,71 @@
+name: release
+
+# M7 release pipeline, phase 1 scope (docs/PACKAGING.md): on a version tag,
+# rebuild + re-gate every artifact, then publish to PyPI via Trusted
+# Publishing (OIDC — configure the publisher for `kome-sync` on PyPI, no
+# token secrets). A manual dispatch publishes to TestPyPI instead, which is
+# the required dry-run before the first real release. npm + amalgamation
+# artifacts join this workflow in phases 2 and 3.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # dry-run: publishes to TestPyPI
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The tag must match CMake's project(VERSION) — the single source of
+      # truth the wheel metadata is generated from (P7.0c).
+      - name: Tag matches CMake version
+        if: github.ref_type == 'tag'
+        run: |
+          v="$(sed -n 's/^project(sync_engine VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          echo "CMake version: $v  tag: $GITHUB_REF_NAME"
+          test "v$v" = "$GITHUB_REF_NAME"
+
+  wheels:
+    needs: check-version
+    name: wheel ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build + test wheel
+        uses: pypa/cibuildwheel@v3.2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-pypi:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ github.ref_type == 'tag' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}

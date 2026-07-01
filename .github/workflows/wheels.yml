@@ -1,0 +1,62 @@
+name: wheels
+
+# M7 workstream A gate (docs/PACKAGING.md): every push/PR must produce
+# installable artifacts and prove them by testing the *installed package* in a
+# clean environment — not the build tree. Publishing happens in release.yml.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: wheel ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest        # manylinux2014 x86_64
+          - ubuntu-24.04-arm     # manylinux2014 aarch64
+          - macos-13             # macOS x86_64
+          - macos-latest         # macOS arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      # Builds in the manylinux container / with delocate on macOS, then runs
+      # the pytest gate from pyproject's [tool.cibuildwheel] test-command
+      # against the wheel installed in a fresh venv.
+      - name: Build + test wheel
+        uses: pypa/cibuildwheel@v3.2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: sdist (self-contained)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build sdist
+        run: pipx run build --sdist
+
+      # The sdist gate: a from-source install must need only a C++17 compiler
+      # and CMake (monocypher is vendored; GoogleTest's FetchContent is gated
+      # behind SYNC_BUILD_TESTS=OFF, so no build-time network fetches).
+      - name: Install from sdist into a clean venv and run the suite
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.tar.gz pytest
+          mkdir /tmp/wheeltest
+          cp bindings/python/test_smoke.py bindings/python/test_quickstart.py /tmp/wheeltest/
+          cd /tmp/wheeltest && /tmp/venv/bin/python -m pytest -q .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

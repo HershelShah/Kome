@@ -4,7 +4,7 @@ Reproduces examples/example.c through the binding: two replicas write
 independently, exchange full state, read across, and converge to an identical
 digest.
 """
-import sync_engine as se
+import kome as se
 
 
 def test_abi_version():
