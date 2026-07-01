@@ -30,6 +30,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
 | **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
 | **M6** | Hardening (fuzz, sanitizers, threading, Python binding) | ✅ done |
+| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 📋 planned — [docs/PACKAGING.md](docs/PACKAGING.md) |
 
 ## Build
 
