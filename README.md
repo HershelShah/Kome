@@ -30,7 +30,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
 | **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
 | **M6** | Hardening (fuzz, sanitizers, threading, Python binding) | ✅ done |
-| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 📋 planned — [docs/PACKAGING.md](docs/PACKAGING.md) |
+| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 🔨 in progress — pip wheel landed; npm + amalgamation next ([docs/PACKAGING.md](docs/PACKAGING.md)) |
 
 ## Build
 
@@ -51,7 +51,7 @@ ctest --test-dir build-asan
 ## Quickstart (Python)
 
 ```python
-import sync_engine as se
+import kome as se
 
 # Two devices, each with its own identity (a 32-byte seed). `path=` makes the
 # engine durable (an append-only log on disk); omit it for in-memory.
@@ -72,8 +72,8 @@ assert phone.digest() == laptop.digest()   # converged to identical state
 ```
 
 ```bash
-cmake -B build && cmake --build build --target sync_engine   # builds libsync_engine.so
-SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python python3 quickstart.py
+pip install .          # builds a self-contained wheel from this checkout
+python3 quickstart.py  # (`pip install kome-sync` once 0.1.0 is on PyPI)
 ```
 
 For a real two-process network demo (UDP + the full secure stack), see
@@ -122,7 +122,7 @@ persisted:
 
 ```bash
 SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python \
-  python3 -c "import sync_engine as se; e=se.Engine(b'\x01'*32, path='a.db'); \
+  python3 -c "import kome as se; e=se.Engine(b'\x01'*32, path='a.db'); \
               print(e.get(b'contacts', b'B-0', b'name'))"
 ```
 
@@ -275,15 +275,33 @@ cases). The committed baseline and the data-driven optimization backlog live in
 sign/verify) dominates every write and every reconciled record — that's where
 the optimization story starts.
 
-## Python binding
+## Python package
 
 ```bash
-SYNC_ENGINE_LIB=build/libsync_engine.so python3 -m pytest bindings/python
+pip install .            # self-contained wheel from this checkout; import kome
 ```
 
-The ctypes wrapper (`bindings/python/sync_engine.py`) mirrors the C ABI; the
-smoke test reproduces `examples/example.c` (write → export → apply → read →
-digest match).
+The binding (`bindings/python/kome/`) is a ctypes wrapper mirroring the C ABI —
+no `Python.h`, so wheels are `py3-none-<platform>`: one wheel per platform
+covers every Python ≥ 3.8. scikit-build-core drives the same CMakeLists and
+bundles `libsync_engine` inside the package (`kome/_lib/`), so installing needs
+no toolchain knowledge and importing needs no environment variables. PyPI
+distribution name: **`kome-sync`** (`kome` is squatted); import name: `kome`.
+Windows wheels are deferred — storage/transport are POSIX (see
+[docs/PACKAGING.md](docs/PACKAGING.md)).
+
+`.github/workflows/wheels.yml` builds Linux (manylinux2014 x86_64/aarch64) and
+macOS (x86_64/arm64) wheels + the sdist on every push, then installs each into
+a clean venv and runs the binding tests from outside the repo — the gate tests
+the packaged artifact, not the build tree. `release.yml` re-gates and publishes
+to PyPI (Trusted Publishing) on version tags.
+
+Dev flow without installing (the ctypes layer falls back to the build tree):
+
+```bash
+SYNC_ENGINE_LIB=build/libsync_engine.so PYTHONPATH=bindings/python \
+  python3 -m pytest bindings/python
+```
 
 ## WebAssembly (browser as a full node)
 
@@ -321,6 +339,8 @@ side). Verified in CI by `.github/workflows/wasm.yml`.
 | `ci.yml` | every push / PR | build + full suite across Release/Debug + ASan/UBSan/TSan (`-Werror`) |
 | `coverage.yml` | push / PR | lcov report (artifact) + refreshes `docs/COVERAGE.md` |
 | `wasm.yml` | push / PR | build WASM + parity battery + the full gtest scenario suites compiled to WASM, in Node |
+| `wheels.yml` | push / PR | Linux/macOS wheels + sdist; each installed into a clean venv and tested as the packaged artifact |
+| `release.yml` | `v*` tag | re-gate all wheels/sdist, publish to PyPI via Trusted Publishing (manual dispatch → TestPyPI) |
 | `fuzz.yml` | nightly | whole-surface coverage-guided fuzzing, compounding corpora |
 | `nightly.yml` | nightly | **everything**: full suite incl. opt-in OOM + multi-process chaos, all sanitizers, N=250 scale, WASM parity, coverage |
 

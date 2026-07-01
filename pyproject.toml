@@ -1,0 +1,76 @@
+# Python packaging (M7, workstream A — see docs/PACKAGING.md).
+#
+# scikit-build-core drives the existing CMakeLists: it builds only the
+# sync_engine_shared target, installs it (component `python`) into kome/_lib/
+# inside the wheel, and copies the pure-Python package alongside. The binding
+# is ctypes (no Python.h), so wheels are tagged py3-none-<platform>: one wheel
+# per platform covers every Python >= 3.8.
+#
+#   pipx run build             -> dist/kome_sync-<v>.tar.gz + .whl
+#   pip install .              -> editable-ish local install (compiles once)
+#
+# PyPI distribution name is `kome-sync` (`kome` is squatted); import name is
+# `kome`.
+
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "kome-sync"
+dynamic = ["version"]
+description = "Private, distributed, offline-first sync engine: CRDT core, incremental reconciliation, end-to-end encryption, no central server"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+authors = [{ name = "Kome contributors" }]
+keywords = ["crdt", "sync", "p2p", "offline-first", "local-first", "replication", "e2ee"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Database",
+    "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Repository = "https://github.com/HershelShah/Kome"
+Documentation = "https://github.com/HershelShah/Kome#readme"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+wheel.packages = ["bindings/python/kome"]
+# ctypes binding: no per-interpreter ABI -> py3-none-<platform> wheels.
+wheel.py-api = "py3"
+# The wheel needs exactly one CMake artifact: the shared library.
+build.targets = ["sync_engine_shared"]
+install.components = ["python"]
+
+[tool.scikit-build.cmake.define]
+SYNC_BUILD_TESTS = "OFF"
+
+# Version single-sourced from CMakeLists.txt (P7.0c).
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(sync_engine VERSION (?P<value>[0-9.]+)'
+
+[tool.cibuildwheel]
+# The wheel is interpreter-agnostic (py3-none), so build with one CPython per
+# platform; the resulting wheel serves them all.
+build = ["cp312-*"]
+skip = ["*musllinux*"]
+manylinux-x86_64-image = "manylinux2014"
+manylinux-aarch64-image = "manylinux2014"
+test-requires = ["pytest"]
+# Copy the tests out of the repo before running them: pytest prepends a test
+# file's directory to sys.path, and running in-place would import the repo's
+# bindings/python/kome instead of the installed wheel under test.
+test-command = 'cp "{project}/bindings/python/test_smoke.py" "{project}/bindings/python/test_quickstart.py" . && python -m pytest -q .'
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }

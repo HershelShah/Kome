@@ -26,5 +26,4 @@ Engine code (include/, src/) is licensed under the MIT License above.
 Documentation (docs/, README.md, DECISIONS.md) is released under CC0-1.0.
 
 Vendored third-party code keeps its own license:
-  third_party/sqlite/     — public domain
   third_party/monocypher/ — BSD-2-Clause OR CC0-1.0

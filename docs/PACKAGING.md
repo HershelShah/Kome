@@ -26,26 +26,27 @@ suite.
 
 ## P7.0 — Prerequisites (blocking decisions, small diffs)
 
-- **P7.0a — License.** README says "MIT or Apache-2.0 (TBD before 1.0)".
-  Publishing to PyPI/npm requires deciding now. Recommendation: **dual
-  MIT OR Apache-2.0** (the Rust-ecosystem convention; maximally permissive,
-  patent grant via Apache). Update `LICENSE`, README, and the SPDX field in
-  every package manifest.
-- **P7.0b — Names.** Public package name is **`kome`** on both PyPI and npm
-  (fallback if taken: `kome-sync` / `@kome/engine`). Reserve both registries
-  with the first real 0.1.0 publish — don't squat placeholders, but don't sit
-  on the name either: name checks are the first task, publishing is the last
-  gate of each workstream. C symbols stay `sync_*` and the shared library
-  stays `libsync_engine` — the ABI is stable and tested under that name;
-  renaming symbols is churn with no user benefit. `import kome` / 
-  `require("kome")` is the brand surface.
+- **P7.0a — License.** ✅ resolved: `LICENSE` already declares **MIT** for the
+  engine + CC0 for docs — the README's "MIT or Apache-2.0 (TBD)" line was
+  stale, not an open decision. Packages ship as MIT; README/LICENSE cleaned
+  up in phase 1.
+- **P7.0b — Names.** ✅ resolved for PyPI: `kome` is squatted (an empty
+  0.1.0), so the distribution name is **`kome-sync`** — the import name stays
+  **`kome`** (distribution/import names are independent). npm's `kome` gets
+  checked in phase 2 (fallback `@kome/engine`). C symbols stay `sync_*` and
+  the shared library stays `libsync_engine` — the ABI is stable and tested
+  under that name; renaming symbols is churn with no user benefit.
 - **P7.0c — Version single-sourcing.** `project(sync_engine VERSION 0.1.0)` in
   CMakeLists.txt is the one source of truth. The Python build reads it via
   scikit-build-core's regex metadata provider; the npm build script injects it
   into `package.json`; the release workflow refuses to publish if the git tag
   (`v0.1.0`) disagrees with it.
 
-## Workstream A — `pip install kome` (self-contained wheel)
+## Workstream A — `pip install kome-sync` (self-contained wheel)
+
+**Status: landed** (A1–A5 + the release workflow skeleton; publishing awaits
+the PyPI Trusted Publisher being configured for `kome-sync` and a `v0.1.0`
+tag, with a TestPyPI dry-run via `release.yml`'s manual dispatch first).
 
 **Approach.** Keep the ctypes binding — that's the PyNaCl lesson inverted:
 because there is no compiled *extension module* (no `Python.h` anywhere), the

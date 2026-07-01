@@ -970,3 +970,31 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   and restart/`reset()` re-convergence. End-to-end over real sockets by
   `examples/netmesh_demo.sh` (secure ring) + `tools/netmesh_verify.sh`. Native
   17/17 + ASan green; `connect_and_sync` path TSan-clean.
+
+## M7 — Packaging (phase 1: pip wheel)
+
+- **Distribution name `kome-sync`, import name `kome`.** `kome` on PyPI is
+  squatted (an empty 0.1.0, no description). The import name carries the
+  brand; distribution/import names are independent in Python packaging, and
+  the only collision — co-installing the squatter's package — isn't worth
+  engineering around.
+- **License stays MIT.** The plan's "decide MIT vs dual" prerequisite
+  dissolved on contact with `LICENSE`, which already declares MIT (engine) +
+  CC0 (docs); the README's "TBD before 1.0" line was stale and is now fixed.
+- **ctypes + `py3-none-<platform>` wheels via scikit-build-core.** No
+  `Python.h` anywhere means no per-interpreter ABI: one wheel per platform
+  covers every Python ≥ 3.8, and the existing CMakeLists stays the only build
+  system (`build.targets = [sync_engine_shared]`, install component `python`
+  → `kome/_lib/` inside the wheel).
+- **`SYNC_ENGINE_LIB` beats the bundled library and fails loudly if wrong.**
+  Previously a nonexistent path in the env var was silently skipped; an
+  explicit override that is silently ignored is worse than an error. Wheel
+  users never set it; dev flows want it to win.
+- **The wheel gate copies tests to a temp dir before running them.** pytest
+  prepends a test file's directory to `sys.path`, so testing in-place would
+  import the repo's `bindings/python/kome` instead of the installed wheel —
+  exactly the "works in my build tree" failure the gate exists to catch.
+- **Windows wheels deferred, stated in README.** `storage.cpp` (POSIX
+  open/fsync) and `src/transport/*` (BSD sockets) need a port; that's engine
+  work (an M8 candidate), not packaging, and pretending otherwise would gate
+  the whole channel on it.
