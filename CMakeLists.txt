@@ -17,6 +17,8 @@ endif()
 option(SYNC_SANITIZER "Enable a sanitizer (address, thread, undefined)" "")
 option(SYNC_BUILD_TESTS "Build the test suite" ON)
 option(SYNC_COVERAGE "Build with gcov instrumentation (use tools/coverage.sh)" OFF)
+option(SYNC_AMALGAMATION
+       "Build the engine from the generated single-file amalgamation (M7)" OFF)
 
 # --- Compiler flags --------------------------------------------------------
 add_compile_options(-Wall -Wextra -Wpedantic)
@@ -96,14 +98,46 @@ set(SYNC_SOURCES
 
 # Compile the sources once into an OBJECT library; the static and shared libs
 # both reuse it (no double compile, no repeated include/link config).
-add_library(sync_engine_obj OBJECT ${SYNC_SOURCES})
+#
+# With SYNC_AMALGAMATION=ON the engine is instead built from the generated
+# single-file amalgamation (tools/amalgamate.py) — the same suite then gates
+# the two-file artifact releases ship. monocypher is inside kome.cpp, so the
+# separate static lib must not also be linked (duplicate definitions).
+if(SYNC_AMALGAMATION)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(SYNC_AMALG_DIR ${CMAKE_BINARY_DIR}/amalgamation)
+    file(GLOB_RECURSE SYNC_AMALG_INPUTS
+         ${CMAKE_SOURCE_DIR}/src/*.cpp
+         ${CMAKE_SOURCE_DIR}/src/*.h
+         ${CMAKE_SOURCE_DIR}/src/*.hpp)
+    add_custom_command(
+        OUTPUT ${SYNC_AMALG_DIR}/kome.cpp ${SYNC_AMALG_DIR}/kome.h
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/amalgamate.py
+                -o ${SYNC_AMALG_DIR}
+        DEPENDS ${CMAKE_SOURCE_DIR}/tools/amalgamate.py
+                ${SYNC_AMALG_INPUTS}
+                ${CMAKE_SOURCE_DIR}/include/sync_engine.h
+                ${CMAKE_SOURCE_DIR}/third_party/monocypher/monocypher.c
+                ${CMAKE_SOURCE_DIR}/third_party/monocypher/monocypher.h
+        COMMENT "Generating single-file amalgamation (tools/amalgamate.py)")
+    add_library(sync_engine_obj OBJECT ${SYNC_AMALG_DIR}/kome.cpp)
+else()
+    add_library(sync_engine_obj OBJECT ${SYNC_SOURCES})
+endif()
 set_target_properties(sync_engine_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(sync_engine_obj
     PUBLIC  ${CMAKE_SOURCE_DIR}/include
     PRIVATE ${CMAKE_SOURCE_DIR}/src
             ${CMAKE_SOURCE_DIR}/third_party/monocypher
 )
-target_link_libraries(sync_engine_obj PUBLIC monocypher)
+if(SYNC_AMALGAMATION)
+    # monocypher's definitions live inside kome.cpp; consumers (tests) still
+    # include its header, so export the include path without the library.
+    target_include_directories(sync_engine_obj
+        PUBLIC ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+else()
+    target_link_libraries(sync_engine_obj PUBLIC monocypher)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(sync_engine_obj PUBLIC pthread dl)
 endif()
@@ -136,6 +170,10 @@ if(NOT EMSCRIPTEN)
     add_executable(example examples/example.c)
     target_link_libraries(example PRIVATE sync_engine)
 
+    # Demo/test daemons that link the monocypher static lib directly (they
+    # use crypto internals) — incompatible with the amalgamated engine, which
+    # already carries monocypher's definitions.
+    if(NOT SYNC_AMALGAMATION)
     # Two-process end-to-end demo node (uses internal transport/crypto headers).
     add_executable(node examples/node.cpp)
     target_link_libraries(node PRIVATE sync_engine monocypher)
@@ -163,6 +201,7 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(netmesh PRIVATE sync_engine monocypher)
     target_include_directories(netmesh PRIVATE
         ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+    endif() # NOT SYNC_AMALGAMATION
 
     # Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
     add_executable(relayd services/relay/relay_main.cpp)

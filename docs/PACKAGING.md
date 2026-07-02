@@ -169,6 +169,13 @@ with vite, unconfigured.
 
 ## Workstream C — single-file amalgamation
 
+**Status: landed** (C1–C4). The unity-build cleanup pass renamed three sets
+of colliding file-local symbols (`storage.cpp` `get_bytes`→`get_blob`,
+`rendezvous.cpp` `kChallenge`/`kAck`/`endpoint_key`→`kRz*`/`rz_*`, `ws.cpp`
+`kMaxMessageBytes`→`kMaxWsMessageBytes`) and deleted three dead constants in
+`crypto.h` that only clang's single-TU view could see. The full 19-suite
+battery passes against the generated pair.
+
 **Approach.** SQLite's play: one header, one implementation file, no build
 system. Ours is C++ under a C API, so the pair is **`kome.h`** (the public C
 header — `sync_engine.h` re-emitted with a provenance banner) and
