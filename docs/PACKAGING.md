@@ -16,7 +16,7 @@ Three channels, one engine, in leverage order:
 
 | Channel | Deliverable | User experience |
 |---------|-------------|-----------------|
-| **A. PyPI** | self-contained wheel | `pip install kome` → the README quickstart runs, zero toolchain |
+| **A. PyPI** | self-contained wheel | `pip install kome-sync` → the README quickstart runs, zero toolchain |
 | **B. npm** | WASM package (Node + browser + bundlers) | `npm install kome` → two engines converge in a 10-line script |
 | **C. Amalgamation** | `kome.h` + `kome.cpp`, one download | drop two files into any C/C++ project, `c++ -c kome.cpp`, done |
 
@@ -60,9 +60,10 @@ drives the CMakeLists we already have; no second build system).
   `kome/__init__.py` (public API — the current `Engine` class and constants),
   `kome/_ffi.py` (the ctypes layer, today's `sync_engine.py`), and
   `kome/_lib/` (destination for the shared library inside the wheel).
-  `_find_lib()` search order becomes: `kome/_lib/` (installed wheel) →
-  `SYNC_ENGINE_LIB` env (dev override, unchanged) → the existing build-tree
-  candidates (repo dev flow, unchanged). `bindings/python/sync_engine.py`
+  `_find_lib()` search order becomes: `SYNC_ENGINE_LIB` env (explicit dev
+  override — wins everywhere and fails loudly if wrong) → `kome/_lib/`
+  (installed wheel) → the existing build-tree candidates (repo dev flow,
+  unchanged). `bindings/python/sync_engine.py`
   becomes a thin `from kome import *` shim for one release, then dies.
 - **A2 — Build config.** `pyproject.toml` at the repo root with
   `build-backend = "scikit_build_core.build"`, `wheel.py-api = "py3"`
@@ -96,7 +97,7 @@ drives the CMakeLists we already have; no second build system).
   goes through TestPyPI end-to-end (install from TestPyPI in a clean container,
   run the quickstart) before the real index.
 
-**Exit gate:** on a machine with no compiler, `pip install kome` then the
+**Exit gate:** on a machine with no compiler, `pip install kome-sync` then the
 README Python quickstart runs unmodified. README's build-first instructions
 get replaced by that one line.
 
@@ -215,7 +216,7 @@ New `release.yml`, triggered by `v*` tags:
 | 3 | Workstream C + release.yml | amalgamation needs the unity-build cleanup pass (C1) and the release workflow wants all three artifact jobs to exist |
 
 Each phase lands as its own PR, gated on its packaged-artifact CI job. After
-phase 1 ships, the README leads with `pip install kome`.
+phase 1 ships, the README leads with `pip install kome-sync`.
 
 ## Risks & mitigations
 

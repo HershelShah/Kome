@@ -11,6 +11,7 @@ Library resolution order:
 """
 import ctypes
 import os
+import sys
 
 SITE_ID_LEN = 32
 PUBKEY_LEN = 32
@@ -30,7 +31,11 @@ __all__ = [
     "abi_version", "Engine",
 ]
 
-_LIB_NAMES = ("libsync_engine.so", "libsync_engine.dylib")
+# Ordered by platform so the last-resort loader search tries the native name.
+if sys.platform == "darwin":
+    _LIB_NAMES = ("libsync_engine.dylib", "libsync_engine.so")
+else:
+    _LIB_NAMES = ("libsync_engine.so", "libsync_engine.dylib")
 
 
 class _Hlc(ctypes.Structure):

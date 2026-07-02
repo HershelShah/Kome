@@ -73,7 +73,8 @@ assert phone.digest() == laptop.digest()   # converged to identical state
 
 ```bash
 pip install .          # builds a self-contained wheel from this checkout
-python3 quickstart.py  # (`pip install kome-sync` once 0.1.0 is on PyPI)
+                       # (`pip install kome-sync` once 0.1.0 is on PyPI)
+python3 quickstart.py  # = the snippet above, saved as quickstart.py
 ```
 
 For a real two-process network demo (UDP + the full secure stack), see
