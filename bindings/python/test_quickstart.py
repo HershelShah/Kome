@@ -33,7 +33,10 @@ def test_quickstart_readme(tmp_path):
         assert again.exists(b"contacts", b"alice")
 
 
-def test_in_memory_engine_has_no_file(tmp_path):
+def test_in_memory_engine_has_no_file(tmp_path, monkeypatch):
+    # chdir first: an in-memory engine that regressed into writing a log
+    # would write relative to cwd, so cwd must be where the assertion looks.
+    monkeypatch.chdir(tmp_path)
     with se.Engine(b"\x09" * 32) as e:
         e.set(b"ns", b"k", b"f", b"v")
         assert e.get(b"ns", b"k", b"f") == b"v"

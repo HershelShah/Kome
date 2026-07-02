@@ -1,11 +1,12 @@
 name: release
 
 # M7 release pipeline, phase 1 scope (docs/PACKAGING.md): on a version tag,
-# rebuild + re-gate every artifact, then publish to PyPI via Trusted
-# Publishing (OIDC — configure the publisher for `kome-sync` on PyPI, no
-# token secrets). A manual dispatch publishes to TestPyPI instead, which is
-# the required dry-run before the first real release. npm + amalgamation
-# artifacts join this workflow in phases 2 and 3.
+# rebuild + re-gate every artifact by reusing the wheels workflow (one build
+# definition — the release ships exactly what CI gates), then publish to PyPI
+# via Trusted Publishing (OIDC — configure the publisher for `kome-sync` on
+# PyPI, no token secrets). A manual dispatch publishes to TestPyPI instead,
+# which is the required dry-run before the first real release. npm +
+# amalgamation artifacts join this workflow in phases 2 and 3.
 
 on:
   push:
@@ -26,36 +27,13 @@ jobs:
           echo "CMake version: $v  tag: $GITHUB_REF_NAME"
           test "v$v" = "$GITHUB_REF_NAME"
 
-  wheels:
+  # Same wheel matrix + sdist + packaged-artifact test gates as per-PR CI.
+  build:
     needs: check-version
-    name: wheel ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-latest]
-    steps:
-      - uses: actions/checkout@v5
-      - name: Build + test wheel
-        uses: pypa/cibuildwheel@v3.2
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.os }}
-          path: wheelhouse/*.whl
-
-  sdist:
-    needs: check-version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - run: pipx run build --sdist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sdist
-          path: dist/*.tar.gz
+    uses: ./.github/workflows/wheels.yml
 
   publish-pypi:
-    needs: [wheels, sdist]
+    needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -69,3 +47,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: ${{ github.ref_type == 'tag' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          # Dry-runs may re-publish an unbumped version to TestPyPI; don't
+          # fail the workflow on the duplicate.
+          skip-existing: ${{ github.ref_type != 'tag' }}

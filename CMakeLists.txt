@@ -121,12 +121,16 @@ if(NOT EMSCRIPTEN)
     set_target_properties(sync_engine_shared PROPERTIES OUTPUT_NAME sync_engine)
     target_link_libraries(sync_engine_shared PUBLIC sync_engine_obj)
 
-    # Wheel packaging (M7, pyproject.toml): scikit-build-core installs the
-    # shared library inside the Python package, making the wheel
-    # self-contained (kome/_ffi.py loads it from kome/_lib/ first).
-    install(TARGETS sync_engine_shared
-            LIBRARY DESTINATION kome/_lib
-            COMPONENT python)
+    # Wheel packaging (M7, pyproject.toml): when driven by scikit-build-core
+    # (which defines SKBUILD), install the shared library inside the Python
+    # package so the wheel is self-contained. Gated so a plain
+    # `cmake --install` doesn't scatter a Python-package layout into the
+    # prefix for C/C++ consumers.
+    if(SKBUILD)
+        install(TARGETS sync_engine_shared
+                LIBRARY DESTINATION kome/_lib
+                COMPONENT python)
+    endif()
 
     # --- Example -----------------------------------------------------------
     add_executable(example examples/example.c)

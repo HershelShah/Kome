@@ -2,13 +2,16 @@ name: wheels
 
 # M7 workstream A gate (docs/PACKAGING.md): every push/PR must produce
 # installable artifacts and prove them by testing the *installed package* in a
-# clean environment — not the build tree. Publishing happens in release.yml.
+# clean environment — not the build tree. release.yml reuses this workflow via
+# workflow_call, so a release rebuilds and re-gates exactly what CI gates —
+# one definition, no drift. Publishing happens in release.yml.
 
 on:
   push:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   wheels:
@@ -20,7 +23,7 @@ jobs:
         os:
           - ubuntu-latest        # manylinux2014 x86_64
           - ubuntu-24.04-arm     # manylinux2014 aarch64
-          - macos-13             # macOS x86_64
+          - macos-15-intel       # macOS x86_64 (macos-13 was retired Dec 2025)
           - macos-latest         # macOS arm64
     steps:
       - uses: actions/checkout@v5
@@ -47,13 +50,14 @@ jobs:
 
       # The sdist gate: a from-source install must need only a C++17 compiler
       # and CMake (monocypher is vendored; GoogleTest's FetchContent is gated
-      # behind SYNC_BUILD_TESTS=OFF, so no build-time network fetches).
+      # behind SYNC_BUILD_TESTS=OFF, so no build-time network fetches). Tests
+      # run from outside the repo so the installed package is what's imported.
       - name: Install from sdist into a clean venv and run the suite
         run: |
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.tar.gz pytest
           mkdir /tmp/wheeltest
-          cp bindings/python/test_smoke.py bindings/python/test_quickstart.py /tmp/wheeltest/
+          cp bindings/python/test_*.py /tmp/wheeltest/
           cd /tmp/wheeltest && /tmp/venv/bin/python -m pytest -q .
 
       - uses: actions/upload-artifact@v4
