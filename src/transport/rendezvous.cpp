@@ -10,13 +10,13 @@
 namespace ke {
 
 namespace {
-constexpr char kRegister = 'R';   /* 'R' | 32 me                          */
-constexpr char kRzChallenge = 'C';  /* 'C' | 16 cookie        (server->me)  */
-constexpr char kRegAuth = 'U';    /* 'U' | 32 me | 16 cookie | 64 sig     */
-constexpr char kRzAck = 'A';        /* 'A'                                  */
-constexpr char kLookup = 'L';     /* 'L' | 32 target                      */
-constexpr char kLookupAuth = 'M'; /* 'M' | 32 target | 16 cookie          */
-constexpr char kPeer = 'P';       /* 'P' | found(1) | varint ip | port(2) */
+constexpr char kRegister = 'R';    /* 'R' | 32 me                          */
+constexpr char kRzChallenge = 'C'; /* 'C' | 16 cookie        (server->me)  */
+constexpr char kRegAuth = 'U';     /* 'U' | 32 me | 16 cookie | 64 sig     */
+constexpr char kRzAck = 'A';       /* 'A'                                  */
+constexpr char kLookup = 'L';      /* 'L' | 32 target                      */
+constexpr char kLookupAuth = 'M';  /* 'M' | 32 target | 16 cookie          */
+constexpr char kPeer = 'P';        /* 'P' | found(1) | varint ip | port(2) */
 
 std::string rz_endpoint_key(const Endpoint &e) {
     return e.ip + ":" + std::to_string(e.port);

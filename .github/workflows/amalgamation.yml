@@ -44,6 +44,11 @@ jobs:
   drop-in:
     name: two-file drop-in + variants
     runs-on: ubuntu-latest
+    env:
+      # One place for the drop-in compile convention (also the README's
+      # advertised build line); the CMake-driven suite job carries its own
+      # flags via the project defaults + -Werror.
+      AMALG_FLAGS: -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror
     steps:
       - uses: actions/checkout@v5
 
@@ -51,21 +56,25 @@ jobs:
         run: python3 tools/amalgamate.py -o /tmp/amalg
 
       # The exit gate: two files, no build system. A C99 program compiles
-      # against kome.h and links kome.o; the convergence demo must run.
+      # against the header and links kome.o; the convergence demo must run
+      # AND exit cleanly (no pipeline that would mask a teardown crash). The
+      # sync_engine.h alias ships in the zip, so the gate tests the shipped
+      # layout.
       - name: c++ -c kome.cpp, link a C99 consumer, run the demo
         run: |
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
-              -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome.o
-          cp /tmp/amalg/kome.h /tmp/amalg/sync_engine.h  # kome.h IS the public header
+          g++ $AMALG_FLAGS -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome.o
+          cp /tmp/amalg/kome.h /tmp/amalg/sync_engine.h
           gcc -std=c99 -Wall -Wextra -Werror -I /tmp/amalg \
               -c examples/example.c -o /tmp/amalg/example.o
           g++ /tmp/amalg/example.o /tmp/amalg/kome.o -o /tmp/amalg/demo
-          /tmp/amalg/demo | tee /dev/stderr | grep -q "converged: yes"
+          /tmp/amalg/demo > /tmp/amalg/demo.log
+          cat /tmp/amalg/demo.log
+          grep -q "converged: yes" /tmp/amalg/demo.log
 
       - name: Portable core (-DKOME_NO_TRANSPORT)
         run: |
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
-              -DKOME_NO_TRANSPORT -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome-core.o
+          g++ $AMALG_FLAGS -DKOME_NO_TRANSPORT \
+              -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome-core.o
 
       - name: Single-TU WASM compile (emscripten)
         run: |
@@ -73,13 +82,17 @@ jobs:
           em++ -std=c++17 -O2 -w -DKOME_NO_TRANSPORT \
                -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome-wasm.o
 
-      # The release asset: kome.h + kome.cpp + LICENSE + checksums, zipped.
+      # The release asset: kome.h (+ a sync_engine.h alias — kome.h IS that
+      # header, and the repo's C examples include it by that name), kome.cpp,
+      # LICENSE, checksums.
       - name: Package release artifact
         run: |
-          v="$(sed -n 's/^project(sync_engine VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          v="$(python3 tools/amalgamate.py --print-version)"
           mkdir "/tmp/kome-$v-amalgamation"
           cp /tmp/amalg/kome.h /tmp/amalg/kome.cpp LICENSE "/tmp/kome-$v-amalgamation/"
-          (cd /tmp/kome-$v-amalgamation && sha256sum kome.h kome.cpp LICENSE > SHA256SUMS)
+          cp /tmp/amalg/kome.h "/tmp/kome-$v-amalgamation/sync_engine.h"
+          (cd "/tmp/kome-$v-amalgamation" && \
+           sha256sum kome.h kome.cpp sync_engine.h LICENSE > SHA256SUMS)
           (cd /tmp && zip -r "kome-$v-amalgamation.zip" "kome-$v-amalgamation")
 
       - uses: actions/upload-artifact@v4

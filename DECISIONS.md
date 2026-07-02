@@ -640,7 +640,7 @@ One line of rationale per non-obvious choice, newest last.
   `hdr+masklen+len` "is it all buffered yet?" check overflowed `size_t`, passed,
   then `std::string payload(ptr, len)` allocated ~2^64 → remote crash/over-read.
   And fragmented-message reassembly (`assembling_ += payload`) was unbounded.
-  Both now cap at `kMaxMessageBytes` (64 MiB) and drop the connection on
+  Both now cap at `kMaxWsMessageBytes` (64 MiB) and drop the connection on
   violation (rejecting *before* the size math, so it can't overflow).
 - TCP `extract` honored a 32-bit length up to 4 GiB, letting one prefix make us
   buffer unbounded bytes; now capped at `kMaxFrameBytes` (64 MiB) → drop.

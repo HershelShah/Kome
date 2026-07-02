@@ -360,7 +360,9 @@ c++ your_app.o kome.o -o your_app
 
 `-DKOME_NO_TRANSPORT` yields the portable core (engine, storage, crypto,
 reconciliation, Noise, capabilities — the same subset the WASM build proves
-out); the default includes the POSIX transports. The amalgamation is
+out); the default includes the POSIX transports. The release zip also carries
+a `sync_engine.h` alias (identical to `kome.h`, same include guard), so code
+written against the repo header compiles unchanged. The amalgamation is
 generated, never committed: `.github/workflows/amalgamation.yml` regenerates
 it on every push and runs the **entire** gtest suite against it (gcc + clang,
 `-Werror`), plus the two-file drop-in gate — `examples/example.c` compiled as

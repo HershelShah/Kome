@@ -32,7 +32,7 @@ rm -rf "$(dirname "$MONO")"
 # LICENSE at the package root, and the package root is bindings/wasm/).
 cp LICENSE bindings/wasm/LICENSE
 
-VERSION="$(sed -n 's/^project(sync_engine VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+VERSION="$(tools/version.sh)"
 (cd bindings/wasm && npm pkg set version="$VERSION")
 
 ls -la "$DIST"
