@@ -24,7 +24,7 @@ jobs:
       - name: Tag matches CMake version
         if: github.ref_type == 'tag'
         run: |
-          v="$(sed -n 's/^project(sync_engine VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          v="$(tools/version.sh)"
           echo "CMake version: $v  tag: $GITHUB_REF_NAME"
           test "v$v" = "$GITHUB_REF_NAME"
 
@@ -53,10 +53,17 @@ jobs:
     permissions:
       id-token: write # PyPI Trusted Publishing (OIDC)
     steps:
+      # Only the Python artifacts — an unfiltered download would also pull
+      # the npm tarball and amalgamation zip into dist/ and fail the upload.
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheel-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -91,17 +98,24 @@ jobs:
   release-assets:
     # The amalgamation ships as a GitHub Release asset (it's generated, never
     # committed — this download URL is the two-file distribution channel).
+    # Runs after the registry publishes so a failed channel doesn't leave a
+    # public release pointing at a version the registries never got.
     if: github.ref_type == 'tag'
-    needs: [build, build-npm, build-amalgamation]
+    needs: [publish-pypi, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release + attach assets
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: amalgamation
-      - name: Attach to the GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: kome-*-amalgamation.zip
-          generate_release_notes: true
+      # First-party gh CLI (no third-party action with write access); the
+      # upload fallback keeps re-runs of a tag idempotent.
+      - name: Create the GitHub Release with the amalgamation attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+             kome-*-amalgamation.zip \
+          || gh release upload "$GITHUB_REF_NAME" --clobber kome-*-amalgamation.zip

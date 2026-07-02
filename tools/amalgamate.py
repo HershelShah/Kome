@@ -50,9 +50,12 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 
 
 def repo_version():
+    # Mirrors tools/version.sh (the shell consumers' single helper).
     m = re.search(r"^project\(sync_engine VERSION ([0-9.]+)",
                   (ROOT / "CMakeLists.txt").read_text(), re.M)
-    return m.group(1) if m else "unknown"
+    if not m:
+        sys.exit("amalgamate: could not parse project(VERSION) in CMakeLists.txt")
+    return m.group(1)
 
 
 def repo_commit():
@@ -60,7 +63,7 @@ def repo_commit():
         return subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                               cwd=ROOT, capture_output=True, text=True,
                               check=True).stdout.strip()
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):
         return "unknown"
 
 
@@ -114,9 +117,11 @@ def topo_headers(headers, satisfied=()):
     return [headers[n] for n in order]
 
 
-def emit_file(out, path, known_includes, strip_all_quotes=True):
+def emit_file(out, path, known_includes):
     """Append a source file, dropping quote-form includes (emission order
-    satisfies them) after validating each names something we emit."""
+    satisfies them) after validating each names something already emitted —
+    pass only the includes legal for this file's section, so e.g. a core
+    source including a transport header is a hard error, not a silent drop."""
     out.append(f"/* ---------- begin: {path} ---------- */")
     for line in (ROOT / path).read_text().splitlines():
         m = INCLUDE_RE.match(line)
@@ -131,11 +136,28 @@ def emit_file(out, path, known_includes, strip_all_quotes=True):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("-o", "--outdir", required=True, type=Path)
+    ap.add_argument("-o", "--outdir", type=Path)
+    ap.add_argument("--print-version", action="store_true",
+                    help="print the engine version (from CMake project()) and exit")
     args = ap.parse_args()
+    if args.print_version:
+        print(repo_version())
+        return
+    if not args.outdir:
+        ap.error("-o/--outdir is required")
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     version, commit = repo_version(), repo_commit()
+
+    # The TU lists above are the CMake SYNC_SOURCES split at the transport
+    # boundary; fail loudly if a source was added to one side only.
+    on_disk = {str(p.relative_to(ROOT))
+               for p in (ROOT / "src").rglob("*.cpp")}
+    listed = set(CORE_SOURCES) | set(TRANSPORT_SOURCES)
+    if on_disk != listed:
+        sys.exit("amalgamate: source lists drifted from src/**/*.cpp — "
+                 f"missing here: {sorted(on_disk - listed)}, "
+                 f"stale here: {sorted(listed - on_disk)}")
 
     core_headers = {p.name: f"src/{p.name}"
                     for p in (ROOT / "src").iterdir()
@@ -143,14 +165,12 @@ def main():
     transport_headers = {f"transport/{p.name}": f"src/transport/{p.name}"
                          for p in (ROOT / "src/transport").iterdir()
                          if p.suffix == ".h"}
-    # The transports may depend on the core, never the reverse.
-    for name, path in core_headers.items():
-        for dep in header_deps(path):
-            if dep in transport_headers:
-                sys.exit(f"amalgamate: core header {path} includes transport \"{dep}\"")
 
-    known = (set(core_headers) | set(transport_headers)
-             | {"sync_engine.h", "monocypher.h"})
+    # Section-scoped include whitelists: the core (headers and sources) may
+    # never include a transport header — topo_headers enforces it for the
+    # headers, the narrower `known_core` enforces it for the sources.
+    known_core = set(core_headers) | {"sync_engine.h", "monocypher.h"}
+    known = known_core | set(transport_headers)
 
     # kome.h — the public C API under the distribution name.
     public = (ROOT / PUBLIC_HEADER).read_text()
@@ -167,17 +187,17 @@ def main():
                   " * portable core (no POSIX sockets).", version, commit),
            "#define KOME_AMALGAMATION 1", ""]
 
-    emit_file(out, PUBLIC_HEADER, known)          # own guard == kome.h's
-    emit_file(out, MONOCYPHER_H, known)           # has extern "C" guards
+    emit_file(out, PUBLIC_HEADER, known_core)     # own guard == kome.h's
+    emit_file(out, MONOCYPHER_H, known_core)      # has extern "C" guards
     out.append('extern "C" {')
-    emit_file(out, MONOCYPHER_C, known)
+    emit_file(out, MONOCYPHER_C, known_core)
     out.append('} /* extern "C" (monocypher) */')
     out.append("")
 
     for path in topo_headers(core_headers):
-        emit_file(out, path, known)
+        emit_file(out, path, known_core)
     for path in CORE_SOURCES:
-        emit_file(out, path, known)
+        emit_file(out, path, known_core)
 
     out.append("#ifndef KOME_NO_TRANSPORT")
     out.append("")

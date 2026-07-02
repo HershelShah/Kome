@@ -104,9 +104,20 @@ set(SYNC_SOURCES
 # the two-file artifact releases ship. monocypher is inside kome.cpp, so the
 # separate static lib must not also be linked (duplicate definitions).
 if(SYNC_AMALGAMATION)
+    # The fuzzers compile the per-file sources and the chaos test runs the
+    # (amalgamation-excluded) meshnode demo — combining either with the
+    # amalgamated engine would silently test the wrong artifact.
+    if(SYNC_FUZZ OR SYNC_CHAOS)
+        message(FATAL_ERROR "SYNC_AMALGAMATION is incompatible with "
+                            "SYNC_FUZZ/SYNC_CHAOS (they build the per-file "
+                            "sources / the excluded demo daemons)")
+    endif()
+    message(STATUS "SYNC_AMALGAMATION: engine built from generated kome.cpp; "
+                   "monocypher-linking demos (node/meshnode/netnode/netmesh) "
+                   "are excluded")
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     set(SYNC_AMALG_DIR ${CMAKE_BINARY_DIR}/amalgamation)
-    file(GLOB_RECURSE SYNC_AMALG_INPUTS
+    file(GLOB_RECURSE SYNC_AMALG_INPUTS CONFIGURE_DEPENDS
          ${CMAKE_SOURCE_DIR}/src/*.cpp
          ${CMAKE_SOURCE_DIR}/src/*.h
          ${CMAKE_SOURCE_DIR}/src/*.hpp)
@@ -121,8 +132,13 @@ if(SYNC_AMALGAMATION)
                 ${CMAKE_SOURCE_DIR}/third_party/monocypher/monocypher.h
         COMMENT "Generating single-file amalgamation (tools/amalgamate.py)")
     add_library(sync_engine_obj OBJECT ${SYNC_AMALG_DIR}/kome.cpp)
+    # monocypher's definitions live inside kome.cpp; consumers (tests) still
+    # include its header, so export the include path without the library.
+    target_include_directories(sync_engine_obj
+        PUBLIC ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 else()
     add_library(sync_engine_obj OBJECT ${SYNC_SOURCES})
+    target_link_libraries(sync_engine_obj PUBLIC monocypher)
 endif()
 set_target_properties(sync_engine_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(sync_engine_obj
@@ -130,14 +146,6 @@ target_include_directories(sync_engine_obj
     PRIVATE ${CMAKE_SOURCE_DIR}/src
             ${CMAKE_SOURCE_DIR}/third_party/monocypher
 )
-if(SYNC_AMALGAMATION)
-    # monocypher's definitions live inside kome.cpp; consumers (tests) still
-    # include its header, so export the include path without the library.
-    target_include_directories(sync_engine_obj
-        PUBLIC ${CMAKE_SOURCE_DIR}/third_party/monocypher)
-else()
-    target_link_libraries(sync_engine_obj PUBLIC monocypher)
-endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(sync_engine_obj PUBLIC pthread dl)
 endif()
@@ -174,33 +182,33 @@ if(NOT EMSCRIPTEN)
     # use crypto internals) — incompatible with the amalgamated engine, which
     # already carries monocypher's definitions.
     if(NOT SYNC_AMALGAMATION)
-    # Two-process end-to-end demo node (uses internal transport/crypto headers).
-    add_executable(node examples/node.cpp)
-    target_link_libraries(node PRIVATE sync_engine monocypher)
-    target_include_directories(node PRIVATE
-        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+        # Two-process end-to-end demo node (uses internal transport/crypto headers).
+        add_executable(node examples/node.cpp)
+        target_link_libraries(node PRIVATE sync_engine monocypher)
+        target_include_directories(node PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
-    # Multi-peer gossip daemon for the multi-process mesh demo.
-    add_executable(meshnode examples/meshnode.cpp)
-    target_link_libraries(meshnode PRIVATE sync_engine monocypher)
-    target_include_directories(meshnode PRIVATE
-        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+        # Multi-peer gossip daemon for the multi-process mesh demo.
+        add_executable(meshnode examples/meshnode.cpp)
+        target_link_libraries(meshnode PRIVATE sync_engine monocypher)
+        target_include_directories(meshnode PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
-    # Deployable node for real-network testing: the production connect_and_sync
-    # path + ConnectionManager (rendezvous -> direct/punch -> relay fallback).
-    add_executable(netnode examples/netnode.cpp)
-    target_link_libraries(netnode PRIVATE sync_engine monocypher)
-    target_include_directories(netnode PRIVATE
-        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+        # Deployable node for real-network testing: the production connect_and_sync
+        # path + ConnectionManager (rendezvous -> direct/punch -> relay fallback).
+        add_executable(netnode examples/netnode.cpp)
+        target_link_libraries(netnode PRIVATE sync_engine monocypher)
+        target_include_directories(netnode PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 
-    # Secure multi-peer mesh daemon for real-network scale testing: drives N
-    # SecurePeerSession links (Noise XX + identity proof + cap-scoped reconcile)
-    # over one socket, gossiping to convergence. Real-network counterpart to the
-    # localhost-only meshnode.
-    add_executable(netmesh examples/netmesh.cpp)
-    target_link_libraries(netmesh PRIVATE sync_engine monocypher)
-    target_include_directories(netmesh PRIVATE
-        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+        # Secure multi-peer mesh daemon for real-network scale testing: drives N
+        # SecurePeerSession links (Noise XX + identity proof + cap-scoped reconcile)
+        # over one socket, gossiping to convergence. Real-network counterpart to the
+        # localhost-only meshnode.
+        add_executable(netmesh examples/netmesh.cpp)
+        target_link_libraries(netmesh PRIVATE sync_engine monocypher)
+        target_include_directories(netmesh PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
     endif() # NOT SYNC_AMALGAMATION
 
     # Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
