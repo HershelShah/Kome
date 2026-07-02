@@ -8,25 +8,43 @@
   "types": "./index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "browser": "./index.mjs",
-      "import": "./index.mjs",
-      "require": "./index.cjs"
+      "browser": {
+        "types": "./index.d.mts",
+        "default": "./index.mjs"
+      },
+      "import": {
+        "types": "./index.d.mts",
+        "default": "./index.mjs"
+      },
+      "require": {
+        "types": "./index.d.ts",
+        "default": "./index.cjs"
+      }
     },
     "./embedded": {
-      "types": "./embedded.d.ts",
-      "browser": "./embedded.mjs",
-      "import": "./embedded.mjs",
-      "require": "./embedded.cjs"
+      "browser": {
+        "types": "./embedded.d.mts",
+        "default": "./embedded.mjs"
+      },
+      "import": {
+        "types": "./embedded.d.mts",
+        "default": "./embedded.mjs"
+      },
+      "require": {
+        "types": "./embedded.d.ts",
+        "default": "./embedded.cjs"
+      }
     }
   },
   "files": [
     "index.cjs",
     "index.mjs",
     "index.d.ts",
+    "index.d.mts",
     "embedded.cjs",
     "embedded.mjs",
     "embedded.d.ts",
+    "embedded.d.mts",
     "binding.cjs",
     "dist/"
   ],

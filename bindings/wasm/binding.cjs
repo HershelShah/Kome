@@ -17,15 +17,22 @@ function bytes(x) {
 class Binding {
   constructor(M) { this.M = M; }
 
+  /* malloc that refuses to hand back the null address — writing through 0
+   * would silently corrupt the runtime's low memory instead of erroring. */
+  _alloc(n) {
+    const p = this.M._malloc(n);
+    if (!p) throw new Error("wasm out of memory (" + n + " bytes)");
+    return p;
+  }
   _toHeap(u8) {
-    const p = this.M._malloc(u8.length || 1);
+    const p = this._alloc(u8.length || 1);
     this.M.HEAPU8.set(u8, p);
     return p;
   }
   _u32(ptr) { return this.M.HEAPU32[ptr >> 2]; }
   _cstr(str) {
     const u = bytes(str);
-    const p = this.M._malloc(u.length + 1);
+    const p = this._alloc(u.length + 1);
     this.M.HEAPU8.set(u, p);
     this.M.HEAPU8[p + u.length] = 0;
     return p;
@@ -47,6 +54,7 @@ class Binding {
    * reloads). */
   open(path, seed) {
     seed = bytes(seed);
+    if (seed.length !== SEED_LEN) throw new Error("seed must be 32 bytes");
     const pp = this._cstr(path), sp = this._toHeap(seed);
     const e = this.M._sync_engine_open(pp, sp);
     this.M._free(pp); this.M._free(sp);
@@ -56,10 +64,11 @@ class Binding {
   destroy(e) { this.M._sync_engine_destroy(e); }
 
   identity(e) {
-    const buf = this.M._malloc(PUBKEY_LEN);
-    this.M._sync_engine_identity(e, buf);
+    const buf = this._alloc(PUBKEY_LEN);
+    const rc = this.M._sync_engine_identity(e, buf);
     const pk = this.M.HEAPU8.slice(buf, buf + PUBKEY_LEN);
     this.M._free(buf);
+    if (rc !== SYNC_OK) throw new Error("identity failed: " + rc);
     return pk;
   }
 
@@ -118,18 +127,20 @@ class Binding {
 
   exists(e, ns, ent) {
     ns = bytes(ns); ent = bytes(ent);
-    const pn = this._toHeap(ns), pe = this._toHeap(ent), pp = this.M._malloc(4);
-    this.M._sync_engine_exists(e, pn, ns.length, pe, ent.length, pp);
+    const pn = this._toHeap(ns), pe = this._toHeap(ent), pp = this._alloc(4);
+    const rc = this.M._sync_engine_exists(e, pn, ns.length, pe, ent.length, pp);
     const v = this.M.HEAPU32[pp >> 2];
     this.M._free(pn); this.M._free(pe); this.M._free(pp);
+    if (rc !== SYNC_OK) throw new Error("exists failed: " + rc);
     return v !== 0;
   }
 
   digest(e) {
-    const buf = this.M._malloc(DIGEST_LEN);
-    this.M._sync_engine_digest(e, buf);
+    const buf = this._alloc(DIGEST_LEN);
+    const rc = this.M._sync_engine_digest(e, buf);
     const d = this.M.HEAPU8.slice(buf, buf + DIGEST_LEN);
     this.M._free(buf);
+    if (rc !== SYNC_OK) throw new Error("digest failed: " + rc);
     return d;
   }
 
@@ -159,29 +170,39 @@ class Binding {
    * instead of directly. */
   sync(a, b) {
     const sa = this.sessionBegin(a, true), sb = this.sessionBegin(b, false);
-    let msg = this.sessionStep(sa, new Uint8Array(0)).out;
-    let turn = sb, other = sa;
-    let empties = msg.length === 0 ? 1 : 0;
-    for (let i = 0; i < 100000; i++) {
-      const r = this.sessionStep(turn, msg);
-      empties = r.out.length === 0 ? empties + 1 : 0;
-      if (empties >= 2) break;
-      msg = r.out;
-      [turn, other] = [other, turn];
+    try {
+      let msg = this.sessionStep(sa, new Uint8Array(0)).out;
+      let turn = sb;
+      let empties = msg.length === 0 ? 1 : 0;
+      let converged = empties >= 2;
+      for (let i = 0; i < 100000 && !converged; i++) {
+        const r = this.sessionStep(turn, msg);
+        empties = r.out.length === 0 ? empties + 1 : 0;
+        converged = empties >= 2;
+        msg = r.out;
+        turn = turn === sa ? sb : sa;
+      }
+      if (!converged) throw new Error("sync did not converge (step cap hit)");
+    } finally {
+      // A throwing step must not leak the session state in the WASM heap.
+      this.sessionEnd(sa); this.sessionEnd(sb);
     }
-    this.sessionEnd(sa); this.sessionEnd(sb);
   }
 }
 
 /* Node-side loader for a CommonJS Emscripten output: pass the wasm bytes
  * directly so the loader doesn't try to fetch() a file path (Node exposes a
  * global fetch, which trips Emscripten's web path). */
-async function loadCjs(jsPath, wasmPath) {
+async function loadCjs(jsPath) {
   const createSyncEngine = require(jsPath);
   const fs = require("fs");
-  const wasmBinary = fs.readFileSync(wasmPath || jsPath.replace(/\.js$/, ".wasm"));
+  const wasmBinary = fs.readFileSync(jsPath.replace(/\.js$/, ".wasm"));
   const M = await createSyncEngine({ wasmBinary });
   return new Binding(M);
 }
 
-module.exports = { Binding, loadCjs };
+/* One place to answer "is this a Node runtime?" for every entry point. */
+const IS_NODE =
+  typeof process !== "undefined" && !!(process.versions && process.versions.node);
+
+module.exports = { Binding, loadCjs, IS_NODE };

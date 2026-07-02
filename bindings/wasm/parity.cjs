@@ -7,7 +7,11 @@
  */
 "use strict";
 // KOME_PKG re-points the battery at an installed package (the npm tarball
-// gate in wasm.yml); default is the repo dev flow over build-wasm/.
+// gate in npm.yml); default is the repo dev flow over build-wasm/. NOTE:
+// with KOME_PKG this file must be COPIED into the consuming project first —
+// run in place, Node's package self-reference resolves "kome-sync" to this
+// very directory (bindings/wasm has that name in its package.json), so the
+// gate would silently re-test the repo instead of the installed tarball.
 const { load } = require(process.env.KOME_PKG || "./sync_engine.cjs");
 
 const enc = (s) => new TextEncoder().encode(s);

@@ -3,19 +3,19 @@
  * assert the in-page convergence reported KOME_OK.
  *
  * Copy into (and run from) a project directory where kome-sync, vite, and
- * playwright-core are installed — ESM resolves imports relative to this
- * file, so it must live inside the project:
+ * playwright are installed (run `npx playwright install chromium` once) —
+ * ESM resolves imports relative to this file, so it must live inside the
+ * project:
  *   cp -r <repo>/bindings/wasm/test/browser <repo>/bindings/wasm/test/browser_smoke.mjs .
  *   node browser_smoke.mjs browser
  *
- * Chromium binary: $CHROMIUM_BIN, else the first of the usual locations.
+ * Chromium: playwright's own managed browser, unless $CHROMIUM_BIN overrides.
  */
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { build } from "vite";
-import { chromium } from "playwright-core";
+import { chromium } from "playwright";
 
 const root = path.resolve(process.argv[2] || "browser");
 const outDir = path.join(root, "dist");
@@ -42,20 +42,9 @@ const srv = createServer(async (req, res) => {
 await new Promise((r) => srv.listen(0, "127.0.0.1", r));
 const url = `http://127.0.0.1:${srv.address().port}/`;
 
-const exe =
-  process.env.CHROMIUM_BIN ||
-  [
-    "/opt/pw-browsers/chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-  ].find(existsSync);
-if (!exe) {
-  console.error("no chromium binary found; set CHROMIUM_BIN");
-  process.exit(1);
-}
-
-const browser = await chromium.launch({ executablePath: exe, args: ["--no-sandbox"] });
+const launchOpts = { args: ["--no-sandbox"] };
+if (process.env.CHROMIUM_BIN) launchOpts.executablePath = process.env.CHROMIUM_BIN;
+const browser = await chromium.launch(launchOpts);
 try {
   const page = await browser.newPage();
   page.on("pageerror", (e) => console.error("[pageerror]", e.message));
@@ -68,7 +57,7 @@ try {
     console.error("browser smoke FAILED:", await page.locator("#out").textContent());
     process.exit(1);
   }
-  console.log(`browser smoke: OK (vite build, headless ${path.basename(exe)})`);
+  console.log("browser smoke: OK (vite build, headless chromium)");
 } finally {
   await browser.close();
   srv.close();

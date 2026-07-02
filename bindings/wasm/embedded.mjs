@@ -6,14 +6,11 @@
  * browsers/bundlers get the ES6 single-file build via dynamic import. */
 import bindingCjs from "./binding.cjs";
 
-const { Binding } = bindingCjs;
-
-const isNode =
-  typeof process !== "undefined" && !!(process.versions && process.versions.node);
+const { Binding, IS_NODE } = bindingCjs;
 
 async function load() {
   let createSyncEngine;
-  if (isNode) {
+  if (IS_NODE) {
     const { createRequire } = await import("node:module");
     createSyncEngine = createRequire(import.meta.url)("./dist/kome.embedded.cjs.js");
   } else {

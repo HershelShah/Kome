@@ -1026,3 +1026,21 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
 - **npm publish is tags-only.** npm has no TestPyPI; the manual-dispatch
   dry-run stops at the fully-gated tarball artifact instead of publishing
   anything.
+- **Review round (phase 2) — the packaged-artifact gate had the same in-place
+  trap a third way**: run from inside `bindings/wasm/`, Node's *package
+  self-reference* resolves `require("kome-sync")` back to the repo checkout
+  (its package.json bears that name), so the parity gate silently re-tested
+  the repo, never the tarball. parity.cjs is now copied into the gate project
+  like every other gate script. Related fixes from the same review: ES6
+  engine builds are now `-sENVIRONMENT=web,worker` (the __dirname landmine is
+  out of the artifact, not just routed around); per-condition `types` with
+  `.d.mts` re-exports (a lone CJS-flavored d.ts made `import kome from
+  "kome-sync"` type-check while failing at runtime — the tsc gate now checks
+  both flavors plus that negative case); the two release publish jobs gate on
+  each other so registries can't diverge; npm.yml builds once and fans out
+  (kills the `matrix.node == 22` upload condition); LICENSE ships in the
+  tarball; open() validates seed length; identity/exists/digest check return
+  codes; sync() can't leak sessions on a throwing step. Deliberately
+  deferred: dist/ ships ~400KB of duplicate engine bytes (kome.wasm ≈
+  kome.cjs.wasm, two embedded builds) — correctness first at 0.1.0, size
+  dedup is follow-up.

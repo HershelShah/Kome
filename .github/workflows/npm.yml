@@ -1,11 +1,17 @@
 name: npm
 
-# M7 workstream B gate (docs/PACKAGING.md): build the npm package and test the
-# *packed tarball* installed into a fresh project — CJS parity (the same
-# battery the UDP/TCP/WS transports pass), ESM + embedded entry smokes, a
-# strict tsc check of the hand-written declarations, and a vite build of the
-# browser app loaded in headless Chromium. release.yml reuses this workflow
-# via workflow_call so the release re-gates exactly what CI gates.
+# M7 workstream B gate (docs/PACKAGING.md): build the npm package once, then
+# test the *packed tarball* installed into a fresh project — CJS parity (the
+# same battery the UDP/TCP/WS transports pass) against both entries, ESM +
+# embedded smokes, a strict tsc check of the declarations in both module
+# flavors, and a vite build of the browser app loaded in headless Chromium.
+# release.yml reuses this workflow via workflow_call so the release re-gates
+# exactly what CI gates.
+#
+# Test scripts (and parity.cjs) are always copied into the gate project
+# before running: ESM resolves imports relative to the script file, and CJS
+# package self-reference would resolve "kome-sync" back to the repo checkout
+# from any script left under bindings/wasm/.
 
 on:
   push:
@@ -15,13 +21,8 @@ on:
   workflow_call:
 
 jobs:
-  package:
-    name: npm package (node ${{ matrix.node }})
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [20, 22]
     steps:
       - uses: actions/checkout@v5
 
@@ -31,27 +32,59 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
 
       - name: Build npm artifacts
         run: tools/npm_build.sh
 
-      # Everything below runs against the packed tarball installed in a fresh
-      # project — never the repo layout. Test scripts are copied in because
-      # ESM resolves their imports relative to the script file.
-      - name: Pack + install into a fresh project
+      # The committed package.json version must already match CMake's
+      # project(VERSION) — a stale commit fails here, loudly, instead of the
+      # stamp papering over it build after build.
+      - name: Committed version matches CMake
+        run: git diff --exit-code bindings/wasm/package.json
+
+      - name: Pack
+        # The ./ prefix matters: a bare x/y argument parses as a GitHub
+        # owner/repo shorthand, not a directory.
+        run: npm pack --pack-destination /tmp ./bindings/wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: /tmp/kome-sync-*.tgz
+
+  gate:
+    name: gate (node ${{ matrix.node }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+
+      - name: Install the tarball into a fresh project
         run: |
           mkdir /tmp/npmgate && cd /tmp/npmgate
           npm init -y > /dev/null
-          npm pack --pack-destination . "$GITHUB_WORKSPACE/bindings/wasm" > /dev/null
-          npm install --no-audit --no-fund ./kome-sync-*.tgz
-          cp -r "$GITHUB_WORKSPACE"/bindings/wasm/test/browser \
-                "$GITHUB_WORKSPACE"/bindings/wasm/test/*.mjs \
-                "$GITHUB_WORKSPACE"/bindings/wasm/test/*.cjs \
-                "$GITHUB_WORKSPACE"/bindings/wasm/test/types.ts .
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/kome-sync-*.tgz
+          cp -r "$GITHUB_WORKSPACE"/bindings/wasm/test/. \
+                "$GITHUB_WORKSPACE"/bindings/wasm/parity.cjs .
 
-      - name: CJS parity (same scenarios as the UDP/TCP/WS builds)
-        run: cd /tmp/npmgate && KOME_PKG=kome-sync node "$GITHUB_WORKSPACE/bindings/wasm/parity.cjs"
+      - name: CJS parity, both entries (same scenarios as the UDP/TCP/WS builds)
+        run: |
+          cd /tmp/npmgate
+          KOME_PKG=kome-sync node parity.cjs
+          KOME_PKG=kome-sync/embedded node parity.cjs
 
       - name: ESM + embedded smokes
         run: |
@@ -60,21 +93,41 @@ jobs:
           node smoke-embedded.mjs
           node smoke-embedded.cjs
 
-      - name: Type-check the declarations (strict consumer)
+  types-and-browser:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+
+      - name: Install the tarball into a fresh project
+        run: |
+          mkdir /tmp/npmgate && cd /tmp/npmgate
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/kome-sync-*.tgz
+          cp -r "$GITHUB_WORKSPACE"/bindings/wasm/test/. .
+
+      # Both module flavors: types.ts checks the require/CJS declarations,
+      # the .mts copy checks the import/ESM ones (index.d.mts) — the flavor
+      # split is exactly what a single-file check can't see.
+      - name: Type-check the declarations (strict, CJS + ESM flavors)
         run: |
           cd /tmp/npmgate
           npm install --no-audit --no-fund --save-dev typescript
+          cp types.ts types.mts
           npx tsc --strict --noEmit --target es2022 --module node16 \
-                  --moduleResolution node16 --lib es2022,dom types.ts
+                  --moduleResolution node16 --lib es2022,dom types.ts types.mts
 
       - name: Browser gate (vite build + headless Chromium)
         run: |
           cd /tmp/npmgate
-          npm install --no-audit --no-fund --save-dev vite playwright-core
+          npm install --no-audit --no-fund --save-dev vite playwright
+          npx playwright install --with-deps chromium
           node browser_smoke.mjs browser
-
-      - uses: actions/upload-artifact@v4
-        if: matrix.node == 22
-        with:
-          name: npm-package
-          path: /tmp/npmgate/kome-sync-*.tgz
