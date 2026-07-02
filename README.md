@@ -334,6 +334,12 @@ Vendored, permissively licensed:
   EdDSA for identity, signatures, capabilities, and the Noise channel (M4).
 - **GoogleTest** — fetched at build time, tests only.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Every commit must be signed off
+under the [Developer Certificate of Origin](https://developercertificate.org/)
+(`git commit -s`); CI enforces this on pull requests.
+
 ## License
 
 Engine code: MIT or Apache-2.0 (TBD before 1.0). Spec/docs: CC0/CC-BY.
