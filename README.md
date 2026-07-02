@@ -342,4 +342,4 @@ under the [Developer Certificate of Origin](https://developercertificate.org/)
 
 ## License
 
-Engine code: MIT or Apache-2.0 (TBD before 1.0). Spec/docs: CC0/CC-BY.
+Engine code: [MIT](LICENSE). Spec/docs: CC0/CC-BY.
