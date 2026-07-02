@@ -17,7 +17,7 @@ Three channels, one engine, in leverage order:
 | Channel | Deliverable | User experience |
 |---------|-------------|-----------------|
 | **A. PyPI** | self-contained wheel | `pip install kome-sync` → the README quickstart runs, zero toolchain |
-| **B. npm** | WASM package (Node + browser + bundlers) | `npm install kome` → two engines converge in a 10-line script |
+| **B. npm** | WASM package (Node + browser + bundlers) | `npm install kome-sync` → two engines converge in a 10-line script |
 | **C. Amalgamation** | `kome.h` + `kome.cpp`, one download | drop two files into any C/C++ project, `c++ -c kome.cpp`, done |
 
 Everything below is gated the same way the engine milestones were: a task isn't
@@ -33,7 +33,8 @@ suite.
 - **P7.0b — Names.** ✅ resolved for PyPI: `kome` is squatted (an empty
   0.1.0), so the distribution name is **`kome-sync`** — the import name stays
   **`kome`** (distribution/import names are independent). npm's `kome` gets
-  checked in phase 2 (fallback `@kome/engine`). C symbols stay `sync_*` and
+  checked in phase 2 — ✅ resolved: squatted there too, so **`kome-sync`** on
+  both registries (one name to remember). C symbols stay `sync_*` and
   the shared library stays `libsync_engine` — the ABI is stable and tested
   under that name; renaming symbols is churn with no user benefit.
 - **P7.0c — Version single-sourcing.** `project(sync_engine VERSION 0.1.0)` in
@@ -108,6 +109,16 @@ not block distribution of what's already tested.
 
 ## Workstream B — npm / WASM package
 
+**Status: landed** (B1–B6; publishing awaits the npm Trusted Publisher being
+configured for `kome-sync` on npmjs.com and a `v*` tag — the manual-dispatch
+dry-run stops at the fully-gated tarball artifact, since npm has no TestPyPI
+equivalent). Two notes from implementation: the API core lives once in
+`binding.cjs` and every entry (CJS/ESM × split/embedded, plus the repo dev
+shim) wraps it; and in Node the ESM entry loads the *CJS* engine build,
+because the distro emscripten's `EXPORT_ES6` output references `__dirname`
+on its Node path — the ES6 build serves browsers/bundlers, where that path
+is dead.
+
 **Approach.** `tools/wasm_build.sh` already produces a modularized
 Emscripten build (`-sMODULARIZE -sEXPORT_NAME=createSyncEngine
 -sENVIRONMENT=web,node`), and `bindings/wasm/sync_engine.cjs` is the
@@ -116,14 +127,14 @@ high-level wrapper. Packaging means: proper `package.json` with a conditional
 gate that tests the **packed tarball**, not the repo layout.
 
 - **B1 — Package layout.** `bindings/wasm/` grows into the npm package root:
-  `package.json` (`name: "kome"`, `exports` with `import`/`require`/`browser`
+  `package.json` (`name: "kome-sync"`, `exports` with `import`/`require`/`browser`
   conditions, `files` allowlist), `index.cjs` (today's wrapper),
   `index.mjs` (ESM), `index.d.ts`. Build emits two Emscripten outputs into the
   package: the current CJS/web one and an `-sEXPORT_ES6` ESM one; the `.wasm`
   file ships alongside. Loading order stays "wrapper wraps factory", so the
   wrapper API is identical across entries.
 - **B2 — Embedded single-file variant.** A second entry point
-  `kome/embedded` built with `-sSINGLE_FILE=1` (wasm base64-embedded in the
+  `kome-sync/embedded` built with `-sSINGLE_FILE=1` (wasm base64-embedded in the
   JS). ~33% size overhead, but zero asset-pipeline configuration — the
   path of least resistance for bundler users who hit "where does the .wasm
   go" friction. Document the tradeoff; default entry stays split-file.
@@ -136,19 +147,23 @@ gate that tests the **packed tarball**, not the repo layout.
   document (in the package README) mounting IDBFS/OPFS in browsers and that
   Node users who want durability on real disk should prefer the native
   path for now. No new persistence code in M7.
-- **B5 — Packaged-artifact test gate.** Extend `wasm.yml`: build the package,
-  `npm pack`, install the tarball into a fresh temp project, then (1) run
-  `parity.cjs` re-pointed at the installed package — the same scenario battery
-  that gates the WASM build today, (2) an ESM `import` smoke test, (3) the
-  browser demo (`examples/web`) built by a stock bundler (vite) against the
-  installed package, loaded headlessly (Chromium is available in CI) —
-  proving the `browser` condition and `.wasm` asset story actually work.
-  Node LTS matrix (20/22).
-- **B6 — Publish.** `npm publish --provenance` from `release.yml` (OIDC).
-  Pin the emsdk version in CI (emsdk changes codegen; unpinned builds make
-  releases non-reproducible).
+- **B5 — Packaged-artifact test gate.** A reusable `npm.yml` (the wheels.yml
+  pattern — release.yml invokes it, so the release can't drift from CI):
+  build the package, `npm pack`, install the tarball into a fresh temp
+  project, then (1) run `parity.cjs` re-pointed at the installed package —
+  the same scenario battery that gates the WASM build today, (2) ESM +
+  embedded `import`/`require` smoke tests, (3) a strict `tsc` check of the
+  declarations, and (4) a browser app built by a stock bundler (vite) against
+  the installed package, loaded headlessly in Chromium — proving the
+  `browser` condition and `.wasm` asset story actually work. Node LTS matrix
+  (20/22).
+- **B6 — Publish.** `npm publish --provenance` from `release.yml` (OIDC via
+  npm Trusted Publishing; tags only). Toolchain reproducibility: the build
+  uses the distro-pinned apt emscripten — the same toolchain wasm.yml has
+  always used — rather than a separately-pinned emsdk; revisit if the distro
+  bump ever changes codegen in a way the parity gate catches.
 
-**Exit gate:** `npm install kome`, a 10-line Node script converges two
+**Exit gate:** `npm install kome-sync`, a 10-line Node script converges two
 engines and matches digests; the same package builds into the browser demo
 with vite, unconfigured.
 

@@ -1,12 +1,13 @@
 name: release
 
-# M7 release pipeline, phase 1 scope (docs/PACKAGING.md): on a version tag,
-# rebuild + re-gate every artifact by reusing the wheels workflow (one build
-# definition — the release ships exactly what CI gates), then publish to PyPI
-# via Trusted Publishing (OIDC — configure the publisher for `kome-sync` on
-# PyPI, no token secrets). A manual dispatch publishes to TestPyPI instead,
-# which is the required dry-run before the first real release. npm +
-# amalgamation artifacts join this workflow in phases 2 and 3.
+# M7 release pipeline, phases 1+2 (docs/PACKAGING.md): on a version tag,
+# rebuild + re-gate every artifact by reusing the wheels and npm workflows
+# (one build definition each — the release ships exactly what CI gates), then
+# publish to PyPI and npm via OIDC only (Trusted Publishing / provenance —
+# configure the publishers for `kome-sync` on both registries, no token
+# secrets). A manual dispatch publishes the wheels to TestPyPI and skips the
+# npm publish, which is the required dry-run before the first real release.
+# The amalgamation artifact joins this workflow in phase 3.
 
 on:
   push:
@@ -32,6 +33,11 @@ jobs:
     needs: check-version
     uses: ./.github/workflows/wheels.yml
 
+  # Same npm tarball + parity/smoke/types/browser gates as per-PR CI.
+  build-npm:
+    needs: check-version
+    uses: ./.github/workflows/npm.yml
+
   publish-pypi:
     needs: build
     runs-on: ubuntu-latest
@@ -50,3 +56,25 @@ jobs:
           # Dry-runs may re-publish an unbumped version to TestPyPI; don't
           # fail the workflow on the duplicate.
           skip-existing: ${{ github.ref_type != 'tag' }}
+
+  publish-npm:
+    # Tags only — npm has no TestPyPI equivalent, so the manual-dispatch
+    # dry-run stops at the fully-gated tarball artifact.
+    if: github.ref_type == 'tag'
+    needs: build-npm
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write # npm Trusted Publishing (OIDC) — configure on npmjs.com
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Provenance + trusted publishing need a current npm client.
+      - run: npm install -g npm@latest
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+      - name: Publish
+        run: npm publish ./kome-sync-*.tgz --provenance --access public

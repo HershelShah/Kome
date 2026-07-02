@@ -1,0 +1,52 @@
+{
+  "name": "kome-sync",
+  "version": "0.1.0",
+  "description": "Private, distributed, offline-first sync engine (WASM): CRDT core, incremental reconciliation, end-to-end encryption, no central server",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./index.cjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.mjs",
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    },
+    "./embedded": {
+      "types": "./embedded.d.ts",
+      "browser": "./embedded.mjs",
+      "import": "./embedded.mjs",
+      "require": "./embedded.cjs"
+    }
+  },
+  "files": [
+    "index.cjs",
+    "index.mjs",
+    "index.d.ts",
+    "embedded.cjs",
+    "embedded.mjs",
+    "embedded.d.ts",
+    "binding.cjs",
+    "dist/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HershelShah/Kome.git",
+    "directory": "bindings/wasm"
+  },
+  "homepage": "https://github.com/HershelShah/Kome#readme",
+  "keywords": [
+    "crdt",
+    "sync",
+    "p2p",
+    "offline-first",
+    "local-first",
+    "replication",
+    "e2ee",
+    "wasm"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

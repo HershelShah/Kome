@@ -1,0 +1,80 @@
+name: npm
+
+# M7 workstream B gate (docs/PACKAGING.md): build the npm package and test the
+# *packed tarball* installed into a fresh project — CJS parity (the same
+# battery the UDP/TCP/WS transports pass), ESM + embedded entry smokes, a
+# strict tsc check of the hand-written declarations, and a vite build of the
+# browser app loaded in headless Chromium. release.yml reuses this workflow
+# via workflow_call so the release re-gates exactly what CI gates.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  package:
+    name: npm package (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same toolchain as wasm.yml — the distro-pinned emscripten.
+      - name: Install Emscripten
+        run: sudo apt-get update && sudo apt-get install -y emscripten
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Build npm artifacts
+        run: tools/npm_build.sh
+
+      # Everything below runs against the packed tarball installed in a fresh
+      # project — never the repo layout. Test scripts are copied in because
+      # ESM resolves their imports relative to the script file.
+      - name: Pack + install into a fresh project
+        run: |
+          mkdir /tmp/npmgate && cd /tmp/npmgate
+          npm init -y > /dev/null
+          npm pack --pack-destination . "$GITHUB_WORKSPACE/bindings/wasm" > /dev/null
+          npm install --no-audit --no-fund ./kome-sync-*.tgz
+          cp -r "$GITHUB_WORKSPACE"/bindings/wasm/test/browser \
+                "$GITHUB_WORKSPACE"/bindings/wasm/test/*.mjs \
+                "$GITHUB_WORKSPACE"/bindings/wasm/test/*.cjs \
+                "$GITHUB_WORKSPACE"/bindings/wasm/test/types.ts .
+
+      - name: CJS parity (same scenarios as the UDP/TCP/WS builds)
+        run: cd /tmp/npmgate && KOME_PKG=kome-sync node "$GITHUB_WORKSPACE/bindings/wasm/parity.cjs"
+
+      - name: ESM + embedded smokes
+        run: |
+          cd /tmp/npmgate
+          node smoke.mjs
+          node smoke-embedded.mjs
+          node smoke-embedded.cjs
+
+      - name: Type-check the declarations (strict consumer)
+        run: |
+          cd /tmp/npmgate
+          npm install --no-audit --no-fund --save-dev typescript
+          npx tsc --strict --noEmit --target es2022 --module node16 \
+                  --moduleResolution node16 --lib es2022,dom types.ts
+
+      - name: Browser gate (vite build + headless Chromium)
+        run: |
+          cd /tmp/npmgate
+          npm install --no-audit --no-fund --save-dev vite playwright-core
+          node browser_smoke.mjs browser
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == 22
+        with:
+          name: npm-package
+          path: /tmp/npmgate/kome-sync-*.tgz
