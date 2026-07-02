@@ -87,7 +87,7 @@ void put_raw(std::string &out, const uint8_t *p, size_t n) {
     out.append(reinterpret_cast<const char *>(p), n);
 }
 
-bool get_bytes(const uint8_t *&p, const uint8_t *end, std::string &out) {
+bool get_blob(const uint8_t *&p, const uint8_t *end, std::string &out) {
     uint64_t len = 0;
     if (!get_varint(p, end, len)) return false;
     if ((uint64_t)(end - p) < len) return false;
@@ -488,7 +488,7 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
     switch (type) {
     case kMeta: {
         std::string k, v;
-        if (!get_bytes(p, end, k) || !get_bytes(p, end, v)) return false;
+        if (!get_blob(p, end, k) || !get_blob(p, end, v)) return false;
         if (k == "schema_version" && v.size() == 8) {
             rp.schema_version = read_u64le((const uint8_t *)v.data());
             rp.have_schema = true;
@@ -508,7 +508,7 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
         std::string ns, ent;
         PubKey a{};
         Sig sg{};
-        if (!get_bytes(p, end, ns) || !get_bytes(p, end, ent)) return false;
+        if (!get_blob(p, end, ns) || !get_blob(p, end, ent)) return false;
         if (p >= end) return false;
         bool present = (*p++ != 0);
         Hlc hlc{};
@@ -543,8 +543,8 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
         uint32_t logi = 0;
         PubKey a{};
         Sig sg{};
-        if (!get_bytes(p, end, dc.ns) || !get_bytes(p, end, dc.entity) ||
-            !get_bytes(p, end, dc.field) || !get_bytes(p, end, dc.value) ||
+        if (!get_blob(p, end, dc.ns) || !get_blob(p, end, dc.entity) ||
+            !get_blob(p, end, dc.field) || !get_blob(p, end, dc.value) ||
             !get_u64le(p, end, phys) || !get_u32le(p, end, logi) ||
             !get_raw(p, end, a.data(), a.size()) ||
             !get_raw(p, end, sg.data(), sg.size()))
@@ -559,7 +559,7 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
     }
     case kCap: {
         std::string blob;
-        if (!get_bytes(p, end, blob)) return false;
+        if (!get_blob(p, end, blob)) return false;
         Capability cap;
         if (cap_decode((const uint8_t *)blob.data(), blob.size(), cap) &&
             cap_sig_valid(cap)) {
@@ -570,7 +570,7 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
     }
     case kRev: {
         std::string blob;
-        if (!get_bytes(p, end, blob)) return false;
+        if (!get_blob(p, end, blob)) return false;
         Revocation rev;
         if (rev_decode((const uint8_t *)blob.data(), blob.size(), rev) &&
             rev_sig_valid(rev)) {

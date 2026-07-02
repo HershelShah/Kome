@@ -1044,3 +1044,32 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   deferred: dist/ ships ~400KB of duplicate engine bytes (kome.wasm ≈
   kome.cjs.wasm, two embedded builds) — correctness first at 0.1.0, size
   dedup is follow-up.
+
+## M7 — Packaging (phase 3: single-file amalgamation)
+
+- **The generator is pure concatenation plus include surgery.** Internal
+  (quote-form) includes are dropped because emission order — a topo sort over
+  the actual include graph — satisfies them; nothing else is rewritten, and
+  unknown includes or core→transport edges are hard errors. Unity-build
+  symbol collisions are fixed in src/ by renaming (`storage.cpp`
+  get_bytes→get_blob, `rendezvous.cpp` kChallenge/kAck/endpoint_key→kRz*/rz_*,
+  `ws.cpp` kMaxMessageBytes→kMaxWsMessageBytes), never patched in the
+  generator, so the normal build keeps compiling the same code the
+  amalgamation ships.
+- **kome.h IS sync_engine.h** — same content, same include guard, plus a
+  provenance banner. A C consumer can `#include` either name; the drop-in CI
+  gate compiles examples/example.c (C99) against it unmodified.
+- **`SYNC_AMALGAMATION=ON` swaps the engine's TU, not the build.** The OBJECT
+  library builds from generated kome.cpp; monocypher's include path is still
+  exported but its static lib isn't linked (the definitions are inside the
+  TU), and the four demos that link monocypher directly are gated off. The
+  full suite, sync_engine_shared, and the services all build unchanged.
+- **`KOME_NO_TRANSPORT` = the WASM subset.** The guard excludes exactly the
+  POSIX-socket transports, mirroring what tools/wasm_flags.sh compiles — one
+  boundary, two consumers.
+- **clang joins the gate.** The single-TU view surfaced dead code per-TU gcc
+  builds can't see (three unused crypto.h constants, deleted); amalgamation
+  CI runs gcc and clang where per-PR CI is gcc-only.
+- **Generated, never committed** — CI regenerates per push; releases attach
+  kome-<version>-amalgamation.zip (kome.h, kome.cpp, LICENSE, SHA256SUMS) to
+  the GitHub Release, and all three channels' publishes gate on each other.

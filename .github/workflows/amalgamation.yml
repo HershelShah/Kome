@@ -1,0 +1,88 @@
+name: amalgamation
+
+# M7 workstream C gate (docs/PACKAGING.md): regenerate the single-file
+# amalgamation on every push/PR and prove it three ways — the full gtest
+# suite built from it (gcc + clang, -Werror), the two-file drop-in story
+# (plain `c++ -c kome.cpp`, a C99 program linked against it, demo runs), and
+# the portable-core / WASM compile variants. The amalgamation is generated,
+# never committed; release.yml reuses this workflow via workflow_call and
+# ships the artifact it uploads.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  suite:
+    name: full suite (${{ matrix.compiler.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { cc: gcc, cxx: g++ }
+          - { cc: clang, cxx: clang++ }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure (engine = generated kome.cpp)
+        run: |
+          cmake -B build-amalg -DSYNC_AMALGAMATION=ON \
+            -DCMAKE_C_COMPILER=${{ matrix.compiler.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} \
+            -DCMAKE_C_FLAGS="-Werror" -DCMAKE_CXX_FLAGS="-Werror"
+
+      - name: Build
+        run: cmake --build build-amalg -j$(nproc)
+
+      - name: Full test suite against the amalgamated engine
+        run: ctest --test-dir build-amalg --output-on-failure
+
+  drop-in:
+    name: two-file drop-in + variants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Generate
+        run: python3 tools/amalgamate.py -o /tmp/amalg
+
+      # The exit gate: two files, no build system. A C99 program compiles
+      # against kome.h and links kome.o; the convergence demo must run.
+      - name: c++ -c kome.cpp, link a C99 consumer, run the demo
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+              -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome.o
+          cp /tmp/amalg/kome.h /tmp/amalg/sync_engine.h  # kome.h IS the public header
+          gcc -std=c99 -Wall -Wextra -Werror -I /tmp/amalg \
+              -c examples/example.c -o /tmp/amalg/example.o
+          g++ /tmp/amalg/example.o /tmp/amalg/kome.o -o /tmp/amalg/demo
+          /tmp/amalg/demo | tee /dev/stderr | grep -q "converged: yes"
+
+      - name: Portable core (-DKOME_NO_TRANSPORT)
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+              -DKOME_NO_TRANSPORT -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome-core.o
+
+      - name: Single-TU WASM compile (emscripten)
+        run: |
+          sudo apt-get update && sudo apt-get install -y emscripten
+          em++ -std=c++17 -O2 -w -DKOME_NO_TRANSPORT \
+               -c /tmp/amalg/kome.cpp -o /tmp/amalg/kome-wasm.o
+
+      # The release asset: kome.h + kome.cpp + LICENSE + checksums, zipped.
+      - name: Package release artifact
+        run: |
+          v="$(sed -n 's/^project(sync_engine VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          mkdir "/tmp/kome-$v-amalgamation"
+          cp /tmp/amalg/kome.h /tmp/amalg/kome.cpp LICENSE "/tmp/kome-$v-amalgamation/"
+          (cd /tmp/kome-$v-amalgamation && sha256sum kome.h kome.cpp LICENSE > SHA256SUMS)
+          (cd /tmp && zip -r "kome-$v-amalgamation.zip" "kome-$v-amalgamation")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amalgamation
+          path: /tmp/kome-*-amalgamation.zip

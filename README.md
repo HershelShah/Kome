@@ -30,7 +30,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
 | **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
 | **M6** | Hardening (fuzz, sanitizers, threading, Python binding) | ✅ done |
-| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 🔨 in progress — pip + npm landed; amalgamation next ([docs/PACKAGING.md](docs/PACKAGING.md)) |
+| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | ✅ engineering done — all three channels landed; first publish pending registry setup ([docs/PACKAGING.md](docs/PACKAGING.md)) |
 
 ## Build
 
@@ -342,6 +342,31 @@ version tags. The repo dev flow is unchanged (`sync_engine.cjs` over
 other nodes via a WebSocket-speaking peer/relay (the native `src/transport/ws.*`
 side). Verified in CI by `.github/workflows/wasm.yml`.
 
+## Single-file amalgamation
+
+SQLite-style two-file distribution: the whole engine as `kome.h` (the public
+C API — `sync_engine.h` under the distribution name) + `kome.cpp` (every TU
+concatenated, monocypher included). No build system, no dependencies — any
+project with a C++17 compiler links it, including plain-C codebases calling
+through the pure-C header:
+
+```bash
+python3 tools/amalgamate.py -o dist    # or download kome-<v>-amalgamation.zip
+                                       # from a GitHub Release
+c++ -std=c++17 -O2 -c dist/kome.cpp    # one object file
+cc  -std=c99 -I dist -c your_app.c     # your C program against kome.h
+c++ your_app.o kome.o -o your_app
+```
+
+`-DKOME_NO_TRANSPORT` yields the portable core (engine, storage, crypto,
+reconciliation, Noise, capabilities — the same subset the WASM build proves
+out); the default includes the POSIX transports. The amalgamation is
+generated, never committed: `.github/workflows/amalgamation.yml` regenerates
+it on every push and runs the **entire** gtest suite against it (gcc + clang,
+`-Werror`), plus the two-file drop-in gate — `examples/example.c` compiled as
+C99, linked against `kome.o`, demo converging — and portable-core/WASM
+compile variants.
+
 ## Continuous integration
 
 | Workflow | When | What |
@@ -351,7 +376,8 @@ side). Verified in CI by `.github/workflows/wasm.yml`.
 | `wasm.yml` | push / PR | build WASM + parity battery + the full gtest scenario suites compiled to WASM, in Node |
 | `wheels.yml` | push / PR | Linux/macOS wheels + sdist; each installed into a clean venv and tested as the packaged artifact |
 | `npm.yml` | push / PR | npm tarball installed into a fresh project: parity battery, ESM/embedded smokes, strict tsc, vite + headless-Chromium browser gate |
-| `release.yml` | `v*` tag | re-gate wheels/sdist/npm via the same workflows, publish to PyPI (Trusted Publishing) + npm (provenance); manual dispatch → TestPyPI dry-run |
+| `amalgamation.yml` | push / PR | regenerate kome.h/kome.cpp; full suite against it (gcc + clang, -Werror) + C99 drop-in demo + portable-core/WASM compiles |
+| `release.yml` | `v*` tag | re-gate all channels via the same workflows; publish PyPI (Trusted Publishing) + npm (provenance) + amalgamation zip on the GitHub Release |
 | `fuzz.yml` | nightly | whole-surface coverage-guided fuzzing, compounding corpora |
 | `nightly.yml` | nightly | **everything**: full suite incl. opt-in OOM + multi-process chaos, all sanitizers, N=250 scale, WASM parity, coverage |
 

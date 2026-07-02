@@ -17,7 +17,7 @@ constexpr size_t kMaxHandshakeBytes = 1u << 20;
  * math overflows (passing the buffered-enough check, then allocating ~2^64) and
  * continuation frames grow the reassembly buffer without bound. 64 MiB is well
  * above any real reconcile message (the UDP path is one ~64 KB datagram). */
-constexpr size_t kMaxMessageBytes = 64u << 20;
+constexpr size_t kMaxWsMessageBytes = 64u << 20;
 
 /* ---- SHA-1 (for the Sec-WebSocket-Accept handshake only) --------------- */
 struct Sha1 {
@@ -191,7 +191,7 @@ int ws_parse_frame(const uint8_t *buf, size_t len, bool &fin, uint8_t &op,
         hdr = 10;
     }
     /* Reject before the size math (hdr + masklen + plen) can overflow size_t. */
-    if (plen > kMaxMessageBytes) return -1;
+    if (plen > kMaxWsMessageBytes) return -1;
     size_t masklen = masked ? 4 : 0;
     if (len < hdr + masklen + plen) return 0;
     const uint8_t *mk = buf + hdr;
@@ -240,7 +240,7 @@ bool WsStream::recv_frame(std::string &out, int timeout_ms) {
 
         /* data: 0x1 text, 0x2 binary, 0x0 continuation */
         if (op == 0x0) {
-            if (assembling_.size() + payload.size() > kMaxMessageBytes) {
+            if (assembling_.size() + payload.size() > kMaxWsMessageBytes) {
                 tcp.close(); rx_.clear(); assembling_.clear();
                 return false;
             }

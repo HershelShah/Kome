@@ -16,9 +16,6 @@ namespace ke {
 constexpr size_t kSignPkLen = 32;  /* EdDSA public key */
 constexpr size_t kSignSkLen = 64;  /* EdDSA secret key (seed||public) */
 constexpr size_t kDhKeyLen  = 32;  /* X25519 key */
-constexpr size_t kSigLen    = 64;  /* EdDSA signature */
-constexpr size_t kMacLen    = 16;  /* Poly1305 tag */
-constexpr size_t kAeadNonce = 24;  /* XChaCha20 nonce */
 
 /* A long-term identity. The signing public key defines the site identity;
  * site_id = BLAKE2b-256(sign_pk). The X25519 pair is used for the channel. */

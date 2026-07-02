@@ -11,14 +11,14 @@ namespace ke {
 
 namespace {
 constexpr char kRegister = 'R';   /* 'R' | 32 me                          */
-constexpr char kChallenge = 'C';  /* 'C' | 16 cookie        (server->me)  */
+constexpr char kRzChallenge = 'C';  /* 'C' | 16 cookie        (server->me)  */
 constexpr char kRegAuth = 'U';    /* 'U' | 32 me | 16 cookie | 64 sig     */
-constexpr char kAck = 'A';        /* 'A'                                  */
+constexpr char kRzAck = 'A';        /* 'A'                                  */
 constexpr char kLookup = 'L';     /* 'L' | 32 target                      */
 constexpr char kLookupAuth = 'M'; /* 'M' | 32 target | 16 cookie          */
 constexpr char kPeer = 'P';       /* 'P' | found(1) | varint ip | port(2) */
 
-std::string endpoint_key(const Endpoint &e) {
+std::string rz_endpoint_key(const Endpoint &e) {
     return e.ip + ":" + std::to_string(e.port);
 }
 
@@ -86,8 +86,8 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
          * a victim's key at an arbitrary endpoint. The cookie is stateless (F5). */
         const uint8_t *me = (const uint8_t *)dg.data() + 1;
         uint8_t cookie[16];
-        if (!rdv.register_cookie(endpoint_key(from), me, cookie)) return true;
-        std::string ch(1, kChallenge);
+        if (!rdv.register_cookie(rz_endpoint_key(from), me, cookie)) return true;
+        std::string ch(1, kRzChallenge);
         ch.append((const char *)cookie, 16);
         sock.send_to(from, ch);
     } else if (dg[0] == kRegAuth && dg.size() >= 1 + 32 + 16 + 64) {
@@ -98,10 +98,10 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
          * routability), and the signature must verify under `me` over that
          * cookie — so the registrant holds me's signing secret and received the
          * challenge at its claimed address. */
-        if (rdv.register_cookie_valid(endpoint_key(from), me, cookie) &&
+        if (rdv.register_cookie_valid(rz_endpoint_key(from), me, cookie) &&
             verify(me, cookie, 16, sig)) {
             rdv.set(me, from);
-            std::string ack(1, kAck);
+            std::string ack(1, kRzAck);
             sock.send_to(from, ack);
         }
     } else if (dg[0] == kLookup && dg.size() >= 1 + 32) {
@@ -110,8 +110,8 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
          * the rendezvous as a reflector/amplifier (F1). Stateless cookie (F5). */
         const uint8_t *target = (const uint8_t *)dg.data() + 1;
         uint8_t cookie[16];
-        if (!rdv.lookup_cookie(endpoint_key(from), target, cookie)) return true;
-        std::string ch(1, kChallenge);
+        if (!rdv.lookup_cookie(rz_endpoint_key(from), target, cookie)) return true;
+        std::string ch(1, kRzChallenge);
         ch.append((const char *)cookie, 16);
         sock.send_to(from, ch);
     } else if (dg[0] == kLookupAuth && dg.size() >= 1 + 32 + 16) {
@@ -119,7 +119,7 @@ bool rendezvous_server_step(Rendezvous &rdv, UdpSocket &sock, int timeout_ms) {
         const uint8_t *cookie = target + 32;
         /* Only a requester that received the challenge at its claimed address can
          * echo a valid cookie, so we now answer it (no reflection). */
-        if (rdv.lookup_cookie_valid(endpoint_key(from), target, cookie)) {
+        if (rdv.lookup_cookie_valid(rz_endpoint_key(from), target, cookie)) {
             Endpoint ep;
             bool found = rdv.get(target, ep);
             std::string reply(1, kPeer);
@@ -140,7 +140,7 @@ bool rendezvous_register(UdpSocket &sock, const Endpoint &server,
     std::string dg;
     Endpoint from;
     if (!sock.recv(dg, from, timeout_ms)) return false;
-    if (dg.size() != 1 + 16 || dg[0] != kChallenge) return false;
+    if (dg.size() != 1 + 16 || dg[0] != kRzChallenge) return false;
 
     /* Step 2: sign the nonce with our signing secret to prove key ownership. */
     uint8_t sig[64];
@@ -151,7 +151,7 @@ bool rendezvous_register(UdpSocket &sock, const Endpoint &server,
     a.append((const char *)sig, 64);
     if (!sock.send_to(server, a)) return false;
     if (!sock.recv(dg, from, timeout_ms)) return false;
-    return !dg.empty() && dg[0] == kAck;
+    return !dg.empty() && dg[0] == kRzAck;
 }
 
 bool rendezvous_lookup(UdpSocket &sock, const Endpoint &server,
@@ -163,7 +163,7 @@ bool rendezvous_lookup(UdpSocket &sock, const Endpoint &server,
     std::string dg;
     Endpoint from;
     if (!sock.recv(dg, from, timeout_ms)) return false;
-    if (dg.size() != 1 + 16 || dg[0] != kChallenge) return false;
+    if (dg.size() != 1 + 16 || dg[0] != kRzChallenge) return false;
 
     /* Step 2: echo the nonce from our real address; only then does the server
      * answer (so it never reflects a reply to a spoofed source). */

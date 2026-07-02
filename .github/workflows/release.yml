@@ -38,10 +38,16 @@ jobs:
     needs: check-version
     uses: ./.github/workflows/npm.yml
 
+  # Same amalgamation suite + drop-in gates as per-PR CI; uploads the zip.
+  build-amalgamation:
+    needs: check-version
+    uses: ./.github/workflows/amalgamation.yml
+
   publish-pypi:
-    # Both registries publish together or not at all — a failed npm gate must
-    # not leave PyPI a version ahead (tags can't cleanly re-publish).
-    needs: [build, build-npm]
+    # Everything publishes together or not at all — a failed gate on any
+    # channel must not leave another a version ahead (tags can't cleanly
+    # re-publish).
+    needs: [build, build-npm, build-amalgamation]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -61,10 +67,10 @@ jobs:
 
   publish-npm:
     # Tags only — npm has no TestPyPI equivalent, so the manual-dispatch
-    # dry-run stops at the fully-gated tarball artifact. Waits on the wheel
-    # gates too (see publish-pypi).
+    # dry-run stops at the fully-gated tarball artifact. Waits on the other
+    # channels' gates too (see publish-pypi).
     if: github.ref_type == 'tag'
-    needs: [build, build-npm]
+    needs: [build, build-npm, build-amalgamation]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -81,3 +87,21 @@ jobs:
           name: npm-package
       - name: Publish
         run: npm publish ./kome-sync-*.tgz --provenance --access public
+
+  release-assets:
+    # The amalgamation ships as a GitHub Release asset (it's generated, never
+    # committed — this download URL is the two-file distribution channel).
+    if: github.ref_type == 'tag'
+    needs: [build, build-npm, build-amalgamation]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + attach assets
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: amalgamation
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kome-*-amalgamation.zip
+          generate_release_notes: true
