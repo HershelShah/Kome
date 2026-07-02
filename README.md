@@ -30,7 +30,7 @@ This is a ground-up rebuild following [the implementation plan](#milestones).
 | **M4** | Secure transport, identity, capabilities (Noise XX) | ✅ done |
 | **M5** | Real connectivity (UDP, STUN, hole punching, relay) | ✅ subset (T5.1–T5.8; IPv6/kernel-NAT need a real network) |
 | **M6** | Hardening (fuzz, sanitizers, threading, Python binding) | ✅ done |
-| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 🔨 in progress — pip wheel landed; npm + amalgamation next ([docs/PACKAGING.md](docs/PACKAGING.md)) |
+| **M7** | Packaging (pip wheel, npm/WASM, single-file amalgamation) | 🔨 in progress — pip + npm landed; amalgamation next ([docs/PACKAGING.md](docs/PACKAGING.md)) |
 
 ## Build
 
@@ -328,7 +328,16 @@ points ctest at `node`) and runs `convergence`, `reconcile`, `crypto`,
 are gated out under `if(NOT EMSCRIPTEN)`; their engine logic is still covered on
 WASM through the suites above (e.g. durability via `resilience_test`).
 
-`bindings/wasm/sync_engine.cjs` is the JS binding (mirrors the Python one);
+The JS binding ships as the npm package **`kome-sync`** (`bindings/wasm/`;
+built by `tools/npm_build.sh`): CJS + ESM entries with TypeScript
+declarations, a `kome-sync/embedded` single-file variant (wasm
+base64-embedded — no asset pipeline, ~33% larger), and bundler support via
+the `browser` condition (vite/webpack 5 emit the `.wasm` asset
+automatically). `.github/workflows/npm.yml` gates the packed tarball on the
+parity battery, ESM/embedded smokes, a strict `tsc` check, and a vite build
+loaded in headless Chromium; `release.yml` publishes with npm provenance on
+version tags. The repo dev flow is unchanged (`sync_engine.cjs` over
+`build-wasm/`; the API core is shared in `binding.cjs`).
 `examples/web/index.html` is an in-page browser demo. A browser node reaches
 other nodes via a WebSocket-speaking peer/relay (the native `src/transport/ws.*`
 side). Verified in CI by `.github/workflows/wasm.yml`.
@@ -341,7 +350,8 @@ side). Verified in CI by `.github/workflows/wasm.yml`.
 | `coverage.yml` | push / PR | lcov report (artifact) + refreshes `docs/COVERAGE.md` |
 | `wasm.yml` | push / PR | build WASM + parity battery + the full gtest scenario suites compiled to WASM, in Node |
 | `wheels.yml` | push / PR | Linux/macOS wheels + sdist; each installed into a clean venv and tested as the packaged artifact |
-| `release.yml` | `v*` tag | re-gate all wheels/sdist, publish to PyPI via Trusted Publishing (manual dispatch → TestPyPI) |
+| `npm.yml` | push / PR | npm tarball installed into a fresh project: parity battery, ESM/embedded smokes, strict tsc, vite + headless-Chromium browser gate |
+| `release.yml` | `v*` tag | re-gate wheels/sdist/npm via the same workflows, publish to PyPI (Trusted Publishing) + npm (provenance); manual dispatch → TestPyPI dry-run |
 | `fuzz.yml` | nightly | whole-surface coverage-guided fuzzing, compounding corpora |
 | `nightly.yml` | nightly | **everything**: full suite incl. opt-in OOM + multi-process chaos, all sanitizers, N=250 scale, WASM parity, coverage |
 

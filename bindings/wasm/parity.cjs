@@ -6,8 +6,9 @@
  *   tools/wasm_build.sh && node bindings/wasm/parity.cjs
  */
 "use strict";
-const path = require("path");
-const { load } = require("./sync_engine.cjs");
+// KOME_PKG re-points the battery at an installed package (the npm tarball
+// gate in wasm.yml); default is the repo dev flow over build-wasm/.
+const { load } = require(process.env.KOME_PKG || "./sync_engine.cjs");
 
 const enc = (s) => new TextEncoder().encode(s);
 const eqBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -19,7 +20,7 @@ function check(name, cond, msg) {
 }
 
 (async () => {
-  const k = await load(path.join(__dirname, "../../build-wasm/sync_engine.js"));
+  const k = await load(); // dev default: build-wasm/sync_engine.js
   const seed = (v) => new Uint8Array(32).fill(v);
   let s = 1;
   const eng = () => k.create(seed(s++));

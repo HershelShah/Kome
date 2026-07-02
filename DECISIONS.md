@@ -998,3 +998,31 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   open/fsync) and `src/transport/*` (BSD sockets) need a port; that's engine
   work (an M8 candidate), not packaging, and pretending otherwise would gate
   the whole channel on it.
+
+## M7 — Packaging (phase 2: npm/WASM)
+
+- **`kome-sync` on npm too** — `kome` is squatted on both registries, so the
+  fallback becomes a feature: one package name everywhere (PyPI, npm).
+- **One API implementation, five entries.** The Binding class lives in
+  `binding.cjs`; index.cjs/index.mjs, embedded.cjs/embedded.mjs, and the repo
+  dev shim (`sync_engine.cjs` over build-wasm/) all wrap it. Shared emcc
+  source list/ABI/flags moved to `tools/wasm_flags.sh`, sourced by both
+  wasm_build.sh and npm_build.sh — same no-drift move as the reusable CI
+  workflows.
+- **Node always runs the CJS engine build, even via the ESM entry.** The
+  distro emscripten (3.1.6)'s EXPORT_ES6 output references `__dirname` on its
+  Node path — a ReferenceError in ES modules. The ES6 builds serve
+  browsers/bundlers only, where that path is dead code; index.mjs branches on
+  the environment. Static `new URL("./dist/kome.wasm", import.meta.url)` in
+  index.mjs is what lets vite/webpack emit the wasm asset.
+- **Distro-pinned emscripten, not emsdk.** The plan said pin emsdk; wasm.yml
+  has always used apt's emscripten, and the npm build uses the same toolchain
+  so the package is built by exactly what the gtest-suites-in-WASM gate runs.
+  Revisit if a distro bump changes codegen in a way the parity gate catches.
+- **Gate scripts are copied into the temp project before running** — ESM
+  resolves imports relative to the script file, so running them from the repo
+  would miss the gate project's node_modules (the same in-place trap as the
+  pytest sys.path one in phase 1, with the same fix).
+- **npm publish is tags-only.** npm has no TestPyPI; the manual-dispatch
+  dry-run stops at the fully-gated tarball artifact instead of publishing
+  anything.
