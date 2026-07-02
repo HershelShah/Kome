@@ -39,7 +39,9 @@ jobs:
     uses: ./.github/workflows/npm.yml
 
   publish-pypi:
-    needs: build
+    # Both registries publish together or not at all — a failed npm gate must
+    # not leave PyPI a version ahead (tags can't cleanly re-publish).
+    needs: [build, build-npm]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -59,9 +61,10 @@ jobs:
 
   publish-npm:
     # Tags only — npm has no TestPyPI equivalent, so the manual-dispatch
-    # dry-run stops at the fully-gated tarball artifact.
+    # dry-run stops at the fully-gated tarball artifact. Waits on the wheel
+    # gates too (see publish-pypi).
     if: github.ref_type == 'tag'
-    needs: build-npm
+    needs: [build, build-npm]
     runs-on: ubuntu-latest
     environment: npm
     permissions:

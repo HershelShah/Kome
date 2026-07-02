@@ -32,13 +32,18 @@ wasm_build_monocypher() {
 # Link the engine to a modularized WASM module.
 #   $1 = monocypher object, $2 = output (.js or .mjs), rest = extra emcc flags
 #   (e.g. -sEXPORT_ES6=1 for an ES module, -sSINGLE_FILE=1 to embed the wasm)
+# WASM_ENV overrides the target environments (default web,node); the ES6
+# builds use web,worker so emscripten's Node path — which references
+# __dirname, a ReferenceError in ES modules on this emscripten version —
+# isn't in the artifact at all.
 wasm_link() {
     local mono="$1" out="$2"
     shift 2
     em++ -O2 -std=c++17 -w \
         -Iinclude -Isrc -Ithird_party/monocypher \
         $WASM_CPP "$mono" \
-        -sMODULARIZE=1 -sEXPORT_NAME=createSyncEngine -sENVIRONMENT=web,node \
+        -sMODULARIZE=1 -sEXPORT_NAME=createSyncEngine \
+        -sENVIRONMENT="${WASM_ENV:-web,node}" \
         -sALLOW_MEMORY_GROWTH=1 -sWASM_BIGINT \
         -sEXPORTED_FUNCTIONS="$(echo "$WASM_EXPORTS" | tr -d '\n ')" \
         -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","UTF8ToString","HEAPU8","HEAPU32"]' \

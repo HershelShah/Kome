@@ -32,3 +32,4 @@ coverage-html/
 *.info
 
 build-wasm/
+/bindings/wasm/LICENSE
