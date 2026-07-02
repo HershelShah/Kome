@@ -70,8 +70,11 @@ test-requires = ["pytest"]
 # Copy the tests out of the repo before running them: pytest prepends a test
 # file's directory to sys.path, and running in-place would import the repo's
 # bindings/python/kome instead of the installed wheel under test. Globbed so
-# new test files join the gate without editing this line.
-test-command = 'cp "{project}"/bindings/python/test_*.py . && python -m pytest -q .'
+# new test files join the gate without editing this line. They go into a
+# subdirectory because cibuildwheel plants a fail-by-design canary test in
+# the working directory (its guard against running tests from the project
+# tree); pointing pytest at t/ collects only our files.
+test-command = 'mkdir -p t && cp "{project}"/bindings/python/test_*.py t/ && python -m pytest -q t'
 
 [tool.cibuildwheel.macos]
 environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
