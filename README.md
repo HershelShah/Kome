@@ -355,7 +355,11 @@ version tags. The repo dev flow is unchanged (`sync_engine.cjs` over
 `build-wasm/`; the API core is shared in `binding.cjs`).
 `examples/web/index.html` is an in-page browser demo. A browser node reaches
 other nodes via a WebSocket-speaking peer/relay (the native `src/transport/ws.*`
-side). Verified in CI by `.github/workflows/wasm.yml`.
+side). Verified in CI by `.github/workflows/wasm.yml`. `bindings/wasm-runtime/`
+(`kome-sync-runtime`, a sibling npm package) turns the binding's manual
+session pump into a running gossip loop — a browser/Node `SyncClient` and a
+Node `SyncHub` — over that same one-frame-per-message WebSocket wire; see its
+own README for usage, the wire protocol, and its trust-model caveat.
 
 ## Single-file amalgamation
 

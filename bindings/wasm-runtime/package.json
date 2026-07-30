@@ -1,0 +1,50 @@
+{
+  "name": "kome-sync-runtime",
+  "version": "0.1.0",
+  "description": "Generic, app-agnostic sync loop over WebSocket for the kome-sync WASM binding: turns the manual sessionStep pump into a running SyncClient (browser or Node) and a Node SyncHub.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HershelShah/Kome.git",
+    "directory": "bindings/wasm-runtime"
+  },
+  "homepage": "https://github.com/HershelShah/Kome#readme",
+  "keywords": [
+    "crdt",
+    "sync",
+    "p2p",
+    "offline-first",
+    "local-first",
+    "websocket",
+    "wasm"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "kome-sync": "file:../wasm",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.6.0"
+  }
+}
