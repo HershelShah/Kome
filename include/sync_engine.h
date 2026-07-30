@@ -186,6 +186,40 @@ int sync_engine_exists(sync_engine *e,
                        const uint8_t *entity, size_t entity_len,
                        int *out_exists);
 
+/* One scanned entity. entity is an owned buffer (release the whole array
+ * with sync_scan_free). */
+typedef struct sync_scan_entry {
+    uint8_t *entity; size_t entity_len;
+} sync_scan_entry;
+
+/* List entities present in namespace ns, in the engine's canonical
+ * byte-lexicographic key order (the sorted map order reconciliation uses).
+ * Tombstoned/absent entities are excluded. start_after is an exclusive resume
+ * cursor: only entities strictly greater than it are returned; NULL/0-len
+ * starts from the beginning. A start_after that does not name an existing
+ * entity is still a valid bound. limit caps the number of entries returned;
+ * 0 means unlimited. An empty/unknown namespace, or a cursor past the end,
+ * is not an error: *out_count is set to 0 and *out_entries to NULL, so
+ * pagination loops terminate cleanly. On success *out_entries points to
+ * *out_count heap-allocated entries; release with sync_scan_free. Like
+ * sync_engine_get / sync_engine_exists, this is a local read with no
+ * capability check — read scoping is a sync-time concern.
+ *
+ * Caveat: an entity literally named "" (the empty string) cannot itself be
+ * used as a start_after cursor to resume past it, since NULL/0-len already
+ * means "start from the beginning". Because "" sorts first, it can only be
+ * the last item of a page when limit == 1; if that case matters, re-scan
+ * from the beginning with a larger limit and skip the already-seen entry
+ * client-side. */
+sync_error sync_engine_scan(sync_engine *e,
+                            const uint8_t *ns, size_t ns_len,
+                            const uint8_t *start_after, size_t start_after_len,
+                            size_t limit,
+                            sync_scan_entry **out_entries, size_t *out_count);
+
+/* Release an array returned by sync_engine_scan. Safe with NULL. */
+void sync_scan_free(sync_scan_entry *entries, size_t count);
+
 /* ---- Full-state replication baseline (the oracle) ----------------------- */
 
 /* Export the entire current state as change records. On success *out points

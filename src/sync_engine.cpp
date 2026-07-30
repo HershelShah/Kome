@@ -441,6 +441,81 @@ int sync_engine_exists(sync_engine *e,
     }
 }
 
+sync_error sync_engine_scan(sync_engine *e,
+                            const uint8_t *ns, size_t ns_len,
+                            const uint8_t *start_after, size_t start_after_len,
+                            size_t limit,
+                            sync_scan_entry **out_entries, size_t *out_count) {
+    if (!e || !out_entries || !out_count || (!ns && ns_len) ||
+        (!start_after && start_after_len))
+        return SYNC_ERR_INVALID;
+    *out_entries = nullptr;
+    *out_count = 0;
+    try {
+        auto ni = e->ns.find(to_str(ns, ns_len));
+        if (ni == e->ns.end()) return SYNC_OK;
+        Entities &ents = ni->second;
+
+        /* start_after is exclusive; upper_bound lands on the first key past it
+         * (a cursor that doesn't name an entity is still a valid bound). No
+         * cursor means the beginning, which is not the same as upper_bound of
+         * an empty string (that would skip an entity literally named ""). */
+        auto begin = start_after_len == 0
+                         ? ents.begin()
+                         : ents.upper_bound(to_str(start_after, start_after_len));
+
+        /* Count first (bounded by limit) so the array is allocated exactly. */
+        size_t n = 0;
+        for (auto it = begin; it != ents.end() && (limit == 0 || n < limit); ++it)
+            if (it->second.present()) n++;
+        if (n == 0) return SYNC_OK;
+
+        sync_scan_entry *arr = static_cast<sync_scan_entry *>(
+            std::calloc(n, sizeof(sync_scan_entry)));
+        if (!arr) return SYNC_ERR_NOMEM;
+
+        size_t i = 0;
+        bool oom = false;
+        for (auto it = begin; it != ents.end() && i < n; ++it) {
+            if (!it->second.present()) continue;
+            const std::string &entk = it->first;
+            if (entk.empty()) {
+                /* dup_field() returns NULL for an empty string, but scan's
+                 * entity buffer must always be non-NULL: it is documented as
+                 * an owned, heap-allocated buffer, and a NULL+0 entry is
+                 * indistinguishable from "no cursor" (start-from-beginning),
+                 * which would make an entity literally named "" un-passable
+                 * as a start_after cursor and hang the documented pagination
+                 * loop. Allocate a 1-byte buffer, as sync_engine_get does for
+                 * the same reason. */
+                arr[i].entity = static_cast<uint8_t *>(std::malloc(1));
+                if (!arr[i].entity) { oom = true; goto fail; }
+            } else {
+                arr[i].entity = dup_field(entk, &oom);
+                if (oom) goto fail;
+            }
+            arr[i].entity_len = entk.size();
+            i++;
+        }
+        *out_entries = arr;
+        *out_count = n;
+        return SYNC_OK;
+    fail:
+        sync_scan_free(arr, i);
+        return SYNC_ERR_NOMEM;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+void sync_scan_free(sync_scan_entry *entries, size_t count) {
+    if (!entries) return;
+    for (size_t i = 0; i < count; i++) std::free(entries[i].entity);
+    std::free(entries);
+}
+
 } // extern "C"
 
 /* Internal apply, shared by the public ABI and reconcile's parallel batch
