@@ -167,6 +167,195 @@ function check(name, cond, msg) {
     [owner, writer, stranger, v].forEach((e) => k.destroy(e));
   }
 
-  console.log(failed ? `\nWASM PARITY FAILED (${failed})` : "\nWASM PARITY OK (sync, storage + reopen, and capability enforcement all in WASM)");
+  // ScanPagination: entities come back sorted, and repeated cursor'd pages
+  // union back to exactly the full unpaginated listing.
+  {
+    const e = eng();
+    const names = [];
+    for (let i = 0; i < 25; i++) { const n = "ent" + String(i).padStart(3, "0"); k.set(e, "sc", n, "f", "v"); names.push(n); }
+    const dec = (u8) => new TextDecoder().decode(u8);
+    const full = k.scan(e, "sc", null, 0).map(dec);
+    let sorted = true;
+    for (let i = 1; i < full.length; i++) if (!(full[i - 1] < full[i])) sorted = false;
+
+    const paged = [];
+    let cursor = null;
+    for (let guard = 0; guard < 100; guard++) {
+      const page = k.scan(e, "sc", cursor, 7);
+      if (page.length === 0) break;
+      for (const p of page) paged.push(dec(p));
+      cursor = page[page.length - 1];
+    }
+    check("ScanPagination",
+          full.length === 25 && sorted &&
+          paged.length === full.length && paged.every((v, i) => v === full[i]));
+    check("ScanEmptyNamespace", k.scan(e, "nope", null, 0).length === 0);
+    k.destroy(e);
+  }
+
+  // BlobRoundTripMultiChunk: content spanning >2 SYNC_BLOB_CHUNK_MAX chunks
+  // reassembles byte-exact; stat reports size+completeness; delete then
+  // NOTFOUND.
+  {
+    const e = eng();
+    const CHUNK = 32768;
+    const data = new Uint8Array(CHUNK * 3 + 777);
+    for (let i = 0; i < data.length; i++) data[i] = (i * 7 + 3) & 0xff;
+    const id = k.blobPut(e, "blobs", data);
+    check("BlobIdLen", id.length === 32);
+    const got = k.blobGet(e, "blobs", id);
+    check("BlobRoundTripMultiChunk", eqBytes(got, data));
+    const stat = k.blobStat(e, "blobs", id);
+    check("BlobStat", !!stat && stat.size === data.length && stat.complete === true);
+    // Idempotent put: same content -> same id.
+    const id2 = k.blobPut(e, "blobs", data);
+    check("BlobPutIdempotent", eqBytes(id, id2));
+
+    k.blobDelete(e, "blobs", id);
+    let deletedOk = false;
+    try { deletedOk = k.blobGet(e, "blobs", id) === null; } catch { deletedOk = false; }
+    check("BlobDeleteThenNotFound", deletedOk);
+    let statAfterDelete = null, statThrew = false;
+    try { statAfterDelete = k.blobStat(e, "blobs", id); } catch { statThrew = true; }
+    check("BlobStatAfterDelete", statAfterDelete === null && !statThrew);
+    k.destroy(e);
+  }
+
+  // BlobCorrupt: tampering with a chunk's payload directly (bypassing
+  // blobPut) makes blobGet detect the mismatch and fail SYNC_ERR_CORRUPT (7),
+  // never handing back unverified bytes.
+  {
+    const e = eng();
+    const data = new Uint8Array(32768 + 55).fill(9);
+    const id = k.blobPut(e, "blobs2", data);
+    const entities = k.scan(e, "blobs2", null, 0);
+    let corrupted = 0;
+    for (const ent of entities) {
+      if (ent.length === 34 && ent[0] === 0x63 && ent[1] === 0x00) { // 'c' 0x00 chunk prefix
+        k.set(e, "blobs2", ent, "d", new TextEncoder().encode("tampered"));
+        corrupted++;
+      }
+    }
+    check("BlobCorruptSetup", corrupted > 0);
+    let code = null;
+    try { k.blobGet(e, "blobs2", id); } catch (err) { code = err.code; }
+    check("BlobCorruptDetected", code === 7);
+    let statCode = null;
+    try { k.blobStat(e, "blobs2", id); } catch (err) { statCode = err.code; }
+    // stat only re-derives size/completeness from the manifest (untouched
+    // here), so a corrupt *chunk* (as opposed to a corrupt manifest) still
+    // reports OK; this just documents that blobGet is the verifying path.
+    check("BlobStatIgnoresChunkCorruption", statCode === null);
+    k.destroy(e);
+  }
+
+  // InviteRoundTrip: peer pubkey + address + an embedded capability survive
+  // encode/decode, including the capability's subject.
+  {
+    const owner = eng(), peer = eng();
+    const pk = k.identity(peer);
+    const root = k.capRoot(owner, "invNs", READ | WRITE);
+    const invite = k.inviteEncode(pk, "wss://relay.example.invalid:4433/r", root);
+    const decoded = k.inviteDecode(invite);
+    check("InviteRoundTripPubkey", eqBytes(decoded.peerPubkey, pk));
+    check("InviteRoundTripAddr", decoded.addr === "wss://relay.example.invalid:4433/r");
+    check("InviteRoundTripCapPresent", decoded.cap !== null);
+    if (decoded.cap !== null) {
+      check("InviteRoundTripCapSubject", eqBytes(k.capSubject(decoded.cap), k.capSubject(root)));
+      k.capFree(decoded.cap);
+    }
+    // No-capability invite decodes with cap === null.
+    const inviteNoCap = k.inviteEncode(pk, "udp://example.invalid:1", 0);
+    const decodedNoCap = k.inviteDecode(inviteNoCap);
+    check("InviteRoundTripNoCap", decodedNoCap.cap === null);
+    k.capFree(root);
+    k.destroy(owner); k.destroy(peer);
+  }
+
+  // RevokeIsRevoked: the namespace owner (who must hold ns's own root to
+  // revoke at all) can burn a subject's access; a non-owner's attempt is
+  // rejected (SYNC_ERR_UNAUTHORIZED).
+  {
+    const owner = eng(), subject = eng(), nonOwner = eng();
+    const spk = k.identity(subject);
+    const root = k.capRoot(owner, "revNs", READ | WRITE);
+    const deleg = k.capDelegate(owner, root, spk, WRITE, 0);
+    k.grant(owner, root);
+    k.grant(subject, deleg);
+    check("IsRevokedFalseBeforeRevoke", k.isRevoked(owner, "revNs", spk) === false);
+    check("RevokeByNonOwnerRejected", k.revoke(nonOwner, "revNs", spk) === 6 /* SYNC_ERR_UNAUTHORIZED */);
+    check("RevokeByOwnerOk", k.revoke(owner, "revNs", spk) === 0);
+    check("IsRevokedTrueAfterRevoke", k.isRevoked(owner, "revNs", spk) === true);
+    k.capFree(root); k.capFree(deleg);
+    [owner, subject, nonOwner].forEach((e) => k.destroy(e));
+  }
+
+  // OpenEncryptedRoundtrip: an encrypted durable engine's data survives
+  // close/reopen with the right key; the wrong key fails cleanly (throws,
+  // no partially-usable engine).
+  {
+    const key = new Uint8Array(32).fill(0x5a);
+    const wrongKey = new Uint8Array(32).fill(0x5b);
+    const e1 = k.openEncrypted("/enc-a.db", seed(s++), key);
+    k.set(e1, "ns", "secret", "f", "shh");
+    const d1 = k.digest(e1);
+    k.destroy(e1);
+
+    const e2 = k.openEncrypted("/enc-a.db", seed(0), key);
+    check("OpenEncryptedRightKey",
+          eqBytes(k.digest(e2), d1) &&
+          eqBytes(k.get(e2, "ns", "secret", "f"), enc("shh")));
+    k.destroy(e2);
+
+    let wrongKeyThrew = false;
+    try { k.openEncrypted("/enc-a.db", seed(0), wrongKey); }
+    catch { wrongKeyThrew = true; }
+    check("OpenEncryptedWrongKeyFails", wrongKeyThrew);
+  }
+
+  // ScopedSessionReadAuthorization: a scoped session sync excludes an
+  // unauthorized namespace's records for a third identity while an
+  // authorized peer receives them; open (unowned) namespaces stay visible to
+  // everyone regardless of scoping.
+  {
+    const owner = eng(), authorized = eng(), unauthorized = eng();
+    const apk = k.identity(authorized);
+    const root = k.capRoot(owner, "secretNs", READ | WRITE);
+    const readOnly = k.capDelegate(owner, root, apk, READ, 0);
+    // The sender's OWN capability store drives scoping/enforcement, so the
+    // owner must hold both the root and the delegation it wants to honor.
+    k.grant(owner, root);
+    k.grant(owner, readOnly);
+    k.grant(authorized, readOnly);
+
+    k.set(owner, "secretNs", "e1", "f", "topsecret");
+    k.set(owner, "openNs", "pub", "f", "public");
+
+    const pump = (sa, sb) => {
+      let msg = k.sessionStep(sa, new Uint8Array(0)).out;
+      let turn = sb, empties = msg.length === 0 ? 1 : 0;
+      for (let i = 0; i < 100000 && empties < 2; i++) {
+        const r = k.sessionStep(turn, msg);
+        empties = r.out.length === 0 ? empties + 1 : 0;
+        msg = r.out;
+        turn = turn === sa ? sb : sa;
+      }
+      k.sessionEnd(sa); k.sessionEnd(sb);
+    };
+
+    pump(k.sessionBeginScoped(owner, true, apk), k.sessionBegin(authorized, false));
+    check("ScopedAuthorizedGetsSecret", k.exists(authorized, "secretNs", "e1"));
+    check("ScopedAuthorizedGetsOpen", k.exists(authorized, "openNs", "pub"));
+
+    const upk = k.identity(unauthorized);
+    pump(k.sessionBeginScoped(owner, true, upk), k.sessionBegin(unauthorized, false));
+    check("ScopedUnauthorizedDeniedSecret", !k.exists(unauthorized, "secretNs", "e1"));
+    check("ScopedUnauthorizedGetsOpen", k.exists(unauthorized, "openNs", "pub"));
+
+    k.capFree(root); k.capFree(readOnly);
+    [owner, authorized, unauthorized].forEach((e) => k.destroy(e));
+  }
+
+  console.log(failed ? `\nWASM PARITY FAILED (${failed})` : "\nWASM PARITY OK (sync, storage + reopen, capability enforcement, scan, blobs, invites, revocation, encrypted storage, and read-scoped sessions all in WASM)");
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

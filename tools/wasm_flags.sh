@@ -10,16 +10,20 @@ WASM_CPP="src/sync_engine.cpp src/sha256.cpp src/storage.cpp src/codec.cpp \
      src/reconcile.cpp src/crypto.cpp src/capability.cpp src/invite.cpp \
      src/noise.cpp src/blob.cpp"
 
-WASM_EXPORTS='["_sync_engine_create","_sync_engine_open","_sync_engine_destroy",
+WASM_EXPORTS='["_sync_engine_create","_sync_engine_open","_sync_engine_open_encrypted",
+"_sync_engine_destroy",
 "_sync_engine_flush","_sync_engine_identity","_sync_engine_site_id",
 "_sync_engine_set","_sync_engine_delete","_sync_engine_get","_sync_engine_exists",
+"_sync_engine_scan","_sync_scan_free",
+"_sync_blob_put","_sync_blob_get","_sync_blob_stat","_sync_blob_delete",
 "_sync_engine_export","_sync_changes_free","_sync_engine_apply","_sync_engine_digest",
 "_sync_free","_sync_strerror","_sync_abi_version","_sync_change_encode",
 "_sync_change_decode","_sync_change_free_decoded","_sync_change_sign",
 "_sync_session_begin","_sync_session_begin_scoped","_sync_session_step",
 "_sync_session_end","_sync_capability_root","_sync_capability_delegate",
 "_sync_capability_encode","_sync_capability_decode","_sync_capability_subject",
-"_sync_engine_grant","_sync_capability_free","_sync_invite_encode",
+"_sync_engine_grant","_sync_engine_revoke","_sync_engine_is_revoked",
+"_sync_capability_free","_sync_invite_encode",
 "_sync_invite_decode","_sync_engine_set_logger","_malloc","_free"]'
 
 # Compile the vendored C dep as C (em++ would treat .c as C++).
@@ -46,6 +50,7 @@ wasm_link() {
         -sENVIRONMENT="${WASM_ENV:-web,node}" \
         -sALLOW_MEMORY_GROWTH=1 -sWASM_BIGINT \
         -sEXPORTED_FUNCTIONS="$(echo "$WASM_EXPORTS" | tr -d '\n ')" \
-        -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","UTF8ToString","HEAPU8","HEAPU32"]' \
+        -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","UTF8ToString","HEAPU8","HEAPU32","FS","IDBFS"]' \
+        -lidbfs.js \
         "$@" -o "$out"
 }
