@@ -160,6 +160,21 @@ secure mesh at scale, and a single-box network-namespace rig are in
 [`docs/REAL_NETWORK_TESTING.md`](docs/REAL_NETWORK_TESTING.md). (IPv6 is not yet
 supported — the UDP layer is IPv4-only.)
 
+`netnode`/`netmesh` are for validating the wire path itself; **`komed`**
+(`services/komed`) is the generic, config-driven, always-on peer daemon meant
+to actually be deployed — no app semantics, just an identity, a durable
+database, and a `key=value` config (`db=`, `peer=<pubkey>@host:port`,
+`rendezvous=`, `relay=`, `interval_ms=`, `cap_file=` for delegated read-scoped
+serving) that it syncs on a cadence over the same production secure path,
+alongside the `relayd`/`rendezvousd` daemons. It answers inbound connections
+from any peer that dials it — even with zero configured `peer=` lines, the way
+`relayd`/`rendezvousd` passively answer requests — so a bare `komed` pointed at
+a shared database is "the always-on member of your circles" any application
+can stand up standalone. `komed --identity` prints its pubkey for wiring into
+peers' configs, `--once` runs a single cron-friendly sync cycle, and
+`tests/komed_test.sh` is the end-to-end check (two `komed`s, direct UDP, full
+convergence, clean `SIGTERM` shutdown).
+
 ## Design
 
 - **Convergence is the law.** Every value type's merge is a semilattice join

@@ -210,6 +210,15 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(netmesh PRIVATE sync_engine monocypher)
         target_include_directories(netmesh PRIVATE
             ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
+        # komed: the generic, config-driven, always-on peer daemon. Drives the
+        # same secure production path as netnode/netmesh (Noise XX + identity
+        # proof + capability-scoped reconcile), so it needs monocypher linked
+        # directly like they do (incompatible with the amalgamated engine).
+        add_executable(komed services/komed/komed_main.cpp)
+        target_link_libraries(komed PRIVATE sync_engine monocypher)
+        target_include_directories(komed PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/monocypher)
     endif() # NOT SYNC_AMALGAMATION
 
     # Infrastructure daemons (M5): blind relay + endpoint-broker rendezvous.
@@ -308,6 +317,31 @@ if(SYNC_BUILD_TESTS)
         sync_add_test(connection_test tests/connection_test.cpp)
         sync_add_test(transport_parity_test tests/transport_parity_test.cpp
                       LIBS Threads::Threads)
+
+        # komed E2E test: two standalone komed processes, two durable SQLite
+        # databases, syncing over real UDP through the production secure
+        # path. Only registered where the komed target itself is built (it
+        # is skipped, like komed, under SYNC_AMALGAMATION).
+        #
+        # It loads libsync_engine.so a second time via Python ctypes (the
+        # test's verification steps use the Python binding directly, outside
+        # the komed processes). Under an active ASan/TSan build that second,
+        # non-LD_PRELOADed load of the sanitizer-instrumented .so fails
+        # ("ASan runtime does not come first in initial library list" /
+        # "libtsan.so.2: cannot allocate memory in static TLS block") — not a
+        # real product bug, so pass the active sanitizer through and have the
+        # script skip (exit 77, wired to SKIP_RETURN_CODE below) rather than
+        # report a false failure. UBSan has no such runtime-preload
+        # requirement and still runs the test.
+        if(TARGET komed)
+            add_test(NAME komed_test
+                     COMMAND bash ${CMAKE_SOURCE_DIR}/tests/komed_test.sh)
+            set_tests_properties(komed_test PROPERTIES
+                ENVIRONMENT
+                  "KOMED_BIN=$<TARGET_FILE:komed>;SYNC_ENGINE_LIB=$<TARGET_FILE:sync_engine_shared>;KOMED_TEST_SANITIZER=${SYNC_SANITIZER}"
+                TIMEOUT 180
+                SKIP_RETURN_CODE 77)
+        endif()
 
         # OOM fault-injection test (allocation-failure paths). Off by default
         # and out of the sanitizer matrix, where --wrap conflicts with ASan's
