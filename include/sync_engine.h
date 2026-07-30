@@ -56,7 +56,8 @@ typedef enum sync_error {
     SYNC_ERR_NOTFOUND    = 3, /* key/field absent or entity not present */
     SYNC_ERR_INTERNAL    = 4, /* unexpected internal failure */
     SYNC_ERR_BADSIG      = 5, /* record signature failed to verify */
-    SYNC_ERR_UNAUTHORIZED = 6 /* author lacks a capability for the namespace */
+    SYNC_ERR_UNAUTHORIZED = 6, /* author lacks a capability for the namespace */
+    SYNC_ERR_CORRUPT     = 7  /* blob content does not match its content hash */
 } sync_error;
 
 /* A hybrid logical clock timestamp. physical is wall-clock milliseconds
@@ -219,6 +220,86 @@ sync_error sync_engine_scan(sync_engine *e,
 
 /* Release an array returned by sync_engine_scan. Safe with NULL. */
 void sync_scan_free(sync_scan_entry *entries, size_t count);
+
+/* ---- Blob extension ------------------------------------------------------
+ *
+ * Generic content-addressed large-value storage, implemented as a pure layer
+ * over sync_engine_set/get/delete/scan/exists (blob.cpp never touches engine
+ * state directly). A value larger than one sync message is sliced into
+ * SYNC_BLOB_CHUNK_MAX-byte chunks that replicate as ordinary signed records;
+ * a small manifest record lists the chunk hashes. There is no media
+ * semantics here — just bytes in, bytes out.
+ *
+ * Apps give blobs a dedicated namespace (e.g. "photos.blobs"): entity scans
+ * of that namespace (sync_engine_scan) will see the blob's chunk and
+ * manifest entities alongside whatever else lives there.
+ *
+ * On-disk layout within the caller's namespace:
+ *   Chunk entity:    'c' 0x00 + 32-byte raw chunk hash (BLAKE2b-256 of the
+ *                     chunk payload); field "d" = payload bytes.
+ *   Manifest entity: 'b' 0x00 + 32-byte raw blob id; field "m" =
+ *                     [u8 version=1][u64le total_size][u32le chunk_count]
+ *                     [chunk_count * 32-byte chunk hashes].
+ * A blob id is BLAKE2b-256 over the *full* content (not over the manifest),
+ * so identical content always maps to the same id and the same set of chunk
+ * hashes, regardless of who wrote it. */
+
+#define SYNC_BLOB_ID_LEN 32u       /* BLAKE2b-256 of the full blob content */
+#define SYNC_BLOB_CHUNK_MAX 32768u /* max chunk payload bytes */
+
+/* Content-address and store data in namespace (ns, ns_len), slicing it into
+ * SYNC_BLOB_CHUNK_MAX-byte chunk records followed by a manifest record.
+ * out_id receives the 32-byte blob id (BLAKE2b-256 of data). len==0 is a
+ * valid empty blob (a manifest with zero chunks); data may be NULL only when
+ * len==0. A blob whose content would require more than 1000 chunks (~31.25
+ * MiB) is rejected with SYNC_ERR_INVALID before anything is written.
+ *
+ * Idempotent: putting the same content again yields the same id and rewrites
+ * the same chunk/manifest values (LWW on identical values is harmless). */
+sync_error sync_blob_put(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                         const uint8_t *data, size_t len,
+                         uint8_t out_id[SYNC_BLOB_ID_LEN]);
+
+/* Reassemble and verify the blob identified by id in namespace (ns, ns_len).
+ * Every chunk's bytes are re-hashed against the manifest's chunk hash, and
+ * the reassembled whole is re-hashed against id; any mismatch returns
+ * SYNC_ERR_CORRUPT rather than handing back unverified bytes. A malformed
+ * manifest (truncated, bad version, an implausible chunk count, or a
+ * size/count that don't agree) is also SYNC_ERR_CORRUPT — manifests arrive
+ * from peers and are treated as untrusted input.
+ *
+ * SYNC_ERR_NOTFOUND covers two cases callers cannot tell apart from this
+ * call alone: no manifest at all, and a manifest present but with at least
+ * one chunk not yet replicated locally (the eventual-consistency answer —
+ * use sync_blob_stat to distinguish "unknown" from "still arriving").
+ *
+ * On success *out is a malloc'd buffer of *out_len bytes, released with
+ * sync_free; following sync_engine_get's convention, an empty blob yields a
+ * non-NULL, zero-length buffer (never NULL on SYNC_OK). */
+sync_error sync_blob_get(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                         const uint8_t id[SYNC_BLOB_ID_LEN],
+                         uint8_t **out, size_t *out_len);
+
+/* Report a blob's size and local replication completeness without
+ * reassembling or verifying it. SYNC_ERR_NOTFOUND if no manifest exists (or
+ * it is malformed: SYNC_ERR_CORRUPT); otherwise SYNC_OK with *out_size set
+ * from the manifest and *out_complete set to 1 iff every chunk entity the
+ * manifest references is present locally (0 otherwise). */
+sync_error sync_blob_stat(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                          const uint8_t id[SYNC_BLOB_ID_LEN],
+                          uint64_t *out_size, int *out_complete);
+
+/* Delete the manifest entity and every chunk entity it references.
+ * SYNC_ERR_NOTFOUND if no manifest exists; SYNC_ERR_CORRUPT (nothing
+ * deleted) if the manifest is malformed.
+ *
+ * Caveat: chunk entities are content-addressed by their own hash, so a chunk
+ * shared by two *different* blobs in the same namespace is deleted for both.
+ * Whole-blob content-addressing means this only bites when two distinct
+ * blobs happen to share an identical chunk of partial content (identical
+ * whole blobs are the same id and the same delete). Accepted for v1. */
+sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                            const uint8_t id[SYNC_BLOB_ID_LEN]);
 
 /* ---- Full-state replication baseline (the oracle) ----------------------- */
 

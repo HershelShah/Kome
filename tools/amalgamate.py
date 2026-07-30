@@ -37,6 +37,7 @@ CORE_SOURCES = [
     "src/sync_engine.cpp", "src/sha256.cpp", "src/storage.cpp",
     "src/codec.cpp", "src/reconcile.cpp", "src/crypto.cpp",
     "src/capability.cpp", "src/invite.cpp", "src/noise.cpp",
+    "src/blob.cpp",
 ]
 TRANSPORT_SOURCES = [
     "src/transport/reliable.cpp", "src/transport/udp.cpp",

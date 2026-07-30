@@ -217,6 +217,7 @@ const char *sync_strerror(int err) {
         case SYNC_ERR_INTERNAL: return "internal error";
         case SYNC_ERR_BADSIG:   return "signature verification failed";
         case SYNC_ERR_UNAUTHORIZED: return "not authorized";
+        case SYNC_ERR_CORRUPT:  return "blob content does not match its hash";
         default:                return "unknown error";
     }
 }

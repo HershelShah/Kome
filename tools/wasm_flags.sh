@@ -8,7 +8,7 @@
 
 WASM_CPP="src/sync_engine.cpp src/sha256.cpp src/storage.cpp src/codec.cpp \
      src/reconcile.cpp src/crypto.cpp src/capability.cpp src/invite.cpp \
-     src/noise.cpp"
+     src/noise.cpp src/blob.cpp"
 
 WASM_EXPORTS='["_sync_engine_create","_sync_engine_open","_sync_engine_destroy",
 "_sync_engine_flush","_sync_engine_identity","_sync_engine_site_id",
