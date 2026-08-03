@@ -52,6 +52,9 @@ public:
     /* Accept one connection into out; false on timeout. */
     bool accept(TcpStream &out, int timeout_ms);
     void close();
+    /* Raw fd, for a caller (e.g. TcpRelayServer) that joins it into its own
+     * poll set instead of using accept() above. -1 if not open. */
+    int fd() const { return fd_; }
 
 private:
     int      fd_ = -1;

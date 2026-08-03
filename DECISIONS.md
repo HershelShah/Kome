@@ -1073,3 +1073,92 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
 - **Generated, never committed** — CI regenerates per push; releases attach
   kome-<version>-amalgamation.zip (kome.h, kome.cpp, LICENSE, SHA256SUMS) to
   the GitHub Release, and all three channels' publishes gate on each other.
+
+## Blind TCP store-and-forward relay (issue #49)
+
+- **Mailbox = a dedicated EdDSA keypair's public key, per-circle.** One
+  broadcast is one POST instead of N; the relay learns only "holder of the
+  mailbox capability posted/polled", never the recipient set or its size. A
+  per-member mailbox is just a mailbox whose keypair belongs to one member,
+  so the model subsumes per-member without the relay knowing which an app
+  chose. Revocation is circle re-key + new mailbox keypair — standard E2EE
+  group semantics; the old mailbox ages out via TTL/LRU.
+- **Retained log, not drain-on-fetch.** A shared circle mailbox can't be
+  drained by the first member to poll it (everyone must see the same
+  broadcast), so FETCH takes a client-held cursor (`since_seq`) and is
+  non-destructive; removal is by TTL/caps only, echoing `evicted_up_to` so a
+  client below it knows it missed data.
+- **One global monotonic seq counter, seeded from wall-clock at startup**
+  (not per-mailbox). A per-mailbox counter restarting at 1 after eviction or
+  a relay restart would silently strand every cursor a client saved against
+  the old incarnation; a shared, wall-clock-seeded counter always hands out
+  seqs above any prior cursor. Coarsens the seq into a global-post-volume
+  leak, and `seq >> 20` discloses the relay's boot time to an authorized
+  poster; both are relay operational metadata (not client content, identity,
+  or key material — outside the plaintext/key blindness invariant), accepted
+  and documented at the `next_seq_` seed in tcp_relay.cpp.
+- **Per-operation challenge signatures, not a one-shot ATTACH or capability
+  chains.** Every op is individually signed against the connection's HELLO
+  challenge (`server_pk`, `nonce`) with a strictly-increasing per-mailbox
+  `ctr`, so a forwarded/relayed frame is worth exactly one operation to
+  whoever relays it (not forwardable into a session). Presenting the
+  existing `Capability` chains instead was rejected: it would hand the relay
+  issuer/subject pubkeys and the delegation graph — strictly more metadata
+  than "holder of this one mailbox key" — so chains stay client-side.
+- **Fetch-driven LRU, POST does not touch it.** A write-only junk spray
+  never refreshes its own mailboxes, so when the mailbox-count or global-byte
+  cap forces whole-mailbox eviction, victims are reader-less mailboxes first
+  — the retained-log analogue of the UDP relay's F6 LRU-admits-new-peers
+  fix, adapted for "refresh on read" instead of "refresh on any access".
+  Combined with a real TTL (a retained log must drain by time too, or steady
+  state becomes "every post evicts someone's data").
+- **Opaque per-mailbox push-wake handles, not raw APNs/FCM tokens.** A raw
+  device token is stable and device-global, so registering it directly would
+  let the relay link every circle sharing that device. The app's push
+  gateway maps handle→token instead, so the relay learns only
+  mailbox↔handle and the gateway only handle↔token — neither party alone
+  links a device to its circles. Wakes carry only the handle (no mailbox id,
+  sender, size, or content), debounced per-handle (30s) so a blob flood
+  can't become a ping flood.
+- **Single-threaded poll loop, server-owned raw I/O — no `TcpStream` on the
+  server side.** Reading tcp.cpp closely rules out the convenience calls for
+  a server fielding untrusted persistent connections: `send_all` loops on
+  EAGAIN with no deadline (one never-reading client freezes the whole
+  loop), and `recv_frame` buffers up to 64 MiB per connection with idle and
+  EOF both reported as plain `false`. `TcpRelayServer` instead owns
+  nonblocking `::recv`/`::send` directly with per-connection RX/TX buffers,
+  a 68 KiB client-frame cap enforced at the length prefix, a 2 MiB TX cap,
+  and independent idle-timeout / mid-frame-progress / TX-stall deadlines —
+  no threads, no locks, TSan-clean by construction, and `TcpListener`
+  gained an `fd()` accessor + `set_nonblock` in `open()` + backlog 128 so it
+  can join that same poll set without ever blocking `::accept`.
+- **Per-IP token-bucket table, not per-connection.** Reconnecting must not
+  reset a budget (bounded LRU-expired table instead), and buckets are
+  charged before any signature verification — garbage frames cost no EdDSA,
+  bounding CPU under a spoofed-source-free flood regardless of validity.
+  The op bucket is charged at the very top of `process_frame`, *before*
+  parsing, so a flood of tiny malformed frames is throttled like real ops
+  (not just the well-formed ones); and a per-connection protocol-error count
+  drops a connection past a small budget (mirroring the auth-failure drop),
+  so a pure-garbage connection is reaped rather than served `ERR` replies
+  forever — without this, a stream of 4-byte frames bought unthrottled
+  ERR-reply work from the single-threaded loop (adversarial-review finding).
+- **`MailboxLog::store` can return false for a reason other than "policy
+  drop".** The UDP relay's `Relay::send` is `void` (a silent-drop contract
+  the plan explicitly does not carry over): POST must acknowledge only
+  actual storage, so `store` reports the assigned seq or failure and the
+  server replies `ERR 5`, never a lying `OK`. In practice, with the per-
+  mailbox cap (1 MiB) far below the global cap (64 MiB) and the global-cap
+  eviction discipline evicting every other LRU mailbox before giving up,
+  genuine capacity exhaustion is not reachable within a sane test byte
+  budget — `MailboxLog` exposes a test-only global-cap override
+  (`set_total_bytes_cap_for_test`) so the `ERR 5` path is still exercised
+  deterministically rather than left unverified.
+- **Client helpers live in the same file as the server, behind a clearly
+  marked section.** The plan's blindness invariant ("no call site of
+  `sign`/`x25519`/`aead_decrypt`" in the server implementation) and the
+  plan's file list (client helpers, which must sign, inside
+  `tcp_relay.cpp`) both hold: `tcp_relay_test.cpp`'s source-level check
+  scopes its grep to everything above the `/* ---- client helpers` marker,
+  so the invariant is enforced automatically without splitting a small
+  internal file in two.

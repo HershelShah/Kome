@@ -44,7 +44,7 @@ TRANSPORT_SOURCES = [
     "src/transport/stun.cpp", "src/transport/cookie.cpp",
     "src/transport/relay.cpp", "src/transport/rendezvous.cpp",
     "src/transport/connection.cpp", "src/transport/tcp.cpp",
-    "src/transport/ws.cpp",
+    "src/transport/tcp_relay.cpp", "src/transport/ws.cpp",
 ]
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
