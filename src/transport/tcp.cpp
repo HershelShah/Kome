@@ -138,7 +138,15 @@ bool TcpListener::open(const char *ip, uint16_t port) {
     a.sin_port = htons(port);
     if (inet_pton(AF_INET, ip ? ip : "127.0.0.1", &a.sin_addr) != 1) { close(); return false; }
     if (::bind(fd_, (sockaddr *)&a, sizeof a) != 0) { close(); return false; }
-    if (::listen(fd_, 8) != 0) { close(); return false; }
+    /* 128 (was 8): a listener backing a server with many short-lived clients
+     * (e.g. TcpRelayServer) needs headroom for a burst of pending connections
+     * between poll iterations. */
+    if (::listen(fd_, 128) != 0) { close(); return false; }
+    /* Non-blocking: a caller that joins fd() into its own poll set (rather
+     * than using accept() above) must never have ::accept() block — e.g. a
+     * peer that RSTs between poll() reporting readable and the accept() call
+     * would otherwise hang the whole loop on one bad connection. */
+    set_nonblock(fd_);
     socklen_t len = sizeof a;
     getsockname(fd_, (sockaddr *)&a, &len);
     char buf[INET_ADDRSTRLEN];

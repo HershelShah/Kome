@@ -94,6 +94,7 @@ set(SYNC_SOURCES
     src/transport/rendezvous.cpp
     src/transport/connection.cpp
     src/transport/tcp.cpp
+    src/transport/tcp_relay.cpp
     src/transport/ws.cpp
 )
 
@@ -229,6 +230,12 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(rendezvousd PRIVATE sync_engine)
     target_include_directories(rendezvousd PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
+    # Blind TCP store-and-forward relay (issue #49): persistent-connection
+    # counterpart to relayd for NATed/CGNAT clients that can't receive UDP.
+    add_executable(tcp-relayd services/tcp_relay/tcp_relay_main.cpp)
+    target_link_libraries(tcp-relayd PRIVATE sync_engine)
+    target_include_directories(tcp-relayd PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
     # Real-internet STUN interop smoke test: drives the engine's STUN client
     # against a public RFC 5389 server and prints the reflexive endpoint. A
     # one-command check that UDP egress + reflexive discovery work from a host.
@@ -318,6 +325,13 @@ if(SYNC_BUILD_TESTS)
         sync_add_test(transport_parity_test tests/transport_parity_test.cpp
                       LIBS Threads::Threads)
 
+        # Blind TCP relay (issue #49): in-process logic/auth/caps suite, plus
+        # a real-sockets suite (background server thread, service_test's
+        # pattern) covering the wire protocol and the offline-convergence e2e.
+        sync_add_test(tcp_relay_test tests/tcp_relay_test.cpp)
+        sync_add_test(tcp_relay_service_test tests/tcp_relay_service_test.cpp
+                      LIBS Threads::Threads)
+
         # komed E2E test: two standalone komed processes, two durable SQLite
         # databases, syncing over real UDP through the production secure
         # path. Only registered where the komed target itself is built (it
@@ -340,6 +354,26 @@ if(SYNC_BUILD_TESTS)
                 ENVIRONMENT
                   "KOMED_BIN=$<TARGET_FILE:komed>;SYNC_ENGINE_LIB=$<TARGET_FILE:sync_engine_shared>;KOMED_TEST_SANITIZER=${SYNC_SANITIZER}"
                 TIMEOUT 180
+                SKIP_RETURN_CODE 77)
+        endif()
+
+        # tcp-relayd E2E test (issue #49): a small signed client binary
+        # (tests/tcp_relay_probe.cpp) drives a real tcp-relayd process over a
+        # loopback socket. Guarded on tcp-relayd existing, mirroring the
+        # komed_test guard above, so a build configuration that ever excludes
+        # the native daemons doesn't register a shell test with nothing to
+        # drive it.
+        if(TARGET tcp-relayd)
+            add_executable(tcp_relay_probe tests/tcp_relay_probe.cpp)
+            target_link_libraries(tcp_relay_probe PRIVATE sync_engine)
+            target_include_directories(tcp_relay_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+            add_test(NAME tcp_relayd_test
+                     COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tcp_relayd_test.sh)
+            set_tests_properties(tcp_relayd_test PROPERTIES
+                ENVIRONMENT
+                  "TCP_RELAYD_BIN=$<TARGET_FILE:tcp-relayd>;TCP_RELAY_PROBE_BIN=$<TARGET_FILE:tcp_relay_probe>;TCP_RELAYD_TEST_SANITIZER=${SYNC_SANITIZER}"
+                TIMEOUT 120
                 SKIP_RETURN_CODE 77)
         endif()
 
