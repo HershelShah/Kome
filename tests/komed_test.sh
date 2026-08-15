@@ -78,6 +78,90 @@ pyrun() {
 
 fail() { echo "komed_test: FAIL: $*" >&2; exit 1; }
 
+# Print a per-cell diff of two databases' exported state — every existence and
+# register record with the HLC/author metadata the digest hashes — so a digest
+# mismatch names the exact diverged cell instead of two opaque hashes.
+diff_dbs() {
+    pyrun - "$1" "$2" <<'PY'
+import sys
+import kome as se
+
+def cells(db):
+    e = se.Engine(b'\x00' * 32, path=db)
+    out = {}
+    for c in e.changes():
+        out[(c["kind"], c["ns"], c["entity"], c["field"])] = c
+    e.close()
+    return out
+
+def show(c):
+    return "present=%d hlc=%d.%d author=%s.. value=%r" % (
+        c["present"], c["hlc"][0], c["hlc"][1],
+        c["author"][:8].hex(), c["value"])
+
+a, b = sys.argv[1], sys.argv[2]
+ca, cb = cells(a), cells(b)
+kinds = {0: "existence", 1: "register"}
+def name(k):
+    return "%s ns=%s entity=%s field=%s" % (
+        kinds.get(k[0], k[0]),
+        k[1].decode("latin-1"), k[2].decode("latin-1"), k[3].decode("latin-1"))
+same = True
+for k in sorted(set(ca) | set(cb)):
+    if k not in ca:
+        same = False
+        print("    only in %s: %s  %s" % (b, name(k), show(cb[k])))
+    elif k not in cb:
+        same = False
+        print("    only in %s: %s  %s" % (a, name(k), show(ca[k])))
+    elif ca[k] != cb[k]:
+        same = False
+        print("    differs: %s" % name(k))
+        print("        %s: %s" % (a, show(ca[k])))
+        print("        %s: %s" % (b, show(cb[k])))
+if same:
+    print("    (no cell-level difference — dbs export identically)")
+PY
+}
+
+dump_logs() {
+    local f
+    for f in "$@"; do
+        echo "--- $f (tail) ---" >&2
+        tail -n 40 "$f" >&2
+    done
+}
+
+# Poll (0.1s steps, up to $3 seconds) until the two databases' digests match;
+# on timeout print the per-cell diff and the daemon log tails, then fail.
+# Opening the databases while their daemons are live is safe: opening a log is
+# read-only (a torn/racing tail is skipped, never truncated) — these polls
+# double as the end-to-end regression test for that guarantee.
+wait_digest_equal() {
+    local db1="$1" db2="$2" budget_s="$3" what="$4"
+    shift 4
+    local i out
+    for i in $(seq 1 $((budget_s * 10))); do
+        out=$(pyrun - "$db1" "$db2" <<'PY'
+import sys
+import kome as se
+ds = []
+for db in sys.argv[1:3]:
+    e = se.Engine(b'\x00' * 32, path=db)
+    ds.append(e.digest())
+    e.close()
+print("EQUAL" if ds[0] == ds[1] else "DIFFER")
+PY
+)
+        [ "$out" = "EQUAL" ] && return 0
+        sleep 0.1
+    done
+    echo "komed_test: $what: digests still differ; per-cell diff:" >&2
+    diff_dbs "$db1" "$db2" >&2
+    dump_logs "$@"
+    fail "$what: digest mismatch"
+}
+
 # Wait (up to 5s, 0.1s poll) for a pid to exit; fail loudly if it doesn't.
 wait_exit_5s() {
     local pid="$1" who="$2"
@@ -291,6 +375,11 @@ T1=$(date +%s.%N)
 ELAPSED=$(awk "BEGIN{printf \"%.2f\", $T1-$T0}")
 [ "$RECOVERED" -eq 1 ] || fail "restart-recovery record did not reach a.db within 10s (elapsed ${ELAPSED}s)\n--- a.log (tail) ---\n$(tail -n 40 "$TMP/a.log")\n--- b.log (tail) ---\n$(tail -n 40 "$TMP/b.log")"
 echo "    ok: record reached a.db ${ELAPSED}s after restart (was ~27-29s before the fix)"
+# Full digest convergence, not just the marker record: catches metadata-level
+# divergence at the step that caused it instead of 100s later in the final check.
+wait_digest_equal "$TMP/a.db" "$TMP/b.db" 10 "step 6 restart-recovery" \
+    "$TMP/a.log" "$TMP/b.log"
+echo "    ok: a.db/b.db digests equal after restart-recovery"
 
 echo "=== [7/10] restart-recovery mirror (FINDING-1 reopened by an earlier fix attempt): SIGTERM A (the pure listener, zero peer= lines), write a record into a.db offline, restart A, verify it reaches b.db within 30s ==="
 # Restart-detection above (step 6) only fires on the side a restarted peer
@@ -347,6 +436,9 @@ T1=$(date +%s.%N)
 ELAPSED=$(awk "BEGIN{printf \"%.2f\", $T1-$T0}")
 [ "$RECOVERED" -eq 1 ] || fail "restart-recovery mirror record did not reach b.db within 30s (elapsed ${ELAPSED}s)\n--- a.log (tail) ---\n$(tail -n 40 "$TMP/a.log")\n--- b.log (tail) ---\n$(tail -n 40 "$TMP/b.log")"
 echo "    ok: record reached b.db ${ELAPSED}s after restarting the listener side (this direction hung forever before the established-session staleness backstop)"
+wait_digest_equal "$TMP/a.db" "$TMP/b.db" 10 "step 7 restart-recovery mirror" \
+    "$TMP/a.log" "$TMP/b.log"
+echo "    ok: a.db/b.db digests equal after mirror restart-recovery"
 
 echo "=== [8/10] no-rehandshake-thrash (FINDING-2/FINDING-3): fresh pair at interval_ms=2000, 'session established' logs exactly once per side over an 8s idle window ==="
 pyrun - "$TMP" <<'PY'
@@ -577,7 +669,12 @@ else:
     print("digest (both):", next(iter(digests.values())).hex())
 sys.exit(0 if ok else 1)
 PY
-[ $? -eq 0 ] || fail "final convergence check failed"
+if [ $? -ne 0 ]; then
+    echo "komed_test: final check failed; per-cell diff of a.db vs b.db:" >&2
+    diff_dbs "$TMP/a.db" "$TMP/b.db" >&2
+    dump_logs "$TMP/a.log" "$TMP/b.log"
+    fail "final convergence check failed"
+fi
 
 echo "=== komed_test PASSED ==="
 exit 0

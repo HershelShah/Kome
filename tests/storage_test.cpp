@@ -300,6 +300,110 @@ TEST(Storage, CrashAtomicity) {
     sync_engine_destroy(peer);
 }
 
+/* ---- Open is read-only ------------------------------------------------- *
+ * Opening a database must never modify the file. load() used to ftruncate a
+ * torn tail at open, which made every open destructive: a concurrent
+ * read-only consumer (a status tool, `komed --identity`, a test poller) could
+ * chop a frame the owning process had just committed — the owner's in-memory
+ * state kept the change and never re-appended it, silently losing the record
+ * from disk (the komed_test nightly flake). The truncation is now deferred to
+ * the writer's first append. */
+TEST(Storage, OpenLeavesFileUntouched) {
+    TempDir dir;
+    std::string db = dir.file("readonly.db");
+    auto site = site_from(0x21);
+
+    sync_engine *w = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(w, nullptr);
+    sync_engine_set(w, B(std::string("n")), 1, B(std::string("e1")), 2,
+                    B(std::string("f")), 1, B(std::string("v1")), 2);
+    Digest before = digest(w);
+    sync_engine_destroy(w);
+
+    /* Simulate a torn trailing write — or, equivalently, an append caught
+     * mid-flight by an open racing the owner. */
+    const std::string garbage = "TORN-TAIL-GARBAGE";
+    std::string torn = read_file(db) + garbage;
+    write_file(db, torn);
+
+    /* A read-only open sees the good frames and leaves the file untouched. */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(digest(r), before);
+    sync_engine_destroy(r);
+    EXPECT_EQ(read_file(db), torn) << "open() modified the database file";
+
+    /* A writer still cleans the torn tail before its first append, so the
+     * log replays to exactly the new state afterwards. */
+    w = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(w, nullptr);
+    sync_engine_set(w, B(std::string("n")), 1, B(std::string("e2")), 2,
+                    B(std::string("f")), 1, B(std::string("v2")), 2);
+    Digest after = digest(w);
+    sync_engine_destroy(w);
+    EXPECT_EQ(read_file(db).find(garbage), std::string::npos)
+        << "torn tail survived the first append";
+    r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(digest(r), after);
+    sync_engine_destroy(r);
+}
+
+/* The end-to-end shape of the same bug: a reader open/close loop racing a
+ * live writer must not lose any of the writer's fsync'd frames. */
+TEST(Storage, ConcurrentOpenDoesNotLoseWrites) {
+    TempDir dir;
+    std::string db = dir.file("shared.db");
+    auto site = site_from(0x22);
+
+    /* Seed so the reader never races the header write of a fresh file. */
+    sync_engine *w = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(w, nullptr);
+    sync_engine_set(w, B(std::string("n")), 1, B(std::string("seed")), 4,
+                    B(std::string("f")), 1, B(std::string("v")), 1);
+    sync_engine_destroy(w);
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        /* Child: open/close the db in a tight loop, never writing — the way a
+         * monitoring tool would. Killed by the parent when it's done. */
+        alarm(30); /* backstop so an orphan can't loop forever */
+        for (;;) {
+            sync_engine *r = sync_engine_open(db.c_str(), site.data());
+            if (r) sync_engine_destroy(r);
+        }
+        _exit(0); /* unreachable */
+    }
+
+    w = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(w, nullptr);
+    const int kWrites = 400;
+    for (int i = 0; i < kWrites; i++) {
+        std::string ent = "k" + std::to_string(i);
+        ASSERT_EQ(sync_engine_set(w, B(std::string("n")), 1, B(ent), ent.size(),
+                                  B(std::string("f")), 1, B(ent), ent.size()),
+                  SYNC_OK);
+    }
+    sync_engine_destroy(w);
+    kill(pid, SIGKILL);
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    /* Every fsync'd write must still be on disk. */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    int missing = 0;
+    for (int i = 0; i < kWrites; i++) {
+        std::string ent = "k" + std::to_string(i);
+        int ex = 0;
+        sync_engine_exists(r, B(std::string("n")), 1, B(ent), ent.size(), &ex);
+        if (!ex) missing++;
+    }
+    EXPECT_EQ(missing, 0) << "concurrent read-only opens lost committed frames";
+    sync_engine_destroy(r);
+}
+
 /* ---- T2.4 Schema guard ------------------------------------------------- */
 TEST(Storage, SchemaGuard) {
     TempDir dir;

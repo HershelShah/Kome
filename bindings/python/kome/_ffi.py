@@ -166,6 +166,37 @@ class Engine:
         _lib.sync_engine_identity(self._e, buf)
         return buf.raw
 
+    def changes(self):
+        """Export the full state as a list of change dicts — one existence
+        record per asserted entity, one register record per field — including
+        the HLC/author metadata the digest hashes. For diagnostics and
+        replication tooling."""
+        arr = ctypes.POINTER(_Change)()
+        n = ctypes.c_size_t(0)
+        rc = _lib.sync_engine_export(self._e, ctypes.byref(arr), ctypes.byref(n))
+        if rc != SYNC_OK:
+            raise RuntimeError("export failed: %d" % rc)
+        out = []
+        try:
+            for i in range(n.value):
+                c = arr[i]
+                out.append({
+                    "kind": c.kind,
+                    "ns": ctypes.string_at(c.ns, c.ns_len) if c.ns_len else b"",
+                    "entity": (ctypes.string_at(c.entity, c.entity_len)
+                               if c.entity_len else b""),
+                    "field": (ctypes.string_at(c.field, c.field_len)
+                              if c.field_len else b""),
+                    "value": (ctypes.string_at(c.value, c.value_len)
+                              if c.value_len else b""),
+                    "present": c.causal_length,
+                    "hlc": (c.hlc.physical, c.hlc.logical),
+                    "author": bytes(c.author),
+                })
+        finally:
+            _lib.sync_changes_free(arr, n)
+        return out
+
     def replicate_into(self, other: "Engine"):
         """Export this engine's full state and apply it into `other`."""
         arr = ctypes.POINTER(_Change)()
