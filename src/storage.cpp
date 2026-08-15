@@ -312,6 +312,14 @@ std::string Storage::header_bytes() const {
 bool Storage::write_frame(const std::string &body, uint32_t entry_count) {
     std::string framed = seal_frame(body, entry_count);
     if (framed.empty()) return false; /* seal failed (RNG); never write a bad frame (F2) */
+    if (tail_torn_) {
+        /* First write since load stopped short of the physical end: drop the
+         * torn tail now so this frame lands where replay stopped (load capped
+         * file_size_ there). Deferred from load — see the comment there. */
+        if (::ftruncate(fd_, (off_t)file_size_) != 0) return false;
+        ::fsync(fd_);
+        tail_torn_ = false;
+    }
     if (::lseek(fd_, 0, SEEK_END) < 0) return false;
     if (!write_all(fd_, framed.data(), framed.size())) return false;
     if (::fsync(fd_) != 0) return false;
@@ -651,15 +659,18 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
         good_end += frame_bytes;
     }
 
-    /* Drop any torn trailing bytes so future appends start clean. */
+    /* Bytes past the last good frame are either a torn write from a crash or
+     * an append racing this open from the live owning process. Truncating them
+     * here would make merely *opening* a database destructive: a concurrent
+     * reader (a monitoring tool, `komed --identity`, a test poller) could chop
+     * a frame the owner just committed — the owner's in-memory state keeps the
+     * change and it never re-appends, so the record is silently gone from disk
+     * with nothing left to heal it. Record where the good frames end and defer
+     * the truncation to the first write (write_frame): read-only opens never
+     * modify the file, while a writer still cleans a genuinely torn tail
+     * before its first append. */
     off_t end = ::lseek(fd_, 0, SEEK_END);
-    if (end != good_end) {
-        if (::ftruncate(fd_, good_end) != 0) {
-            if (err) *err = SYNC_ERR_INTERNAL;
-            return false;
-        }
-        ::fsync(fd_);
-    }
+    tail_torn_ = (end != good_end);
     file_size_ = (uint64_t)good_end;
 
     /* Re-verify all collected records in parallel, then merge the valid ones. */
@@ -696,16 +707,13 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     e->clock.logical = rp.hlc_logical;
     e->db_clock = rp.db_clock;
 
-    /* Compact a bloated log up front so reopen stays O(state): if the live
-     * image is much smaller than the file, rewrite it now. */
+    /* A bloated log (live image much smaller than the file) used to be
+     * rewritten right here so reopen stays O(state). Deferred to the first
+     * mutation (maybe_compact) for the same reason as the torn tail above:
+     * open must never write, or a read-only consumer rewrites the file out
+     * from under a live owner. */
     compacted_size_ = file_size_;
-    if (file_size_ > 65536) {
-        std::string fresh;
-        serialize_state(e, fresh);
-        if (!fresh.empty() && (uint64_t)fresh.size() * 2 < file_size_ &&
-            atomic_replace(fresh))
-            compacted_size_ = file_size_;
-    }
+    open_compact_pending_ = file_size_ > 65536;
     return true;
 }
 
@@ -795,6 +803,9 @@ bool Storage::atomic_replace(const std::string &content) {
     fd_ = ::open(path_.c_str(), O_RDWR);
     if (fd_ < 0) return false;
     file_size_ = content.size();
+    /* The rewrite superseded any deferred tail cleanup / open-time compact. */
+    tail_torn_ = false;
+    open_compact_pending_ = false;
 
     /* Best-effort: fsync the directory so the rename is durable across a crash. */
     std::string dir = path_;
@@ -843,6 +854,18 @@ bool Storage::compact(sync_engine *e) {
 }
 
 void Storage::maybe_compact(sync_engine *e) {
+    if (open_compact_pending_) {
+        /* Deferred open-time compaction (see load): now that the owner is
+         * actually writing, rewrite a bloated log if the live image is much
+         * smaller than the file. Same condition open() used to apply. */
+        open_compact_pending_ = false;
+        std::string fresh;
+        serialize_state(e, fresh);
+        if (!fresh.empty() && (uint64_t)fresh.size() * 2 < file_size_ &&
+            atomic_replace(fresh))
+            compacted_size_ = file_size_;
+        return;
+    }
     uint64_t threshold = compacted_size_ * 2;
     if (threshold < 65536) threshold = 65536; /* don't churn tiny logs */
     if (file_size_ > threshold) compact(e); /* best-effort */

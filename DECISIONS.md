@@ -1162,3 +1162,19 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   scopes its grep to everything above the `/* ---- client helpers` marker,
   so the invariant is enforced automatically without splitting a small
   internal file in two.
+
+## Storage — open is read-only (nightly komed_test flake)
+
+- **`Storage::load` no longer truncates a torn tail (or compacts a bloated
+  log) at open; both are deferred to the writer's first append/mutation.**
+  Open-time `ftruncate` made merely opening a database destructive: a
+  concurrent read-only open (a monitoring tool, `komed --identity`, a test
+  poller) that raced the owner's append classified the in-flight — or even
+  fully committed — trailing frame as a torn tail and chopped it. The owner's
+  in-memory state kept the change and never re-appended it, so the record was
+  silently gone from disk with nothing to heal it (reconcile compares live
+  in-memory state, which still matched). This was the ~1% nightly komed_test
+  "DIGEST MISMATCH with all records present" flake. Crash recovery semantics
+  are unchanged — the owner still drops a genuinely torn tail before its
+  first write — and `Storage.OpenLeavesFileUntouched` pins the new contract:
+  open + read + close leaves the file byte-identical.

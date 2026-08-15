@@ -122,6 +122,12 @@ private:
     bool        batching_ = false;     /* bulk-apply transaction open */
     uint64_t    file_size_ = 0;       /* current log size in bytes */
     uint64_t    compacted_size_ = 0;  /* log size just after the last compaction */
+    bool        tail_torn_ = false;   /* load found bytes past the last good
+                                         frame; truncated on the first write
+                                         (never at open — see load()) */
+    bool        open_compact_pending_ = false; /* load found a bloated log;
+                                         compacted on the first mutation
+                                         (never at open) */
     uint8_t     seed_[32] = {0};      /* identity seed, re-persisted on compaction */
     bool        encrypted_ = false;   /* frames sealed with key_ at rest */
     uint8_t     key_[32] = {0};       /* at-rest encryption key (wiped on destroy) */
