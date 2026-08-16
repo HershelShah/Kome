@@ -4,8 +4,10 @@ cmake-build-*/
 .cache/
 compile_commands.json
 
-# IDE
+# IDE / code-index tooling
 .vscode/
+.codegraph/
+.agent/
 .idea/
 *.swp
 *.swo
