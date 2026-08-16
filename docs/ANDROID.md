@@ -43,8 +43,9 @@ not the build tree.
   amalgamation ships only the public C API, but phase 3's network shim and
   the JNI layer want the same access komed has (internal C++ headers, one
   source snapshot, no ABI drift risk because everything ships together).
-  The existing `CMakeLists.txt` builds `libsync_engine` unchanged under the
-  NDK toolchain file; the JNI TU is one more target in the same build.
+  The existing `CMakeLists.txt` builds `libsync_engine` under the NDK
+  toolchain file with one build-config addition (the phase-1 version
+  script); the JNI TU is one more target in the same build.
 - **D0f — Threading: honor the caller-serialized contract in Kotlin, don't
   re-litigate it in C.** The engine's documented contract is "one engine, one
   thread at a time; no shared global state" (DECISIONS.md, M6). The Kotlin
@@ -62,10 +63,20 @@ Java exists.
   `cmake -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake
   -DANDROID_ABI=... -DANDROID_PLATFORM=android-21 -DANDROID_STL=c++_static`,
   plus `-Wl,-z,max-page-size=16384`.
+- **Symbol surface needs real (small) build work first**: today's
+  `sync_engine_shared` exports 418 dynamic symbols — the 44 `sync_*` API
+  functions plus 374 extras (329 mangled C++ internals, 45 vendored
+  monocypher `crypto_*`; no visibility machinery exists anywhere in the
+  repo). The exported `crypto_*` names are an interposition hazard against
+  any other in-process copy of monocypher. Fix is a link-time version
+  script scoped to the shared target only — `{ global: sync_*; local: *; };`
+  via `target_link_options` on `sync_engine_shared` — zero source changes,
+  no effect on other build flavors, and it subsumes the monocypher problem
+  (`-Wl,--exclude-libs,ALL` becomes optional).
 - Gate per ABI: links with no missing symbols (`llvm-readelf -d`, no
   `NEEDED` beyond libc/libm/liblog), 16 KiB `LOAD` alignment verified,
   exported surface is exactly the `sync_*` C ABI (`llvm-nm -D` diffed against
-  the header — same spirit as the amalgamation's symbol discipline).
+  the header — enforced by the version script above).
 - The full gtest suite already runs on linux-x86_64 in `ci.yml`; phase 1
   adds no on-device testing. Cross-compile + ELF checks are the whole gate.
 
@@ -75,16 +86,34 @@ Bind the entire public C ABI — the same surface the ctypes binding and the
 WASM binding wrap, no more, no less:
 
 - Engine lifecycle: `create(seed)`, `open(path, seed)`,
-  `openEncrypted(path, seed, key)`, `flush()`, `close()`
-  (`AutoCloseable`, plus a `java.lang.ref.Cleaner` safety net so a leaked
-  handle never leaks native memory).
-- Data: `set/get/delete/exists`, `scan` (cursor pagination surfaced as a
-  Kotlin `Sequence<ScanEntry>`), blobs (`blobPut/blobGet/blobStat/blobDelete`),
-  `exportChanges/applyChange` with a `Change` data class mirroring
-  `sync_change` field-for-field, `digest()`.
+  `openEncrypted(path, seed, key)`, `flush()`, `close()` (`AutoCloseable`).
+  The leaked-handle safety net is a hand-rolled `PhantomReference` +
+  `ReferenceQueue` registry — **not** `java.lang.ref.Cleaner`, which only
+  exists on Android from API 33 and is not desugared, so with minSdk 21 it
+  would `NoClassDefFoundError` on every API 21–32 device (and the
+  platform's own `NativeAllocationRegistry` is hidden API). Every native
+  entry point checks handle validity so a call on a closed engine fails
+  cleanly instead of touching freed memory.
+- Data: `set/get/delete/exists`, `scan`, blobs
+  (`blobPut/blobGet/blobStat/blobDelete`), `exportChanges/applyChange` with
+  a `Change` data class mirroring `sync_change` field-for-field, `digest()`.
+  Scan gets two shapes matching D0f's two lanes: a blocking
+  `Sequence<ScanEntry>` and a `Flow`-based suspend variant. Pagination
+  terminates when a page comes back shorter than the requested limit (the
+  `tests/scan_test.cpp` pattern) — necessary because the C cursor cannot
+  represent an entity literally named `""` (`sync_engine.h`'s documented
+  `start_after` caveat), so "loop until empty page" can spin forever.
 - Sync: `sessionBegin`/`sessionBeginScoped`/`sessionStep`/`sessionEnd` — the
   transport-agnostic pump, so any Kotlin transport can drive reconciliation
-  (this is what makes phase 3b possible at all).
+  (this is what makes phase 3b possible at all). **Lifetime rule:**
+  `sync_session` holds a raw pointer to its parent engine (dereferenced on
+  every step), so Kotlin `Session` keeps a strong reference to its `Engine`,
+  dispatches on the engine's dispatcher, and gets no independent
+  finalization that could outrun the engine's; `Engine.close()` refuses (or
+  ends sessions) while any are open. Mirror this as a doc comment on
+  `sync_session_begin` in `sync_engine.h`, which is silent on it today.
+  (`Capability` is exempt — it's a self-contained value that safely
+  outlives its engine.)
 - Authz: capabilities (root/delegate/encode/decode/grant/revoke/isRevoked),
   invites (encode/decode).
 - Misc: identity/siteId, logger callback (JNI → a Kotlin `(level, msg)`
@@ -124,7 +153,31 @@ Examples and komed use it; no binding can. Two lanes, in order:
   the same PR** — the README's "over a network this is the secure
   connect_and_sync path" note finally becomes a callable line of Python,
   and the ABI addition pays for itself across every binding at once.
-  Bump `SYNC_ABI_VERSION`.
+  Bump `SYNC_ABI_VERSION`. Two internals gaps the shim must close first:
+  - **Identity pinning.** Nothing in the stack today compares the
+    authenticated peer to an expected key: `verify_identity_proof` is a
+    pure output, `begin_cycle_` starts reconciliation with whoever
+    authenticates, `ConnectionManager::sync_with` uses `peer_pk` only for
+    relay addressing, and `DirectTransport::recv` discards the sender
+    address — so any host that can land a datagram on the socket (or fetch
+    from the relay mailbox, which is guarded only by a routability cookie)
+    can complete the session, converge over all *open* namespaces, and
+    hand the caller a false success. Fix in one place: an optional
+    expected-pk parameter on `SecurePeerSession`, compared at the
+    identity-verify site *before* `begin_cycle_()` (checking after
+    `authenticated()` flips is too late — the initiator's first scoped
+    fingerprint is already queued). This also hardens komed/netmesh and
+    the relay path for free. Without it, the ABI's `peer_pubkey` would
+    name a guarantee the engine doesn't provide.
+  - **Role selection + liveness precondition.** Noise XX is interactive:
+    exactly one side initiates, and the peer must be live within
+    `timeout_ms` (relay store-and-forward does not relax this). Adopt the
+    repo's existing convention (DECISIONS.md): role derived by
+    `memcmp(my_pk, peer_pk) < 0`, **plus** komed's flipped-role retry
+    within the timeout — derivation alone deadlocks against a pure
+    responder. Document the precondition: the named peer must concurrently
+    be in its own connect/serve loop (komed in daemon mode — not `--once`
+    — netmesh, or another device calling this ABI).
 - **3b — Kotlin WebSocket runtime (follow-up, optional).** A `SyncClient`
   mirroring `kome-sync-runtime`'s TS loop (dial, gossip interval, reconnect,
   converge) over OkHttp, for networks where UDP is blocked and for talking
@@ -133,8 +186,9 @@ Examples and komed use it; no binding can. Two lanes, in order:
   AAR keeps zero dependencies.
 
 Gate for 3a: an end-to-end CI scenario — x86_64 emulator app converges with
-a host-side komed over the emulator's `10.0.2.2` host alias (UDP, full
-secure stack). Hole punching through real NATs stays out of CI scope, same
+a host-side komed **running in daemon mode** (a one-shot call against
+`komed --once` cannot converge; see the liveness precondition above) over
+the emulator's `10.0.2.2` host alias (UDP, full secure stack). Hole punching through real NATs stays out of CI scope, same
 caveat as M5 ("needs a real network"); the netnode/relay scenarios already
 cover the protocol logic on the host.
 
@@ -160,11 +214,15 @@ queries":
 - AAR assembly: Kotlin classes + per-ABI `jniLibs` + consumer R8 rules
   (keep JNI-referenced names), prefab headers optionally exported for NDK
   consumers who want the C API directly.
-- `android.yml` end state: ABI matrix build + ELF checks (phase 1), host-JVM
-  suite (phase 2), one Gradle-managed-device x86_64 instrumented run of the
-  parity battery + the komed convergence scenario (phase 3), then the
-  assembled AAR installed into a fresh sample project and smoke-tested — the
-  npm.yml "test the artifact, not the tree" pattern.
+- `android.yml` end state: ABI matrix build + ELF checks (phase 1), Android
+  Lint with `NewApi` as `abortOnError` (the host-JVM suite is structurally
+  blind to API-level regressions — the Cleaner near-miss in phase 2 is the
+  proof), host-JVM suite (phase 2), Gradle-managed-device instrumented runs
+  of the parity battery + the komed convergence scenario (phase 3) on **two
+  images: one modern x86_64 and one at the minSdk floor (API 21/26)** so the
+  declared floor is actually exercised somewhere, then the assembled AAR
+  installed into a fresh sample project and smoke-tested — the npm.yml
+  "test the artifact, not the tree" pattern.
 - Publishing: Sonatype Central portal, signed artifacts, version
   single-sourced from `project(sync_engine VERSION ...)` exactly as P7.0c
   does for pip/npm; `release.yml` grows a fourth channel that refuses to
@@ -183,7 +241,15 @@ phase 4 ≈ 2 days. Phases 1→2→3a are strictly ordered; 4 and 5 overlap them
   register in week 1 (D0b), publish whenever ready.
 - **New public ABI (3a) is a forever commitment** — keep it to the one
   connect-and-sync entry point + cancel; resist config sprawl (everything
-  else can arrive later without breaking anyone).
+  else can arrive later without breaking anyone). The cancel handle is an
+  atomic flag polled by the connect loop (~20 ms latency) — but
+  `rendezvous_register`/`rendezvous_lookup` are multi-second uncancellable
+  blocking calls today; shorten or loop them so total cancel latency stays
+  bounded.
+- **The logger callback fires on the engine's dispatcher thread** — the
+  Kotlin lambda must not call back into the engine (deadlock by contract);
+  no `AttachCurrentThread` machinery is needed since the callback only ever
+  fires on the calling thread.
 - **16 KiB pages and 32-bit v7a** are the two silent-breakage risks; both
   are mechanical CI checks (readelf; the existing suite compiled `-m32`
   already runs in the sanitizer matrix's spirit — add a v7a-shaped host gate
