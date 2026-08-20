@@ -177,6 +177,9 @@ convergence, clean `SIGTERM` shutdown).
 
 ## Design
 
+A full architecture overview — subsystem map, module dependency graph, and
+data-flow walkthroughs — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 - **Convergence is the law.** Every value type's merge is a semilattice join
   (commutative, associative, idempotent). The merge of two replicas does not
   depend on message order or duplication.
