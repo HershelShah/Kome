@@ -135,6 +135,25 @@ sync_engine *sync_engine_open_encrypted(const char *path,
  * a no-op for in-memory engines. Returns SYNC_OK on success. */
 int sync_engine_flush(sync_engine *e);
 
+/* Rewrite the append-only log to current live state, now, through the same
+ * path as the engine's size-triggered compaction: tombstones past the ~30-day
+ * GC horizon are dropped, then the log is rewritten one record per live cell
+ * and atomically swapped into place (temp file + rename — a crash leaves the
+ * original log intact). The state digest is unchanged.
+ *
+ * This is the physical-erasure half of a privacy delete: superseded frames —
+ * including non-empty values later overwritten with empty bytes via
+ * sync_engine_erase_field / sync_blob_erase — leave the disk for good.
+ * Registers hidden under still-fresh tombstones are retained (with whatever
+ * value they last held, which is why erasing before tombstoning matters);
+ * they leave once the tombstone itself ages out. See docs/STORAGE.md.
+ *
+ * Returns SYNC_OK on success; SYNC_ERR_INVALID for an in-memory engine
+ * (there is no log to rewrite); SYNC_ERR_INTERNAL when the rewrite refuses
+ * to run (a transaction is in flight) or fails — the existing, correct log
+ * is left in place either way, so a failure is safe to retry later. */
+int sync_engine_compact(sync_engine *e);
+
 /* Destroy an engine. For durable engines this also closes the database.
  * Safe to call with NULL. */
 void sync_engine_destroy(sync_engine *e);
@@ -167,6 +186,25 @@ int sync_engine_set(sync_engine *e,
 int sync_engine_delete(sync_engine *e,
                        const uint8_t *ns, size_t ns_len,
                        const uint8_t *entity, size_t entity_len);
+
+/* Erase field on a present (ns, entity): overwrite its value with the empty
+ * value under a freshly ticked HLC — exactly a sync_engine_set with
+ * value_len == 0, so the erasure is an ordinary signed LWW record that
+ * replicates to peers and beats the value it erases. The register itself
+ * survives with an empty value (sync_engine_get then returns SYNC_OK with a
+ * zero-length buffer, not SYNC_ERR_NOTFOUND); pair with sync_engine_compact
+ * to drop the superseded bytes from the local log.
+ *
+ * Ordering invariant (the reason this function exists): erase BEFORE
+ * tombstoning. sync_engine_set re-asserts presence, so a set on a tombstoned
+ * entity resurrects it. This function instead returns SYNC_ERR_NOTFOUND —
+ * writing nothing — when the entity is absent or tombstoned, and likewise
+ * when the field does not exist (an erase must never create state). Erase
+ * every field first, then sync_engine_delete the entity. */
+sync_error sync_engine_erase_field(sync_engine *e,
+                                   const uint8_t *ns, size_t ns_len,
+                                   const uint8_t *entity, size_t entity_len,
+                                   const uint8_t *field, size_t field_len);
 
 /* ---- Reads -------------------------------------------------------------- */
 
@@ -293,13 +331,46 @@ sync_error sync_blob_stat(sync_engine *e, const uint8_t *ns, size_t ns_len,
  * SYNC_ERR_NOTFOUND if no manifest exists; SYNC_ERR_CORRUPT (nothing
  * deleted) if the manifest is malformed.
  *
- * Caveat: chunk entities are content-addressed by their own hash, so a chunk
- * shared by two *different* blobs in the same namespace is deleted for both.
- * Whole-blob content-addressing means this only bites when two distinct
- * blobs happen to share an identical chunk of partial content (identical
- * whole blobs are the same id and the same delete). Accepted for v1. */
+ * Delete only tombstones: the chunk payload registers (field "d") are
+ * retained hidden under the tombstones — in RAM, on disk, and in sync
+ * snapshots — until tombstone GC ~30 days later. When the payload must
+ * actually go away, use sync_blob_erase instead.
+ *
+ * Caveat (applies to sync_blob_erase too): chunk entities are
+ * content-addressed by their own hash, so a chunk shared by two *different*
+ * blobs in the same namespace is deleted — and, under erase, zeroed — for
+ * both. There is no chunk refcounting. Whole-blob content-addressing means
+ * this only bites when two distinct blobs happen to share an identical chunk
+ * of partial content (identical whole blobs are the same id and the same
+ * delete). Accepted for v1. */
 sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
                             const uint8_t id[SYNC_BLOB_ID_LEN]);
+
+/* Erase the blob's payload, then delete it. Walks the manifest and
+ * overwrites every locally present chunk's payload (field "d") with the
+ * empty value — fresh-HLC signed LWW records, so the erasure replicates to
+ * peers and beats the original payloads — then tombstones the chunk and
+ * manifest entities exactly as sync_blob_delete does. The zero-before-
+ * tombstone order is enforced internally (a set on a tombstoned entity
+ * would resurrect it). Pair with sync_engine_compact to make the superseded
+ * payload bytes leave the local disk; peers drop theirs at their own next
+ * compaction after applying the erasure.
+ *
+ * What erase does NOT scrub: the manifest's own value (chunk hashes + total
+ * size — metadata, not payload) stays hidden under its tombstone until
+ * tombstone GC, and chunks this replica never received are skipped (an
+ * erase must never create state — peers holding those chunks erase them
+ * when the empty overwrites and tombstones replicate to them).
+ *
+ * SYNC_ERR_NOTFOUND if no manifest is present — including a blob already
+ * tombstoned by sync_blob_delete: payloads hidden under pre-existing
+ * tombstones cannot be reached without resurrecting their entities, and
+ * leave at tombstone GC. SYNC_ERR_CORRUPT if a manifest is present but
+ * malformed: its chunk list is unusable, so the manifest entity alone is
+ * tombstoned (erase what exists) and the error tells the caller that chunk
+ * payloads may survive until GC. */
+sync_error sync_blob_erase(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                           const uint8_t id[SYNC_BLOB_ID_LEN]);
 
 /* ---- Full-state replication baseline (the oracle) ----------------------- */
 

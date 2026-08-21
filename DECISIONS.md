@@ -1178,3 +1178,39 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   are unchanged — the owner still drops a genuinely torn tail before its
   first write — and `Storage.OpenLeavesFileUntouched` pins the new contract:
   open + read + close leaves the file byte-identical.
+
+## Deletion & erasure ABI (upstreamed from Circles)
+
+- **The privacy-deletion recipe moved from app code into the public ABI.**
+  Circles (the first real embedder) shipped ephemeral posts by combining four
+  fragile facts about the engine from the app side: an empty-value `set` is
+  the only replicating "unset"; fields must be zeroed BEFORE tombstoning
+  (a `set` on a tombstoned entity resurrects it); `sync_blob_delete` only
+  tombstones, so it walked the manifest's binary layout in Kotlin to zero
+  chunk payloads by hand; and physical erasure needed `ke::Storage::compact`
+  via a shim into an internal class. Each was an engine invariant an app had
+  no right to depend on — the manifest-layout coupling especially: a layout
+  change would have silently stopped image bytes from being erased, a privacy
+  failure with no error signal. All four are now engine guarantees:
+  `sync_engine_compact` (the internal Bitcask merge made callable),
+  `sync_blob_erase` (zero chunk payloads with fresh-HLC LWW overwrites so the
+  erasure replicates, then tombstone chunks + manifest), and
+  `sync_engine_erase_field` (the empty overwrite that *refuses* a tombstoned
+  entity instead of resurrecting it — the ordering invariant enforced at the
+  API instead of documented at the call site). Additive C ABI only — no wire,
+  codec, or `kTombstoneTtlMs` change.
+- **Erase never creates or resurrects state.** `sync_engine_erase_field`
+  returns NOTFOUND for an absent/tombstoned entity or absent field;
+  `sync_blob_erase` skips chunks the replica never received and cannot reach
+  payloads already hidden under a prior plain delete (tombstone GC covers
+  those). A corrupt manifest gets its entity tombstoned ("erase what exists")
+  and reports SYNC_ERR_CORRUPT so the caller knows chunk payloads may
+  survive. No chunk refcounting (documented; same shared-chunk caveat as
+  delete).
+- **Proof retained from the app's verification:** the storage suite now pins
+  that after `sync_blob_erase` + `sync_engine_compact` the *encrypted* log
+  file is smaller than it was while it held the payload (Circles measured
+  34368 → 27512 bytes on-device). `docs/STORAGE.md` documents the
+  erase → tombstone → compact recipe, the 30-day tombstone interplay, and the
+  cooperative-deletion limits; the designed next step (signed per-record
+  `expires_at`, a protocol rev) is parked in `docs/DATA_TODO.md`.

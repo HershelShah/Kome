@@ -34,6 +34,19 @@ implemented now; this file holds the rest. See `docs/DATA_MODEL.md` and
   seed in plaintext today (chmod 0600). Likely an XChaCha20-Poly1305 wrapper over
   each frame keyed from a passphrase/OS keystore.
 
+## P4b — Deletion follow-up (design only — protocol rev)
+
+- **Signed per-record `expires_at` (engine-level TTL).** Today ephemeral data
+  is app-level: the app stores a TTL field, hides expired records at read
+  time, and each member's sweep runs the erase → tombstone → compact recipe
+  (`docs/STORAGE.md`). The designed next step is a record-level, author-signed
+  `expires_at`: every replica drops the record at the deadline *without* a
+  cooperative sweep, and the relay can drop expired envelopes server-side
+  (which needs the expiry visible on the envelope — authenticated but outside
+  the sealed payload, a deliberate metadata leak to trade off). This is a
+  protocol rev — codec/signing-content change plus a relay wire change — NOT
+  additive; do not implement until the codec is due a version bump.
+
 ## P5 — Backlog / tuning / docs
 
 - **Per-namespace HLC clock domains.** Fixes the documented engine-global-clock

@@ -556,7 +556,7 @@ TEST(Storage, TombstoneGcOnCompaction) {
     ASSERT_EQ(sync_engine_apply(e, &c), SYNC_OK);
     EXPECT_TRUE(has_entity(e, "old")); /* present before GC */
 
-    ASSERT_TRUE(e->store->compact(e)); /* forces gc_tombstones */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK); /* forces gc_tombstones */
 
     EXPECT_TRUE(has_entity(e, "live"));
     EXPECT_TRUE(has_entity(e, "recent")); /* fresh tombstone survives */
@@ -766,8 +766,9 @@ TEST(Storage, AtRestEncryption) {
     EXPECT_EQ(d0, d1);
     EXPECT_EQ(cluster::get(e2, "ns", "alice", "name"), "Alice");
 
-    /* Force a compaction and confirm the rewritten log stays encrypted + valid. */
-    ASSERT_TRUE(e2->store->compact(e2));
+    /* Force a compaction (through the public ABI) and confirm the rewritten
+     * log stays encrypted + valid. */
+    ASSERT_EQ(sync_engine_compact(e2), SYNC_OK);
     sync_engine_destroy(e2);
     EXPECT_EQ(read_file(db).compare(0, 8, "KOMEENC1"), 0) << "compaction lost encryption";
 
@@ -817,4 +818,105 @@ TEST(Storage, EncryptedFramesUseDistinctNonces) {
     ASSERT_GE(nonces.size(), 3u) << "expected several sealed frames";
     std::set<std::string> uniq(nonces.begin(), nonces.end());
     EXPECT_EQ(uniq.size(), nonces.size()) << "nonce reuse across frames";
+}
+
+/* ---- Erasure + compaction: superseded bytes leave the disk -------------- */
+
+/* sync_engine_compact via the public ABI on a plaintext log: same rewrite the
+ * engine's size trigger runs, callable on demand. In-memory engines have no
+ * log to rewrite and must refuse cleanly. */
+TEST(Storage, CompactAbiShrinksPlaintextLog) {
+    TempDir dir;
+    std::string db = dir.file("compact_abi.db");
+    auto site = site_from(0x30);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    /* Enough overwrites of one cell to bloat the log, few enough to stay
+     * under the 64 KiB auto-compaction floor — so the shrink observed below
+     * is attributable to this call alone. */
+    for (int i = 0; i < 150; i++)
+        cluster::put(e, "ns", "k", "f", "v" + std::to_string(i));
+    size_t before = read_file(db).size();
+    ASSERT_LT(before, 65536u) << "auto-compaction already ran; shrink ambiguous";
+    Digest d0;
+    ASSERT_EQ(sync_engine_digest(e, d0.data()), SYNC_OK);
+
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    size_t after = read_file(db).size();
+    EXPECT_LT(after, before) << "compaction did not shrink the log";
+    sync_engine_destroy(e);
+
+    /* State preserved across the rewrite + reopen. */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    Digest d1;
+    ASSERT_EQ(sync_engine_digest(r, d1.data()), SYNC_OK);
+    EXPECT_EQ(d0, d1);
+    EXPECT_EQ(cluster::get(r, "ns", "k", "f"), "v149");
+    sync_engine_destroy(r);
+
+    /* No log to rewrite: NULL and in-memory engines refuse cleanly. */
+    EXPECT_EQ(sync_engine_compact(nullptr), SYNC_ERR_INVALID);
+    sync_engine *mem = sync_engine_create(site_from(0x31).data());
+    ASSERT_NE(mem, nullptr);
+    EXPECT_EQ(sync_engine_compact(mem), SYNC_ERR_INVALID);
+    sync_engine_destroy(mem);
+}
+
+/* The proof that matters for ephemeral media: after sync_blob_erase +
+ * sync_engine_compact, the ENCRYPTED log file is smaller than it was while it
+ * held the payload — the erased bytes physically left the disk, not just the
+ * read surface. (Circles verified this shape on-device: kome_enc.db shrank
+ * 34368 -> 27512 bytes across an expiry sweep.) */
+TEST(Storage, BlobEraseThenCompactShrinksEncryptedLog) {
+    TempDir dir;
+    std::string db = dir.file("erase_enc.db");
+    auto site = site_from(0x32);
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i * 7 + 3);
+
+    sync_engine *e = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e, nullptr);
+
+    /* ~100 KiB of pseudo-random "media" (4 chunks). */
+    std::vector<uint8_t> data(100 * 1024);
+    uint32_t x = 0xC0FFEE;
+    for (auto &b : data) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        b = (uint8_t)x;
+    }
+    uint8_t id[SYNC_BLOB_ID_LEN];
+    ASSERT_EQ(sync_blob_put(e, B(std::string("ph")), 2, data.data(),
+                            data.size(), id),
+              SYNC_OK);
+    size_t pre_erase = read_file(db).size();
+    ASSERT_GT(pre_erase, data.size()) << "log must hold the payload";
+
+    ASSERT_EQ(sync_blob_erase(e, B(std::string("ph")), 2, id), SYNC_OK);
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+
+    size_t post = read_file(db).size();
+    EXPECT_LT(post, pre_erase) << "erased payload still on disk";
+    /* Stronger: what remains (tombstoned entities with EMPTY payload
+     * registers + manifest metadata) is far smaller than the payload was. */
+    EXPECT_LT(post, data.size()) << "payload-sized residue after erase+compact";
+
+    Digest d0;
+    ASSERT_EQ(sync_engine_digest(e, d0.data()), SYNC_OK);
+    sync_engine_destroy(e);
+
+    /* Still a valid encrypted log; state survives reopen; blob stays gone. */
+    std::string raw = read_file(db);
+    EXPECT_EQ(raw.compare(0, 8, "KOMEENC1"), 0) << "compaction lost encryption";
+    sync_engine *r = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(r, nullptr);
+    Digest d1;
+    ASSERT_EQ(sync_engine_digest(r, d1.data()), SYNC_OK);
+    EXPECT_EQ(d0, d1);
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    EXPECT_EQ(sync_blob_get(r, B(std::string("ph")), 2, id, &out, &out_len),
+              SYNC_ERR_NOTFOUND);
+    sync_engine_destroy(r);
 }

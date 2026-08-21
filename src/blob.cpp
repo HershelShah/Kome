@@ -322,4 +322,68 @@ sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
     }
 }
 
+sync_error sync_blob_erase(sync_engine *e, const uint8_t *ns, size_t ns_len,
+                           const uint8_t id[SYNC_BLOB_ID_LEN]) {
+    if (!e || !id || (!ns && ns_len)) return SYNC_ERR_INVALID;
+    try {
+        Manifest mf;
+        uint8_t *raw = nullptr;
+        size_t raw_len = 0;
+        sync_error err = load_manifest(e, ns, ns_len, id, mf, &raw, &raw_len);
+        if (err == SYNC_ERR_CORRUPT) {
+            /* The chunk list is unusable, so the payload cannot be zeroed —
+             * but the manifest entity itself is present (its field was just
+             * read). Tombstone what exists rather than leave a corrupt blob
+             * visible; CORRUPT tells the caller chunk payloads may survive
+             * until tombstone GC. */
+            EntityKey mkey = make_key('b', id);
+            int rc = sync_engine_delete(e, ns, ns_len, mkey.bytes,
+                                        sizeof mkey.bytes);
+            return rc == SYNC_OK ? SYNC_ERR_CORRUPT : (sync_error)rc;
+        }
+        if (err != SYNC_OK) return err; /* NOTFOUND: nothing left to reach */
+
+        /* Zero every locally present chunk's payload BEFORE any tombstone
+         * lands — a set on a tombstoned entity would resurrect it. Absent
+         * chunks are skipped for the same reason (a set would create them);
+         * peers holding them erase when these records replicate. */
+        for (uint32_t i = 0; i < mf.chunk_count; i++) {
+            const uint8_t *chash = mf.hashes + (size_t)i * SYNC_BLOB_ID_LEN;
+            EntityKey ckey = make_key('c', chash);
+            int exists = 0;
+            int rc = sync_engine_exists(e, ns, ns_len, ckey.bytes,
+                                        sizeof ckey.bytes, &exists);
+            if (rc == SYNC_OK && exists)
+                rc = sync_engine_set(e, ns, ns_len, ckey.bytes,
+                                     sizeof ckey.bytes, kFieldData,
+                                     sizeof kFieldData, nullptr, 0);
+            if (rc != SYNC_OK) {
+                sync_free(raw);
+                return (sync_error)rc;
+            }
+        }
+
+        /* Then tombstone chunks and manifest, exactly as sync_blob_delete. */
+        for (uint32_t i = 0; i < mf.chunk_count; i++) {
+            const uint8_t *chash = mf.hashes + (size_t)i * SYNC_BLOB_ID_LEN;
+            EntityKey ckey = make_key('c', chash);
+            int rc = sync_engine_delete(e, ns, ns_len, ckey.bytes,
+                                        sizeof ckey.bytes);
+            if (rc != SYNC_OK) {
+                sync_free(raw);
+                return (sync_error)rc;
+            }
+        }
+        sync_free(raw);
+
+        EntityKey mkey = make_key('b', id);
+        int rc = sync_engine_delete(e, ns, ns_len, mkey.bytes, sizeof mkey.bytes);
+        return (sync_error)rc;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
 } // extern "C"
