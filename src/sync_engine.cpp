@@ -280,6 +280,17 @@ int sync_engine_flush(sync_engine *e) {
     return SYNC_OK;
 }
 
+int sync_engine_compact(sync_engine *e) {
+    if (!e || !e->store) return SYNC_ERR_INVALID; /* no log to rewrite */
+    try {
+        return e->store->compact(e) ? SYNC_OK : SYNC_ERR_INTERNAL;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
 void sync_engine_destroy(sync_engine *e) {
     if (!e) return;
     delete e->store;
@@ -382,6 +393,34 @@ int sync_engine_delete(sync_engine *e,
             }
         }
         return SYNC_OK;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+sync_error sync_engine_erase_field(sync_engine *e,
+                                   const uint8_t *ns, size_t ns_len,
+                                   const uint8_t *entity, size_t entity_len,
+                                   const uint8_t *field, size_t field_len) {
+    if (!e || (!ns && ns_len) || (!entity && entity_len) ||
+        (!field && field_len))
+        return SYNC_ERR_INVALID;
+    try {
+        /* Refuse to write through a tombstone: set() re-asserts presence, so
+         * erasing a deleted entity would resurrect it. Likewise refuse a
+         * field that does not exist — an erase must never create state. */
+        auto ni = e->ns.find(to_str(ns, ns_len));
+        if (ni == e->ns.end()) return SYNC_ERR_NOTFOUND;
+        auto ei = ni->second.find(to_str(entity, entity_len));
+        if (ei == ni->second.end() || !ei->second.present())
+            return SYNC_ERR_NOTFOUND;
+        if (ei->second.fields.find(to_str(field, field_len)) ==
+            ei->second.fields.end())
+            return SYNC_ERR_NOTFOUND;
+        return (sync_error)sync_engine_set(e, ns, ns_len, entity, entity_len,
+                                           field, field_len, nullptr, 0);
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
     } catch (...) {

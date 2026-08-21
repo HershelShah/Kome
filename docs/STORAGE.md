@@ -64,6 +64,48 @@ reopen O(state).
 - This is where **tombstone GC** plugs in once the LWW-existence model lands
   (drop tombstones past their TTL during the rewrite — see `docs/DATA_MODEL.md`).
 
+## Deletion & erasure
+
+`sync_engine_delete` is a *logical* delete: it writes a tombstone
+(`present=false` at a fresh HLC) and **retains the entity's field registers
+hidden underneath it** — in RAM, in the log, and in sync snapshots — until the
+tombstone ages past `kTombstoneTtlMs` (30 days) and compaction's tombstone GC
+drops the whole entity. That retention is what makes deletion converge, but it
+means a delete alone is not an erasure: the bytes are merely hidden.
+
+When the *content* must actually go away (ephemeral posts, expired media), the
+recipe is **erase → tombstone → compact**, in that order:
+
+1. **Erase** every field first: `sync_engine_erase_field` (and
+   `sync_blob_erase` for a blob's chunk payloads) overwrites the value with an
+   empty one under a fresh HLC. This is an ordinary signed LWW record, so the
+   erasure **replicates to peers and beats the value it erases** — remote
+   copies go empty at their next sync, not just the local one.
+2. **Tombstone** with `sync_engine_delete` (`sync_blob_erase` does this
+   itself). Order matters: `sync_engine_set` on a tombstoned entity re-asserts
+   presence — writing *after* deleting resurrects the entity. The erase APIs
+   enforce this by refusing (SYNC_ERR_NOTFOUND) to write through a tombstone.
+3. **Compact** with `sync_engine_compact`: the log rewrite drops every
+   superseded frame — including the non-empty values the erasure overwrote —
+   so the bytes physically leave the disk. What the rewritten log still holds
+   for the entity is its tombstone plus the now-empty registers.
+
+**Interplay with `kTombstoneTtlMs`:** for up to 30 days after the delete, the
+entity's *keys* survive (entity id, field names, a blob manifest's chunk-hash
+list — metadata, not payload) alongside the emptied registers. Once the
+tombstone passes the horizon, the next compaction drops the entity entirely.
+The horizon is also the resurrection bound: a peer offline longer than 30 days
+can bring a purged entity back (see `docs/DATA_MODEL.md`).
+
+**Limits — deletion is cooperative, not cryptographic.** The erasure reaches a
+peer only when that peer syncs and honors the records (every implementation
+does, but nothing *forces* a hostile one to). A peer that never syncs again
+keeps its copy forever; relay mailboxes hold sealed envelopes of the original
+records until their retention evicts them; and there is no recall of data a
+device has already displayed or exported. This is the same honest bound
+Earthstar and Willow document: deletion works when peers receive and honor the
+update.
+
 ## Why this design (and not a Prolly Tree / LSM / B-tree)
 
 The storage, in-memory index, and sync are three separate concerns; the best
