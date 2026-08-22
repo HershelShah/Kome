@@ -39,6 +39,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cassert> /* the Debug-only streamed-size exactness check (§3.4) */
 #include <cstring>
 #include <vector>
 #ifndef __EMSCRIPTEN__
@@ -124,6 +125,113 @@ bool write_all(int fd, const void *buf, size_t n) {
     }
     return true;
 }
+
+/* ---- streaming compaction plumbing (§3.4) ------------------------------ */
+
+/* FrameSink buffer size: the compaction stream's only long-lived allocation.
+ * Its capacity is pinned here for the whole run (see FrameSink::append). */
+constexpr size_t kCompactBufSize = 256u * 1024;
+
+/* Exact encoded length of one varint, mirroring put_varint (codec.cpp): one
+ * byte per 7 bits, minimal form. Named frame_varint_len / frame_field_len —
+ * NOT `blen` — because the amalgamated (unity) build concatenates this TU
+ * with noise.cpp, whose locals named `blen` (noise.cpp decrypt paths) would
+ * collide; -Wshadow is absent from the flag set, so the collision would be a
+ * silent latent trap rather than a build error (§3.4 amendment 6). */
+size_t frame_varint_len(uint64_t v) {
+    size_t n = 1;
+    while (v >= 0x80) {
+        v >>= 7;
+        n++;
+    }
+    return n;
+}
+/* On-disk size of one length-prefixed byte string (put_bytes): varint + raw. */
+size_t frame_field_len(size_t n) { return frame_varint_len(n) + n; }
+
+/* Exact wire-blob sizes for capability / revocation entries. These MUST
+ * mirror cap_encode / rev_encode (capability.cpp) byte for byte:
+ *   cap = version(1) issuer(32) subject(32) varint(ns)+ns access(1)
+ *         expiry(8) sig(64)
+ *   rev = version(1) revoker(32) subject(32) varint(ns)+ns issued_ms(8)
+ *         sig(64)
+ * The Debug assert in rewrite_log_streamed cross-checks this arithmetic
+ * against the real encoders' output on every Debug compaction. */
+size_t cap_blob_size(const Capability &c) {
+    return 1 + 2 * SYNC_PUBKEY_LEN + frame_field_len(c.ns.size()) + 1 + 8 +
+           SYNC_SIG_LEN;
+}
+size_t rev_blob_size(const Revocation &r) {
+    return 1 + 2 * SYNC_PUBKEY_LEN + frame_field_len(r.ns.size()) + 8 +
+           SYNC_SIG_LEN;
+}
+
+/* RAII guard for the compaction temp file `<path>.tmp`, with EXPLICIT
+ * ownership transitions so no path can double-close a descriptor (§3.4
+ * amendment 3): close_fd() closes and sets fd = -1, so the destructor's close
+ * branch is dead afterwards; disarm() (legal only once the fd is manually
+ * closed) releases the unlink duty once the rename has consumed the path.
+ * The destructor handles every early-return/throw: close a still-open fd,
+ * unlink a still-armed path — never both acting on a live descriptor after a
+ * manual close. Double-close matters here because this process spawns threads
+ * (load()'s verification pool, transport/connection.cpp): a second ::close on
+ * a reused descriptor number silently reaps another thread's fd, invisible to
+ * ASan/TSan. */
+struct TmpFile {
+    std::string path;
+    int fd = -1;
+    bool armed = false; /* unlink path in the destructor (cleanup on failure) */
+    ~TmpFile() {
+        if (fd >= 0) ::close(fd);
+        if (armed) ::unlink(path.c_str());
+    }
+    void close_fd() {
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
+    }
+    void disarm() {
+        assert(fd == -1); /* close_fd() first; never abandon a live fd */
+        armed = false;
+    }
+};
+
+/* Buffered sequential writer for the streamed compaction. append() is
+ * PRE-checked (§3.4 amendment 1): it returns immediately when !ok; it flushes
+ * FIRST when the incoming bytes would push buf past kCompactBufSize; and it
+ * writes anything >= kCompactBufSize straight through, bypassing the buffer —
+ * so buf's capacity is pinned at exactly kCompactBufSize for the whole run
+ * (a threshold checked only after copying would let one oversized frame grow
+ * the buffer geometrically, and std::string never shrinks on clear()).
+ * ok latches false on the first write error and every subsequent append/flush
+ * is a no-op; the caller also checks ok in its entity-loop condition so a
+ * mid-stream ENOSPC/EIO aborts the stream instead of continuing to build,
+ * seal, and buffer every remaining frame (§3.4 amendment 2). */
+struct FrameSink {
+    int fd;
+    std::string buf;
+    uint64_t total = 0; /* bytes successfully accepted (buffered or written) */
+    bool ok = true;
+    explicit FrameSink(int f) : fd(f) { buf.reserve(kCompactBufSize); }
+    void flush() {
+        if (!ok || buf.empty()) return;
+        if (!write_all(fd, buf.data(), buf.size())) ok = false;
+        buf.clear(); /* keeps capacity — pinned at kCompactBufSize */
+    }
+    void append(const char *p, size_t n) {
+        if (!ok) return;
+        if (buf.size() + n > kCompactBufSize) flush();
+        if (!ok) return;
+        if (n >= kCompactBufSize) {
+            if (!write_all(fd, p, n)) ok = false;
+        } else {
+            buf.append(p, n);
+        }
+        if (ok) total += n;
+    }
+    void append(const std::string &s) { append(s.data(), s.size()); }
+};
 
 /* ---- entry + frame builders (shared by append and compaction) ---------- */
 
@@ -903,40 +1011,79 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     return true;
 }
 
-/* Build a complete log image (magic + frames) of the engine's current state:
- * one meta frame, one frame per entity (its existence record + field
- * registers), and one frame for granted capabilities. Replaying it reconstructs
- * exactly the current state, so the digest is unchanged. */
-void Storage::serialize_state(sync_engine *e, std::string &out) {
-    out = header_bytes();
+/* Stream a complete compacted log image of the engine's current state — one
+ * meta frame, one frame per entity (its existence record + field registers,
+ * in byte-lexicographic (ns, entity) order: std::map iteration), one frame of
+ * granted capabilities and one of revocations (each only when non-empty) —
+ * directly to `<path_>.tmp` through a FrameSink, then commit it with the
+ * exact sequence the full-image rewrite used: fsync(tmp) -> close -> rename
+ * -> reopen -> fsync(dir). Replaying the image reconstructs exactly the
+ * current state, so the digest is unchanged; the rename stays the sole commit
+ * point, so a crash or failure anywhere mid-stream leaves the original log
+ * untouched (at most an orphan `<path>.tmp`, which open() never reads and the
+ * next compaction O_TRUNCs). RAM transient: kCompactBufSize + O(one frame) —
+ * where "one frame" may be a single entity with all its fields OR the entire
+ * cap/rev blob set sealed as a unit — never a full log image (§3.4).
+ *
+ * WASM (§3.4 amendment 7, corrected claim): the CI WASM leg links with
+ * -sNODERAWFS=1 (CMakeLists.txt), i.e. real Node filesystem calls, so
+ * streaming bounds the compaction transient there exactly as natively. Only
+ * the *shipped* npm/browser module (tools/wasm_flags.sh: MEMFS+IDBFS, no
+ * NODERAWFS) still sees MEMFS's geometric expandFileStorage keep the old and
+ * new backing arrays alive while the temp file grows, making streaming
+ * roughly neutral there rather than a win. If a MEMFS win is wanted later,
+ * pre-size the temp with ftruncate(tmp.fd, compacted_image_size(e)) so MEMFS
+ * allocates once — the MANDATORY final ftruncate(tmp.fd, sink.total) below
+ * already guarantees a size misprediction could never commit a log with
+ * trailing zero bytes. */
+bool Storage::rewrite_log_streamed(sync_engine *e) {
+    TmpFile tmp;
+    tmp.path = path_ + ".tmp";
+    tmp.fd = ::open(tmp.path.c_str(), O_RDWR | O_CREAT | O_TRUNC,
+                    S_IRUSR | S_IWUSR);
+    if (tmp.fd < 0) return false;
+    tmp.armed = true;
+    ::fchmod(tmp.fd, S_IRUSR | S_IWUSR);
 
-    /* Append one sealed frame; on a seal failure (RNG, encrypted path) clear out
-     * to signal the whole image is invalid so callers don't write a partial /
-     * zero-nonce file (F2). A valid image always has at least the header + meta
-     * frame, so empty is an unambiguous failure sentinel. */
-    bool failed = false;
+    FrameSink sink(tmp.fd);
+    sink.append(header_bytes());
+
+    /* Seal + stream one frame. F2: seal_frame's empty return (RNG failure on
+     * the encrypted path) is checked BEFORE any append, so a zero-nonce frame
+     * never reaches even the temp file; the sink latches !ok and the stream
+     * aborts, leaving the existing log in place. */
     auto add_frame = [&](const std::string &body, uint32_t count) {
-        if (failed) return;
+        if (!sink.ok) return;
         std::string f = seal_frame(body, count);
-        if (f.empty()) { failed = true; return; }
-        out += f;
+        if (f.empty()) {
+            sink.ok = false;
+            return;
+        }
+        sink.append(f);
     };
 
-    std::string mbody;
-    uint32_t mc = 0;
-    auto add_meta = [&](const std::string &entry) { mbody += entry; mc++; };
-    add_meta(build_meta_u64("schema_version", kSchemaVersion));
-    add_meta(build_meta("seed", seed_, 32));
-    add_meta(build_meta_u64("hlc_physical", e->clock.physical));
-    add_meta(build_meta_u64("hlc_logical", e->clock.logical));
-    add_meta(build_meta_u64("db_clock", e->db_clock));
-    add_frame(mbody, mc);
+    {
+        std::string mbody;
+        uint32_t mc = 0;
+        auto add_meta = [&](const std::string &entry) { mbody += entry; mc++; };
+        add_meta(build_meta_u64("schema_version", kSchemaVersion));
+        add_meta(build_meta("seed", seed_, 32));
+        add_meta(build_meta_u64("hlc_physical", e->clock.physical));
+        add_meta(build_meta_u64("hlc_logical", e->clock.logical));
+        add_meta(build_meta_u64("db_clock", e->db_clock));
+        add_frame(mbody, mc);
+    }
 
-    for (const auto &np : e->ns) {
-        const std::string &ns = np.first;
-        for (const auto &ep : np.second) {
-            const std::string &ent = ep.first;
-            const Entity &en = ep.second;
+    /* sink.ok gates the loop conditions AND each build/seal (§3.4 amendment
+     * 2): the first write/seal failure stops the stream immediately instead
+     * of continuing to build, seal, and buffer every remaining entity —
+     * which would re-create the full-image RAM transient on the error path. */
+    for (auto np = e->ns.cbegin(); sink.ok && np != e->ns.cend(); ++np) {
+        const std::string &ns = np->first;
+        for (auto ep = np->second.cbegin();
+             sink.ok && ep != np->second.cend(); ++ep) {
+            const std::string &ent = ep->first;
+            const Entity &en = ep->second;
             std::string body = build_entity(ns, ent, en.present_v,
                                             en.presence_hlc, en.ex_author,
                                             en.ex_sig);
@@ -949,7 +1096,7 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
         }
     }
 
-    if (e->caps) {
+    if (sink.ok && e->caps) {
         std::vector<std::string> blobs;
         e->caps->export_blobs(blobs);
         if (!blobs.empty()) {
@@ -957,58 +1104,137 @@ void Storage::serialize_state(sync_engine *e, std::string &out) {
             for (const auto &b : blobs) body += build_cap(b);
             add_frame(body, (uint32_t)blobs.size());
         }
-        std::vector<std::string> rblobs;
-        e->caps->export_rev_blobs(rblobs);
-        if (!rblobs.empty()) {
-            std::string body;
-            for (const auto &b : rblobs) body += build_rev(b);
-            add_frame(body, (uint32_t)rblobs.size());
+        if (sink.ok) {
+            std::vector<std::string> rblobs;
+            e->caps->export_rev_blobs(rblobs);
+            if (!rblobs.empty()) {
+                std::string body;
+                for (const auto &b : rblobs) body += build_rev(b);
+                add_frame(body, (uint32_t)rblobs.size());
+            }
         }
     }
 
-    if (failed) out.clear();
-}
+    sink.flush();
+    if (!sink.ok) return false; /* TmpFile closes the fd and unlinks .tmp */
 
-bool Storage::atomic_replace(const std::string &content) {
-    std::string tmp = path_ + ".tmp";
-    int t = ::open(tmp.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-    if (t < 0) return false;
-    ::fchmod(t, S_IRUSR | S_IWUSR);
-    bool wrote = write_all(t, content.data(), content.size());
-    if (wrote) {
-        wrote = ::fsync(t) == 0;
-        storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
-    }
-    if (!wrote) {
-        ::close(t);
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    ::close(t);
-    if (::rename(tmp.c_str(), path_.c_str()) != 0) {
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    /* Reopen the now-replaced file for continued appends. */
-    if (fd_ >= 0) ::close(fd_);
-    fd_ = ::open(path_.c_str(), O_RDWR);
-    if (fd_ < 0) return false;
-    file_size_ = content.size();
-    /* The rewrite superseded any deferred tail cleanup / open-time compact. */
+#ifndef NDEBUG
+    /* Exactness check, live on every Debug compaction: the arithmetic image
+     * size must match the streamed bytes to the byte, or maybe_compact's
+     * open-time heuristic is deciding on a lie. */
+    assert(sink.total == compacted_image_size(e));
+#endif
+
+    /* MANDATORY final truncate to the streamed size (§3.4 amendment 7): a
+     * no-op today (the temp was opened O_TRUNC and only appended), it exists
+     * so any future pre-sizing ftruncate can never commit trailing zero
+     * bytes on a size misprediction. */
+    if (::ftruncate(tmp.fd, (off_t)sink.total) != 0) return false;
+
+    int rc = ::fsync(tmp.fd);
+    storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
+    if (rc != 0) return false;
+    tmp.close_fd();
+    if (::rename(tmp.path.c_str(), path_.c_str()) != 0) return false;
+    tmp.disarm(); /* the rename consumed the path; nothing left to unlink */
+
+    /* The rename IS the commit: record the new on-disk truth IMMEDIATELY,
+     * before attempting the reopen (§3.4 amendment 10). The old epilogue
+     * returned from a failed reopen with file_size_ still holding the OLD
+     * (larger) size while the on-disk file was the new, correct, smaller one
+     * — every later write_frame then failed at lseek(-1) against stale
+     * bookkeeping. The rewrite also superseded any deferred tail cleanup /
+     * open-time compact. */
+    file_size_ = sink.total;
     tail_torn_ = false;
     open_compact_pending_ = false;
 
-    /* Best-effort: fsync the directory so the rename is durable across a crash. */
+    /* Best-effort: fsync the directory so the rename is durable across a
+     * crash. This runs BEFORE the reopen: the rename already committed, so
+     * making it durable must not be skipped just because the reopen below
+     * fails (that failure costs this handle its fd, not the on-disk truth),
+     * and the counted fsync total stays 2 on every path past the rename. A
+     * path with no directory component means the cwd; one whose only slash
+     * is at index 0 ("/x.db") means the root, not the empty string. */
     std::string dir = path_;
     size_t slash = dir.find_last_of('/');
-    dir = (slash == std::string::npos) ? std::string(".") : dir.substr(0, slash);
+    dir = slash == std::string::npos ? std::string(".")
+          : slash == 0               ? std::string("/")
+                                     : dir.substr(0, slash);
     int d = ::open(dir.c_str(), O_RDONLY);
     if (d >= 0) {
         ::fsync(d);
         storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
         ::close(d);
     }
+
+    /* Reopen the now-replaced file for continued appends. */
+    if (fd_ >= 0) ::close(fd_);
+    fd_ = ::open(path_.c_str(), O_RDWR);
+    if (fd_ < 0) return false;
+
     return true;
+}
+
+/* Exact byte size rewrite_log_streamed will produce — pure arithmetic over
+ * the engine's state, no allocation, mirroring the stream frame for frame and
+ * entry for entry (the Debug assert above keeps the two in lockstep). Lets
+ * maybe_compact's deferred open-time heuristic ask "would compaction halve
+ * the file?" without building an image just to measure it. */
+uint64_t Storage::compacted_image_size(const sync_engine *e) const {
+    /* Fixed bytes wrapping one body's entries: the u32le length prefix + the
+     * in-body u32le entry count, then sha8 (plaintext) or nonce24 + mac16
+     * (encrypted — the per-frame AEAD overhead). */
+    const uint64_t frame_overhead = 4 + 4 + (encrypted_ ? 24u + 16u : 8u);
+    /* One [type][key][value] meta entry (build_meta). */
+    auto meta_entry = [](size_t klen, size_t vlen) -> uint64_t {
+        return 1 + frame_field_len(klen) + frame_field_len(vlen);
+    };
+
+    uint64_t total = header_size();
+
+    /* Meta frame: schema_version, seed, hlc_physical, hlc_logical, db_clock. */
+    total += frame_overhead + meta_entry(sizeof "schema_version" - 1, 8) +
+             meta_entry(sizeof "seed" - 1, 32) +
+             meta_entry(sizeof "hlc_physical" - 1, 8) +
+             meta_entry(sizeof "hlc_logical" - 1, 8) +
+             meta_entry(sizeof "db_clock" - 1, 8);
+
+    /* One frame per entity: a build_entity entry ([type][ns][ent][present]
+     * [hlc u64+u32][author 32][sig 64]) plus one build_field entry per
+     * register ([type][ns][ent][field][value][hlc u64+u32][author][sig]). */
+    for (const auto &np : e->ns) {
+        const uint64_t ns_f = frame_field_len(np.first.size());
+        for (const auto &ep : np.second) {
+            const uint64_t ent_f = frame_field_len(ep.first.size());
+            uint64_t body = 1 + ns_f + ent_f + 1 + 8 + 4 + SYNC_PUBKEY_LEN +
+                            SYNC_SIG_LEN;
+            for (const auto &fp : ep.second.fields)
+                body += 1 + ns_f + ent_f + frame_field_len(fp.first.size()) +
+                        frame_field_len(fp.second.value.size()) + 8 + 4 +
+                        SYNC_PUBKEY_LEN + SYNC_SIG_LEN;
+            total += frame_overhead + body;
+        }
+    }
+
+    /* Cap / rev frames, each emitted only when its set is non-empty. Entry =
+     * [type][varint(blob_len)][blob]; blob sizes per cap_blob_size /
+     * rev_blob_size (mirrors of cap_encode / rev_encode). */
+    if (e->caps) {
+        if (!e->caps->caps().empty()) {
+            uint64_t body = 0;
+            for (const auto &c : e->caps->caps())
+                body += 1 + frame_field_len(cap_blob_size(c));
+            total += frame_overhead + body;
+        }
+        if (!e->caps->revs().empty()) {
+            uint64_t body = 0;
+            for (const auto &r : e->caps->revs())
+                body += 1 + frame_field_len(rev_blob_size(r));
+            total += frame_overhead + body;
+        }
+    }
+    return total;
 }
 
 void Storage::gc_tombstones(sync_engine *e) {
@@ -1043,10 +1269,8 @@ bool Storage::compact(sync_engine *e) {
      * outside any batch (documented at the ABI). */
     if (in_tx_) return false;
     gc_tombstones(e); /* purge expired tombstones before rewriting */
-    std::string fresh;
-    serialize_state(e, fresh);
-    if (fresh.empty()) return false; /* seal failed (RNG); keep the existing log (F2) */
-    if (!atomic_replace(fresh)) return false;
+    if (!rewrite_log_streamed(e)) return false; /* incl. seal failure (F2):
+                                                 * the existing log is kept */
     compacted_size_ = file_size_;
     return true;
 }
@@ -1061,12 +1285,14 @@ void Storage::maybe_compact(sync_engine *e) {
     if (open_compact_pending_) {
         /* Deferred open-time compaction (see load): now that the owner is
          * actually writing, rewrite a bloated log if the live image is much
-         * smaller than the file. Same condition open() used to apply. */
+         * smaller than the file. Same condition open() used to apply, now
+         * computed arithmetically (compacted_image_size) instead of
+         * serializing a full image just to measure it. Deliberately no
+         * gc_tombstones here — this branch keeps its historical no-gc
+         * semantics (route through compact() to change that). */
         open_compact_pending_ = false;
-        std::string fresh;
-        serialize_state(e, fresh);
-        if (!fresh.empty() && (uint64_t)fresh.size() * 2 < file_size_ &&
-            atomic_replace(fresh))
+        if (compacted_image_size(e) * 2 < file_size_ &&
+            rewrite_log_streamed(e))
             compacted_size_ = file_size_;
         return;
     }

@@ -127,7 +127,7 @@ inline std::string frame_nonce(const std::string &raw, const LogWalk &w,
 }
 
 /* ---- fsync accounting (see the counter's contract in src/storage.h) ----- *
- * Counts write_frame's per-frame fsync and atomic_replace's two fsyncs (temp
+ * Counts write_frame's per-frame fsync and rewrite_log_streamed's two fsyncs (temp
  * file + best-effort directory), nothing else. Process-global (and atomic —
  * independent engines on independent threads share it): reset before the
  * operation under test. */

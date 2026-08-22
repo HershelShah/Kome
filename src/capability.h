@@ -113,6 +113,12 @@ public:
     /* Number of capabilities held (used to bound growth from gossip). */
     size_t size() const { return caps_.size(); }
 
+    /* Read-only views of the held sets. Storage::compacted_image_size (§3.4)
+     * computes each cap/rev wire-blob's exact encoded size arithmetically —
+     * no export_blobs allocation — and needs the per-item ns lengths. */
+    const std::vector<Capability> &caps() const { return caps_; }
+    const std::vector<Revocation> &revs() const { return revs_; }
+
 private:
     /* Subjects revoked in `ns` by a root owner (effective revocations). */
     void revoked_in(const std::string &ns,
