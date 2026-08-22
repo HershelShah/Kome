@@ -1249,3 +1249,75 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   directly through the internal headers (the Circles app shim did) no longer
   compiles; the replacement is `gens()` (or the individual counters) with the
   content/scope classification made explicit at the call site.
+
+## Element-hash cache: cache per-cell reconciliation hashes (improvement 2)
+
+- **Each cell now carries its own reconciliation-element hash.** `Register`
+  gets `Hash256 elem_hash{}`, `Entity` gets `Hash256 ex_hash{}` (`Hash256 =
+  std::array<uint8_t,32>`, promoted into `ke` in `engine.hpp`) — the SHA-256
+  of the cell's canonical `encode_record` bytes (`encode_signing` bytes + the
+  raw 64 B signature), computed once at every mutation point that installs or
+  replaces a cell. `build_snapshot`'s `emit_element` now copies the stored
+  hash instead of re-hashing the record, so the cold rebuild that dominated
+  post-write sync drops from a SHA-256-per-element pass to a pure encode+copy
+  pass. Wire bytes, RBSR fingerprints, and the on-disk frame format are all
+  byte-identical; `sync_engine_digest` is deliberately **not** rewired to this
+  cache (its preimage excludes signatures, a different hash over different
+  bytes); the cache itself is RAM-only and rebuilt during the load-verify pass
+  at open, so there is no schema bump.
+- **Compute-then-commit: every hash is computed before the first byte of the
+  state it describes is mutated — a standing invariant for future mutation
+  points, not just this one.** `element_hash` allocates (`encode_record`
+  appends into a `std::string`) and can throw `std::bad_alloc`. Computing it
+  *after* installing the cell — the naive shape — would let a throw there
+  strand an already-committed cell with a stale/zero hash and no invalidation
+  signal: silent, permanent fingerprint divergence in Release, since nothing
+  ever re-hashes a live cell from its bytes again. Every insertion point
+  (`sign_existence`, `sync_engine_set`'s register path, both branches of
+  `apply_change`) now computes the hash into a local alongside the signature,
+  then assigns everything into the entity/register together as the last,
+  non-throwing step, so a throw anywhere in the sequence leaves engine state
+  exactly as untouched as before this change. Any future code that installs
+  or replaces a `Register`/`Entity` must keep this shape: compute every
+  allocating/throwing derived value — hash included — into locals first, then
+  commit them as one non-throwing block.
+- **The two hot local paths hash the buffer they already built, instead of
+  re-encoding.** `author_sign`/`verify_change` already construct a `signing`
+  string for the Ed25519 call and used to discard it; it is now threaded out
+  to a streaming `element_hash(signing_bytes, sig, out)` overload
+  (`Sha256.update(signing).update(sig, 64).finish()`), byte-equivalent to the
+  one-shot form because `encode_record` is exactly `encode_signing` followed
+  by an unprefixed signature append. Only `apply_change`'s
+  `already_verified=true` path (no pre-built `signing` buffer available)
+  still one-shot-encodes; that call still obeys the compute-then-commit rule
+  above. `Storage::verify_range`'s parallel load-verify pass hashes the same
+  way, writing a disjoint `hashes[i]` slot per index alongside the existing
+  `ok[i]` verify result, unconditionally — identical code on the threaded and
+  serial-fallback branches.
+- **`merge_record`'s `try_emplace` closes the default-inserted-Register tie
+  structurally, not just by test.** The promoted (out of the anonymous
+  namespace) `ke::merge_record(sync_engine*, const DecodedChange&, const
+  Hash256&)` uses `try_emplace` on the register map to observe insertion
+  explicitly: on a `register_cmp` win, the incoming record's hash installs
+  together with the record; on `inserted && !won` — the map just
+  default-constructed a `Register` nobody described — that cell's hash is
+  computed from its *own* canonical encoding via the shared
+  `change_from_register` helper. Either branch leaves the map with a hash
+  that actually describes what is stored under it; there is no path that
+  leaves a default-constructed cell with a zero or stale hash.
+- **One shared construction, not five hand-written encodings.**
+  `change_from_entity`/`change_from_register` are factored out of
+  `build_snapshot` and reused by `merge_record`'s degenerate-insert path and
+  by the cross-path oracle test, so "the hash covers exactly what
+  `build_snapshot` re-encodes" is a structural property of one code path
+  instead of an argument repeated by hand at every call site.
+- **Measured** (`docs/PERF.md` chapter 6): `BM_SessionBeginCold` at N=64 (the
+  plan's headline case) goes 220.4 µs → 80.1 µs (2.75×, matching the plan's
+  ~2.7× claim) and at N=4096, 13.43 ms → 2.00 ms (6.72×, 85.1% of the cold
+  rebuild removed — SHA-256's share of the cold build grows with N, not flat
+  at the ~63%/~35% figures either earlier chapter claimed; see PERF.md's
+  reconciliation). Write-path cost: `BM_SetNewCell` (two hashes: presence +
+  register) regresses 104.4 µs → 107.3 µs (+2.76%) against the ~86 µs
+  Ed25519 double-sign that already dominates that path; `BM_SetOverwrite`
+  and `BM_ApplyRegister` (one hash each) come out *faster* (−9.31%, −19.45%)
+  from reusing the signing buffer instead of paying a separate re-encode.

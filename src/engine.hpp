@@ -18,6 +18,10 @@ using SiteId = std::array<uint8_t, SYNC_SITE_ID_LEN>;
 using PubKey = std::array<uint8_t, SYNC_PUBKEY_LEN>;
 using Sig    = std::array<uint8_t, SYNC_SIG_LEN>;
 
+/* A 32-byte SHA-256 value: reconciliation-element hashes, combinable
+ * fingerprint sums (reconcile.cpp), and the cached per-cell hashes below. */
+using Hash256 = std::array<uint8_t, 32>;
+
 /* A public key rendered as raw bytes, for use as a std::map/std::set key. */
 inline std::string key_bytes(const PubKey &pk) {
     return std::string(reinterpret_cast<const char *>(pk.data()), pk.size());
@@ -44,6 +48,17 @@ struct Register {
     Hlc         hlc;
     PubKey      author{};
     Sig         sig{};
+    /* Cached reconciliation-element hash: SHA-256 of this cell's canonical
+     * record bytes (encode_record = encode_signing bytes + raw signature).
+     * Invariant — scoped to cells stored in sync_engine::ns only: every point
+     * that installs or replaces such a cell computes the hash (hoisted above
+     * the first committed byte, so a throw leaves no stale-hashed cell) and
+     * stores it with the cell, so build_snapshot copies it instead of
+     * re-hashing. Registers that never enter sync_engine::ns (e.g. the
+     * throwaway Register Storage::put_field builds only to feed build_field)
+     * are out of scope and may leave this zero. RAM-only: never serialized,
+     * recomputed at load. */
+    Hash256     elem_hash{};
 };
 
 /* Total order on registers: (hlc, author, value). Larger wins on merge. */
@@ -59,6 +74,11 @@ struct Entity {
     Hlc                               presence_hlc;      /* {0,0} == no assertion */
     PubKey                            ex_author{};
     Sig                               ex_sig{};
+    /* Cached hash of the existence element — same contract as
+     * Register::elem_hash (see above): maintained at every mutation point for
+     * entities stored in sync_engine::ns; meaningful only while asserted()
+     * (an unasserted shell emits no element). */
+    Hash256                           ex_hash{};
     std::map<std::string, Register>   fields;
 
     bool present() const { return present_v; }
@@ -78,8 +98,11 @@ uint64_t now_ms();
 /* Apply one change. The public sync_engine_apply is a thin wrapper with
  * already_verified=false; reconcile's parallel batch verifier calls it with
  * already_verified=true after checking the signature out of band (the cheap
- * "would this change state?" gate still runs either way). */
-int apply_change(sync_engine *e, const sync_change *c, bool already_verified);
+ * "would this change state?" gate still runs either way), passing the element
+ * hash it computed alongside that check so the bulk path never re-encodes the
+ * record. */
+int apply_change(sync_engine *e, const sync_change *c, bool already_verified,
+                 const Hash256 *elem_hash = nullptr);
 
 /* The engine's two cache-invalidation counters taken together (see the fields
  * on sync_engine below). Comparable so a cache stamped with a pair can ask
@@ -121,13 +144,17 @@ struct sync_engine {
      *                 or wire ingest): the element set is untouched, so the
      *                 unscoped snapshot stays valid, but every per-peer scoped
      *                 snapshot is suspect.
-     * Ordering caveat (pre-existing, not introduced by the split): the local
-     * mutation paths in sync_engine.cpp allocate (sign/encode) between the
-     * first committed byte and the content_gen++ — a bad_alloc in that window
-     * leaves state mutated with no bump, so recon_cache can serve a stale
-     * snapshot until the next accepted mutation. New code must not widen that
-     * window: compute anything that can throw before committing state, then
-     * bump (Phase 2 hoists its element hashing accordingly). */
+     * Ordering rule: compute anything that can throw (sign/encode/hash) into
+     * locals BEFORE committing state, then commit and bump as non-throwing
+     * steps. Phase 2 hoists every sign/element-hash computation accordingly:
+     * on the set/delete/apply paths a bad_alloc now leaves the element set —
+     * and every cached element hash — untouched (at worst an empty,
+     * unasserted entity shell is inserted, which emits no element), and the
+     * gen bump immediately follows the commit with nothing throwing between.
+     * New code must preserve this: a throw between the first committed byte
+     * and the bump would let recon_cache serve a stale snapshot, and a
+     * committed cell without its hash would be a permanent, silent
+     * fingerprint divergence (Release never re-hashes from bytes). */
     uint64_t         content_gen = 0;
     uint64_t         scope_gen = 0;
     ke::GenPair      gens() const { return {content_gen, scope_gen}; }

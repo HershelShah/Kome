@@ -32,6 +32,29 @@ void encode_signing(const sync_change &c, std::string &out);
 /* Append the full canonical serialization (signing bytes + signature). */
 void encode_record(const sync_change &c, std::string &out);
 
+/* Borrowing sync_change views of stored cells — the single canonical
+ * construction of "what build_snapshot re-encodes" for a cell, shared by the
+ * snapshot builder, the storage load path's degenerate-insert synthesis, and
+ * the tests, so the element-hash contract is established once, structurally.
+ * The returned change borrows the argument strings/cell bytes, which must
+ * outlive it. */
+sync_change change_from_entity(const std::string &ns, const std::string &entity,
+                               const Entity &en);
+sync_change change_from_register(const std::string &ns,
+                                 const std::string &entity,
+                                 const std::string &field, const Register &r);
+
+/* Reconciliation-element hash: SHA-256 of the cell's full canonical record
+ * (the encode_record bytes). One-shot form — encodes, then hashes. */
+Hash256 element_hash(const sync_change &c);
+
+/* Streaming form: hash pre-built signing bytes plus the raw 64-byte signature
+ * without re-encoding. Byte-equivalent to the one-shot form because
+ * encode_record is exactly encode_signing followed by the unprefixed
+ * signature append. */
+void element_hash(const std::string &signing_bytes,
+                  const uint8_t sig[SYNC_SIG_LEN], Hash256 &out);
+
 /* A decoded record owning its own bytes; yields a borrowing sync_change view. */
 struct DecodedChange {
     uint8_t     kind = 0;

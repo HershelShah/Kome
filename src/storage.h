@@ -24,6 +24,19 @@
 
 namespace ke {
 
+struct DecodedChange; /* defined in codec.h */
+
+/* Merge one already-verified record into engine state by the same LWW rule the
+ * engine uses (order-independent, idempotent — replay calls this per record).
+ * `h` is the record's reconciliation-element hash (SHA-256 of its canonical
+ * encode_record bytes), computed by the caller; it is installed on the cell
+ * when — and only when — the record wins the merge, so the stored hash always
+ * describes what is actually in the map (on the degenerate tie against the
+ * would-be default Register, the default cell is hashed — before it is
+ * inserted, per the hoisting rule — and installed instead). Promoted out of
+ * storage.cpp's anonymous namespace so tests can drive it directly. */
+void merge_record(sync_engine *e, const DecodedChange &dc, const Hash256 &h);
+
 /* Current on-disk log-format version (stored in a meta record). Opening a file
  * with a newer/unknown version fails cleanly (no backward migration).
  *   1 — append-only log: meta + per-record (existence/register) + capability

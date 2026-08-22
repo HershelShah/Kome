@@ -47,7 +47,7 @@ using sync_engine_detail::sha256;
 
 namespace ke {
 
-using Hash256 = std::array<uint8_t, 32>;
+/* Hash256 comes from engine.hpp (promoted there for the per-cell caches). */
 
 /* ---- sort key ---------------------------------------------------------- */
 
@@ -381,12 +381,16 @@ struct sync_session {
 namespace {
 
 #ifndef __EMSCRIPTEN__
-/* Verify a decoded record's signature. Pure (no engine/global state), so it is
- * safe to run concurrently across worker threads. (Only the parallel path uses
- * it; the serial path verifies inside apply_change.) */
-bool change_sig_ok(const sync_change &c) {
+/* Verify a decoded record's signature and compute its element hash from the
+ * same signing buffer (streaming — the ~1.6 us encode+hash rides along with
+ * the ~130 us verify, and apply_change is handed the hash so the bulk path
+ * never re-encodes the record). Pure (no engine/global state), so it is safe
+ * to run concurrently across worker threads. (Only the parallel path uses it;
+ * the serial path verifies and hashes inside apply_change.) */
+bool change_sig_ok(const sync_change &c, Hash256 &eh) {
     std::string signing;
     encode_signing(c, signing);
+    element_hash(signing, c.signature, eh);
     return verify(c.author, signing.data(), signing.size(), c.signature);
 }
 
@@ -427,18 +431,20 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
     if (decoded.size() >= kParallelVerifyMin && workers > 1) {
         const size_t n = decoded.size();
         std::vector<char> ok(n, 0); /* distinct index per worker: no races */
+        std::vector<Hash256> hashes(n); /* same per-index pattern as ok[] */
         std::vector<std::thread> pool;
         const size_t chunk = (n + workers - 1) / workers;
         for (unsigned w = 0; w < workers; w++) {
             size_t lo = (size_t)w * chunk, hi = std::min(n, lo + chunk);
             if (lo >= hi) break;
-            pool.emplace_back([&decoded, &ok, lo, hi] {
+            pool.emplace_back([&decoded, &ok, &hashes, lo, hi] {
                 /* An exception escaping a std::thread calls std::terminate;
                  * encode_signing can throw bad_alloc on a huge record. Treat
                  * any failure as not-verified (fail-closed). */
                 try {
                     for (size_t i = lo; i < hi; i++)
-                        ok[i] = change_sig_ok(decoded[i].view()) ? 1 : 0;
+                        ok[i] = change_sig_ok(decoded[i].view(), hashes[i])
+                                    ? 1 : 0;
                 } catch (...) {
                 }
             });
@@ -447,7 +453,7 @@ void apply_records(sync_engine *e, const std::vector<std::string> &recs) {
         for (size_t i = 0; i < n; i++) {
             if (!ok[i]) continue;
             sync_change c = decoded[i].view();
-            apply_change(e, &c, /*already_verified=*/true);
+            apply_change(e, &c, /*already_verified=*/true, &hashes[i]);
         }
         if (batched) e->store->batch_commit(e);
         return;
@@ -556,17 +562,31 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
 namespace {
 
 /* Append the element for one change (key + canonical bytes + hash) to out. The
- * change borrows the engine's strings; only the Element's key/bytes are copied. */
+ * change borrows the engine's strings; only the Element's key/bytes are copied.
+ * `hash` is the cell's cached element hash (Register::elem_hash /
+ * Entity::ex_hash), maintained at every mutation point — copying it here is
+ * what lets a snapshot rebuild skip re-running SHA-256 per element. */
 void emit_element(const sync_change &c, const std::string &nsk,
                   const std::string &entk, const std::string &fk, bool existence,
-                  std::vector<Element> &out) {
+                  const Hash256 &hash, std::vector<Element> &out) {
     Element el;
     el.key.ns = nsk;
     el.key.entity = entk;
     el.key.existence = existence;
     if (!existence) el.key.field = fk;
     encode_record(c, el.bytes);
-    sha256(el.bytes.data(), el.bytes.size(), el.hash.data());
+    el.hash = hash;
+#ifndef NDEBUG
+    /* Debug cross-check: the cached hash must equal a fresh hash of the wire
+     * bytes just encoded — a stale cache here is a permanent, silent
+     * fingerprint divergence in Release. Full per-element for now; sampling
+     * is the pre-agreed fallback only if CI wall time forces it (§3.2). */
+    {
+        Hash256 fresh;
+        sha256(el.bytes.data(), el.bytes.size(), fresh.data());
+        assert(fresh == el.hash && "cached element hash is stale");
+    }
+#endif
     out.push_back(std::move(el));
 }
 
@@ -596,33 +616,18 @@ bool build_snapshot(sync_engine *e, const uint8_t *peer,
             const std::string &entk = ep.first;
             const Entity &ent = ep.second;
 
-            sync_change c;
-            std::memset(&c, 0, sizeof c);
-            c.ns = (const uint8_t *)nsk.data(); c.ns_len = nsk.size();
-            c.entity = (const uint8_t *)entk.data(); c.entity_len = entk.size();
-
+            /* change_from_entity/change_from_register (codec) are the one
+             * shared construction of a cell's canonical change — the same one
+             * the mutation-time hashing contract is defined against. */
             if (ent.asserted()) { /* existence element (present or tombstone) */
-                c.kind = SYNC_CHANGE_EXISTENCE;
-                c.causal_length = ent.present_v ? 1 : 0; /* present bit */
-                c.hlc.physical = ent.presence_hlc.physical;
-                c.hlc.logical = ent.presence_hlc.logical;
-                std::memcpy(c.author, ent.ex_author.data(), SYNC_PUBKEY_LEN);
-                std::memcpy(c.signature, ent.ex_sig.data(), SYNC_SIG_LEN);
-                emit_element(c, nsk, entk, kEmpty, true, out);
+                emit_element(change_from_entity(nsk, entk, ent), nsk, entk,
+                             kEmpty, true, ent.ex_hash, out);
             }
             for (const auto &fp : ent.fields) { /* register element per field */
                 const std::string &fk = fp.first;
                 const Register &r = fp.second;
-                c.kind = SYNC_CHANGE_REGISTER;
-                c.causal_length = 0;
-                c.field = (const uint8_t *)fk.data(); c.field_len = fk.size();
-                c.value = (const uint8_t *)r.value.data();
-                c.value_len = r.value.size();
-                c.hlc.physical = r.hlc.physical;
-                c.hlc.logical = r.hlc.logical;
-                std::memcpy(c.author, r.author.data(), SYNC_PUBKEY_LEN);
-                std::memcpy(c.signature, r.sig.data(), SYNC_SIG_LEN);
-                emit_element(c, nsk, entk, fk, false, out);
+                emit_element(change_from_register(nsk, entk, fk, r), nsk, entk,
+                             fk, false, r.elem_hash, out);
             }
         }
     }
