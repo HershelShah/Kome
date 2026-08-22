@@ -121,6 +121,8 @@ struct GenPair {
 class Storage;          /* defined in storage.h (M2) */
 class CapStore;         /* defined in capability.h (M4) */
 struct ReconSnapshot;   /* defined in reconcile.cpp (M3): cached sync snapshot */
+struct ReconView;       /* defined in reconcile.cpp (M3): read-scoped range view
+                         * over a ReconSnapshot (see scoped_view_cache below) */
 
 } // namespace ke
 
@@ -174,12 +176,32 @@ struct sync_engine {
      * cleared wholesale when either gen advances (a write, apply, or capability
      * change). Initialized to {UINT64_MAX, UINT64_MAX} — never a live gens()
      * value — so the first ensure_scoped_cache call clears unconditionally.
-     * Snapshots whose scope is time-bound (a finite-expiry cap) are not
-     * cached — see reconcile.cpp ensure_scoped_cache. */
+     * Holds only peers whose scope is time-INdependent: a fully-open peer (an
+     * alias to the shared unscoped snapshot) or a permanently-restricted one (a
+     * distinct filtered snapshot). A peer whose scope can change with the clock
+     * alone is served from scoped_view_cache below instead, because a GenPair is
+     * not enough to invalidate it. */
     ke::GenPair                               scoped_cache_gens{UINT64_MAX,
                                                                 UINT64_MAX};
     std::map<std::string,
              std::shared_ptr<const ke::ReconSnapshot>> scoped_cache;
+
+    /* Per-peer read-scoped RANGE VIEWS, for peers whose visible set depends on a
+     * capability expiry (§3.5). Such a peer used to be excluded from caching
+     * altogether, so every gossip cycle — idle ones included — re-encoded and
+     * re-hashed its whole visible set. A ReconView instead holds base-index
+     * ranges into the shared unscoped snapshot plus prefix sums over them, so it
+     * is built in O(namespaces log N) and serves the identical wire bytes.
+     *
+     * Two independent invalidations apply, and both are required:
+     *   - scoped_cache_gens, exactly as for scoped_cache above: this map is
+     *     cleared in the same guarded block whenever either gen advances.
+     *   - ReconView::valid_until_ms, the wall-clock deadline the view's scope
+     *     decision holds until (inclusive). Capability expiry moves no counter,
+     *     so a deadline-passed entry is erased and rebuilt on the spot, with no
+     *     dependence on a content_gen or scope_gen bump. */
+    std::map<std::string,
+             std::shared_ptr<const ke::ReconView>>     scoped_view_cache;
 };
 
 #endif /* SYNC_ENGINE_INTERNAL_HPP */

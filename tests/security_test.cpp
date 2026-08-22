@@ -670,23 +670,32 @@ TEST(Security, ReadScoping) {
     sync_engine_destroy(p);
 }
 
-/* The read-scope cache (reconcile.cpp ensure_scoped_cache) may cache a peer's
- * scoped snapshot only when its scope cannot change with time alone.
- * cap_authorize_read reports that via `time_bound`: open/unowned namespaces and
- * permanent-cap grants are stable (cacheable); a finite-expiry read cap makes
- * inclusion time-bound (not cacheable), so capability expiry stays exact even
- * with caching. This locks the predicate the cache relies on. */
+/* The read-scope caches (reconcile.cpp ensure_scoped_source) may serve a peer's
+ * cached scope only while that scope cannot change with time alone.
+ * cap_authorize_read reports two things about that:
+ *   `time_bound`    - the ALLOW depended on a finite-expiry capability;
+ *   `valid_until_ms` - the last ms (inclusive) at which THIS answer, allow or
+ *                      deny, is known to hold; UINT64_MAX when time cannot
+ *                      change it at all.
+ * The deadline is the namespace-wide minimum expiry over the namespace's usable
+ * capabilities, so it covers time-dependent DENIAL as well: `owned()` ignores
+ * expiry, so a namespace whose only root has a finite expiry flips from denied
+ * to world-readable purely with the clock, moving no generation counter. This
+ * locks both predicates the caches rely on. */
 TEST(Security, ReadScopeTimeBoundFlag) {
     sync_engine *owner = sync_engine_create(seed_from(0x31).data());
     sync_engine *v = sync_engine_create(seed_from(0x32).data());
     sync_engine *p = sync_engine_create(seed_from(0x33).data());
     uint8_t ppk[SYNC_PUBKEY_LEN];
     sync_engine_identity(p, ppk);
+    const uint64_t now = ke::now_ms();
 
     /* Open (unowned) namespace: no caps consulted → stable, cacheable. */
     bool tb = true;
-    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "open", &tb));
+    uint64_t vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "open", now, &tb, &vu));
     EXPECT_FALSE(tb) << "open namespace must not be time-bound";
+    EXPECT_EQ(vu, UINT64_MAX) << "an unowned namespace has no expiry deadline";
 
     /* v owns "ns"; grant P a *permanent* (expiry==0) read delegation → stable. */
     sync_capability *root =
@@ -697,8 +706,11 @@ TEST(Security, ReadScopeTimeBoundFlag) {
         sync_capability_delegate(owner, root, ppk, SYNC_ACCESS_READ, 0);
     ASSERT_EQ(sync_engine_grant(v, perm), SYNC_OK);
     tb = true;
-    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", &tb));
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", now, &tb, &vu));
     EXPECT_FALSE(tb) << "permanent read cap must not be time-bound";
+    EXPECT_EQ(vu, UINT64_MAX)
+        << "a namespace with only permanent caps has no expiry deadline";
 
     /* Peer Q holds a *finite-expiry* (still-usable) read cap → time-bound. */
     sync_engine *q = sync_engine_create(seed_from(0x34).data());
@@ -709,8 +721,21 @@ TEST(Security, ReadScopeTimeBoundFlag) {
         sync_capability_delegate(owner, root, qpk, SYNC_ACCESS_READ, kFarFuture);
     ASSERT_EQ(sync_engine_grant(v, temp), SYNC_OK);
     tb = false;
-    EXPECT_TRUE(ke::cap_authorize_read(v, qpk, "ns", &tb));
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, qpk, "ns", now, &tb, &vu));
     EXPECT_TRUE(tb) << "finite-expiry read cap must be flagged time-bound";
+    EXPECT_EQ(vu, kFarFuture)
+        << "a time-bound allow must carry the granting cap's expiry as its deadline";
+
+    /* P is still permanently authorized in "ns" — but the namespace now also
+     * holds Q's expiring cap, so P's answer carries that deadline too. The
+     * deadline is deliberately namespace-wide rather than chain-precise: it can
+     * only force an earlier rebuild, never a wrong answer. */
+    tb = true;
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", now, &tb, &vu));
+    EXPECT_FALSE(tb) << "a permanent member stays cacheable-as-allowed";
+    EXPECT_EQ(vu, kFarFuture) << "the deadline is the namespace-wide minimum";
 
     /* Peer R holds only an *expired* cap → filtered out, R excluded. Exclusion is
      * stable (access only decreases as caps expire), so it is not time-bound. */
@@ -721,8 +746,57 @@ TEST(Security, ReadScopeTimeBoundFlag) {
         sync_capability_delegate(owner, root, rpk, SYNC_ACCESS_READ, 1 /* ms */);
     ASSERT_EQ(sync_engine_grant(v, expd), SYNC_OK);
     tb = true;
-    EXPECT_FALSE(ke::cap_authorize_read(v, rpk, "ns", &tb));
+    vu = 0;
+    EXPECT_FALSE(ke::cap_authorize_read(v, rpk, "ns", now, &tb, &vu));
     EXPECT_FALSE(tb) << "an excluded (expired-cap) peer is stable, not time-bound";
+    /* R's own cap is expired, so it is filtered out and contributes no deadline;
+     * the namespace-wide minimum below comes from Q's still-usable one. */
+    EXPECT_EQ(vu, kFarFuture)
+        << "a denial in a namespace holding a usable expiring cap is deadlined";
+
+    /* ---- time-dependent DENIAL ------------------------------------------
+     * The security case the deadline exists for. "tns" is owned by a root whose
+     * expiry is finite; P holds nothing in it, so P is denied. owned() ignores
+     * expiry, so nothing about this denial is permanent: the instant the root
+     * lapses the namespace has no usable root, which means OPEN — P may read it,
+     * with no grant, no revoke and no write to bump either generation counter.
+     * A cache keyed only on `time_bound` (false here) plus the GenPair would
+     * serve the stale denial forever. The public ABI mints only permanent roots,
+     * so the expiring root is built directly against CapStore. */
+    const uint64_t kRootExp = now + 100000;
+    {
+        ke::Capability xr;
+        xr.issuer = owner->identity.sign_pk;
+        xr.subject = owner->identity.sign_pk; /* issuer == subject == root */
+        xr.ns = "tns";
+        xr.access = ke::kAccessRead | ke::kAccessWrite;
+        xr.expiry = kRootExp;
+        std::string sb;
+        ke::cap_signing_bytes(xr, sb);
+        ke::sign(owner->identity.sign_sk.data(), sb.data(), sb.size(),
+                 xr.sig.data());
+        ASSERT_TRUE(ke::cap_sig_valid(xr));
+        ASSERT_NE(v->caps, nullptr);
+        v->caps->add(xr);
+    }
+    tb = true;
+    vu = 0;
+    EXPECT_FALSE(ke::cap_authorize_read(v, ppk, "tns", now, &tb, &vu));
+    EXPECT_FALSE(tb) << "a denial is not a time-bound *allow*";
+    EXPECT_EQ(vu, kRootExp)
+        << "a denial that lapses with the root's expiry must carry that deadline";
+
+    /* The flip itself, evaluated at an instant past the root's expiry — the
+     * query `now` is a required parameter precisely so this is expressible (and
+     * so no path can silently substitute a fresh clock read). */
+    tb = true;
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "tns", kRootExp + 1, &tb, &vu));
+    EXPECT_FALSE(tb);
+    EXPECT_EQ(vu, UINT64_MAX)
+        << "once the last root lapses the namespace is open, and open is absorbing";
+    /* Inclusive at the expiry millisecond itself, matching usable(). */
+    EXPECT_FALSE(ke::cap_authorize_read(v, ppk, "tns", kRootExp, &tb, &vu));
 
     sync_capability_free(root);
     sync_capability_free(perm);
@@ -809,7 +883,7 @@ TEST(Security, DiamondDelegationUnionsAccess) {
     set(carol, "nsA", "c1", "f", "hi");
     EXPECT_EQ(apply_all(v, carol), SYNC_OK) << "WRITE via the Y chain not honored";
     /* READ via the X chain. */
-    EXPECT_TRUE(ke::cap_authorize_read(v, cpk, "nsA"))
+    EXPECT_TRUE(ke::cap_authorize_read(v, cpk, "nsA", ke::now_ms()))
         << "READ via the X chain not honored";
 
     for (sync_capability *c : {root, ox, oy, xc, yc}) sync_capability_free(c);
@@ -916,7 +990,7 @@ TEST(Security, AttenuatedDelegationConfersProvableSubset) {
 
     /* Holder can now only prove READ (its R|W expired), so X is attenuated to
      * READ: readable, NOT writable, and crucially NOT denied entirely. */
-    EXPECT_TRUE(ke::cap_authorize_read(v, xpk, "nsA"))
+    EXPECT_TRUE(ke::cap_authorize_read(v, xpk, "nsA", ke::now_ms()))
         << "attenuated delegation must still confer the issuer's provable READ";
     set(x, "nsA", "rec", "f", "v");
     EXPECT_EQ(apply_all(v, x), SYNC_ERR_UNAUTHORIZED)

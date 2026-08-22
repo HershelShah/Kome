@@ -72,7 +72,12 @@ Under the threat model below, the engine aims to provide:
    authenticated too (S6c).
 4. **Read scoping.** A peer only receives records from namespaces it is
    authorized to read; the live transport reconciles a capability-scoped
-   snapshot keyed to the authenticated peer (S1).
+   snapshot keyed to the authenticated peer (S1). A peer whose scope depends
+   on a finite-expiry capability may be served from a cached, deadline-limited
+   range view rather than a snapshot rebuilt every cycle — see "Scoped-view
+   read enforcement" and "Scoped-view cache deadlines" under Known limitations
+   below for how that cache is kept from leaking a denied namespace and from
+   outliving a capability's expiry.
 5. **Convergence safety.** Merges are commutative/associative/idempotent;
    message reorder/loss/duplication cannot corrupt state or diverge two honest
    replicas.
@@ -181,6 +186,53 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   Worst case is *silent divergence / data suppression* for a range (not data
   forgery — signatures still gate writes). A collision-resistant multiset hash
   (LtHash/ECMH) is the planned fix; it is a wire-protocol change.
+- **Scoped-view read enforcement is index arithmetic, not physical absence.**
+  A peer whose read scope depends on a finite-expiry capability is served,
+  when cheap, from a cached range view (`ReconView`, `sync_engine::
+  scoped_view_cache`) — half-open index ranges over the engine's *shared*,
+  unfiltered reconciliation snapshot — rather than from a per-peer snapshot
+  that has denied records physically removed. A bug in the range/index
+  arithmetic (`ReconView::base_index`/`elem`/`vsum`, `reconcile.cpp`) could
+  therefore, in principle, expose a denied namespace's bytes, element count, or
+  fingerprint from a base that never omitted them in the first place. Three
+  layered mitigations close this: (1) every view build is cross-checked,
+  element-for-element and prefix-sum-for-prefix-sum, against a from-scratch,
+  genuinely-filtered `build_filtered` for the same peer and the same instant,
+  under `assert()` — live on all four sanitizer CI legs (they build Debug), so
+  a divergence fails the build, not a fuzzer; (2) the session's own source
+  members (`sync_session::ss_`/`vw_`) are private, with `set_source()` the
+  sole writer, so any code path that reached the shared base directly instead
+  of through the visible-index accessors (`size()`/`elem()`/`fingerprint()`,
+  all bounds-asserted) is a compile error, not a discipline; (3) an
+  adversarial test drives crafted out-of-range and malformed reconcile-message
+  bounds at a scoped session and asserts that no byte, count, or fingerprint
+  of the denied namespace escapes into the reply
+  (`ScopedView.MaliciousBoundsCannotLeakDeniedBytes`,
+  `tests/scoped_view_test.cpp`) — built on a minimal wire-message encoder with
+  its own round-trip decode guard (`tests/recon_wire.hpp`), since the
+  production encoders have internal linkage and the guard's own
+  discriminating power is separately pinned
+  (`ScopedView.WireVehicleGuardIsDiscriminating`).
+- **Scoped-view cache deadlines cover time-dependent denial, not only
+  time-bound readability.** A cached range view is reusable only while
+  `now <= valid_until_ms` (`sync_engine::scoped_view_cache`,
+  `reconcile.cpp`); that deadline is the **minimum expiry over every
+  namespace scanned when the view was built — readable and denied namespaces
+  alike** — not only the namespaces the peer can currently read. This is
+  deliberate, not conservative-by-accident: `CapStore::owned()` ignores
+  expiry, so an *owned* namespace whose only root capability carries a finite
+  expiry silently becomes *open* (world-readable — no usable root means
+  unowned) the instant that root lapses, with no grant, revoke, or write to
+  bump a generation counter and invalidate the cache. A deadline computed only
+  from readable/time-bound namespaces would keep serving that now-stale
+  denial past the moment it flips to world-readable, until the next
+  unrelated content or scope change happened to evict it. `CapStore::
+  authorized` (`capability.cpp`) sets its `valid_until_ms` out-parameter for
+  the denied case exactly as it does for the allowed one, and
+  `ensure_scoped_source` takes the minimum over every namespace its pre-scan
+  visits, with no early exit on the first denial. Pinned by
+  `ScopedView.DenialDeadlineSurvivesRootExpiry` and the denial-case assertions
+  added to `Security.ReadScopeTimeBoundFlag`.
 - **Low-order / non-canonical keys.** Author public keys are not screened for
   low-order points. This does not grant access on an owned namespace (the key
   holds no capability), but such keys should be rejected for defense in depth.
