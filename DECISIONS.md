@@ -1497,3 +1497,103 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   the Phase-3 frame walker: exactly one meta frame + one frame per entity in
   byte-lexicographic order + optional cap/rev frames, each entity frame's
   entry count matching its field count.
+## Scoped-range-views: deadline-cached read-scoped snapshots (improvement 5)
+
+- **Why the never-cache branch existed, and what replaced it.** A peer whose
+  read scope depended on a finite-expiry capability used to be excluded from
+  the per-peer snapshot cache entirely — `ensure_scoped_cache` returned an
+  uncached `build_filtered` result every single time — because the existing
+  cache had no notion of expiring an entry when nothing else moved: every
+  invalidation the engine tracked was a generation bump, and a capability's
+  expiry isn't one. That made every gossip cycle for such a peer, including an
+  idle, converged one, pay a full O(N_visible) re-encode (`docs/PERF.md`
+  chapter 9: 253.7 µs–4741.5 µs per cycle depending on shape). The replacement
+  is `ReconView`: an immutable set of half-open base-index ranges over a
+  `ReconSnapshot`, plus prefix sums over those ranges, cached per peer in the
+  new `sync_engine::scoped_view_cache` under a wall-clock deadline
+  (`valid_until_ms`) in addition to the existing `GenPair` guard. A cache hit
+  is one map lookup plus one deadline compare — 1762×–32254× faster than the
+  uncached rebuild it replaces, flat in both N and visible fraction.
+- **Security fix — the cache deadline is the minimum expiry over every
+  namespace scanned, denied ones included, not only readable/time-bound
+  ones.** `CapStore::owned()` ignores expiry, so an *owned* namespace whose
+  only root capability carries a finite expiry silently becomes *open*
+  (world-readable — no usable root means unowned) the instant that root
+  lapses, with no grant/revoke/write to bump a generation counter. Computing
+  `valid_until_ms` only for the readable, time-bound case — the original
+  shape — would cache that denial past the moment it flips to world-readable.
+  `CapStore::authorized` (`capability.cpp`) now sets its `valid_until_ms`
+  out-parameter whenever the namespace has a usable root and anything in it
+  carries a finite expiry, for the denied case exactly as for the allowed
+  one; `ensure_scoped_source`'s pre-scan (`reconcile.cpp`) takes the minimum
+  over every namespace it visits, with no early exit on the first denial.
+  Pinned by `ScopedView.DenialDeadlineSurvivesRootExpiry` and by
+  denial-case assertions added to `Security.ReadScopeTimeBoundFlag`.
+- **Security fix — `cap_authorize_read`'s `now` is now a required parameter;
+  the `now == 0 → now_ms()` sentinel is gone.** With `now == 0`, `usable()`'s
+  `c.expiry == 0 || now <= c.expiry` check treats *every* finite-expiry
+  capability as usable — an uninitialized or defaulted `now` was a fail-open
+  planted directly in the read-scope enforcement path, and the Debug
+  cross-check couldn't catch it because the cross-check was handed that same
+  `now`. `now` is required at both `cap_authorize_read` call sites now, with
+  no in-function fallback and no default argument; `begin_session` reads the
+  clock exactly once per session and threads that single instant through the
+  scope pre-scan, the range-view build, the filtered build, and the Debug
+  cross-check, so all four classify against the same point in time. Two
+  separate clock reads could otherwise classify a peer as time-independent
+  and then, a microsecond later, silently cache a set narrower than that
+  classification assumed, as if it were permanent.
+- **Privatization that makes a missed raw-base access a compile error, not a
+  discipline.** `sync_session`'s snapshot/view members (`ss_`/`vw_`) are
+  private, written exactly once by `set_source()` (asserted write-once, and
+  asserted mutually exclusive — a session reconciles over one source, never
+  both). Every other member is expressed in visible-index space (`size()`,
+  `elem()`, `lower_index()`, `fingerprint()`), so `s->ss->snap[i]`-style raw
+  base indexing — which would silently ignore read scope — no longer
+  compiles from anywhere in the file. The original design privatized only the
+  *accessors*, leaving `ss`/`vw` themselves public and directly assignable,
+  so its "a missed access is a compile error" claim did not actually hold;
+  this closes it structurally instead of by convention.
+- **Read scoping now rests on index arithmetic over a shared base, not
+  physical absence — accepted, and deliberately layered.** When cheap (see
+  the gating decision below), a view ranges over the engine's *shared*,
+  unfiltered snapshot instead of a per-peer snapshot with denied records
+  physically removed, so correctness depends on the range/index arithmetic
+  (`ReconView::base_index`/`elem`/`vsum`, each bounds-asserted —
+  `assert(v < visible)`, since the unguarded mapping at `v == visible` is
+  valid-but-wrong and invisible to UBSan) rather than on denied bytes never
+  having been copied in the first place. Three independent mitigations, not
+  one: the Debug cross-check (every view build compared element-for-element
+  and prefix-sum-for-prefix-sum against a from-scratch, genuinely-filtered
+  `build_filtered`, live on all four sanitizer CI legs since they all build
+  Debug), the accessor privatization above, and an adversarial test that
+  drives crafted out-of-range and malformed reconcile-message bounds at a
+  scoped session and asserts that no byte, count, or fingerprint of a denied
+  namespace escapes into the reply
+  (`ScopedView.MaliciousBoundsCannotLeakDeniedBytes`) — built on a new
+  minimal wire-message encoder with its own encode/decode round-trip guard
+  (`tests/recon_wire.hpp`, its discriminating power separately pinned by
+  `ScopedView.WireVehicleGuardIsDiscriminating`), since the production
+  message encoders have internal linkage and no reconcile-message builder
+  existed to reuse. See `SECURITY.md`'s residual-risk entries for the
+  deployed framing.
+- **Measured crossover: gate on "is the base already paid for," not a
+  visible-fraction threshold.** Ranging over the shared base costs an O(N)
+  snapshot build where the old filtered path cost only O(N_visible); forcing
+  `build_view`'s gate to `share_base = true` unconditionally to measure the
+  ungated path directly (`docs/PERF.md` chapter 9) showed a 6.67×–15.65×
+  write-active regression at small visible fractions (1/100, 1/10) — and the
+  ungated path stayed 1.88×–2.42× regressive even at the *largest* visible
+  fraction measured (1/2); the ratio only approaches 1.0× in the limit as the
+  peer's visible fraction approaches "reads everything," where filtering and
+  sharing converge to the same work. No fraction short of that limit is safe
+  to treat as "close enough" to share for free. `build_view` therefore ships
+  gated on `share_base = base_is_current(e) || fully_open` — share the
+  already-built, current unscoped snapshot, or share it when the peer may
+  read all of it anyway; otherwise build the peer's own filtered snapshot,
+  exactly as the pre-phase path did — rather than on a visible-fraction or
+  multi-consumer heuristic. Gated, write-active cost lands at parity with the
+  pre-phase filtered rebuild (ratios 0.92–1.01 across the measured shapes);
+  the idle/converged case this phase exists for keeps its full 1762×–32254×
+  win, since gating only chooses which base a view is built over, never
+  whether the deadline cache applies.

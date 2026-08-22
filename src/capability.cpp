@@ -176,8 +176,14 @@ bool CapStore::owned(const std::string &ns) const {
 }
 
 bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
-                          uint8_t need, uint64_t now, bool *time_bound) const {
+                          uint8_t need, uint64_t now, bool *time_bound,
+                          uint64_t *valid_until_ms) const {
     if (time_bound) *time_bound = false;
+    /* Unbounded until proven otherwise. Every path that returns without
+     * revisiting this is a path whose answer cannot change with time alone: it
+     * changes only via a grant/revoke/ingest, each of which bumps scope_gen and
+     * so invalidates any cache keyed on it. */
+    if (valid_until_ms) *valid_until_ms = UINT64_MAX;
     /* Capabilities in the store are signature-verified on insertion, so the
      * hot path only checks access/expiry (no EdDSA here). */
     auto usable = [now](const Capability &c) {
@@ -207,12 +213,24 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
      * role upgrade that adds a second, broader grant is honored. Masks only gain
      * bits (<=2), so it terminates and is cycle-safe. */
     struct Result { bool open; uint8_t access; };
-    auto solve = [&](bool permanent_only, bool *saw_expiring) -> Result {
+    /* `expiring` (when non-null) collects, over the *usable* caps of this
+     * namespace, whether any carries a finite expiry and the earliest such
+     * expiry — the instant at which this whole answer may change. Every usable
+     * cap counts, not just the ones on the winning chain: a cap expiring
+     * elsewhere in the namespace can turn a denial into an allow (losing the
+     * last usable root makes the namespace open == world-readable). Expired caps
+     * are already filtered out by usable(), and expiry is one-way, so the
+     * minimum collected here is always >= now. */
+    struct Expiring { bool saw = false; uint64_t min_ms = UINT64_MAX; };
+    auto solve = [&](bool permanent_only, Expiring *expiring) -> Result {
         const Capability *root = nullptr;
         std::map<std::string, std::vector<const Capability *>> by_issuer;
         for (const auto &c : caps_) {
             if (!usable(c) || c.ns != ns) continue;
-            if (saw_expiring && c.expiry != 0) *saw_expiring = true;
+            if (expiring && c.expiry != 0) {
+                expiring->saw = true;
+                if (c.expiry < expiring->min_ms) expiring->min_ms = c.expiry;
+            }
             if (permanent_only && c.expiry != 0) continue;
             if (c.is_root()) {
                 if (!root) root = &c;
@@ -251,16 +269,25 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
         return {false, ait == best.end() ? (uint8_t)0 : ait->second};
     };
 
-    bool saw_expiring = false;
-    Result all = solve(/*permanent_only=*/false, &saw_expiring);
-    if (all.open) return true; /* unowned namespace == open (time-independent) */
+    Expiring expiring;
+    Result all = solve(/*permanent_only=*/false, &expiring);
+    /* No usable root: the namespace is open (world-readable/writable). This is
+     * absorbing — caps only ever expire, never revive — so "open" cannot lapse
+     * with time, and valid_until_ms stays unbounded. */
+    if (all.open) return true;
+    /* Owned, and something in this namespace expires: the answer below — allow
+     * OR deny — holds only until that instant. Set for the denied case too
+     * (§3.5 fix 1): owned() ignores expiry, so a namespace whose only root has a
+     * finite expiry silently becomes open once that root lapses, flipping a
+     * denial to world-readable with no generation bump anywhere. */
+    if (valid_until_ms && expiring.saw) *valid_until_ms = expiring.min_ms;
     bool ok = (all.access & need) == need;
     /* Time-bound only if `need` cannot be proven from permanent caps alone — i.e.
      * the answer genuinely depends on a finite-expiry cap. With no expiring cap in
      * the namespace the permanent-only pass is identical, so skip it. (A permanent
      * member in a namespace that merely also holds some unrelated expiring cap is
      * thus correctly NOT flagged time-bound, keeping its scoped snapshot cacheable.) */
-    if (ok && time_bound && saw_expiring) {
+    if (ok && time_bound && expiring.saw) {
         Result perm = solve(/*permanent_only=*/true, nullptr);
         *time_bound = (perm.access & need) != need;
     }
@@ -333,11 +360,21 @@ int cap_authorize_write(sync_engine *e, const uint8_t author[32],
 }
 
 bool cap_authorize_read(sync_engine *e, const uint8_t reader[32],
-                        const std::string &ns, bool *time_bound) {
+                        const std::string &ns, uint64_t now, bool *time_bound,
+                        uint64_t *valid_until_ms) {
     if (time_bound) *time_bound = false;
-    if (!e->caps) return true;
-    if (!e->caps->owned(ns)) return true;
-    return e->caps->authorized(reader, ns, kAccessRead, now_ms(), time_bound);
+    /* Both early returns below are time-independent, so the unbounded deadline
+     * is not a fail-open default: engaging the capability system at all, and
+     * taking ownership of a namespace, both require a local grant, and every
+     * grant/revoke/wire-ingest bumps scope_gen (capability.cpp) — which
+     * invalidates every per-peer cache keyed on the engine's GenPair. Only
+     * expiry moves without a bump, and expiry is what authorized() reports. */
+    if (valid_until_ms) *valid_until_ms = UINT64_MAX;
+    if (!e->caps) return true;              /* no capability system engaged */
+    if (!e->caps->owned(ns)) return true;   /* open (unowned) namespace */
+    /* `now` is the caller's, never now_ms() here — see capability.h. */
+    return e->caps->authorized(reader, ns, kAccessRead, now, time_bound,
+                               valid_until_ms);
 }
 
 } // namespace ke
