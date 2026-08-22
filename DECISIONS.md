@@ -1497,6 +1497,7 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   the Phase-3 frame walker: exactly one meta frame + one frame per entity in
   byte-lexicographic order + optional cap/rev frames, each entity frame's
   entry count matching its field count.
+
 ## Scoped-range-views: deadline-cached read-scoped snapshots (improvement 5)
 
 - **Why the never-cache branch existed, and what replaced it.** A peer whose
@@ -1597,3 +1598,41 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   the idle/converged case this phase exists for keeps its full 1762×–32254×
   win, since gating only chooses which base a view is built over, never
   whether the deadline cache applies.
+
+## Integration: the five improvements on one head
+
+- **The rebase was mechanical, as the plan predicted.** P5 was developed off
+  P2 (the reconcile track) and had never met P3/P4 until integration.
+  Replaying it onto P4 conflicted in `DECISIONS.md` and `docs/PERF.md` only —
+  both the "two phases appended at the same place" kind — while every source
+  file merged clean, including `reconcile.cpp`, which P2 and P5 both edit.
+  Resolution kept both sides and renumbered P5's PERF chapter 7 → 9 (7 and 8
+  were taken by P3 and P4).
+- **Cross-phase review found no correctness or security defect**, which is
+  the claim worth recording precisely: each phase had been reviewed only
+  against its own base, so the seams — P4's streamed compaction against P2's
+  cached element hashes, P3's batching against P4's `maybe_compact`, P5's
+  view cache against P1's generation bumps — were unexamined until here. They
+  were verified by repro and by mutation, plus a ~13k-op randomized soak
+  across 13 build/encryption configurations with the P2 hash assert, the P4
+  size-exactness assert and the P5 view cross-check all live.
+- **It did find a coverage gap, and the gap hid a real leak path.** Reaching
+  the `ReconView` path requires a delegation with a *finite* expiry; every
+  test that created one used an in-memory engine, and every test that
+  compacted or batched used expiry 0. So nothing pinned the P5 × P3 and
+  P5 × P4 seams. The behaviour was correct, but the protection was
+  accidental: neutering `gc_tombstones`' `content_gen++` leaks a GC'd
+  tombstone to a peer through a stale scoped view, and no permanent test
+  noticed. `ScopedView.TombstoneGcEvictsCachedViewOnStoreBackedEngine` and
+  `ScopedView.RevokeInsideOpenBatchEvictsCachedViewImmediately` close it on
+  store-backed engines; the first is mutation-proofed against exactly that
+  neutering, the second pins that a revoke inside an open batch cuts a cached
+  view *immediately* (capability writes bypass batching, so waiting for the
+  commit would keep serving a revoked peer).
+- **Also fixed here:** documentation that had drifted out of step with the
+  code — `engine.hpp`'s `scoped_cache_gens` contract still named
+  `ensure_scoped_cache` (P5 renamed it `ensure_scoped_source`), PERF chapter
+  7 still described compaction going through `atomic_replace` in the present
+  tense (P4 deleted it), and the plan's Phase-5 gate text still described the
+  visible-fraction heuristic it *anticipated* rather than the
+  `base_is_current || fully_open` gate that measurement actually produced.
