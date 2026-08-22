@@ -68,6 +68,11 @@ struct Element {
  * shared by sessions (see sync_engine::recon_cache). Named (external linkage)
  * so the engine can hold a shared_ptr<const ReconSnapshot>. */
 struct ReconSnapshot {
+    /* The content_gen the snapshot was built at — content-only, even for a
+     * scoped snapshot (the field's sole consumer is ensure_cache's equality
+     * check on the unscoped cache). Scoped-cache validity is a property of the
+     * engine, not the snapshot: it lives on sync_engine::scoped_cache_gens as
+     * a full (content, scope) GenPair. */
     uint64_t             gen = 0;
     std::vector<Element> snap;
     std::vector<Hash256> prefix; /* prefix[i] = sum of snap[0..i).hash */
@@ -332,7 +337,7 @@ struct sync_session {
 
     /* The point-in-time snapshot this session reconciles over. Held by
      * shared_ptr so it stays stable even as records applied mid-session bump
-     * the engine's state_gen and replace its cached snapshot. */
+     * the engine's content_gen and replace its cached snapshot. */
     std::shared_ptr<const ReconSnapshot> ss;
 
     const std::vector<Element> &snap() const { return ss->snap; }
@@ -642,21 +647,23 @@ void build_prefix(const std::vector<Element> &snap,
     }
 }
 
-/* Build a fresh snapshot stamped at the current state_gen — full when peer==NULL,
- * else read-scoped to peer. NULL on build failure. Shared by the unscoped
- * (ensure_cache) and per-peer (ensure_scoped_cache) paths. */
+/* Build a fresh snapshot stamped at the current content_gen — full when
+ * peer==NULL, else read-scoped to peer. NULL on build failure. Shared by the
+ * unscoped (ensure_cache) and per-peer (ensure_scoped_cache) paths. */
 std::shared_ptr<ReconSnapshot> build_filtered(sync_engine *e, const uint8_t *peer) {
     auto snap = std::make_shared<ReconSnapshot>();
-    snap->gen = e->state_gen;
+    snap->gen = e->content_gen;
     if (!build_snapshot(e, peer, snap->snap)) return nullptr;
     build_prefix(snap->snap, snap->prefix);
     return snap;
 }
 
-/* The engine's cached full snapshot, rebuilt only when state_gen advanced since
- * it was taken. Returns NULL on build failure. */
+/* The engine's cached full snapshot, rebuilt only when content_gen advanced
+ * since it was taken — the snapshot is a pure function of e->ns, so a
+ * capability change (scope_gen) no longer discards and re-encodes/re-hashes
+ * it. Returns NULL on build failure. */
 std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e) {
-    if (e->recon_cache && e->recon_cache->gen == e->state_gen)
+    if (e->recon_cache && e->recon_cache->gen == e->content_gen)
         return e->recon_cache;
     auto snap = build_filtered(e, nullptr);
     if (snap) e->recon_cache = snap;
@@ -665,9 +672,10 @@ std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e) {
 
 /* The per-peer read-scoped snapshot, cached on the engine (engine.hpp
  * scoped_cache) the same way ensure_cache caches the unscoped one: rebuilt only
- * when state_gen advanced since it was taken — which now includes capability
- * grants/ingest (capability.cpp). A converged, idle gossip link therefore stops
- * re-encoding and re-hashing every record each cycle. Snapshots whose scope is
+ * when either gen advanced since it was taken — content (writes/applies) or
+ * scope (capability grants/revokes/ingest, capability.cpp). A converged, idle
+ * gossip link therefore stops re-encoding and re-hashing every record each
+ * cycle. Snapshots whose scope is
  * time-bound (a finite-expiry read cap) are returned but NOT cached, so capability
  * expiry stays exact (that peer rebuilds each cycle, as before). Returns NULL on
  * build failure. */
@@ -688,10 +696,13 @@ std::shared_ptr<const ReconSnapshot> ensure_scoped_cache(sync_engine *e,
      * cycle regardless of how the peer is scoped. The cache holds both restricted
      * peers (a distinct filtered snapshot) and fully-open peers (an alias to the
      * shared unscoped snapshot). It is cleared whenever engine state advances —
-     * writes, applies, and capability grants/ingest all bump state_gen. */
-    if (e->scoped_cache_gen != e->state_gen) {
+     * a content bump (writes, applies, tombstone GC) or a scope bump (capability
+     * grants/revokes/ingest) both clear it; a fully-open peer then cheaply
+     * re-runs the pre-scan below and re-aliases the still-valid unscoped
+     * snapshot. */
+    if (e->scoped_cache_gens != e->gens()) {
         e->scoped_cache.clear();
-        e->scoped_cache_gen = e->state_gen;
+        e->scoped_cache_gens = e->gens();
     }
     std::string key((const char *)peer, SYNC_PUBKEY_LEN);
     auto it = e->scoped_cache.find(key);
@@ -799,8 +810,8 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
              * records, so a revoked key's *writes* in this very message are
              * rejected (write authorization is re-checked live per record). Read-
              * scope is bound to this session's snapshot and refreshes at the next
-             * reconcile cycle (SecurePeerSession::poll rebuilds when state_gen
-             * advances) — i.e. read cut-off is eventually consistent, not mid-
+             * reconcile cycle (SecurePeerSession::poll rebuilds when either
+             * gen advances) — i.e. read cut-off is eventually consistent, not mid-
              * session, because re-snapshotting mid-protocol would break the
              * in-flight reconcile (see SECURITY.md and transport/connection.cpp). */
             cap_ingest_delegations(s->engine, caps_in);

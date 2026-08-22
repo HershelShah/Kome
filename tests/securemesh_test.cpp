@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "capability.h" /* CapStore::rev_count — revocation-propagation probe */
 #include "cluster.hpp"
 #include "engine.hpp"
 #include "transport/connection.h"
@@ -174,7 +175,7 @@ TEST(SecureMesh, ReadScopingEnforced) {
 
 /* ---- A grant must take effect on a live gossip link --------------------- */
 /* The scoped snapshot is cached per peer (reconcile.cpp ensure_scoped_cache). A
- * capability grant bumps the engine's state_gen (capability.cpp), clearing that
+ * capability grant bumps the engine's scope_gen (capability.cpp), clearing that
  * cache so a newly-readable namespace is included on the next cycle. Without the
  * bump, A would keep serving B its stale cached scope and the grant would never
  * propagate over an established link. */
@@ -206,7 +207,7 @@ TEST(SecureMesh, GrantMidSyncInvalidatesScopeCache) {
     ASSERT_NE(readB, nullptr);
     ASSERT_EQ(sync_engine_grant(a, readB), SYNC_OK);
 
-    /* The grant must reach B over the live link — the state_gen bump dropped the
+    /* The grant must reach B over the live link — the scope_gen bump dropped the
      * cached scope, so the next cycle re-snapshots with "secret" included. */
     bool got = false;
     for (int r = 0; r < 400; r++) {
@@ -214,6 +215,154 @@ TEST(SecureMesh, GrantMidSyncInvalidatesScopeCache) {
         if (cluster::exists(b, "secret", "s1")) { got = true; break; }
     }
     EXPECT_TRUE(got) << "granted namespace did not propagate after mid-sync grant";
+
+    sync_capability_free(root);
+    sync_capability_free(readB);
+}
+
+/* ---- A revoke must cut off a live gossip link (responder side) ----------- */
+/* Respecified (review blocker): the capability-changing engine sits on the
+ * RESPONDER side of the edge — m.connect() picks the initiator by identity-key
+ * compare (the smaller key initiates), so the owner below is chosen at runtime
+ * as the engine with the larger key. GrantMidSyncInvalidatesScopeCache above
+ * grants on the *initiator*, so this test covers the responder direction.
+ *
+ * TWO independent transport routes can refresh a responder's stale scope, so
+ * end-to-end propagation alone cannot pin either one:
+ *   (1) on_datagram's cycle restart: a responder whose previous cycle drained
+ *       (sess_done_) re-begins — and thus re-scopes — its session on the next
+ *       inbound datagram, with no gen comparison at all; and
+ *   (2) poll()'s cycle-boundary refresh: the two-counter
+ *       (content_gen || scope_gen) comparison, which fires with no inbound
+ *       traffic whatsoever, needing only an idle link.
+ * On full mesh rounds the initiator kicks a fresh fingerprint every interval,
+ * so route (1) alone reproduces every propagation observable below. Route (2)
+ * is therefore pinned directly, twice: after the revoke (scope-only change —
+ * the zero-write phase is guarded) and again after content-only writes, a
+ * single poll() of the owner's end — no datagram delivered to any end — must
+ * re-begin the owner's scoped session. Observable: the engine's
+ * scoped_cache_gens restamp; ensure_scoped_cache runs only from a session
+ * begin, and the owner's end holds the only session on that engine, so
+ * nothing but poll()'s refresh can produce it. One probe per counter, so
+ * deleting either term of the compare — or the whole refresh branch — fails
+ * this test even though route (1) would still deliver the data end-to-end.
+ *
+ * The propagation half remains the whole-chain check: the revoke is followed
+ * by ZERO content writes, so only a scope-driven re-scope can separate the
+ * owner's state from the settled session; the re-begun cycle excludes
+ * "secret", the owner's next reply mismatches the peer's fingerprint, and —
+ * being a fresh session's first message — it carries the revocation to the
+ * peer. Data cut-off is then pinned with post-assertion writes: new open data
+ * still syncs (the link is alive), new secret data does not. Already-delivered
+ * data stays: read cut-off is eventually consistent, never mid-session
+ * (SECURITY.md). GenSplit.RevokeDropsCachedScope is the engine-level
+ * security-direction gate; this test covers the transport chain. */
+TEST(SecureMesh, RevokeMidSyncCutsOff) {
+    Mesh m(/*interval=*/200);
+    sync_engine *e0 = m.add_engine(41);
+    sync_engine *e1 = m.add_engine(42);
+    uint8_t p0[32], p1[32];
+    sync_engine_identity(e0, p0);
+    sync_engine_identity(e1, p1);
+    /* The owner (capability-changing engine) must be the responder: connect()
+     * makes the smaller identity key the initiator, so pick the larger. */
+    bool e0_owner = std::memcmp(p0, p1, 32) > 0;
+    sync_engine *a = e0_owner ? e0 : e1; /* owner — responder on the edge */
+    sync_engine *b = e0_owner ? e1 : e0; /* peer — initiator on the edge */
+    uint8_t bpk[32];
+    sync_engine_identity(b, bpk);
+
+    sync_capability *root =
+        sync_capability_root(a, "secret", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(a, root), SYNC_OK); /* A owns "secret" */
+    sync_capability *readB =
+        sync_capability_delegate(a, root, bpk, SYNC_ACCESS_READ, 0);
+    ASSERT_NE(readB, nullptr);
+    ASSERT_EQ(sync_engine_grant(a, readB), SYNC_OK); /* B may read it */
+    cluster::put(a, "secret", "s1", "f", "v");
+    cluster::put(a, "open", "p1", "f", "v");
+
+    m.connect(0, 1);
+    ASSERT_TRUE(run_until_converged(m, 2)) << "grant-era convergence failed";
+    ASSERT_TRUE(cluster::exists(b, "secret", "s1"))
+        << "granted namespace did not sync while the delegation was live";
+    ASSERT_NE(b->caps, nullptr) << "B never ingested A's delegation";
+    ASSERT_EQ(b->caps->rev_count(), 0u);
+
+    /* Settle to a cycle boundary: poll()'s refresh fires only when the owner's
+     * reliability link is fully drained, and converged digests do not imply
+     * that. Kicks land every ~4 rounds, so idle windows recur between cycles. */
+    Endp *own = m.ends[e0_owner ? 0 : 1].get(); /* the owner's (responder) end */
+    for (int r = 0; r < 100 && !own->sps.idle(); r++) m.round();
+    ASSERT_TRUE(own->sps.idle()) << "owner link never drained after convergence";
+
+    /* Revoke; from here to the propagation assertions: zero content writes. */
+    const uint64_t ca = a->content_gen;
+    const uint64_t sa = a->scope_gen;
+    ASSERT_EQ(sync_engine_revoke(a, "secret", bpk), SYNC_OK);
+    EXPECT_EQ(a->scope_gen, sa + 1);
+    EXPECT_EQ(a->content_gen, ca);
+
+    /* Probe 1 — the scope_gen term of poll()'s cycle-boundary compare. The
+     * revoke left the owner's session stamps stale (content frozen, scope
+     * advanced). One poll of the owner's idle end, delivering no datagram to
+     * anyone, must re-begin its cycle: begin_cycle_ -> sync_session_begin_scoped
+     * -> ensure_scoped_cache restamps scoped_cache_gens to gens(). */
+    ASSERT_NE(a->scoped_cache_gens, a->gens());
+    {
+        std::vector<std::string> probe;
+        own->sps.poll(m.now, probe);
+        m.enqueue(own, probe); /* idle link: expected empty; keep flow normal */
+    }
+    EXPECT_EQ(a->scoped_cache_gens, a->gens())
+        << "responder poll() did not re-begin its cycle on a scope-only change "
+           "(the scope_gen term of connection.cpp's two-counter refresh)";
+
+    /* The responder's refreshed (re-scoped) cycle must carry the revocation to
+     * B — nothing else changed, so only the scope-driven refresh can. */
+    bool rev_reached_b = false;
+    for (int r = 0; r < 200 && !rev_reached_b; r++) {
+        m.round();
+        rev_reached_b = b->caps && b->caps->rev_count() > 0;
+    }
+    EXPECT_TRUE(rev_reached_b)
+        << "revocation did not propagate: the responder never refreshed its "
+           "cycle on a scope-only change";
+    EXPECT_EQ(a->content_gen, ca)
+        << "test bug: a content write crept in — propagation proves nothing";
+    EXPECT_TRUE(cluster::exists(b, "secret", "s1"))
+        << "already-delivered data must not be clawed back";
+
+    /* Probe 2 — the content_gen term of the same compare, same shape: settle
+     * to idle, bump content only (scope frozen), single owner-side poll. */
+    for (int r = 0; r < 100 && !own->sps.idle(); r++) m.round();
+    ASSERT_TRUE(own->sps.idle()) << "owner link never drained after propagation";
+
+    /* Cut-off, pinned with fresh writes (after the zero-write phase): the open
+     * namespace still syncs, the revoked one must not. */
+    const uint64_t sa2 = a->scope_gen;
+    cluster::put(a, "open", "p2", "f", "v2");
+    cluster::put(a, "secret", "s2", "f", "v2");
+    EXPECT_EQ(a->scope_gen, sa2) << "test bug: cut-off writes must be content-only";
+    ASSERT_NE(a->scoped_cache_gens, a->gens());
+    {
+        std::vector<std::string> probe;
+        own->sps.poll(m.now, probe);
+        m.enqueue(own, probe);
+    }
+    EXPECT_EQ(a->scoped_cache_gens, a->gens())
+        << "responder poll() did not re-begin its cycle on a content-only "
+           "change (the content_gen term of connection.cpp's two-counter refresh)";
+    bool open_arrived = false;
+    for (int r = 0; r < 400 && !open_arrived; r++) {
+        m.round();
+        open_arrived = cluster::exists(b, "open", "p2");
+    }
+    EXPECT_TRUE(open_arrived) << "open namespace stopped syncing after revoke";
+    m.run_rounds(200); /* generous extra window for a leak to surface */
+    EXPECT_FALSE(cluster::exists(b, "secret", "s2"))
+        << "revoked read scope kept syncing on the live link";
 
     sync_capability_free(root);
     sync_capability_free(readB);

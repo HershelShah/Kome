@@ -89,7 +89,11 @@ private:
     bool                          peer_ok_ = false;
     bool                          failed_ = false;
     bool                          sess_done_ = false; /* current cycle drained to empty */
-    uint64_t                      sess_gen_ = 0;      /* engine state_gen when sess_ began */
+    /* Engine gens when sess_ began — two loose counters, not a ke::GenPair,
+     * so this header keeps sync_engine opaque (no engine.hpp include);
+     * compared with || at the cycle boundary in poll(). */
+    uint64_t                      sess_content_gen_ = 0;
+    uint64_t                      sess_scope_gen_ = 0;
     std::array<uint8_t, 32>       peer_pk_{};
     uint64_t                      last_kick_ = 0;
     uint64_t                      last_progress_ = 0;

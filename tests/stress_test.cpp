@@ -299,7 +299,7 @@ TEST(Stress, CapabilityGraphScales) {
 
 /* #2 — many writers hammering ONE cell over a gossiping mesh converge once writes
  * stop (no wedge); the scoped cache is inert here because every write advances
- * state_gen. */
+ * content_gen. */
 TEST(Stress, HighContentionConverges) {
     const int K = 8, WRITE_ROUNDS = 1500;
     ImpairMesh m(/*interval=*/120);

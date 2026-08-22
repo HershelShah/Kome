@@ -304,7 +304,7 @@ void BM_SessionBegin(benchmark::State &st) {
 BENCHMARK(BM_SessionBegin)->RangeMultiplier(4)->Range(64, 16384)->Complexity();
 
 void BM_SessionBeginCold(benchmark::State &st) {
-    /* Force a snapshot rebuild each iteration (one overwrite bumps state_gen),
+    /* Force a snapshot rebuild each iteration (one overwrite bumps content_gen),
      * so this measures the cold build_snapshot path, not the cached hit. The
      * constant ~one-sign overwrite cost cancels in before/after comparisons; the
      * N-scaling part is the snapshot build. */
@@ -325,6 +325,43 @@ void BM_SessionBeginCold(benchmark::State &st) {
     sync_engine_destroy(e);
 }
 BENCHMARK(BM_SessionBeginCold)->RangeMultiplier(4)->Range(64, 4096)->Complexity();
+
+void BM_SessionBeginAfterGrant(benchmark::State &st) {
+    /* A capability change bumps scope_gen only, and the unscoped snapshot is
+     * keyed on content_gen — so a session begun right after a grant must hit
+     * the still-valid cached snapshot. Each iteration re-grants a prepared
+     * delegation (a CapStore dedup no-op, but an unconditional scope_gen bump)
+     * and then begins a session. Before the gen split, every grant discarded
+     * the snapshot and this benchmark scaled like BM_SessionBeginCold's O(N)
+     * rebuild; now the begin costs a cached hit, and the timing is dominated
+     * by the grant's constant ~130us EdDSA signature verify — so compare the
+     * *scaling* (flat vs. O(N)), not the absolute floor. */
+    int n = (int)st.range(0);
+    sync_engine *e = sync_engine_create(seed_of(14).data());
+    populate(e, n);
+    sync_capability *root =
+        sync_capability_root(e, "ns", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    sync_engine_grant(e, root);
+    uint8_t sub[SYNC_PUBKEY_LEN];
+    std::memset(sub, 0x42, sizeof sub);
+    sync_capability *d =
+        sync_capability_delegate(e, root, sub, SYNC_ACCESS_READ, 0);
+    { /* warm the snapshot cache */
+        sync_session *s = sync_session_begin(e, 1);
+        sync_session_end(s);
+    }
+    for (auto _ : st) {
+        sync_engine_grant(e, d); /* scope-only invalidation */
+        sync_session *s = sync_session_begin(e, 1); /* cached-snapshot hit */
+        benchmark::DoNotOptimize(s);
+        sync_session_end(s);
+    }
+    st.SetComplexityN(n);
+    sync_capability_free(root);
+    sync_capability_free(d);
+    sync_engine_destroy(e);
+}
+BENCHMARK(BM_SessionBeginAfterGrant)->RangeMultiplier(4)->Range(64, 16384)->Complexity();
 
 /* Canonical encoded size of one representative record (the shape populate()
  * writes), used as the amplification denominator. */
