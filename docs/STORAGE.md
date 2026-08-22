@@ -56,9 +56,14 @@ reopen O(state).
   exceeds `max(64 KiB, 2 × its size at the last compaction)`. The doubling gives
   amortized O(1) write amplification. It also runs once at load if an existing
   log is more than 2× its live image.
-- **Atomicity:** write the full image to `<path>.tmp` → `fsync` → `rename()` over
-  the log (the atomic commit point) → reopen → `fsync` the directory. A crash
-  during compaction leaves the original log untouched, so it can never lose data.
+- **Atomicity:** stream the image frame-by-frame through a small bounded
+  buffer (256 KiB) to `<path>.tmp` — never building the whole image in RAM —
+  then `ftruncate` the temp file to the exact streamed size → `fsync` →
+  `rename()` over the log (the atomic commit point, unchanged) → reopen →
+  `fsync` the directory. The crash-safety story is exactly what it was before
+  streaming: a crash during compaction leaves the original log untouched, so
+  it can never lose data — only how the replacement image gets built changed,
+  not the commit sequence that makes replacing it safe.
 - Serializing the in-RAM state reproduces the exact current state, so the
   **digest is unchanged** across a compaction.
 - This is where **tombstone GC** plugs in once the LWW-existence model lands

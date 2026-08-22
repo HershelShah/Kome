@@ -64,8 +64,8 @@ constexpr size_t kBatchFlushBytes = 2u * 1024 * 1024;
 
 /* Debug/test-only fsync accounting: a process-global counter bumped once per
  * fsync() the log layer issues on its measured write paths — write_frame's
- * per-frame fsync, and atomic_replace's two fsyncs (temp file before the
- * rename, then the best-effort directory fsync). Open-time header fsyncs and
+ * per-frame fsync, and rewrite_log_streamed's two fsyncs (temp file before
+ * the rename, then the best-effort directory fsync). Open-time header fsyncs and
  * the one-shot torn-tail truncate fsync are NOT counted. Tests (which include
  * this header) and the bench harness read and reset it through the returned
  * mutable reference (e.g. `ke::storage_fsync_count() = 0;`); nothing in the
@@ -198,11 +198,19 @@ private:
     /* Drop expired tombstones (present=false older than kTombstoneTtlMs) from
      * the engine's state before a compaction rewrites it. */
     void gc_tombstones(sync_engine *e);
-    /* Serialize the engine's current state to a complete log image (header +
-     * frames), sealed if encrypted. */
-    void serialize_state(sync_engine *e, std::string &out);
-    /* Durably replace the log file with `content` (temp + fsync + rename). */
-    bool atomic_replace(const std::string &content);
+    /* Stream a complete compacted log image (header + frames, sealed if
+     * encrypted) of the engine's current state directly to `<path_>.tmp`
+     * through a small reused buffer (kCompactBufSize), then durably commit it:
+     * fsync(tmp) -> close -> rename -> reopen -> fsync(dir). The rename is the
+     * sole commit point — a mid-stream failure or crash leaves the original
+     * log untouched (plus at most an orphan .tmp that open() never reads and
+     * the next compaction O_TRUNCs). Bounds the compaction RAM transient to
+     * O(kCompactBufSize + one frame) instead of a full log image (§3.4). */
+    bool rewrite_log_streamed(sync_engine *e);
+    /* Exact byte size rewrite_log_streamed will produce for the engine's
+     * current state — pure arithmetic, no allocation; used by maybe_compact's
+     * deferred open-time heuristic and the Debug exactness assert. */
+    uint64_t compacted_image_size(const sync_engine *e) const;
 
     /* Wrap a body into one on-disk frame (plaintext + SHA, or AEAD-sealed). */
     std::string seal_frame(const std::string &body, uint32_t count) const;

@@ -280,19 +280,76 @@ compaction's `atomic_replace` writes ~258 frames under a single fsync pair
 **Peak memory — the corrected claim (spec §3.3 hazard table).** Naive
 batching (stage everything, one commit) measured **+41.7 MB** VmHWM for the
 8 MiB put and was rejected; the mandatory sub-frame flush caps staging at
-~`kBatchFlushBytes` + one record, which **restores roughly today's +17.9 MB
-peak** — it does **not** drop below it. The residual peak is not the
-batch's: `maybe_compact`'s `serialize_state` still allocates a full log
-image at the outermost commit, and that transient only goes away when
-Phase 4 (stream-compaction, chapter 8) replaces it with the bounded
-streaming writer. Numbers are the design review's measurements (manual
-VmHWM around `sync_blob_put`); process-global RSS is not CI-asserted.
+~`kBatchFlushBytes` + one record, which **restored roughly today's +17.9 MB
+peak** at the time this chapter shipped — it did **not** drop below it yet,
+because that peak's residual was not the batch's: `maybe_compact`'s
+`serialize_state` still allocated a full log image at the outermost commit's
+compaction. That residual transient is gone as of Phase 4 (stream-compaction,
+chapter 8): the bounded streaming writer replaces the full-image build
+everywhere `serialize_state` used to run, including at this batch's outermost
+commit. The 8 MiB batched-put figure above has not itself been re-measured
+end-to-end against the streaming compactor; chapter 8 records the isolated
+compaction-transient collapse instead (34.1 MB → 0.33 MB plaintext, 1.8 MB →
+0.26 MB encrypted, at the 50k-entity shape) — that is the figure that no
+longer rides on top of the +17.9 MB peak above. Numbers are the design
+review's measurements (manual VmHWM around `sync_blob_put`); process-global
+RSS is not CI-asserted.
 
 The staging bound holds for POISONED batches too: poisoning drops the
 condemned staged tail immediately and the write path refuses to stage into
 a poisoned batch, so a caller looping over failing post-poison writes holds
 zero staging (pinned by `Storage.PoisonedBatchHoldsNoStaging`), not an
 unbounded transient.
+
+## Chapter 8 — stream compaction (§3.4, Phase 4) ✅
+
+Replace `Storage::serialize_state` (built the whole compacted image as one
+`std::string` before handing it to `atomic_replace`) with `Storage::
+rewrite_log_streamed`: header and sealed frames stream straight to
+`<path>.tmp` through a `FrameSink` buffer pinned at `kCompactBufSize` = 256
+KiB for the whole run, committed with the unchanged sequence — `fsync(tmp) →
+close → rename → reopen → fsync(dir)`. A companion `compacted_image_size`
+computes the exact final byte count arithmetically (no allocation) for
+`maybe_compact`'s open-time heuristic. On-disk bytes, the digest, and the
+erase→tombstone→compact shrink proofs are all unchanged; only how the
+replacement image gets built differs.
+
+**VmHWM at 50k entities × 3 fields, before vs. after (manual RSS harness, same
+machine/flags discipline as chapter 1; not CI-asserted).** Plaintext and
+encrypted variants run in one process, so VmHWM — a high-water mark — carries
+over between them; the per-variant **delta** isolates the compaction
+transient, which is the figure Phase 4 targets, not the absolute level:
+
+| | before Phase 4 (Δ, before→after compact) | after Phase 4 (Δ, before→after compact) | reduction |
+|---|---:|---:|---:|
+| plaintext | 34.1 MB (87.9→122.0 MB) | 0.33 MB (56.3→56.6 MB) | **−99.0%** |
+| encrypted | 1.8 MB (129.8→131.7 MB) | 0.26 MB (56.6→56.9 MB) | −85.9% |
+
+Log sizes before/after compaction are byte-identical to the pre-Phase-4
+numbers (32,247,058→27,172,382 B plaintext; 30,992,794→28,772,446 B
+encrypted): the streamed writer produces the same image `serialize_state`
+did — it just never holds all of it in RAM at once. The encrypted delta was
+already small pre-Phase-4 (the AEAD path's own per-frame transients dwarfed
+the plaintext gap); Phase 4 still cuts it by 85.9%, and the cap/rev frame is
+exactly why encrypted doesn't collapse as far as plaintext's −99.0% — see the
+peak-allocation bound below.
+
+**Peak single allocation during compaction (`compact_stream_test`, CI-gated
+`if(NOT SYNC_SANITIZER)` per §3.4 amendment 8, not benched — same discipline
+as chapter 7's fsync counts).** A 50k-entity engine holding granted
+capabilities *and* a revocation (so the cap/rev frame — the largest possible
+single frame — actually streams through the writer under the probe) compacts
+to a 27,172,851 B (plaintext) / 28,772,979 B (encrypted) image. Measured
+largest single allocation on **both** paths: **262,145 B** — essentially the
+`FrameSink` buffer itself — against the corrected bound of **2,056,336 B**
+(`kCompactBufSize` + 3× the largest single frame; at `kMaxIngestedCaps`=4096
+the capability/revocation blob set, not an entity frame, sets that bound —
+~1.8 MB of `seal_frame` transients on the encrypted path, §3.4 amendment 4)
+and over 100× below the compacted image itself. That gap is the
+discriminator: the pre-Phase-4 `serialize_state` built the whole image as one
+`std::string`, so its single largest allocation was >= the image size — this
+test fails on that code in both directions the assertions pin (bound
+exceeded; image not large enough relative to the bound).
 
 ## Optimization backlog (data-driven, in priority order)
 

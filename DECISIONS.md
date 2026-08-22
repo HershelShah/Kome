@@ -1392,3 +1392,108 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   independently self-consistent (checksum-verified, append-order,
   clock-stamped), so the existing torn-tail argument at `load()` covers
   the multi-sub-frame case with no new reasoning.
+
+## Stream compaction: bounding the compaction transient to O(one frame) (improvement 4)
+
+- **`serialize_state` had to go: it built the whole compacted image as one
+  `std::string` before `atomic_replace` ever touched disk, and that transient
+  was measured, not assumed.** The data-structure review's design-review pass
+  compacted 50k entities (17 MB log, ~30 MB live RSS) and measured a **+29.1
+  MB VmHWM transient (48.5→77.6 MB)** — ~1.7× process memory — extrapolating
+  to an estimated 100–300 MB at 200–500k records, which is exactly the
+  Android low-memory-kill window (`docs/DATA_STRUCTURE_REVIEW.md` §3.1). A
+  full-image allocation at compaction time was therefore a correctness risk
+  on the platform the library is explicitly sized for, not just a memory
+  nicety.
+- **The bounded-sink design streams frames straight to `<path>.tmp` instead
+  of into RAM.** `Storage::rewrite_log_streamed` replaces `serialize_state` +
+  `atomic_replace` together: a `FrameSink` buffer pinned at `kCompactBufSize`
+  = 256 KiB for the entire run (`append` flushes *before* copying, and
+  anything ≥ the buffer size writes straight through, bypassing it — a
+  threshold checked only *after* copying would let one oversized append grow
+  the buffer geometrically and `std::string` never shrinks it back on
+  `clear()`) accepts header + sealed frames one at a time; `sink.ok` gates
+  both loop conditions, not just a single post-loop check, so a mid-stream
+  write failure (ENOSPC/EIO) aborts immediately instead of falling back to
+  building, sealing, and buffering every remaining entity — which would
+  silently re-open the exact full-image transient this change exists to
+  remove, on the failure path.
+- **The honest bound is the capability/revocation frame, not an entity
+  frame.** A frame is AEAD-sealed as a unit and can't be streamed away, so
+  the peak is set by the *largest single frame* — and at `kMaxIngestedCaps`/
+  `kMaxIngestedRevs` = 4096, the entire granted-capability set serializes as
+  one ~598 KB frame body, whose encrypted-path `seal_frame` (`full`+`ct`+
+  `framed`) costs **~1.8 MB** of transients, not the ~33 KiB an entity-only
+  estimate would predict — roughly 50× the original claim. The corrected,
+  tested bound is `kCompactBufSize` + 3× that largest frame = **2,056,336 B**
+  (~2.0 MiB); `compact_stream_test` compacts an engine holding capabilities
+  *and* a revocation specifically so this branch is exercised (no prior
+  compaction test held any capability state at all). Measured
+  (`docs/PERF.md` chapter 8): largest single allocation **262,145 B** on
+  both plaintext and encrypted paths — essentially just the `FrameSink`
+  buffer — against a 27.2/28.8 MB compacted image, over 100× smaller; VmHWM
+  compaction-transient delta at 50k entities × 3 fields drops 34.1 MB→0.33 MB
+  plaintext (−99.0%), 1.8 MB→0.26 MB encrypted (−85.9%, smaller because the
+  cap/rev frame is the residual cost the bound above accounts for).
+- **A mandatory final `ftruncate(tmp.fd, sink.total)` guards against a size
+  misprediction, even though it's a no-op today.** `compacted_image_size`
+  computes the exact byte count arithmetically for the open-time heuristic
+  (mirrors the streamed frames entry-for-entry; cross-checked by a
+  `#ifndef NDEBUG assert(sink.total == compacted_image_size(e))` live on
+  every Debug/ASan/TSan/UBSan compaction), and the temp file is opened
+  `O_TRUNC` and only ever appended to, so the truncate changes nothing on
+  the path that ships. It exists for the path that doesn't yet: if the temp
+  file is ever pre-sized with `ftruncate(tmp.fd, compacted_image_size(e))`
+  to give WASM's MEMFS a one-shot allocation instead of `expandFileStorage`'s
+  geometric growth, a size misprediction between the estimate and the actual
+  stream could otherwise commit a rename'd log with trailing zero bytes —
+  the final truncate to the *streamed* total forecloses that before it can
+  ever happen, independent of whether pre-sizing ships.
+- **The epilogue-ordering fix closes a latent bug the rewrite exposed rather
+  than caused.** The pre-existing `atomic_replace` renamed successfully,
+  then on a failed reopen returned `false` with `file_size_` still holding
+  the *old* (larger) size while the on-disk file was already the new,
+  smaller one — every subsequent `write_frame` would then `lseek` against a
+  stale offset. `rewrite_log_streamed` sets `file_size_`/`tail_torn_`/
+  `open_compact_pending_` to the new truth **immediately after the rename,
+  before attempting the reopen** — the rename is the commit point, so the
+  bookkeeping should reflect it the instant it happens, not after a second
+  syscall that can independently fail.
+- **The Phase-3 fsync counter keeps counting at the same accessor, on
+  purpose.** `atomic_replace`'s two `storage_fsync_count()` bumps (temp-file
+  fsync before rename, best-effort directory fsync after it) move to
+  `rewrite_log_streamed` unchanged in count — same two calls, same counter —
+  so `Storage.BlobPutFrameBounded`'s Phase-3 arithmetic (one compaction
+  rewrite costs exactly 2 counted fsyncs, chapter 7 of `docs/PERF.md`)
+  needed no update: the counter instruments *what a compaction rewrite costs
+  in fsyncs*, and that cost is identical whether the bytes behind it were
+  streamed or built as one string.
+- **The directory fsync moved ahead of the reopen** (the one ordering change
+  inside the epilogue). Both sit after the rename, so the old order only
+  mattered on the reopen-failure path — where it skipped the directory fsync
+  entirely, leaving the commit that had *already happened* un-hardened
+  against a crash, and costing 1 counted fsync instead of 2 for that
+  compaction. Durability of the commit point does not depend on this handle
+  keeping a usable fd, so the fsync goes first and the reopen failure now
+  costs only this handle its descriptor. The same edit fixes a latent
+  edge case inherited from `atomic_replace`: a log at the filesystem root
+  (`/x.db`) has its only slash at index 0, and `substr(0, 0)` asked to fsync
+  `""` — a directory that never opens — so root-level logs silently got no
+  directory fsync at all. It resolves to `/` now.
+- **Everything the rewrite must not disturb, didn't:** rename stays the sole
+  commit point (a crash or write failure mid-stream leaves the original log
+  byte-identical, plus at most an orphan `<path>.tmp` that `open()` never
+  reads and the next compaction `O_TRUNC`s); the digest is unchanged across
+  compaction (the streamed bytes are the same bytes `serialize_state` used
+  to build, just not materialized all at once); F2 holds structurally —
+  `seal_frame`'s empty return is checked before any append, so a zero-nonce
+  frame from an RNG failure never reaches even the temp file; and the
+  erase→tombstone→compact shrink proofs (`CompactAbiShrinksPlaintextLog`,
+  `BlobEraseThenCompactShrinksEncryptedLog`) pass unmodified, because the
+  rewrite changes how the image is assembled, not which frames survive it.
+  `CompactionIsDeterministicByteForByte` was respecified from a
+  self-comparison (compact twice, diff the outputs — vacuous against a
+  writer that drops the same frame both times) to a structural check via
+  the Phase-3 frame walker: exactly one meta frame + one frame per entity in
+  byte-lexicographic order + optional cap/rev frames, each entity frame's
+  entry count matching its field count.

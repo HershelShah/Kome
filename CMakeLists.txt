@@ -389,6 +389,19 @@ if(SYNC_BUILD_TESTS)
             target_link_options(oom_test PRIVATE
                 -Wl,--wrap=malloc -Wl,--wrap=calloc)
         endif()
+
+        # Streamed-compaction peak-single-allocation probe (§3.4 amendment
+        # 8). It defines the full global operator new/new[]/delete family
+        # (oom_test's pattern) to record the largest single allocation during
+        # sync_engine_compact; a bare global operator new paired with a
+        # sanitizer runtime's operator delete is the classic alloc-dealloc-
+        # mismatch configuration, so — following oom_test's precedent above —
+        # it is kept out of the sanitizer matrix from the outset rather than
+        # discovered on a red CI. Any future sanitizer added to the matrix
+        # must re-evaluate this gate explicitly (risk register #14).
+        if(NOT SYNC_SANITIZER)
+            sync_add_test(compact_stream_test tests/compact_stream_test.cpp)
+        endif()
     endif()
 endif()
 

@@ -927,6 +927,595 @@ TEST(Storage, BlobEraseThenCompactShrinksEncryptedLog) {
     sync_engine_destroy(r);
 }
 
+/* ---- Phase 4 (§3.4): streamed compaction -------------------------------- *
+ * Gate tests for rewrite_log_streamed / compacted_image_size: structural
+ * determinism of the compacted image (amendment 5), the cap/rev-bearing
+ * compaction path (amendment 4), the deferred open-time heuristic (fire and
+ * skip — the skip with a derived threshold, amendment 9), and stale-.tmp
+ * hygiene around the rename commit point. All raw-file structure goes through
+ * the shared frame walker (tests/log_frames.hpp). */
+
+namespace {
+
+/* On-disk entry-type tags — the log-format contract documented at the top of
+ * storage.cpp (entry = type:u8 payload; META=1 ENTITY=2 FIELD=3 CAP=4 REV=5).
+ * This suite parses raw formats by hand (see recompute_frames above), so the
+ * tags are restated here rather than exported from the anonymous namespace. */
+constexpr uint8_t kEntryMeta = 1, kEntryEntity = 2, kEntryCap = 4,
+                  kEntryRev = 5;
+
+/* Type byte of a PLAINTEXT frame's first entry (0 if empty/short). */
+uint8_t frame_first_type(const std::string &raw, const synctest::LogFrame &f) {
+    if (f.body_len < 5 || f.body_offset + 5 > raw.size()) return 0;
+    return (uint8_t)raw[f.body_offset + 4]; /* skip the u32le entry count */
+}
+
+/* (ns, entity) of a PLAINTEXT entity frame's FIRST entry, read from the entry
+ * encoding storage.cpp writes: type:u8, varint(ns_len) ns, varint(ent_len)
+ * ent, ... — exactly enough to extract the frame's entity key. */
+bool frame_first_entity_key(const std::string &raw, const synctest::LogFrame &f,
+                            std::string &ns, std::string &ent) {
+    if (f.body_offset + f.body_len > raw.size() || f.body_len < 5) return false;
+    const uint8_t *p = (const uint8_t *)raw.data() + f.body_offset + 4;
+    const uint8_t *end =
+        (const uint8_t *)raw.data() + f.body_offset + f.body_len;
+    if (p >= end || *p != kEntryEntity) return false;
+    p++;
+    uint64_t n = 0;
+    if (!ke::get_varint(p, end, n) || (uint64_t)(end - p) < n) return false;
+    ns.assign((const char *)p, (size_t)n);
+    p += n;
+    if (!ke::get_varint(p, end, n) || (uint64_t)(end - p) < n) return false;
+    ent.assign((const char *)p, (size_t)n);
+    return true;
+}
+
+} // namespace
+
+/* §3.4 amendment 5 — the determinism gate is STRUCTURAL, not self-comparison:
+ * after compacting an engine holding several entities (scrambled insertion
+ * order, a tombstone, a multi-byte-varint entity name) plus granted
+ * capabilities and a revocation, the compacted file must be exactly
+ *   [meta frame][one frame per entity, byte-lex (ns, entity)][cap][rev]
+ * with each entity frame's entry count == 1 existence entry + its field
+ * registers. The frame walker + first-entry decode pin every one of those
+ * properties against the real on-disk bytes. Compact-twice byte-equality is
+ * kept only as a SECONDARY check — see the comment at the bottom. */
+TEST(Storage, CompactionIsDeterministicByteForByte) {
+    TempDir dir;
+    std::string db = dir.file("det.db");
+    auto site = site_from(0x81);
+
+    /* Identities for the delegation / revocation subjects. */
+    sync_engine *writer = sync_engine_create(site_from(0x82).data());
+    sync_engine *third = sync_engine_create(site_from(0x83).data());
+    ASSERT_NE(writer, nullptr);
+    ASSERT_NE(third, nullptr);
+    uint8_t wpk[SYNC_PUBKEY_LEN], tpk[SYNC_PUBKEY_LEN];
+    ASSERT_EQ(sync_engine_identity(writer, wpk), SYNC_OK);
+    ASSERT_EQ(sync_engine_identity(third, tpk), SYNC_OK);
+
+    sync_engine *v = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(v, nullptr);
+
+    /* 150-char entity name: its length prefix needs a 2-byte varint, so the
+     * first-entry decode below exercises the multi-byte varint path too. */
+    const std::string long_ent = "e" + std::string(149, 'x');
+
+    /* Insertion order deliberately scrambled versus byte-lex output order,
+     * and "b10"/"b2" chosen so byte-lex ("b10" < "b2") is distinguishable
+     * from numeric or length order. "beta"/"z" becomes a FRESH tombstone:
+     * present=false with its (hidden) field register still serialized. */
+    cluster::put(v, "beta", "z", "f1", "vz");
+    cluster::del(v, "beta", "z");
+    cluster::put(v, "alpha0", "a", "f1", "va1");
+    cluster::put(v, "alpha0", "a", "f2", "va2");
+    cluster::put(v, "alpha", "b2", "f1", "vb2");
+    cluster::put(v, "alpha", long_ent, "f1", "vlong");
+    cluster::put(v, "alpha", "b10", "f1", "v1");
+    cluster::put(v, "alpha", "b10", "f2", "v2");
+    cluster::put(v, "alpha", "b10", "f3", "v3");
+
+    /* Capabilities + a revocation, on a namespace unrelated to the entity
+     * writes (so enforcement never interferes with the puts above): the
+     * durable engine mints its own root — making it the owner, so it may
+     * revoke — plus one delegation; then revokes an uninvolved third key. */
+    sync_capability *root =
+        sync_capability_root(v, "zeta", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    sync_capability *deleg =
+        sync_capability_delegate(v, root, wpk, SYNC_ACCESS_WRITE, 0);
+    ASSERT_NE(deleg, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(v, deleg), SYNC_OK);
+    sync_capability_free(root);
+    sync_capability_free(deleg);
+    ASSERT_EQ(sync_engine_revoke(v, "zeta", tpk), SYNC_OK);
+
+    /* Under the 64 KiB auto-compaction floor: the structure verified below is
+     * attributable to the explicit compact alone. */
+    ASSERT_LT(read_file(db).size(), 65536u);
+    Digest d0 = digest(v);
+
+    ASSERT_EQ(sync_engine_compact(v), SYNC_OK);
+    EXPECT_EQ(digest(v), d0) << "digest changed across compaction";
+
+    std::string raw = read_file(db);
+    synctest::LogWalk w = synctest::walk_frames(raw);
+    ASSERT_TRUE(w.ok);
+    EXPECT_FALSE(w.encrypted);
+    EXPECT_EQ(w.trailing, 0u) << "compacted image has a torn/garbage tail";
+
+    /* Expected entity frames, in byte-lexicographic (ns, entity) order, each
+     * with entry count == 1 (existence) + field-register count. */
+    struct EntFrame {
+        std::string ns, ent;
+        uint32_t entries;
+    };
+    const EntFrame expect[] = {
+        {"alpha", "b10", 4},    /* 3 fields */
+        {"alpha", "b2", 2},     /* 1 field; "b10" < "b2" in byte-lex */
+        {"alpha", long_ent, 2}, /* 1 field; 2-byte varint name */
+        {"alpha0", "a", 3},     /* 2 fields; ns "alpha" < "alpha0" < "beta" */
+        {"beta", "z", 2},       /* tombstone + its 1 hidden field register */
+    };
+    const size_t n_ent = sizeof expect / sizeof expect[0];
+
+    /* Exactly 1 meta + n_ent entity + 1 cap + 1 rev frames. */
+    ASSERT_EQ(w.frames.size(), 1u + n_ent + 1u + 1u)
+        << "compacted image is not [meta][entities...][cap][rev]";
+
+    /* [0]: the meta frame — schema_version, seed, hlc_physical, hlc_logical,
+     * db_clock — and no OTHER frame may be a meta frame (exactly one). */
+    EXPECT_EQ(frame_first_type(raw, w.frames[0]), kEntryMeta);
+    EXPECT_EQ(synctest::frame_entry_count(raw, w.frames[0]), 5u)
+        << "meta frame must hold exactly the 5 meta entries";
+    for (size_t i = 1; i < w.frames.size(); i++)
+        EXPECT_NE(frame_first_type(raw, w.frames[i]), kEntryMeta)
+            << "second meta frame at index " << i;
+
+    /* [1..n_ent]: entity frames in byte-lex (ns, entity) order with exact
+     * entry counts. */
+    for (size_t i = 0; i < n_ent; i++) {
+        const synctest::LogFrame &f = w.frames[1 + i];
+        EXPECT_EQ(frame_first_type(raw, f), kEntryEntity)
+            << "frame " << (1 + i) << " is not an entity frame";
+        std::string fns, fent;
+        ASSERT_TRUE(frame_first_entity_key(raw, f, fns, fent))
+            << "frame " << (1 + i) << ": undecodable first entity entry";
+        EXPECT_EQ(fns, expect[i].ns) << "entity frame " << i << " out of order";
+        EXPECT_EQ(fent, expect[i].ent)
+            << "entity frame " << i << " out of order (byte-lex (ns, entity))";
+        EXPECT_EQ(synctest::frame_entry_count(raw, f), expect[i].entries)
+            << "frame for (" << expect[i].ns << ", " << expect[i].ent
+            << "): entry count != 1 + field count";
+    }
+
+    /* [n_ent+1]: the cap frame (root + delegation), then [n_ent+2]: the rev
+     * frame (one revocation), closing the file. */
+    EXPECT_EQ(frame_first_type(raw, w.frames[1 + n_ent]), kEntryCap);
+    EXPECT_EQ(synctest::frame_entry_count(raw, w.frames[1 + n_ent]), 2u)
+        << "cap frame must hold the root + the delegation";
+    EXPECT_EQ(frame_first_type(raw, w.frames[2 + n_ent]), kEntryRev);
+    EXPECT_EQ(synctest::frame_entry_count(raw, w.frames[2 + n_ent]), 1u)
+        << "rev frame must hold the one revocation";
+
+    /* SECONDARY check only: compacting again reproduces the bytes. Weak on
+     * its own — a writer that consistently dropped the cap frame or reordered
+     * fields would emit the same wrong bytes both times and self-compare
+     * clean — which is why the structural walk above is the primary gate
+     * (§3.4 amendment 5). */
+    ASSERT_EQ(sync_engine_compact(v), SYNC_OK);
+    EXPECT_EQ(read_file(db), raw) << "recompacting an unchanged engine "
+                                     "produced different bytes";
+
+    sync_engine_destroy(v);
+    sync_engine_destroy(writer);
+    sync_engine_destroy(third);
+}
+
+/* §3.4 amendment 4 — the cap/rev branch of compacted_image_size, previously
+ * unexercised by any compaction test, on the ENCRYPTED path (the plaintext
+ * cap/rev structure is pinned byte-level by the structural test above): an
+ * engine holding granted capabilities AND an ingested revocation compacts via
+ * the public ABI — in Debug builds this runs the live
+ * assert(sink.total == compacted_image_size(e)) over the cap/rev arithmetic —
+ * and a reopen from the compacted image alone still enforces writes
+ * (delegated writer accepted, stranger rejected, revoked key still revoked:
+ * the CapabilityPersistence pattern). */
+TEST(Storage, CapRevCompactionPersistsEnforcement) {
+    TempDir dir;
+    std::string db = dir.file("caprev.db");
+    auto vseed = site_from(0x84);
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i * 5 + 7);
+
+    sync_engine *writer = sync_engine_create(site_from(0x85).data());
+    sync_engine *stranger = sync_engine_create(site_from(0x86).data());
+    sync_engine *stolen = sync_engine_create(site_from(0x87).data());
+    ASSERT_NE(writer, nullptr);
+    ASSERT_NE(stranger, nullptr);
+    ASSERT_NE(stolen, nullptr);
+    uint8_t wpk[SYNC_PUBKEY_LEN], spk[SYNC_PUBKEY_LEN];
+    ASSERT_EQ(sync_engine_identity(writer, wpk), SYNC_OK);
+    ASSERT_EQ(sync_engine_identity(stolen, spk), SYNC_OK);
+
+    auto apply_all = [](sync_engine *target, sync_engine *src) {
+        sync_change *recs = nullptr;
+        size_t n = 0;
+        EXPECT_EQ(sync_engine_export(src, &recs, &n), SYNC_OK);
+        int rc = SYNC_OK;
+        for (size_t i = 0; i < n; i++) {
+            int r = sync_engine_apply(target, &recs[i]);
+            if (r != SYNC_OK) { rc = r; break; }
+        }
+        sync_changes_free(recs, n);
+        return rc;
+    };
+
+    sync_engine *v = sync_engine_open_encrypted(db.c_str(), vseed.data(), key);
+    ASSERT_NE(v, nullptr);
+
+    /* v mints its own root (so it owns nsA and may revoke), delegates WRITE
+     * to `writer`, and revokes a "stolen device" key. */
+    sync_capability *root =
+        sync_capability_root(v, "nsA", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    sync_capability *deleg =
+        sync_capability_delegate(v, root, wpk, SYNC_ACCESS_WRITE, 0);
+    ASSERT_NE(deleg, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    ASSERT_EQ(sync_engine_grant(v, deleg), SYNC_OK);
+    sync_capability_free(root);
+    sync_capability_free(deleg);
+    ASSERT_EQ(sync_engine_revoke(v, "nsA", spk), SYNC_OK);
+
+    /* Entities under the enforced namespace: two authored by the owner and
+     * one by the delegated writer (accepted pre-compact). */
+    cluster::put(v, "nsA", "own1", "f", "v1");
+    cluster::put(v, "nsA", "own2", "f", "v2");
+    sync_engine_set(writer, B(std::string("nsA")), 3, B(std::string("w1")), 2,
+                    B(std::string("f")), 1, B(std::string("wv")), 2);
+    ASSERT_EQ(apply_all(v, writer), SYNC_OK)
+        << "delegated writer rejected before compaction";
+
+    Digest d0 = digest(v);
+    ASSERT_EQ(sync_engine_compact(v), SYNC_OK);
+    EXPECT_EQ(digest(v), d0) << "digest changed across compaction";
+
+    /* Structural anchor (the encrypted walk is length-driven): the compacted
+     * image must be 1 meta + 3 entity frames + 1 cap frame + 1 rev frame —
+     * the cap/rev frames really were emitted (and, in Debug, their
+     * compacted_image_size arithmetic held exactly). */
+    std::string raw1 = read_file(db);
+    synctest::LogWalk w1 = synctest::walk_frames(raw1);
+    ASSERT_TRUE(w1.ok);
+    EXPECT_TRUE(w1.encrypted);
+    EXPECT_EQ(w1.trailing, 0u);
+    EXPECT_EQ(w1.frames.size(), 1u + 3u + 1u + 1u)
+        << "cap/rev frames missing from the encrypted compacted image";
+
+    /* One more compaction, instrumented: exactly the 2 counted fsyncs (temp
+     * file + directory — the Phase-3 counter contract rewrite_log_streamed
+     * inherits from atomic_replace), and an idempotent file size (fresh
+     * nonces change the bytes, never the arithmetic size). */
+    synctest::fsync_reset();
+    ASSERT_EQ(sync_engine_compact(v), SYNC_OK);
+    EXPECT_EQ(synctest::fsync_count(), 2u)
+        << "one compaction must cost exactly the temp-file + directory fsyncs";
+    EXPECT_EQ(read_file(db).size(), raw1.size())
+        << "recompacting an unchanged engine changed the image size";
+    sync_engine_destroy(v);
+
+    /* Reopen from the compacted image alone: enforcement is intact. */
+    v = sync_engine_open_encrypted(db.c_str(), vseed.data(), key);
+    ASSERT_NE(v, nullptr);
+    EXPECT_EQ(digest(v), d0);
+    int revoked = 0;
+    EXPECT_EQ(sync_engine_is_revoked(v, "nsA", spk, &revoked), SYNC_OK);
+    EXPECT_EQ(revoked, 1) << "revocation lost across compact+reopen";
+
+    sync_engine_set(writer, B(std::string("nsA")), 3, B(std::string("w2")), 2,
+                    B(std::string("f")), 1, B(std::string("wv2")), 3);
+    EXPECT_EQ(apply_all(v, writer), SYNC_OK)
+        << "authorized writer rejected after compact+reopen";
+    sync_engine_set(stranger, B(std::string("nsA")), 3, B(std::string("s1")), 2,
+                    B(std::string("f")), 1, B(std::string("sv")), 2);
+    EXPECT_EQ(apply_all(v, stranger), SYNC_ERR_UNAUTHORIZED)
+        << "unauthorized writer accepted after compact+reopen";
+
+    /* And the load -> compact round trip once more, from replayed caps. */
+    Digest d1 = digest(v);
+    ASSERT_EQ(sync_engine_compact(v), SYNC_OK);
+    EXPECT_EQ(digest(v), d1);
+    sync_engine_destroy(v);
+    v = sync_engine_open_encrypted(db.c_str(), vseed.data(), key);
+    ASSERT_NE(v, nullptr);
+    EXPECT_EQ(digest(v), d1);
+
+    sync_engine_destroy(v);
+    sync_engine_destroy(writer);
+    sync_engine_destroy(stranger);
+    sync_engine_destroy(stolen);
+}
+
+/* The deferred open-time compaction: a log left bloated at close (live image
+ * far under half the file) is rewritten by the FIRST MUTATION after reopen —
+ * never by the open itself — through rewrite_log_streamed, shrinking the file
+ * to exactly the compacted image with the digest preserved.
+ *
+ * Construction (deterministic, write-path only): a 200 KiB value trips the
+ * in-session auto-compaction (64 KiB floor), ratcheting compacted_size_ to
+ * ~200 KiB; overwriting it with a tiny value then collapses the LIVE image to
+ * ~1 KiB while the file keeps the dead 200 KiB frame (the next in-session
+ * trigger would be 2 x 200 KiB — never reached). Non-vacuity: after reopen
+ * the normal threshold re-anchors at 2 x the bloated file size, so the shrink
+ * observed below is attributable ONLY to the open_compact_pending_ branch. */
+TEST(Storage, OpenCompactHeuristicFires) {
+    TempDir dir;
+    std::string db = dir.file("heur_fire.db");
+    auto site = site_from(0x88);
+
+    /* Session 1: manufacture the bloated-but-idle log. */
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    const std::string big(200u * 1024u, 'x');
+    cluster::put(e, "ns", "pad", "f", big); /* auto-compacts; ratchets 2x bar */
+    cluster::put(e, "ns", "pad", "f", "tiny"); /* live image -> ~1 KiB */
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+
+    const size_t bloated = read_file(db).size();
+    ASSERT_GT(bloated, 65536u)
+        << "construction failed: file too small to arm the open-time check";
+    ASSERT_GT(bloated, 150u * 1024u)
+        << "construction failed: the dead 200 KiB frame is not on disk";
+
+    /* Session 2: open must not write (read-only consumers must never rewrite
+     * the file out from under a live owner) — the rewrite is deferred. */
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(read_file(db).size(), bloated) << "open itself mutated the file";
+    EXPECT_EQ(digest(e), d0);
+
+    /* The first mutation fires the deferred streamed rewrite. */
+    cluster::put(e, "ns2", "t", "f", "v");
+    std::string raw = read_file(db);
+    EXPECT_LT(raw.size(), 65536u) << "open-time compaction did not fire";
+    EXPECT_LT(raw.size() * 10, bloated)
+        << "file did not shrink to anywhere near the live image";
+
+    /* Not just smaller — exactly the compacted image: 1 meta frame + the two
+     * live entities ("ns","pad") and ("ns2","t"), nothing else, no tail. */
+    synctest::LogWalk w = synctest::walk_frames(raw);
+    ASSERT_TRUE(w.ok);
+    EXPECT_EQ(w.trailing, 0u);
+    EXPECT_EQ(w.frames.size(), 3u)
+        << "post-rewrite file is not the pure compacted image";
+
+    /* Digest stable across the rewrite: reopen reproduces the exact state. */
+    Digest d1 = digest(e);
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d1) << "open-time rewrite lost state";
+    EXPECT_EQ(cluster::get(e, "ns", "pad", "f"), "tiny");
+    EXPECT_EQ(cluster::get(e, "ns2", "t", "f"), "v");
+    sync_engine_destroy(e);
+}
+
+/* §3.4 amendment 9 — the skip side of the open-time heuristic, with a DERIVED
+ * threshold: the healthy log's observed size must lie strictly between the
+ * 64 KiB arming floor and 2 x a sibling engine's post-compaction size for the
+ * SAME state (the sibling is a byte copy of the log, compacted). If a later
+ * change to the meta set, value sizes, or per-frame overhead drifts the
+ * geometry out of that band, these guards fail LOUDLY — instead of the test
+ * silently inverting into "the heuristic fired and nothing noticed" (the
+ * hand-tuned-ratio trap the respecification removes). */
+TEST(Storage, OpenCompactHeuristicSkipsHealthyLog) {
+    TempDir dir;
+    std::string db = dir.file("healthy.db");
+    std::string sib = dir.file("healthy_sib.db");
+    auto site = site_from(0x89);
+
+    /* ~150 KiB of DISTINCT live entities, compacted to exactly the live
+     * image, plus a small same-length overwrite history: a healthy log
+     * (image/file ratio well inside (0.5, 1)). */
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    const int N = 150;
+    const std::string val(700, 'v');
+    for (int i = 0; i < N; i++)
+        cluster::put(e, "ns", "ent" + std::to_string(i), "f", val);
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    for (int i = 0; i < 20; i++)
+        cluster::put(e, "ns", "ent" + std::to_string(i), "f", val);
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+
+    const std::string before = read_file(db);
+
+    /* Sibling: the same bytes, compacted — its size IS this state's
+     * post-compaction size, from which the healthy band is derived. */
+    write_file(sib, before);
+    sync_engine *s = sync_engine_open(sib.c_str(), site.data());
+    ASSERT_NE(s, nullptr);
+    ASSERT_EQ(digest(s), d0) << "sibling copy diverged from the original";
+    ASSERT_EQ(sync_engine_compact(s), SYNC_OK);
+    sync_engine_destroy(s);
+    const size_t compacted = read_file(sib).size();
+
+    /* THE DERIVED-THRESHOLD GUARDS: fail loudly, never invert silently. */
+    ASSERT_GT(before.size(), 65536u)
+        << "log below the arming floor: the open-time check never runs and "
+           "the skip assertion below would be vacuous";
+    ASSERT_LT(before.size(), 2u * compacted)
+        << "log is not healthy (>= 2x its compacted image): the heuristic "
+           "SHOULD fire here, so this test would be checking the wrong branch";
+    ASSERT_GT(before.size(), compacted)
+        << "log has no append history: skip would be trivial";
+
+    /* Reopen + mutate: the armed heuristic must SKIP — the file may change
+     * only by the one appended frame (the old bytes stay a byte-prefix). */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(read_file(db).size(), before.size()) << "open mutated the file";
+    EXPECT_EQ(digest(r), d0);
+    cluster::put(r, "ns", "fresh", "f", "v");
+    const std::string after = read_file(db);
+    ASSERT_GT(after.size(), before.size()) << "mutation appended nothing";
+    EXPECT_EQ(after.compare(0, before.size(), before), 0)
+        << "file was rewritten: the open-time heuristic fired on a HEALTHY log";
+    synctest::LogWalk wb = synctest::walk_frames(before);
+    synctest::LogWalk wa = synctest::walk_frames(after);
+    ASSERT_TRUE(wa.ok);
+    EXPECT_EQ(wa.trailing, 0u);
+    EXPECT_EQ(wa.frames.size(), wb.frames.size() + 1)
+        << "expected exactly the one appended frame";
+    sync_engine_destroy(r);
+}
+
+/* A stale `<path>.tmp` (the orphan a crash mid-compaction leaves behind) is
+ * IGNORED by open — even when it is a valid log holding different state, the
+ * adversarial confusion case — and replaced by the next compaction's O_TRUNC
+ * + rename, leaving no stray files (the SingleFile pattern for the allowed
+ * set). */
+TEST(Storage, StaleTmpIgnoredAtOpenReplacedAtCompact) {
+    TempDir dir;
+    TempDir decoy_dir;
+    std::string db = dir.file("stale.db");
+    std::string tmp = db + ".tmp";
+    auto site = site_from(0x8A);
+
+    /* The real state. */
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    for (int i = 0; i < 5; i++)
+        cluster::put(e, "ns", "e" + std::to_string(i), "f",
+                     "v" + std::to_string(i));
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+
+    /* Plant the stale tmp: a VALID plaintext log with DIFFERENT,
+     * distinguishable state, plus a garbage tail (a plausible torn artifact
+     * of a crashed previous compaction). If open consulted it, the digest
+     * and the impostor lookup below would give it away. */
+    std::string decoy_db = decoy_dir.file("decoy.db");
+    sync_engine *decoy = sync_engine_open(decoy_db.c_str(),
+                                          site_from(0x8B).data());
+    ASSERT_NE(decoy, nullptr);
+    cluster::put(decoy, "ns", "impostor", "f", "not-yours");
+    Digest d_decoy = digest(decoy);
+    sync_engine_destroy(decoy);
+    ASSERT_NE(d_decoy, d0);
+    const std::string planted = read_file(decoy_db) + std::string(1024, '\xa5');
+    write_file(tmp, planted);
+    ASSERT_EQ(read_file(tmp), planted); /* the stale tmp is really in place */
+
+    /* Open reads ONLY <path>: state intact, tmp neither consulted, mutated,
+     * nor removed. */
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d0) << "open consulted the stale .tmp";
+    EXPECT_EQ(cluster::get(e, "ns", "impostor", "f"), "<none>")
+        << "decoy state leaked out of the stale .tmp";
+    EXPECT_EQ(read_file(tmp), planted) << "open mutated/removed the stale .tmp";
+
+    /* The next compaction truncates + replaces it: the rename consumes the
+     * path, so no .tmp survives a successful compact. */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    EXPECT_EQ(digest(e), d0);
+    struct stat st;
+    EXPECT_NE(::stat(tmp.c_str(), &st), 0)
+        << "stale .tmp still present after a successful compaction";
+
+    /* No stray files next to the log (SingleFile's allowed-set pattern). */
+    std::set<std::string> allowed = {"stale.db"};
+    DIR *d = opendir(dir.path.c_str());
+    ASSERT_NE(d, nullptr);
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        std::string n = ent->d_name;
+        if (n == "." || n == "..") continue;
+        EXPECT_TRUE(allowed.count(n) > 0) << "unexpected file: " << n;
+    }
+    closedir(d);
+
+    /* And the replacement log is intact and reopenable. */
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d0);
+    EXPECT_EQ(cluster::get(e, "ns", "e3", "f"), "v3");
+    sync_engine_destroy(e);
+}
+
+/* F2 on the STREAMED path: every frame the compaction writes must carry its
+ * own fresh, non-zero nonce. EncryptedFramesUseDistinctNonces pins this for
+ * the append path only — it walks a log built purely by write_frame and never
+ * compacts — so the whole-file rewrite, which seals more frames in one call
+ * than any other code path, had no nonce coverage at all. A seal_frame that
+ * reused or zeroed a nonce here would be catastrophic for XChaCha20-Poly1305
+ * and invisible to every other encrypted test (they only assert the log still
+ * decrypts, which a reused nonce does). */
+TEST(Storage, CompactedEncryptedFramesUseDistinctNonces) {
+    TempDir dir;
+    std::string db = dir.file("compact_nonce.db");
+    auto site = site_from(0x3C);
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i * 5 + 9);
+
+    sync_engine *e = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(e, nullptr);
+    /* Several entities and a capability + revocation, so the rewrite seals a
+     * meta frame, many entity frames, and the cap/rev frames — every frame
+     * kind the streamed writer emits. */
+    for (int i = 0; i < 12; i++)
+        cluster::put(e, "ns", "e" + std::to_string(i), "f",
+                     "v" + std::to_string(i));
+    sync_capability *root =
+        sync_capability_root(e, "ns", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(e, root), SYNC_OK);
+    uint8_t sub[SYNC_PUBKEY_LEN];
+    std::memset(sub, 0x5C, sizeof sub);
+    ASSERT_EQ(sync_engine_revoke(e, "ns", sub), SYNC_OK);
+    sync_capability_free(root);
+
+    Digest d0;
+    ASSERT_EQ(sync_engine_digest(e, d0.data()), SYNC_OK);
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    sync_engine_destroy(e);
+
+    std::string raw = read_file(db);
+    ASSERT_EQ(raw.compare(0, 8, "KOMEENC1"), 0) << "compaction lost encryption";
+    synctest::LogWalk w = synctest::walk_frames(raw);
+    ASSERT_TRUE(w.ok);
+    EXPECT_EQ(w.trailing, 0u);
+    /* meta + 12 entities + cap + rev: every one of them freshly sealed. */
+    ASSERT_GE(w.frames.size(), 15u) << "expected the full rewritten image";
+
+    std::set<std::string> nonces;
+    for (const synctest::LogFrame &f : w.frames) {
+        /* Encrypted framing: [len:4][nonce:24][ct][mac:16] (log_frames.hpp). */
+        ASSERT_LE(f.offset + 4 + 24, raw.size());
+        std::string nonce = raw.substr(f.offset + 4, 24);
+        EXPECT_NE(nonce, std::string(24, '\0'))
+            << "zero nonce in a compacted frame at offset " << f.offset;
+        nonces.insert(nonce);
+    }
+    EXPECT_EQ(nonces.size(), w.frames.size())
+        << "nonce reuse across compacted frames";
+
+    /* The rewrite is still a valid, decryptable log holding the same state. */
+    sync_engine *r = sync_engine_open_encrypted(db.c_str(), site.data(), key);
+    ASSERT_NE(r, nullptr);
+    Digest d1;
+    ASSERT_EQ(sync_engine_digest(r, d1.data()), SYNC_OK);
+    EXPECT_EQ(d0, d1);
+    sync_engine_destroy(r);
+}
+
 /* ---- Phase 2: cached element hashes across the load path ----------------- */
 
 namespace {
@@ -1149,8 +1738,8 @@ TEST(Storage, DefaultInsertedRegisterGetsHash) {
  * invariant under batching. All assertions on write cost go through the
  * debug/test fsync counter (ke::storage_fsync_count via log_frames.hpp), NOT
  * on-disk frame counts — the outermost commit of a large batch ends with a
- * maybe_compact full rewrite whose atomic_replace writes many frames under a
- * single fsync pair (spec §3.3 amendment 1). */
+ * maybe_compact full rewrite whose rewrite_log_streamed streams many frames
+ * under a single fsync pair (spec §3.3 amendment 1). */
 
 namespace {
 
@@ -1184,8 +1773,8 @@ std::vector<uint8_t> blob_data(size_t n, uint32_t s) {
  *   exactly 4 sub-frame fsyncs. The manifest record (+ the tail's clock-meta
  *   stamp) then lands in the outermost commit's frame: +1 fsync. That commit's
  *   maybe_compact sees an ~8.6 MB log against the fresh-log 64 KiB floor and
- *   rewrites it: atomic_replace = +2 counted fsyncs (temp file + directory).
- *   Total: 4 + 1 + 2 = 7. */
+ *   rewrites it: rewrite_log_streamed = +2 counted fsyncs (temp file +
+ *   directory). Total: 4 + 1 + 2 = 7. */
 TEST(Storage, BlobPutFrameBounded) {
     TempDir dir;
     std::string db = dir.file("batch_blob.db");
@@ -1212,8 +1801,8 @@ TEST(Storage, BlobPutFrameBounded) {
     uint64_t fsyncs = synctest::fsync_count();
 
     /* subframes + 1 outermost-commit frame + 2 for exactly one
-     * compaction-driven atomic_replace (temp-file fsync + directory fsync;
-     * one rename). A second compaction would show up as +2 here. */
+     * compaction-driven rewrite_log_streamed (temp-file fsync + directory
+     * fsync; one rename). A second compaction would show up as +2 here. */
     EXPECT_EQ(fsyncs, subframes + 1 + 2) << "8 MiB put cost the wrong number "
                                             "of fsyncs (sub-frame bound or "
                                             "compaction count broken)";
@@ -1308,7 +1897,7 @@ TEST(Storage, NestedBatchSingleCommitPoint) {
  * threshold, so nothing here re-persists them and the divergence resolves in
  * disk's favor at the next reopen (the aborted mutations are simply gone).
  * That is deliberately NOT a general keep-off-disk guarantee: a compaction's
- * serialize_state rewrites the log from RAM wholesale, so once the batch is
+ * streamed rewrite re-serializes the log from RAM wholesale, so once the batch is
  * closed, an explicit sync_engine_compact — or the size-triggered
  * auto-compaction that ordinary later writes set off — persists the aborted
  * mutations after all. That half of the contract is documented at
@@ -1882,4 +2471,279 @@ TEST(Storage, MidBatchCrashPrefix) {
         << "reopened state diverged from the engine that wrote it";
     sync_engine_destroy(r2);
     sync_engine_destroy(expected);
+}
+
+/* ---- Phase 4: crash / failure injection against the streamed rewrite ---- *
+ * The two tests below attack rewrite_log_streamed's one hard crash-safety
+ * invariant (§3.4): THE RENAME IS THE SOLE COMMIT POINT. Everything before it
+ * — temp-file creation, every FrameSink flush, ftruncate, fsync(tmp) — must
+ * be free to die or fail at any byte without the original log changing by a
+ * single bit, and a failure must leave the engine fully serviceable.
+ *
+ * Both inject the failure with RLIMIT_FSIZE, sized so the FIRST buffered
+ * flush (~kCompactBufSize = 256 KiB, restated below) overruns the cap while
+ * streaming to <db>.tmp: the kernel writes what fits below the limit, then
+ * the next write at the limit raises SIGXFSZ — process death mid-flush when
+ * the disposition is default (the fork test), a genuine EFBIG short write
+ * when ignored (the in-process test). The seeded image is made comfortably
+ * larger than one flush so the failure lands inside the entity loop — mid-
+ * stream — not in the final flush before fsync. */
+
+namespace {
+
+/* Restated flush granularity of storage.cpp's FrameSink (kCompactBufSize,
+ * anonymous namespace there — restated here the way kEntryMeta is above). */
+constexpr size_t kStreamBufSize = 256u * 1024;
+/* Temp-file byte cap for the injected failure: far below one flush. */
+constexpr rlim_t kTmpCapBytes = 64u * 1024;
+
+/* Seed n distinct 4-KiB-valued entities — ~n*4.2 KiB of live image, so
+ * n = 200 gives ~850 KiB: > 3 flushes worth of stream. */
+void seed_bulk_entities(sync_engine *e, int n) {
+    for (int i = 0; i < n; i++) {
+        char ent[16];
+        std::snprintf(ent, sizeof ent, "e%03d", i);
+        cluster::put(e, "bulk", ent, "f",
+                     std::string(4096, (char)('a' + i % 26)));
+    }
+}
+
+/* Open file descriptors of this process, via /proc/self/fd. The readdir fd
+ * itself is included in every count identically, so equality between two
+ * counts is meaningful. */
+int count_open_fds() {
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        std::string s = ent->d_name;
+        if (s != "." && s != "..") n++;
+    }
+    closedir(d);
+    return n;
+}
+
+} // namespace
+
+/* A compaction KILLED mid-stream (SIGXFSZ, default disposition — no unwind,
+ * no TmpFile destructor, exactly like SIGKILL power loss) must leave the
+ * original log BYTE-IDENTICAL: the child dies during the first 256-KiB flush
+ * to <db>.tmp, having never reached fsync/rename. The orphaned partial .tmp
+ * it strands must be ignored by the next open (never read, never deleted)
+ * and consumed by the next successful compaction — the StaleTmp contract,
+ * here proven against a REAL crash artifact rather than a planted one.
+ *
+ * The child self-validates and reports through its exit code (the
+ * MidBatchCrashPrefix pattern — no gtest in the child); the expected verdict
+ * is death BY SIGXFSZ, not any exit code. It snapshots the pre-crash log and
+ * digest to side files BEFORE arming the limit, so the parent can compare
+ * bytes and digest across the crash without cross-process plumbing. */
+TEST(Storage, CrashMidStreamLeavesLogIntact) {
+    TempDir dir;
+    std::string db = dir.file("crashstream.db");
+    std::string tmp = db + ".tmp";
+    std::string pre_copy = db + ".pre";  /* child's pre-crash byte snapshot */
+    std::string pre_dig = db + ".dig";   /* child's pre-crash digest        */
+    auto site = site_from(0x90);
+
+    /* Seed live state, then compact so image ~= file: the child's open-time
+     * heuristic (compacted_image_size*2 < file_size_) then deterministically
+     * declines to rewrite under the child's first put. */
+    sync_engine *seed = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(seed, nullptr);
+    seed_bulk_entities(seed, 200);
+    ASSERT_EQ(sync_engine_compact(seed), SYNC_OK);
+    sync_engine_destroy(seed);
+    ASSERT_GT(read_file(db).size(), kStreamBufSize + (size_t)kTmpCapBytes)
+        << "seed too small: the crash would not land mid-stream";
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        /* Child. Deterministic dispositions first: SIGXFSZ back to default
+         * (an earlier test in this binary ignores it), no core dump. */
+        std::signal(SIGXFSZ, SIG_DFL);
+        struct rlimit nocore {0, 0};
+        setrlimit(RLIMIT_CORE, &nocore);
+
+        sync_engine *c = sync_engine_open(db.c_str(), site.data());
+        if (!c) _exit(2);
+        /* Write state of our own, so the crashed compaction is attacking a
+         * log with post-open writes, not just the parent's seed. */
+        const std::string ns = "crash", f = "f", va = "written-pre-crash-a",
+                          vb = "written-pre-crash-b";
+        const std::string ea = "a", eb = "b";
+        if (sync_engine_set(c, B(ns), ns.size(), B(ea), ea.size(), B(f),
+                            f.size(), B(va), va.size()) != SYNC_OK)
+            _exit(3);
+        if (sync_engine_set(c, B(ns), ns.size(), B(eb), eb.size(), B(f),
+                            f.size(), B(vb), vb.size()) != SYNC_OK)
+            _exit(3);
+
+        /* Pre-crash snapshot + digest to side files (limit not armed yet). */
+        {
+            std::string bytes = read_file(db);
+            if (bytes.empty()) _exit(4);
+            FILE *out = fopen(pre_copy.c_str(), "wb");
+            if (!out || fwrite(bytes.data(), 1, bytes.size(), out) !=
+                            bytes.size()) _exit(4);
+            fclose(out);
+            uint8_t d[SYNC_DIGEST_LEN];
+            if (sync_engine_digest(c, d) != SYNC_OK) _exit(5);
+            out = fopen(pre_dig.c_str(), "wb");
+            if (!out || fwrite(d, 1, sizeof d, out) != sizeof d) _exit(5);
+            fclose(out);
+        }
+
+        /* Arm: any file this process extends past 64 KiB kills it. The live
+         * log is bigger already but never extended before the crash; the
+         * stream's first 256-KiB flush to .tmp dies partway. */
+        struct rlimit lim {kTmpCapBytes, kTmpCapBytes};
+        if (setrlimit(RLIMIT_FSIZE, &lim) != 0) _exit(6);
+        sync_engine_compact(c); /* expected: no return — SIGXFSZ mid-flush */
+        _exit(7); /* compaction survived the cap: injection failed */
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ)
+        << "child did not die mid-stream by SIGXFSZ (exit code "
+        << (WIFEXITED(status) ? WEXITSTATUS(status) : -1)
+        << ": 2=open 3=set 4=snapshot 5=digest 6=setrlimit "
+           "7=compact returned)";
+
+    /* THE INVARIANT: the original log is bit-for-bit what it was when the
+     * compaction started. Rename never ran, so nothing else may have. */
+    const std::string pre = read_file(pre_copy);
+    ASSERT_FALSE(pre.empty());
+    EXPECT_EQ(read_file(db), pre)
+        << "a compaction crash BEFORE the rename commit point mutated the "
+           "original log";
+
+    /* The crash really stranded a partial .tmp (no unwind ran): it must hold
+     * some bytes but at most the cap — a mid-flush corpse, not an image. */
+    struct stat st {};
+    ASSERT_EQ(::stat(tmp.c_str(), &st), 0)
+        << "no orphan .tmp: the crash did not interrupt the temp stream";
+    EXPECT_GT(st.st_size, 0);
+    EXPECT_LE(st.st_size, (off_t)kTmpCapBytes);
+
+    Digest want{};
+    {
+        std::string d = read_file(pre_dig);
+        ASSERT_EQ(d.size(), (size_t)SYNC_DIGEST_LEN);
+        std::memcpy(want.data(), d.data(), d.size());
+    }
+
+    /* Reopen: full pre-crash state, digest unchanged, orphan .tmp neither
+     * consulted nor removed by open. */
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr) << "crashed compaction corrupted the log";
+    EXPECT_EQ(digest(e), want) << "digest changed across a crashed compaction";
+    EXPECT_EQ(cluster::get(e, "crash", "a", "f"), "written-pre-crash-a");
+    EXPECT_EQ(cluster::get(e, "crash", "b", "f"), "written-pre-crash-b");
+    EXPECT_EQ(cluster::get(e, "bulk", "e007", "f"),
+              std::string(4096, (char)('a' + 7)));
+    EXPECT_EQ(::stat(tmp.c_str(), &st), 0)
+        << "open consumed/removed the orphan .tmp (open must never write)";
+
+    /* A later SUCCESSFUL compaction replaces the orphan: the O_TRUNC + rename
+     * consume the path, state and digest carry over, and the log reopens. */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK)
+        << "orphan .tmp blocked the next compaction";
+    EXPECT_NE(::stat(tmp.c_str(), &st), 0)
+        << "orphan .tmp survived a successful compaction";
+    EXPECT_EQ(digest(e), want);
+    sync_engine_destroy(e);
+
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), want)
+        << "post-crash compacted image does not replay to the same state";
+    sync_engine_destroy(e);
+}
+
+/* A compaction that FAILS mid-stream in-process (EFBIG short write with
+ * SIGXFSZ ignored — the ENOSPC shape: write_all returns false partway into a
+ * flush) must fail CLEANLY: SYNC_ERR_INTERNAL out of the ABI, the live log
+ * untouched byte-for-byte, no leaked descriptor (TmpFile's destructor must
+ * close AND unlink — §3.4 amendment 3), no stale .tmp, and the engine still
+ * fully appendable with intact bookkeeping — subsequent writes land at the
+ * correct offset (no hole, no torn region) and survive reopen. */
+TEST(Storage, EnospcMidStreamFailsCleanly) {
+    TempDir dir;
+    std::string db = dir.file("enospc.db");
+    std::string tmp = db + ".tmp";
+    auto site = site_from(0x91);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    seed_bulk_entities(e, 200);
+    /* Normalize: compacted_size_ = file_size_, so nothing auto-compacts
+     * behind the assertions below; also image ~= file from here on. */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+
+    const std::string before = read_file(db);
+    ASSERT_GT(before.size(), kStreamBufSize + (size_t)kTmpCapBytes)
+        << "seed too small: the failure would not land mid-stream";
+    const Digest d0 = digest(e);
+
+    /* Arm the failure: .tmp writes past 64 KiB fail with EFBIG. */
+    struct rlimit old {};
+    ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &old), 0);
+    struct rlimit lim = old;
+    lim.rlim_cur = kTmpCapBytes;
+    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &lim), 0);
+    auto oldsig = std::signal(SIGXFSZ, SIG_IGN);
+    ASSERT_NE(oldsig, SIG_ERR);
+
+    const int fds_before = count_open_fds();
+    ASSERT_GT(fds_before, 0);
+
+    EXPECT_EQ(sync_engine_compact(e), SYNC_ERR_INTERNAL)
+        << "precondition: the capped temp stream was supposed to fail";
+
+    EXPECT_EQ(count_open_fds(), fds_before)
+        << "failed compaction leaked a descriptor (TmpFile close, or the "
+           "engine's own log fd)";
+
+    std::signal(SIGXFSZ, oldsig);
+    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &old), 0);
+
+    /* The live log: untouched, byte for byte — and no .tmp left behind
+     * (the RAII guard unlinks the partial temp on the failure path). */
+    EXPECT_EQ(read_file(db), before)
+        << "failed compaction modified the live log";
+    struct stat st {};
+    EXPECT_NE(::stat(tmp.c_str(), &st), 0)
+        << "failed compaction left a partial .tmp behind";
+    EXPECT_EQ(digest(e), d0) << "failed compaction changed engine state";
+
+    /* Still appendable with intact bookkeeping: new writes must land as
+     * well-formed frames at the true end of the log (a corrupted file_size_
+     * or a spuriously-set torn-tail flag would leave a gap, truncate good
+     * frames, or strand the appends), and survive reopen. */
+    cluster::put(e, "post", "p1", "f", "v1");
+    cluster::put(e, "post", "p2", "f", "v2");
+    {
+        synctest::LogWalk w = synctest::walk_log_file(db);
+        ASSERT_TRUE(w.ok);
+        EXPECT_EQ(w.trailing, 0u)
+            << "post-failure appends left a hole/torn region in the log";
+    }
+    EXPECT_GT(read_file(db).size(), before.size())
+        << "post-failure appends never reached the file";
+    const Digest d1 = digest(e);
+    sync_engine_destroy(e);
+
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr) << "log unopenable after failed compaction + writes";
+    EXPECT_EQ(digest(e), d1)
+        << "post-failure writes were lost or corrupted at reopen";
+    EXPECT_EQ(cluster::get(e, "post", "p1", "f"), "v1");
+    EXPECT_EQ(cluster::get(e, "post", "p2", "f"), "v2");
+    EXPECT_EQ(cluster::get(e, "bulk", "e199", "f"),
+              std::string(4096, (char)('a' + 199 % 26)));
+    sync_engine_destroy(e);
 }
