@@ -256,6 +256,103 @@ wall time ever forces it. (`Stress.DataScale` exceeds its hard-coded 2 s
 Debug snapshot bound in this container on the *base* tree too — ~3.0 s both
 before and after — a pre-existing environment failure, not a regression.)
 
+## Chapter 7 — deadline-cached read-scoped range views ✅
+
+A peer whose read scope depends on a finite-expiry capability used to be
+excluded from the per-peer snapshot cache entirely (`ensure_scoped_cache`
+returned an uncached `build_filtered`), so **every** gossip cycle — idle,
+converged ones included — re-encoded that peer's whole visible set. Phase 5
+(`docs/IMPROVEMENT_PLAN.md` §3.5) gives such a peer a `ReconView`: an immutable
+set of base-index ranges over a `ReconSnapshot`, plus prefix sums over those
+ranges, cached per peer in `sync_engine::scoped_view_cache` under two
+invalidations — the `GenPair` guard (writes/applies/GC, grants/revokes/ingest)
+and a wall-clock `valid_until_ms` deadline, since capability expiry moves no
+counter.
+
+Measured in this container (4 × 2.8 GHz, GCC, `-O2` bench TU against a Release
+engine, `--benchmark_min_time=0.5s`; treat ratios as the signal, not absolute
+ns). N is the total element count target, and `/D` is the visible fraction
+1/D — D namespaces, of which the peer may read one.
+
+**The win — an idle, converged link** (`BM_ScopedSessionBeginIdleTimeBound`,
+against `...IdleUncached`, which drops the deadline-keyed entry each cycle and
+so reproduces the pre-phase "never cache a time-bound scope" path exactly):
+
+| shape | before (uncached) | after (deadline-cached) | ratio |
+|---|---|---|---|
+| 4096 /100 | 253.7 µs | 144 ns | 1762× |
+| 4096 /10 | 265.8 µs | 141 ns | 1885× |
+| 4096 /2 | 950.1 µs | 144 ns | 6597× |
+| 16384 /100 | 674.2 µs | 147 ns | 4584× |
+| 16384 /10 | 1133.2 µs | 141 ns | 8039× |
+| 16384 /2 | 4741.5 µs | 147 ns | 32254× |
+
+The "after" column is flat in both N and the visible fraction, as it should be:
+a cache hit is one map lookup plus one deadline compare.
+
+**The regression that had to be gated first (§3.5 fix 3).** Ranging over the
+engine's *shared* unscoped snapshot means building that snapshot — O(N)
+encodes — where the old filtered path encoded only O(N_visible). Measured
+write-active (one overwrite per iteration, so every cycle rebuilds), against
+`BM_ScopedSessionBeginPermanent` — a permanently-restricted peer of the same
+shape and visible fraction, which pays exactly the filtered rebuild the
+time-bound peer used to — as the "before", with `build_view`'s gate
+(`share_base = base_is_current(e) || fully_open`, `reconcile.cpp`) forced to
+`share_base = true` unconditionally to measure the ungated path directly
+(reverted immediately after measurement — this is not a shipped mode):
+
+| shape | filtered rebuild (before) | shared-base view, **ungated** | ungated loss |
+|---|---|---|---|
+| 4096 /100 | 310.4 µs | 2070.0 µs | 6.67× |
+| 4096 /10 | 316.3 µs | 1889.3 µs | 5.97× |
+| 4096 /2 | 1004.6 µs | 1893.8 µs | 1.88× |
+| 16384 /100 | 708.9 µs | 11109.1 µs | 15.65× |
+| 16384 /10 | 1205.5 µs | 10836.5 µs | 8.99× |
+| 16384 /2 | 4340.3 µs | 10518.0 µs | 2.42× |
+
+Material, and worst exactly at the small visible fractions this item exists to
+serve. **Measured crossover:** the ungated loss falls as the visible fraction
+rises, but does not reach parity anywhere tested — even at the largest
+fraction measured (1/2 visible), the ungated path is still 1.88–2.42×
+regressive; it only approaches 1.0× in the limit as the visible fraction
+approaches 1.0 (the peer reads everything, so filtering and sharing converge
+to the same work). There is no visible fraction below "reads everything" at
+which sharing the base for free is safe to assume — so `build_view` ships
+**gated**: it ranges over the shared unscoped snapshot only when that snapshot
+is already current (`base_is_current(e)` — `recon_cache` built by any other
+consumer, or no write since this peer's last cycle) or when the peer may read
+all of it anyway (`fully_open`); otherwise the view wraps its **own** filtered
+snapshot in one full-span range — same view type, same accessors, same
+deadline cache. This binary "is the base already paid for" gate is both
+necessary (the measured 6.67–15.65× ungated loss above) and sufficient (no
+further visible-fraction or multi-consumer threshold is needed on top of it,
+per the gated numbers below) — the design's open question from fix 3 is
+closed by measurement, not left as a tunable. With the gate in place,
+write-active cost is at parity with the old filtered rebuild:
+
+| shape | filtered rebuild (before) | **gated** view (after) | ratio |
+|---|---|---|---|
+| 4096 /100 | 329.8 µs | 311.9 µs | 0.95 |
+| 4096 /10 | 339.4 µs | 313.8 µs | 0.92 |
+| 4096 /2 | 1021.9 µs | 1019.9 µs | 1.00 |
+| 16384 /100 | 714.0 µs | 719.2 µs | 1.01 |
+| 16384 /10 | 1223.7 µs | 1229.3 µs | 1.00 |
+| 16384 /2 | 4603.6 µs | 4616.8 µs | 1.00 |
+
+(Ratios in [0.92, 1.01] are run-to-run noise in this container at these sizes;
+the before/after columns come from separate `./build/bench` invocations.) Note
+that both write-active columns are dominated by the one ~86 µs EdDSA sign the
+overwrite pays; the idle table above is the honest measure of the phase's
+steady state.
+
+**Debug cross-check cost.** Every `build_view` compares itself element-for-
+element and prefix-sum-for-prefix-sum against a from-scratch `build_filtered`
+under `#ifndef NDEBUG`, so it is live on all four sanitizer legs (they build
+`Debug`). Pre-agreed downgrade trigger, documented before the first CI run
+(§3.5 fix 9): if measured CI wall time regresses materially, sample the check
+once `visible > 4096` rather than remove it. Not implemented — the unsampled
+check is what ships.
+
 ## Optimization backlog (data-driven, in priority order)
 
 1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2).

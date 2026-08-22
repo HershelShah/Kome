@@ -102,13 +102,28 @@ public:
     bool owned(const std::string &ns) const;
 
     /* True if `author` holds a valid chain granting `need` access to `ns`.
-     * If `time_bound` is non-null, it is set to true when the granting decision
-     * depended on a capability with a finite expiry — i.e. the answer can change
-     * with the passage of time alone. (An open/unowned namespace or a chain of
-     * permanent caps is not time-bound.) Lets callers cache the result safely. */
+     * If `time_bound` is non-null, it is set to true when the *granting* decision
+     * depended on a capability with a finite expiry — i.e. an allowed answer can
+     * change with the passage of time alone. (An open/unowned namespace or a chain
+     * of permanent caps is not time-bound.)
+     *
+     * If `valid_until_ms` is non-null it is set to the last wall-clock ms
+     * (inclusive) at which THIS answer — allow or deny — is known to still hold,
+     * or UINT64_MAX when the answer cannot change with time alone. It is the
+     * namespace-wide minimum expiry over every currently-usable capability in
+     * `ns`, set whenever the namespace has a usable root and any usable cap in it
+     * carries a finite expiry. It therefore covers time-dependent DENIAL as well
+     * as time-bound readability: `owned()` ignores expiry, so an owned namespace
+     * whose root capability has a finite expiry flips from denied to
+     * world-readable (no usable root == open) purely by the passage of time, with
+     * no grant, revoke or write to bump a generation counter. A caller that
+     * cached only on `time_bound` would serve that stale denial forever.
+     * Deliberately ns-wide rather than chain-precise: an earlier-than-necessary
+     * rebuild costs one recompute, never a wrong answer. */
     bool authorized(const uint8_t author[32], const std::string &ns,
-                    uint8_t need, uint64_t now_ms,
-                    bool *time_bound = nullptr) const;
+                    uint8_t need, uint64_t now,
+                    bool *time_bound = nullptr,
+                    uint64_t *valid_until_ms = nullptr) const;
 
     /* Number of capabilities held (used to bound growth from gossip). */
     size_t size() const { return caps_.size(); }
@@ -142,8 +157,26 @@ void rev_ingest(sync_engine *e, const std::vector<std::string> &blobs);
  * allowed (including the open, unowned-namespace case). */
 int cap_authorize_write(sync_engine *e, const uint8_t author[32],
                         const std::string &ns);
+
+/* Read enforcement. `now` (unix ms) is REQUIRED and has deliberately no default
+ * and no in-function fallback: the previous `now == 0 -> now_ms()` sentinel was a
+ * fail-open planted in the middle of the read-scope enforcement path. With
+ * now == 0 the `usable()` predicate in CapStore::authorized (`c.expiry == 0 ||
+ * now <= c.expiry`) accepts EVERY capability with a finite expiry, i.e. an
+ * uninitialized or defaulted `now` silently grants read through arbitrarily long
+ * expired chains — and the Debug cross-check cannot see it, because the
+ * cross-check is handed the same `now`. Requiring the argument makes the clock
+ * read an explicit, greppable decision at each call site; reconcile.cpp reads it
+ * once per session begin and threads that single instant through the scope
+ * pre-scan, the range-view build and the Debug cross-check, so all three agree on
+ * one point in time. See docs/IMPROVEMENT_PLAN.md §3.5 fix 2.
+ *
+ * `time_bound` / `valid_until_ms` are forwarded from CapStore::authorized (see
+ * its declaration above for the exact semantics). */
 bool cap_authorize_read(sync_engine *e, const uint8_t reader[32],
-                        const std::string &ns, bool *time_bound = nullptr);
+                        const std::string &ns, uint64_t now,
+                        bool *time_bound = nullptr,
+                        uint64_t *valid_until_ms = nullptr);
 
 } // namespace ke
 

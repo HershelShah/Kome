@@ -363,6 +363,150 @@ void BM_SessionBeginAfterGrant(benchmark::State &st) {
 }
 BENCHMARK(BM_SessionBeginAfterGrant)->RangeMultiplier(4)->Range(64, 16384)->Complexity();
 
+/* ---- scoped session begin for a time-bound peer (improvement plan §3.5) ---
+ *
+ * The device this phase is for: one gossip peer whose read scope depends on a
+ * finite-expiry capability, seeing a small fraction of the engine's data, on a
+ * link that keeps taking writes. Before Phase 5 such a peer was excluded from
+ * caching entirely and rebuilt a FILTERED snapshot every cycle — O(N_visible)
+ * encodes. It now builds the shared unscoped base (O(N) encodes, amortized
+ * across every other consumer of that base) plus O(namespaces·log N) range
+ * work, and is then cached until the capability's expiry.
+ *
+ * The two benchmarks below are the A/B for that trade at a given visible
+ * fraction, measured in one binary at one revision:
+ *   ...TimeBound  — the peer's cap has a finite expiry: the new view path.
+ *   ...Permanent  — the same shape, same visible fraction, but a never-expiring
+ *                   cap, so the peer is permanently restricted and each write
+ *                   forces exactly the filtered O(N_visible) rebuild the
+ *                   time-bound peer used to pay. This is the "before" number.
+ * Both are write-active (one overwrite per iteration bumps content_gen and so
+ * invalidates the per-peer cache), so both include the same constant ~one-sign
+ * overwrite cost; compare the difference between them, not the absolute floor.
+ * The crossover in visible fraction is recorded in docs/PERF.md. */
+struct ScopedFixture {
+    sync_engine     *e = nullptr;
+    sync_capability *root0 = nullptr;
+    sync_capability *deleg = nullptr;
+    std::vector<sync_capability *> roots;
+    uint8_t          peer[SYNC_PUBKEY_LEN];
+    std::string      hot_ns, hot_ent;
+};
+
+/* n elements-ish spread over `denom` namespaces; the peer may read exactly one
+ * of them, i.e. a visible fraction of 1/denom. `expiry` 0 == permanent. */
+void scoped_setup(ScopedFixture &fx, int n, int denom, uint64_t expiry,
+                  uint32_t seed) {
+    fx.e = sync_engine_create(seed_of(seed).data());
+    sync_engine *peer_engine = sync_engine_create(seed_of(seed + 1).data());
+    sync_engine_identity(peer_engine, fx.peer);
+    sync_engine_destroy(peer_engine); /* only its identity is needed */
+
+    const std::string f = "f", v = "value-data";
+    const int per = n / denom > 0 ? n / denom : 1;
+    for (int k = 0; k < denom; k++) {
+        std::string ns = "ns" + std::to_string(k);
+        for (int i = 0; i < per; i++) {
+            std::string ent = "e" + std::to_string(i);
+            sync_engine_set(fx.e, B(ns), ns.size(), B(ent), ent.size(), B(f),
+                            f.size(), B(v), v.size());
+        }
+        sync_capability *r = sync_capability_root(
+            fx.e, ns.c_str(), SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+        sync_engine_grant(fx.e, r);
+        fx.roots.push_back(r);
+        if (k == 0) fx.root0 = r;
+    }
+    fx.deleg = sync_capability_delegate(fx.e, fx.root0, fx.peer,
+                                        SYNC_ACCESS_READ, expiry);
+    sync_engine_grant(fx.e, fx.deleg);
+    fx.hot_ns = "ns0";
+    fx.hot_ent = "e0";
+}
+
+void scoped_teardown(ScopedFixture &fx) {
+    for (auto *r : fx.roots) sync_capability_free(r);
+    sync_capability_free(fx.deleg);
+    sync_engine_destroy(fx.e);
+}
+
+void scoped_run(benchmark::State &st, uint64_t expiry, uint32_t seed) {
+    const int n = (int)st.range(0);
+    const int denom = (int)st.range(1);
+    ScopedFixture fx;
+    scoped_setup(fx, n, denom, expiry, seed);
+    const std::string f = "f";
+    uint64_t i = 0;
+    for (auto _ : st) {
+        std::string v = "v" + std::to_string(i++);
+        sync_engine_set(fx.e, B(fx.hot_ns), fx.hot_ns.size(), B(fx.hot_ent),
+                        fx.hot_ent.size(), B(f), f.size(), B(v), v.size());
+        sync_session *s = sync_session_begin_scoped(fx.e, 1, fx.peer);
+        benchmark::DoNotOptimize(s);
+        sync_session_end(s);
+    }
+    st.SetComplexityN(n);
+    scoped_teardown(fx);
+}
+
+void BM_ScopedSessionBeginTimeBound(benchmark::State &st) {
+    scoped_run(st, /*expiry=*/4000000000000ull /* ~2096, finite */, 16);
+}
+BENCHMARK(BM_ScopedSessionBeginTimeBound)
+    ->Args({4096, 100})->Args({4096, 10})->Args({4096, 2})
+    ->Args({16384, 100})->Args({16384, 10})->Args({16384, 2});
+
+void BM_ScopedSessionBeginPermanent(benchmark::State &st) {
+    scoped_run(st, /*expiry=*/0 /* never */, 18);
+}
+BENCHMARK(BM_ScopedSessionBeginPermanent)
+    ->Args({4096, 100})->Args({4096, 10})->Args({4096, 2})
+    ->Args({16384, 100})->Args({16384, 10})->Args({16384, 2});
+
+/* The steady state this phase is named for: an IDLE, converged link. No write
+ * lands between cycles, so the only question is what a repeated
+ * sync_session_begin_scoped costs for a peer whose scope is deadline-bearing.
+ *   ...IdleTimeBound — now: one map lookup plus one deadline compare.
+ *   ...IdleUncached  — before: the same peer, but the deadline-keyed entry is
+ *                      dropped each cycle, which is exactly the pre-phase
+ *                      "a time-bound scope is never cached" behaviour: a full
+ *                      filtered rebuild (encode every visible record) per
+ *                      cycle. Uses the internal cache map directly (engine.hpp
+ *                      is already included here) purely to reproduce that
+ *                      path; nothing in the engine clears it this way. */
+void BM_ScopedSessionBeginIdleTimeBound(benchmark::State &st) {
+    ScopedFixture fx;
+    scoped_setup(fx, (int)st.range(0), (int)st.range(1),
+                 /*expiry=*/4000000000000ull, 20);
+    for (auto _ : st) {
+        sync_session *s = sync_session_begin_scoped(fx.e, 1, fx.peer);
+        benchmark::DoNotOptimize(s);
+        sync_session_end(s);
+    }
+    st.SetComplexityN((int)st.range(0));
+    scoped_teardown(fx);
+}
+BENCHMARK(BM_ScopedSessionBeginIdleTimeBound)
+    ->Args({4096, 100})->Args({4096, 10})->Args({4096, 2})
+    ->Args({16384, 100})->Args({16384, 10})->Args({16384, 2});
+
+void BM_ScopedSessionBeginIdleUncached(benchmark::State &st) {
+    ScopedFixture fx;
+    scoped_setup(fx, (int)st.range(0), (int)st.range(1),
+                 /*expiry=*/4000000000000ull, 22);
+    for (auto _ : st) {
+        fx.e->scoped_view_cache.clear(); /* pre-phase: never cached */
+        sync_session *s = sync_session_begin_scoped(fx.e, 1, fx.peer);
+        benchmark::DoNotOptimize(s);
+        sync_session_end(s);
+    }
+    st.SetComplexityN((int)st.range(0));
+    scoped_teardown(fx);
+}
+BENCHMARK(BM_ScopedSessionBeginIdleUncached)
+    ->Args({4096, 100})->Args({4096, 10})->Args({4096, 2})
+    ->Args({16384, 100})->Args({16384, 10})->Args({16384, 2});
+
 /* Canonical encoded size of one representative record (the shape populate()
  * writes), used as the amplification denominator. */
 long record_wire_size() {

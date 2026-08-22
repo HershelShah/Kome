@@ -143,6 +143,38 @@ void sub256(Hash256 &acc, const Hash256 &x) {
     }
 }
 
+/* Fold a range's combinable hash sum into the wire fingerprint. The ONLY
+ * construction of a fingerprint: the plain-snapshot path and the read-scoped
+ * range-view path both come through here with (sum over the range, element
+ * count), so a view produces byte-identical fingerprints to a dense snapshot of
+ * the same visible set — the RBSR wire-parity invariant. */
+Hash256 fp_of(const Hash256 &lo_sum, const Hash256 &hi_sum, size_t count) {
+    Hash256 sum = hi_sum;
+    sub256(sum, lo_sum);
+    Sha256 h;
+    uint8_t cnt[8];
+    store_u64le(cnt, (uint64_t)count);
+    h.update(cnt, 8);
+    h.update(sum.data(), sum.size());
+    Hash256 out;
+    h.finish(out.data());
+    return out;
+}
+
+/* First index in a sorted element vector whose key >= bound. Shared by the plain
+ * snapshot path and (as the base-space step of) the range-view path. */
+size_t base_lower_index(const std::vector<Element> &sn, const Bound &b) {
+    if (b.type == Bound::NEG_INF) return 0;
+    if (b.type == Bound::POS_INF) return sn.size();
+    size_t lo = 0, hi = sn.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (key_cmp(sn[mid].key, b.key) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 /* ---- varint / wire helpers --------------------------------------------- */
 
 void encode_bound(std::string &o, const Bound &b) {
@@ -313,10 +345,122 @@ bool decode_message(const uint8_t *buf, size_t len, std::vector<Desc> &out,
         if (!decode_desc(p, end, d, elem_budget)) return false;
         out.push_back(std::move(d));
     }
+    /* The framing is CANONICAL: a message is exactly its three blocks and
+     * nothing else. Without this the decoder silently ignored anything after the
+     * last descriptor, which (a) let a peer piggyback unbounded uninspected
+     * bytes on every message, and (b) made the round-trip guard in
+     * tests/recon_wire.hpp blind in the two directions that matter for wire
+     * drift -- an appended field, and an under-reported block count (whose
+     * unread items become trailing bytes). encode_message never emits a trailing
+     * byte and every caller hands us an exactly-sized message
+     * (transport/connection.cpp decrypts into one), so this rejects only input
+     * no honest peer produces. */
+    if (p != end) return false;
     return true;
 }
 
 } // namespace
+
+/* ---- read-scoped range view -------------------------------------------- */
+
+/* An immutable read-scoped VIEW over the engine's shared unscoped snapshot
+ * (§3.5). A peer whose visible set depends on a capability expiry used to be
+ * excluded from the scoped cache entirely, so every gossip cycle — idle,
+ * converged ones included — re-encoded its whole visible set. A view instead
+ * records, per readable namespace, the half-open base-index range that
+ * namespace occupies in the base snapshot, plus prefix sums over those ranges;
+ * building it is O(namespaces * log N) with no encode and no SHA-256 per
+ * element, and it is cached per peer until the earliest capability expiry it
+ * depends on (sync_engine::scoped_view_cache).
+ *
+ * Layout invariants (all established by build_view, none re-derivable later):
+ *   - `base` is the unscoped snapshot the ranges index, held by shared_ptr so an
+ *     in-flight session's view stays valid after the engine replaces its cache;
+ *   - `ranges` are ascending, disjoint, non-empty and COALESCED (adjacent
+ *     readable namespaces merge into one range), so `visible` == sum of range
+ *     lengths and a whole-space fingerprint is one subtraction;
+ *   - `vstart[r]` is the visible index of `ranges[r].lo`, with a trailing entry
+ *     equal to `visible`;
+ *   - `cum[r]` is the combinable sum of the first `vstart[r]` visible element
+ *     hashes, with the same trailing entry, so any visible sub-range sum is one
+ *     add and two subtractions.
+ * Everything a session touches is expressed in VISIBLE index space; the base
+ * index is never handed out (see sync_session's accessors). */
+struct ReconView {
+    struct Range { size_t lo = 0, hi = 0; }; /* half-open base-index interval */
+
+    GenPair                              gen;              /* built at */
+    uint64_t                             valid_until_ms = 0; /* inclusive */
+    std::shared_ptr<const ReconSnapshot> base;
+    std::vector<Range>                   ranges;
+    std::vector<size_t>                  vstart; /* ranges.size() + 1 entries */
+    std::vector<Hash256>                 cum;    /* ranges.size() + 1 entries */
+    size_t                               visible = 0;
+
+    size_t size() const { return visible; }
+
+    /* Index of the range holding visible index v. */
+    size_t range_of(size_t v) const {
+        assert(v < visible && "ReconView::range_of past the visible set");
+        size_t r = (size_t)(std::upper_bound(vstart.begin(), vstart.end(), v) -
+                            vstart.begin()) - 1;
+        assert(r < ranges.size());
+        return r;
+    }
+
+    /* Visible index -> base index. Bounds-asserted (§3.5 fix 6): at v == visible
+     * the arithmetic below yields a valid-but-wrong base index — the first
+     * element of the NEXT, possibly denied, namespace — which is in bounds and
+     * therefore invisible to UBSan and to the sanitizer legs. */
+    size_t base_index(size_t v) const {
+        assert(v < visible && "ReconView::base_index past the visible set");
+        size_t r = range_of(v);
+        return ranges[r].lo + (v - vstart[r]);
+    }
+
+    const Element &elem(size_t v) const {
+        assert(v < visible && "ReconView::elem past the visible set");
+        return base->snap[base_index(v)];
+    }
+
+    /* Combinable sum of the first v visible element hashes. v == visible is
+     * legitimate here (it is the exclusive end of the whole visible range) and is
+     * deliberately a SEPARATE, unguarded path rather than a relaxed bound on
+     * elem()/base_index(): those two must keep rejecting it. */
+    Hash256 vsum(size_t v) const {
+        assert(v <= visible && "ReconView::vsum past the visible set");
+        if (v == visible) return cum.back(); /* whole-set sum; no element read */
+        size_t r = range_of(v);
+        Hash256 s = cum[r];
+        Hash256 d = base->prefix[ranges[r].lo + (v - vstart[r])];
+        sub256(d, base->prefix[ranges[r].lo]);
+        add256(s, d);
+        return s;
+    }
+
+    Hash256 fingerprint(size_t lo, size_t hi) const {
+        return fp_of(vsum(lo), vsum(hi), hi - lo);
+    }
+
+    /* First VISIBLE index whose key >= bound. Exact because the visible sequence
+     * is the base sequence restricted to `ranges`: the base is sorted, so every
+     * element at or after the base bound has key >= bound and every element
+     * before it has key < bound, and that split carries over to the subsequence.
+     * O(log N + log ranges), no per-probe range lookup. */
+    size_t lower_index(const Bound &b) const {
+        if (b.type == Bound::NEG_INF) return 0;
+        if (b.type == Bound::POS_INF) return visible;
+        size_t bi = base_lower_index(base->snap, b);
+        size_t r = (size_t)(std::lower_bound(
+                       ranges.begin(), ranges.end(), bi,
+                       [](const Range &x, size_t v) { return x.hi <= v; }) -
+                   ranges.begin());
+        if (r == ranges.size()) return visible; /* bound is past every range */
+        if (bi <= ranges[r].lo) return vstart[r];
+        return vstart[r] + (bi - ranges[r].lo);
+    }
+};
+
 } // namespace ke
 
 using namespace ke;
@@ -335,47 +479,61 @@ struct sync_session {
      * single message exceeds the relay/UDP size bound. */
     std::deque<Desc> outq;
 
-    /* The point-in-time snapshot this session reconciles over. Held by
-     * shared_ptr so it stays stable even as records applied mid-session bump
-     * the engine's content_gen and replace its cached snapshot. */
-    std::shared_ptr<const ReconSnapshot> ss;
+    /* ---- the point-in-time source this session reconciles over ----------
+     * Exactly one of the two is held, and both are PRIVATE (§3.5 fix 7):
+     * privatizing only the accessors left `ss` itself assignable and, worse,
+     * readable as `s->ss->snap[i]` from anywhere in this file — raw BASE
+     * indexing that silently ignores read scope. With the members private and
+     * every accessor below expressed in VISIBLE index space, a missed
+     * conversion is a compile error rather than a scope leak.
+     *
+     * Both are held by shared_ptr, so the source stays stable for an in-flight
+     * session even as records applied mid-session bump content_gen and replace
+     * the engine's cached snapshot, or a capability expiry evicts the cached
+     * view. begin_session is the sole writer (see set_source). */
+    void set_source(std::shared_ptr<const ReconSnapshot> s,
+                    std::shared_ptr<const ReconView> v) {
+        assert(!ss_ && !vw_ && "session source is written exactly once");
+        assert(!(s && v) && "a session reconciles over one source, not two");
+        ss_ = std::move(s);
+        vw_ = std::move(v);
+    }
+    bool has_source() const { return ss_ != nullptr || vw_ != nullptr; }
 
-    const std::vector<Element> &snap() const { return ss->snap; }
-    const std::vector<Hash256> &prefix() const { return ss->prefix; }
+    /* Number of elements VISIBLE to this session's peer. Every bound derived
+     * from the element count — descriptor splitting, the reply-amplification cap
+     * — must come from here and never from the base snapshot, which for a scoped
+     * session also counts elements the peer may not read. */
+    size_t size() const { return vw_ ? vw_->size() : ss_->snap.size(); }
 
-    /* First snapshot index whose key >= bound. */
-    size_t lower_index(const Bound &b) const {
-        const auto &sn = snap();
-        if (b.type == Bound::NEG_INF) return 0;
-        if (b.type == Bound::POS_INF) return sn.size();
-        size_t lo = 0, hi = sn.size();
-        while (lo < hi) {
-            size_t mid = (lo + hi) / 2;
-            if (key_cmp(sn[mid].key, b.key) < 0) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
+    /* Element at VISIBLE index i. */
+    const Element &elem(size_t i) const {
+        assert(i < size() && "sync_session::elem past the visible set");
+        return vw_ ? vw_->elem(i) : ss_->snap[i];
     }
 
+    /* First visible index whose key >= bound. */
+    size_t lower_index(const Bound &b) const {
+        return vw_ ? vw_->lower_index(b) : base_lower_index(ss_->snap, b);
+    }
+
+    /* Fingerprint of the visible half-open range [lo, hi). Identical bytes on
+     * both paths — see fp_of. */
     Hash256 fingerprint(size_t lo, size_t hi) const {
-        Hash256 sum = prefix()[hi];
-        sub256(sum, prefix()[lo]);
-        Sha256 h;
-        uint8_t cnt[8];
-        store_u64le(cnt, (uint64_t)(hi - lo));
-        h.update(cnt, 8);
-        h.update(sum.data(), sum.size());
-        Hash256 out;
-        h.finish(out.data());
-        return out;
+        return vw_ ? vw_->fingerprint(lo, hi)
+                   : fp_of(ss_->prefix[lo], ss_->prefix[hi], hi - lo);
     }
 
     Bound key_bound(size_t idx) const {
         Bound b;
         b.type = Bound::KEY;
-        b.key = snap()[idx].key;
+        b.key = elem(idx).key;
         return b;
     }
+
+private:
+    std::shared_ptr<const ReconSnapshot> ss_;
+    std::shared_ptr<const ReconView>     vw_;
 };
 
 namespace {
@@ -484,7 +642,7 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
             leaf.lo = d.lo;
             leaf.hi = d.hi;
             for (size_t i = lo; i < hi; i++)
-                leaf.records.push_back(s->snap()[i].bytes);
+                leaf.records.push_back(s->elem(i).bytes);
             out.push_back(std::move(leaf));
             return;
         }
@@ -534,10 +692,10 @@ void process_desc(sync_session *s, const Desc &d, std::vector<Desc> &out) {
         have.hi = d.hi;
         size_t bytes = 0;
         for (size_t i = lo; i < hi; i++) {
-            std::string kk = serialize_key(s->snap()[i].key);
+            std::string kk = serialize_key(s->elem(i).key);
             auto it = peer.find(kk);
-            if (it != peer.end() && it->second == s->snap()[i].hash) continue;
-            const std::string &rec = s->snap()[i].bytes;
+            if (it != peer.end() && it->second == s->elem(i).hash) continue;
+            const std::string &rec = s->elem(i).bytes;
             if (!have.records.empty() && bytes + rec.size() > kMaxMessageBytes) {
                 out.push_back(std::move(have)); /* flush this chunk */
                 have = Desc{};
@@ -592,12 +750,15 @@ void emit_element(const sync_change &c, const std::string &nsk,
 
 /* Snapshot the engine as sorted elements with per-element hashes. Records in
  * namespaces peer may not read are excluded (peer == NULL == no scoping).
+ * `now` is the caller's single wall-clock instant for the whole build (see
+ * begin_session); it is consulted only through cap_authorize_read, i.e. only
+ * when peer != NULL.
  *
  * Iterates the engine's maps directly rather than via sync_engine_export — the
  * export path mallocs an N-element array plus four field copies per record and
  * then we free it all (profiled at ~55% of the build). Here each change borrows
  * the map's strings and is encoded straight into its Element. */
-bool build_snapshot(sync_engine *e, const uint8_t *peer,
+bool build_snapshot(sync_engine *e, const uint8_t *peer, uint64_t now,
                     std::vector<Element> &out) {
     static const std::string kEmpty;
     /* Reserve exactly: one element per present-or-tombstoned entity + one per
@@ -610,7 +771,7 @@ bool build_snapshot(sync_engine *e, const uint8_t *peer,
 
     for (const auto &np : e->ns) {
         const std::string &nsk = np.first;
-        if (peer && !cap_authorize_read(e, peer, nsk))
+        if (peer && !cap_authorize_read(e, peer, nsk, now))
             continue; /* whole namespace read-scoped out */
         for (const auto &ep : np.second) {
             const std::string &entk = ep.first;
@@ -653,12 +814,14 @@ void build_prefix(const std::vector<Element> &snap,
 }
 
 /* Build a fresh snapshot stamped at the current content_gen — full when
- * peer==NULL, else read-scoped to peer. NULL on build failure. Shared by the
- * unscoped (ensure_cache) and per-peer (ensure_scoped_cache) paths. */
-std::shared_ptr<ReconSnapshot> build_filtered(sync_engine *e, const uint8_t *peer) {
+ * peer==NULL, else read-scoped to peer as of `now`. NULL on build failure.
+ * Shared by the unscoped (ensure_cache) and per-peer (ensure_scoped_source)
+ * paths, and by the Debug cross-check in build_view. */
+std::shared_ptr<ReconSnapshot> build_filtered(sync_engine *e, const uint8_t *peer,
+                                              uint64_t now) {
     auto snap = std::make_shared<ReconSnapshot>();
     snap->gen = e->content_gen;
-    if (!build_snapshot(e, peer, snap->snap)) return nullptr;
+    if (!build_snapshot(e, peer, now, snap->snap)) return nullptr;
     build_prefix(snap->snap, snap->prefix);
     return snap;
 }
@@ -667,94 +830,322 @@ std::shared_ptr<ReconSnapshot> build_filtered(sync_engine *e, const uint8_t *pee
  * since it was taken — the snapshot is a pure function of e->ns, so a
  * capability change (scope_gen) no longer discards and re-encodes/re-hashes
  * it. Returns NULL on build failure. */
-std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e) {
+std::shared_ptr<const ReconSnapshot> ensure_cache(sync_engine *e, uint64_t now) {
     if (e->recon_cache && e->recon_cache->gen == e->content_gen)
         return e->recon_cache;
-    auto snap = build_filtered(e, nullptr);
+    /* peer==NULL: `now` is threaded for signature uniformity only — the unscoped
+     * build consults no capability and so no clock. */
+    auto snap = build_filtered(e, nullptr, now);
     if (snap) e->recon_cache = snap;
     return snap;
 }
 
-/* The per-peer read-scoped snapshot, cached on the engine (engine.hpp
- * scoped_cache) the same way ensure_cache caches the unscoped one: rebuilt only
- * when either gen advanced since it was taken — content (writes/applies) or
- * scope (capability grants/revokes/ingest, capability.cpp). A converged, idle
- * gossip link therefore stops re-encoding and re-hashing every record each
- * cycle. Snapshots whose scope is
- * time-bound (a finite-expiry read cap) are returned but NOT cached, so capability
- * expiry stays exact (that peer rebuilds each cycle, as before). Returns NULL on
- * build failure. */
-/* Upper bound on cached per-peer scoped snapshots. Cleared wholesale on every
- * state change, so this only matters for a burst of distinct restricted peers
- * between writes; fully-open peers cache a cheap shared alias, so the expensive
- * (distinct O(N) snapshot) entries are the few genuinely read-restricted peers. */
+/* True when the engine's shared unscoped snapshot is already built and current,
+ * so a range view over it costs no element encoding at all. See build_view. */
+bool base_is_current(const sync_engine *e) {
+    return e->recon_cache && e->recon_cache->gen == e->content_gen;
+}
+
+/* Build the read-scoped range view for `peer`, valid (inclusively) until
+ * `valid_until_ms`. NULL on build failure.
+ *
+ * TWO bases, chosen by `share_base` -- this is §3.5 fix 3's gate, and it is
+ * measured rather than assumed (numbers in docs/PERF.md):
+ *
+ *  - share_base: range the peer's readable namespaces over the engine's SHARED
+ *    unscoped snapshot. The base is ns-major sorted, so each readable namespace
+ *    occupies one contiguous half-open base range, located with a pair of
+ *    partition_points -- no encode, no hash, no per-element work at all.
+ *    Adjacent readable namespaces are coalesced as they are appended (e->ns
+ *    iterates ascending, so ranges come out ascending and disjoint by
+ *    construction), keeping the common "everything readable" and "one denied
+ *    namespace" shapes at one or two ranges.
+ *
+ *  - otherwise: build this peer's own filtered snapshot and wrap it in a single
+ *    full-span range. Same view type, same deadline, same accessors; it simply
+ *    owns its base instead of sharing one.
+ *
+ * The caller passes share_base only when the shared base is already current
+ * (some other consumer built it, or no write has landed since this peer's last
+ * cycle) or when the peer may read everything anyway. Forcing the O(N) base
+ * build for a restricted peer instead measured 2x-15x SLOWER per write-active
+ * cycle than the O(N_visible) filtered build it replaced, worst at the small
+ * visible fractions this phase exists to serve (BM_ScopedSessionBeginTimeBound
+ * vs BM_ScopedSessionBeginPermanent, docs/PERF.md). The per-cycle win this
+ * phase is actually about -- an idle, converged link stops re-encoding
+ * everything -- comes from the DEADLINE-keyed cache, which both bases get; the
+ * shared base is the additional win when the snapshot is there for free.
+ *
+ * Either way the element sequence a view exposes is exactly what
+ * build_snapshot(e, peer) would emit: build_snapshot walks e->ns in ascending
+ * order, skips denied namespaces wholesale, and emits each kept namespace's
+ * elements in map order -- which is the base's order restricted to that
+ * namespace's range. */
+std::shared_ptr<const ReconView> build_view(sync_engine *e, const uint8_t *peer,
+                                            uint64_t now,
+                                            uint64_t valid_until_ms,
+                                            bool share_base) {
+    auto base = share_base ? ensure_cache(e, now) : build_filtered(e, peer, now);
+    if (!base) return nullptr;
+
+    auto v = std::make_shared<ReconView>();
+    v->gen = e->gens();
+    v->valid_until_ms = valid_until_ms;
+    v->base = base;
+
+    const std::vector<Element> &sn = base->snap;
+    if (!share_base) {
+        /* The base IS the visible set: one full-span range (empty bases get no
+         * range at all, keeping every range non-empty). */
+        if (!sn.empty()) v->ranges.push_back(ReconView::Range{0, sn.size()});
+    } else {
+        for (const auto &np : e->ns) {
+            const std::string &nsk = np.first;
+            if (!cap_authorize_read(e, peer, nsk, now)) continue;
+            size_t lo = (size_t)(std::partition_point(
+                                     sn.begin(), sn.end(),
+                                     [&nsk](const Element &x) {
+                                         return x.key.ns < nsk;
+                                     }) -
+                                 sn.begin());
+            size_t hi = (size_t)(std::partition_point(
+                                     sn.begin() + (std::ptrdiff_t)lo, sn.end(),
+                                     [&nsk](const Element &x) {
+                                         return x.key.ns <= nsk;
+                                     }) -
+                                 sn.begin());
+            if (hi == lo) continue; /* readable but contributes no element */
+            if (!v->ranges.empty() && v->ranges.back().hi == lo)
+                v->ranges.back().hi = hi; /* coalesce with the previous range */
+            else
+                v->ranges.push_back(ReconView::Range{lo, hi});
+        }
+    }
+
+    v->vstart.reserve(v->ranges.size() + 1);
+    v->cum.reserve(v->ranges.size() + 1);
+    size_t vis = 0;
+    Hash256 acc{};
+    v->vstart.push_back(vis);
+    v->cum.push_back(acc);
+    for (const auto &r : v->ranges) {
+        vis += r.hi - r.lo;
+        Hash256 d = base->prefix[r.hi];
+        sub256(d, base->prefix[r.lo]);
+        add256(acc, d);
+        v->vstart.push_back(vis);
+        v->cum.push_back(acc);
+    }
+    v->visible = vis;
+
+#ifndef NDEBUG
+    /* Debug cross-check (§3.5): read scoping now rests on index arithmetic
+     * rather than on the denied bytes being physically absent, so every view
+     * build is compared against a from-scratch build_filtered with the SAME
+     * `now` -- element for element (key, wire bytes, element hash) and prefix
+     * sum for prefix sum. A divergence here is a scope leak or a wire-parity
+     * break, and it must fail the build, not a fuzzer.
+     *
+     * Cost is live on every sanitizer leg (all four CI legs build Debug), which
+     * is accepted for this rollout. Pre-agreed downgrade trigger, documented
+     * before the first CI run rather than discovered on a red one (§3.5 fix 9):
+     * if measured CI wall time regresses materially, sample the cross-check
+     * once `visible > 4096` (i.e. run it for every small view, and for large
+     * ones only on a deterministic sample) instead of removing it. NOT
+     * implemented yet -- the unsampled check is what ships until the wall-time
+     * measurement says otherwise. */
+    {
+        auto chk = build_filtered(e, peer, now);
+        assert(chk && "cross-check build failed");
+        assert(chk->snap.size() == v->visible &&
+               "range view exposes a different element count than a filtered build");
+        for (size_t i = 0; i < v->visible; i++) {
+            assert(key_cmp(chk->snap[i].key, v->elem(i).key) == 0 &&
+                   "range view element key diverges from a filtered build");
+            assert(chk->snap[i].bytes == v->elem(i).bytes &&
+                   "range view element bytes diverge from a filtered build");
+            assert(chk->snap[i].hash == v->elem(i).hash &&
+                   "range view element hash diverges from a filtered build");
+            assert(chk->prefix[i] == v->vsum(i) &&
+                   "range view prefix sum diverges from a filtered build");
+        }
+        assert(chk->prefix[v->visible] == v->vsum(v->visible) &&
+               "range view total sum diverges from a filtered build");
+    }
+#endif
+    return v;
+}
+
+/* The source a scoped session reconciles over: exactly one of a plain snapshot
+ * (time-independent scope) or a range view (scope bounded by a capability
+ * expiry). Both null on build failure. */
+struct ScopedSource {
+    std::shared_ptr<const ReconSnapshot> snap;
+    std::shared_ptr<const ReconView>     view;
+};
+
+/* Upper bound on cached per-peer scoped snapshots/views. Both maps are cleared
+ * wholesale on every state change, so this only matters for a burst of distinct
+ * restricted peers between writes; fully-open peers cache a cheap shared alias,
+ * so the expensive entries are the few genuinely read-restricted peers. */
 constexpr size_t kMaxScopedCache = 256;
 
-std::shared_ptr<const ReconSnapshot> ensure_scoped_cache(sync_engine *e,
-                                                         const uint8_t *peer) {
-    /* No capability system engaged → every namespace is open → the scoped
-     * snapshot is exactly the unscoped one. */
-    if (!e->caps) return ensure_cache(e);
+/* The per-peer read-scoped source, cached on the engine the same way
+ * ensure_cache caches the unscoped snapshot, and classified by ONE pre-scan over
+ * the namespaces:
+ *
+ *   deadline == UINT64_MAX (no namespace's answer can move with the clock alone)
+ *     fully open -> alias the shared unscoped snapshot (scoped_cache)
+ *     restricted -> a distinct filtered snapshot     (scoped_cache)
+ *   deadline <  UINT64_MAX (some namespace's answer moves with the clock)
+ *     -> a range view, cached in scoped_view_cache until `deadline` inclusive.
+ *        Whether that view ranges over the shared unscoped snapshot or over its
+ *        own filtered one is build_view's measured gate, not a scope question:
+ *        both expose exactly the same visible elements.
+ *
+ * The deadline is the MINIMUM over EVERY namespace scanned, denied ones included
+ * (§3.5 fix 1). A denied namespace is time-dependent too: CapStore::owned()
+ * ignores expiry, so a namespace whose only root capability carries a finite
+ * expiry flips from denied to open (== world-readable) the moment that root
+ * lapses, and nothing bumps content_gen or scope_gen when it does. Keying the
+ * deadline off readable-time-bound namespaces alone would serve that denial
+ * forever. Both directions are sound by the same monotonicity argument: an
+ * earlier-than-necessary rebuild costs one range recompute, never a wrong
+ * answer.
+ *
+ * Neither cache is consulted without its guard: the GenPair guard below covers
+ * writes/applies/GC and grants/revokes/ingest; the per-view deadline covers the
+ * one thing no counter sees, the passage of time. */
+ScopedSource ensure_scoped_source(sync_engine *e, const uint8_t *peer,
+                                  uint64_t now) {
+    ScopedSource out;
+    /* No capability system engaged -> every namespace is open -> the scoped
+     * source is exactly the unscoped snapshot. */
+    if (!e->caps) {
+        out.snap = ensure_cache(e, now);
+        return out;
+    }
 
-    /* Cache-first: a hit is one map lookup and skips the per-namespace
-     * authorization pre-scan below — so a converged, idle link costs O(1) per
-     * cycle regardless of how the peer is scoped. The cache holds both restricted
-     * peers (a distinct filtered snapshot) and fully-open peers (an alias to the
-     * shared unscoped snapshot). It is cleared whenever engine state advances —
-     * a content bump (writes, applies, tombstone GC) or a scope bump (capability
-     * grants/revokes/ingest) both clear it; a fully-open peer then cheaply
-     * re-runs the pre-scan below and re-aliases the still-valid unscoped
-     * snapshot. */
+    /* Cache-first: a hit is one map lookup (plus, for a view, one deadline
+     * compare) and skips the per-namespace authorization pre-scan below -- so a
+     * converged, idle link costs O(1) per cycle regardless of how the peer is
+     * scoped. Both maps are cleared whenever engine state advances: a content
+     * bump (writes, applies, tombstone GC) or a scope bump (capability
+     * grants/revokes/ingest). A fully-open peer then cheaply re-runs the
+     * pre-scan and re-aliases the still-valid unscoped snapshot. */
     if (e->scoped_cache_gens != e->gens()) {
         e->scoped_cache.clear();
+        e->scoped_view_cache.clear();
         e->scoped_cache_gens = e->gens();
     }
     std::string key((const char *)peer, SYNC_PUBKEY_LEN);
-    auto it = e->scoped_cache.find(key);
-    if (it != e->scoped_cache.end()) return it->second;
 
-    /* Miss: classify the peer's scope. The O(namespaces) pre-scan (each
-     * cap_authorize_read is O(caps)) runs only here, not on cache hits.
-     *   fully_open  -> snapshot equals the unscoped one; alias the shared cache.
-     *   time_bound  -> scope depends on a finite-expiry cap; rebuild every cycle
-     *                  (never cached) so expiry stays exact. */
-    /* Scan EVERY namespace (no early break): a readable, time-bound namespace
-     * sorted after a denied one must still set time_bound, or its scope would be
-     * wrongly cached and served past the cap's expiry. Only readable namespaces
-     * (those that end up in the snapshot) contribute time_bound. */
-    bool fully_open = true, time_bound = false;
-    for (const auto &np : e->ns) {
-        bool tb = false;
-        if (!cap_authorize_read(e, peer, np.first, &tb)) fully_open = false;
-        else time_bound = time_bound || tb;
+    auto vit = e->scoped_view_cache.find(key);
+    if (vit != e->scoped_view_cache.end()) {
+        /* TWO independent guards, and a hit needs BOTH:
+         *
+         *  - `gen`: the GenPair the view was built at must still be the engine's.
+         *    The map-wide clear above already guarantees that, so this compare
+         *    never fires in correct operation -- it is here so the per-view stamp
+         *    is LOAD-BEARING rather than decorative. A view carrying a validity
+         *    stamp that nothing reads invites a future refactor to trust the
+         *    stamp and drop the map-wide clear, which is exactly how a revoked
+         *    peer gets served from its grant-era view; with the compare here,
+         *    that refactor degrades to an extra rebuild instead of a leak. The
+         *    stamp is checked BEFORE the deadline because scope changes are the
+         *    security-relevant direction.
+         *  - the deadline: inclusive, matching usable()'s `now <= c.expiry` in
+         *    capability.cpp -- a capability is usable through its expiry
+         *    millisecond, so a view built from it is too. This is the guard no
+         *    counter can replace, because expiry moves neither generation. */
+        if (vit->second && vit->second->gen == e->gens() &&
+            now <= vit->second->valid_until_ms) {
+            out.view = vit->second;
+            return out;
+        }
+        /* Stale stamp or passed deadline. Drop it and rebuild right here -- no
+         * dependence on a content_gen or scope_gen bump, because expiry moves
+         * neither. */
+        e->scoped_view_cache.erase(vit);
+    }
+    /* A snapshot entry is only ever stored for a peer whose scope carries NO
+     * deadline at all, so unlike a view it cannot go stale with time; the
+     * GenPair guard above is its whole invalidation. (The two maps are disjoint
+     * per peer for the same reason: the classification that files a peer under
+     * one rules out the other, and any change to that classification goes
+     * through a grant/revoke/ingest, which clears both.) */
+    auto it = e->scoped_cache.find(key);
+    if (it != e->scoped_cache.end()) {
+        out.snap = it->second;
+        return out;
     }
 
-    if (time_bound) return build_filtered(e, peer); /* exact expiry: never cache */
+    /* Miss: classify the peer's scope. The O(namespaces) pre-scan (each
+     * cap_authorize_read is O(caps)) runs only here, not on cache hits, and
+     * scans EVERY namespace with no early break -- a namespace sorted after a
+     * denied one still contributes both its readability and its deadline. */
+    bool fully_open = true;
+    uint64_t deadline = UINT64_MAX;
+    for (const auto &np : e->ns) {
+        bool tb = false;
+        uint64_t vu = UINT64_MAX;
+        if (!cap_authorize_read(e, peer, np.first, now, &tb, &vu))
+            fully_open = false;
+        /* A time-bound ALLOW must always carry a deadline; the reverse does not
+         * hold (a time-dependent DENY carries one and is not `time_bound`). */
+        assert((!tb || vu != UINT64_MAX) && "time-bound scope without a deadline");
+        (void)tb;
+        if (vu < deadline) deadline = vu;
+    }
 
-    std::shared_ptr<const ReconSnapshot> snap =
-        fully_open ? ensure_cache(e) : build_filtered(e, peer);
-    if (snap && e->scoped_cache.size() < kMaxScopedCache)
-        e->scoped_cache[key] = snap;
-    return snap;
+    if (deadline != UINT64_MAX) {
+        /* Time-dependent scope: a range view, cached until the deadline. Range
+         * it over the shared unscoped snapshot only when that costs nothing --
+         * the snapshot is already current, or this peer may read all of it
+         * anyway (§3.5 fix 3; see build_view). */
+        out.view = build_view(e, peer, now, deadline,
+                              /*share_base=*/base_is_current(e) || fully_open);
+        if (out.view && e->scoped_view_cache.size() < kMaxScopedCache)
+            e->scoped_view_cache[key] = out.view;
+        return out;
+    }
+
+    out.snap = fully_open ? ensure_cache(e, now) : build_filtered(e, peer, now);
+    if (out.snap && e->scoped_cache.size() < kMaxScopedCache)
+        e->scoped_cache[key] = out.snap;
+    return out;
 }
 
 /* Build a session, optionally read-scoped to peer (NULL == no scoping). The
- * unscoped snapshot is cached on the engine and shared across sessions; a
- * scoped session builds its own filtered snapshot (not cached — it's per-peer). */
+ * unscoped snapshot is cached on the engine and shared across sessions; a scoped
+ * session gets a per-peer source from ensure_scoped_source. */
 sync_session *begin_session(sync_engine *e, int as_initiator,
                             const uint8_t *peer) {
     if (!e) return nullptr;
+    /* ONE clock read per session begin, threaded through the scope pre-scan, the
+     * range-view build, the filtered build and the Debug cross-check, so all of
+     * them classify against the same instant (§3.5 fix 2). Reading the clock
+     * separately in each of them is not merely redundant: the pre-scan could
+     * classify a peer as time-independent and a microsecond later the build
+     * could drop a namespace whose capability expired in between, caching that
+     * narrower set as if it were permanent. */
+    const uint64_t now = now_ms();
+    /* Acquire the source BEFORE allocating the session: the build can throw
+     * bad_alloc, and an already-allocated session would leak out through
+     * sync_session_begin's catch. */
+    ScopedSource src;
+    if (peer) src = ensure_scoped_source(e, peer, now);
+    else src.snap = ensure_cache(e, now);
+    if (!src.snap && !src.view) return nullptr;
+
     sync_session *s = new (std::nothrow) sync_session();
     if (!s) return nullptr;
     s->engine = e;
     s->initiator = as_initiator != 0;
-
-    if (peer) {
-        s->ss = ensure_scoped_cache(e, peer);
-    } else {
-        s->ss = ensure_cache(e);
-    }
-    if (!s->ss) { delete s; return nullptr; }
+    /* set_source is the ONLY writer of the session's snapshot/view members
+     * (§3.5 fix 7) and asserts it is called exactly once. */
+    s->set_source(src.snap, src.view);
+    assert(s->has_source());
     return s;
 }
 
@@ -801,7 +1192,7 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
             f.mode = MODE_FP;
             f.lo.type = Bound::NEG_INF;
             f.hi.type = Bound::POS_INF;
-            f.fp = s->fingerprint(0, s->snap().size());
+            f.fp = s->fingerprint(0, s->size());
             reply.push_back(std::move(f));
         } else {
             s->sent_initial = true;
@@ -826,7 +1217,12 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
              * ~kBuckets * (our element count). A peer flooding many whole-range
              * FPs can't force more than that — its excess descriptors are
              * dropped (only that malicious connection fails to converge). */
-            const size_t reply_cap = (s->snap().size() + 1) * kBuckets + 64;
+            /* VISIBLE count, never the base snapshot's: for a read-scoped
+             * session the base also counts elements this peer may not read, and
+             * sizing the cap off it would both leak the hidden count's magnitude
+             * through reply volume and hand a restricted peer a larger
+             * amplification budget than its own visible set justifies. */
+            const size_t reply_cap = (s->size() + 1) * kBuckets + 64;
             for (auto &d : incoming) {
                 if (reply.size() >= reply_cap) break;
                 process_desc(s, d, reply);
@@ -843,7 +1239,18 @@ int sync_session_step(sync_session *s, const uint8_t *in, size_t in_len,
         }
 
         /* Attach our delegation capabilities and revocations to the first message
-         * we send. */
+         * we send.
+         *
+         * These two blocks are DELEGATION GOSSIP and are deliberately outside
+         * read scoping, which governs the reconciliation element set (records,
+         * their count, and every fingerprint derived from them). A blob here may
+         * name a namespace this peer cannot read — a peer must learn delegations
+         * to authorize records authored by keys it has not been told about, and
+         * revocations must propagate replica-to-replica. Nothing about a denied
+         * namespace's CONTENT may appear anywhere, and the scoped-view leak
+         * assertions in tests/scoped_view_test.cpp compare the descriptor
+         * section for exactly that reason (see descriptor_offset there, and
+         * §3.5 of docs/IMPROVEMENT_PLAN.md). */
         std::vector<std::string> caps_out, revs_out;
         if (!s->sent_caps && s->engine->caps) {
             s->engine->caps->export_blobs(caps_out);
