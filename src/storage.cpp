@@ -194,6 +194,17 @@ std::string make_frame_full(const std::string &full) {
 
 } // namespace
 
+/* See storage.h: debug/test-only fsync accounting. Function-local static so
+ * there is exactly one definition (unity-build-safe, no init-order hazard);
+ * std::atomic because the counter is process-global while engines are only
+ * per-instance single-threaded — two independent durable engines on two
+ * threads (a supported, TSan-clean configuration) increment it concurrently.
+ * Relaxed ordering: it is a statistic, not a synchronization point. */
+std::atomic<uint64_t> &storage_fsync_count() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
 Storage::~Storage() {
     if (fd_ >= 0) ::close(fd_);
     secure_wipe(seed_, sizeof seed_);
@@ -321,14 +332,46 @@ bool Storage::write_frame(const std::string &body, uint32_t entry_count) {
         tail_torn_ = false;
     }
     if (::lseek(fd_, 0, SEEK_END) < 0) return false;
-    if (!write_all(fd_, framed.data(), framed.size())) return false;
-    if (::fsync(fd_) != 0) return false;
+    if (!write_all(fd_, framed.data(), framed.size())) {
+        /* A short/failed write leaves partial frame bytes on disk PAST
+         * file_size_ — garbage in what is now the middle of the append
+         * stream. Left there, the next append would land after it: replay
+         * stops at the first bad frame, so every later "successful" write
+         * would silently vanish on reopen. Mark the tail torn so the next
+         * write_frame first truncates back to file_size_ (the last good
+         * frame) — the same deferred-cleanup mechanism load() uses; a crash
+         * before that next write is equally safe, since load() rejects the
+         * partial frame as a torn tail. */
+        tail_torn_ = true;
+        return false;
+    }
+    int rc = ::fsync(fd_);
+    storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
+    if (rc != 0) {
+        /* fsync failed: the frame's durability is unknown and the kernel may
+         * have dropped the dirty pages. The caller was told this write
+         * failed, so the log must not keep a frame the caller will retry or
+         * re-derive — treat it exactly like a short write and truncate it
+         * away before the next append. */
+        tail_torn_ = true;
+        return false;
+    }
     file_size_ += framed.size();
     return true;
 }
 
 bool Storage::emit(const std::string &entry) {
     if (in_tx_) {
+        /* A poisoned batch's tail is GUARANTEED to be discarded at the
+         * outermost close — never stage into one. Without this refusal every
+         * post-poison mutation would keep appending records that
+         * batch_maybe_flush (which bails out on poison before its size
+         * check) will never flush, growing staging_ without bound — the
+         * exact unbounded RAM transient the mandatory-flush amendment
+         * exists to prevent (spec §3.3). batch_failed_ is only ever set
+         * while a batch is open, so the plain begin()/commit() path is
+         * unaffected. */
+        if (batch_failed_) return false;
         staging_ += entry;
         staged_count_++;
         return true;
@@ -359,24 +402,115 @@ bool Storage::rollback() {
     return true;
 }
 
+/* Nesting-safe batches — see the contract in storage.h. Only the 0->1 begin
+ * opens the transaction; inner begins just join it. */
 bool Storage::batch_begin() {
-    if (batching_) return true;
+    if (batch_depth_ > 0) {
+        batch_depth_++;
+        return true;
+    }
     if (!begin()) return false;
-    batching_ = true;
+    batch_depth_ = 1;
+    batch_failed_ = false;
     return true;
 }
 
+/* The three clock-meta entries every batch (sub-)frame must carry, so replay
+ * never sees a durable record whose HLC exceeds the persisted clock. */
+bool Storage::stamp_clock_meta(sync_engine *e) {
+    return put_meta_u64("hlc_physical", e->clock.physical) &&
+           put_meta_u64("hlc_logical", e->clock.logical) &&
+           put_meta_u64("db_clock", e->db_clock);
+}
+
 bool Storage::batch_commit(sync_engine *e) {
-    if (!batching_) return true;
-    batching_ = false;
-    /* One clock record for the whole batch, then a single fsync'd frame. */
-    bool ok = put_meta_u64("hlc_physical", e->clock.physical) &&
-              put_meta_u64("hlc_logical", e->clock.logical) &&
-              put_meta_u64("db_clock", e->db_clock);
-    if (!ok) { rollback(); return false; }
-    if (!commit()) return false;
+    if (batch_depth_ == 0) return false; /* unbalanced commit */
+    if (batch_depth_ > 1) {
+        /* Inner commit: bookkeeping only — writes nothing, fsyncs nothing.
+         * Durability arrives only at the outermost commit. Report poison so
+         * a nested holder can learn its mutations are condemned. */
+        batch_depth_--;
+        return !batch_failed_;
+    }
+    batch_depth_ = 0;
+    if (batch_failed_) {
+        /* Poisoned (a nested abort or an in-batch write failure): discard
+         * the un-flushed staged tail. Sub-frames already force-flushed are
+         * durable and stay — a batch is a durability boundary, not a
+         * rollback mechanism. */
+        batch_failed_ = false;
+        rollback();
+        std::string().swap(staging_); /* release the batch's capacity */
+        return false;
+    }
+    bool ok = false;
+    try {
+        /* Cover the tail sub-frame with the clock meta, then one fsync'd
+         * frame (crash-prefix invariant, as in batch_maybe_flush). */
+        ok = stamp_clock_meta(e) && commit();
+    } catch (...) {
+        rollback();
+        std::string().swap(staging_);
+        throw; /* callers map bad_alloc etc. at the ABI boundary */
+    }
+    if (!ok) rollback(); /* stamp failed with the tx still open: close it */
+    std::string().swap(staging_); /* release the batch's staging capacity
+                                   * (clear() would retain it — a permanent
+                                   * kBatchFlushBytes floor per engine) */
+    if (!ok) return false;
     maybe_compact(e);
     return true;
+}
+
+/* See storage.h: poison = fail-fast flag + immediate drop of the condemned
+ * staged tail (bytes and capacity), so a poisoned batch holds no staging for
+ * the rest of its lifetime and emit() cannot grow it back. */
+void Storage::batch_poison() {
+    if (batch_depth_ == 0) return;
+    batch_failed_ = true;
+    std::string().swap(staging_);
+    staged_count_ = 0;
+}
+
+bool Storage::batch_abort() {
+    if (batch_depth_ == 0) return false; /* unbalanced abort */
+    /* Engine-global poison: an abort at ANY depth condemns the whole
+     * outermost batch — depth cannot distinguish holders, so the un-flushed
+     * tail of every enclosing caller is dropped right here (batch_poison)
+     * and the outermost batch_commit reports failure. */
+    batch_poison();
+    if (--batch_depth_ == 0) {
+        batch_failed_ = false;
+        rollback(); /* close the tx (staging already dropped by the poison) */
+    }
+    return true;
+}
+
+bool Storage::batch_maybe_flush(sync_engine *e) {
+    if (batch_depth_ == 0) return true; /* not in a batch: nothing to bound */
+    if (batch_failed_) return false;    /* poisoned: fail the write path now
+                                         * (emit() already refused to stage,
+                                         * so there is nothing here to bound
+                                         * — staging was dropped at poison
+                                         * time and stays empty) */
+    if (staging_.size() < kBatchFlushBytes) return true;
+    /* Force a sub-frame: stamp the three clock-meta entries first so ANY
+     * durable frame with records also carries a covering clock (a crash
+     * between sub-frames must not persist records whose HLC exceeds the
+     * persisted clock meta), then write + fsync. The transaction stays open
+     * for the batch's remaining records; staging keeps its capacity until
+     * the outermost commit/abort releases it. */
+    bool ok = false;
+    try {
+        ok = stamp_clock_meta(e) && write_frame(staging_, staged_count_);
+    } catch (...) {
+        batch_poison(); /* drops the staged tail too — see storage.h */
+        throw;
+    }
+    staging_.clear(); /* flushed: keep capacity for the batch's next fill */
+    staged_count_ = 0;
+    if (!ok) batch_poison(); /* releases the retained capacity as well */
+    return ok;
 }
 
 bool Storage::put_meta_u64(const char *key, uint64_t v) {
@@ -387,12 +521,29 @@ bool Storage::put_meta_blob(const char *key, const uint8_t *data, size_t len) {
     return emit(build_meta(key, data, len));
 }
 
+/* Capability writes are EXCLUDED from batch staging (spec §3.3 point 5), so
+ * they bypass emit() and always write their own immediately-fsync'd frame,
+ * in_batch() or not. Security rationale: sync_engine_grant/sync_engine_revoke
+ * return SYNC_OK only once the grant/revocation is durable, and a revocation
+ * in particular must never sit in a staging buffer where a later batch_abort
+ * could discard it — that would silently undo a "remove a stolen device"
+ * cut-off the caller was told succeeded. Grant/revoke therefore keep today's
+ * synchronous fsync durability unconditionally.
+ *
+ * Durable-ORDER caveat of that bypass: inside an open batch, a capability/
+ * revocation frame lands on disk BEFORE records staged earlier in program
+ * order (those wait in staging_ for the next sub-frame flush or the
+ * outermost commit). Replay is insensitive to this — load() collects signed
+ * records across the whole log and merges only after the full replay, cap/rev
+ * blobs are order-independent sets, and clock meta stays monotone across
+ * frames — but it does mean "the durable log preserves append order" only
+ * holds among the RECORD stream, not across these frames. */
 bool Storage::put_capability(const std::string &blob) {
-    return emit(build_cap(blob));
+    return write_frame(build_cap(blob), 1);
 }
 
 bool Storage::put_revocation(const std::string &blob) {
-    return emit(build_rev(blob));
+    return write_frame(build_rev(blob), 1);
 }
 
 bool Storage::put_entity(const std::string &ns, const std::string &ent,
@@ -823,7 +974,12 @@ bool Storage::atomic_replace(const std::string &content) {
     int t = ::open(tmp.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
     if (t < 0) return false;
     ::fchmod(t, S_IRUSR | S_IWUSR);
-    if (!write_all(t, content.data(), content.size()) || ::fsync(t) != 0) {
+    bool wrote = write_all(t, content.data(), content.size());
+    if (wrote) {
+        wrote = ::fsync(t) == 0;
+        storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!wrote) {
         ::close(t);
         ::unlink(tmp.c_str());
         return false;
@@ -849,6 +1005,7 @@ bool Storage::atomic_replace(const std::string &content) {
     int d = ::open(dir.c_str(), O_RDONLY);
     if (d >= 0) {
         ::fsync(d);
+        storage_fsync_count().fetch_add(1, std::memory_order_relaxed);
         ::close(d);
     }
     return true;
@@ -879,7 +1036,12 @@ void Storage::gc_tombstones(sync_engine *e) {
 }
 
 bool Storage::compact(sync_engine *e) {
-    if (in_tx_) return false; /* never rewrite mid-transaction */
+    /* Never rewrite mid-transaction. A batch (batch_begin) holds in_tx_ for
+     * its WHOLE lifetime, so compaction refuses mid-batch BY DESIGN —
+     * sync_engine_compact maps this to SYNC_ERR_INTERNAL, and the erase-then-
+     * tombstone-then-compact physical-erasure pairing must therefore run
+     * outside any batch (documented at the ABI). */
+    if (in_tx_) return false;
     gc_tombstones(e); /* purge expired tombstones before rewriting */
     std::string fresh;
     serialize_state(e, fresh);
@@ -890,6 +1052,12 @@ bool Storage::compact(sync_engine *e) {
 }
 
 void Storage::maybe_compact(sync_engine *e) {
+    /* Never rewrite mid-transaction (spec §3.3 point 8). compact() below has
+     * its own in_tx_ refusal, but the open_compact_pending_ branch bypasses
+     * compact() — it used to be safe only by accident (no caller reached it
+     * with in_tx_ set). The batch machinery holds in_tx_ for a batch's whole
+     * lifetime and adds mid-batch write paths, so make the guard explicit. */
+    if (in_tx_) return;
     if (open_compact_pending_) {
         /* Deferred open-time compaction (see load): now that the owner is
          * actually writing, rewrite a bloated log if the live image is much

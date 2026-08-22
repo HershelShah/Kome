@@ -15,6 +15,7 @@
 #include "byteorder.h"
 #include "cluster.hpp"
 #include "crypto.h" /* ke::blake2b — to compute/tamper chunk hashes directly */
+#include "tempdir.hpp" /* durable-engine scaffolding, WASM-capable (§3.3) */
 
 namespace {
 
@@ -769,4 +770,124 @@ TEST(Blob, InvalidArgs) {
     EXPECT_EQ(sync_blob_delete(e, B(ns), ns.size(), unknown), SYNC_ERR_NOTFOUND);
 
     sync_engine_destroy(e);
+}
+
+/* ---- 11. Full lifecycle under an embedder batch (§3.3) ------------------- */
+/* put + erase + delete all inside ONE embedder-opened write batch on a
+ * DURABLE engine (synctest::TempDir; WASM-capable — no fork): every blob call
+ * nests its own internal BatchGuard one level inside ours, so nothing becomes
+ * durable until our single outermost commit — pinned by the payload bytes
+ * being absent from the log file until then. After the commit the lifecycle
+ * outcome is exactly the unbatched one (blob readable, erased payloads
+ * zeroed, deleted blob gone), the digest converges with an in-memory replica
+ * seeded via export/apply, and the durable state reopens byte-identical. */
+TEST(Blob, BatchedBlobLifecycleConverges) {
+    synctest::TempDir dir;
+    std::string db = dir.file("batched_blob.db");
+    auto sd = cluster::seed_from(0xB7);
+    sync_engine *d = sync_engine_open(db.c_str(), sd.data());
+    ASSERT_NE(d, nullptr);
+    const std::string ns = "photos.blobs";
+
+    /* Sizes chosen so the whole batch stages ~170 KB — comfortably below the
+     * mandatory sub-frame flush threshold on BOTH build flavors (2 MiB
+     * native, 256 KiB under __EMSCRIPTEN__), so the nothing-durable-before-
+     * commit assertion below cannot be voided by a mid-batch flush. */
+    std::vector<uint8_t> keep = make_data(SYNC_BLOB_CHUNK_MAX * 2 + 17, 21);
+    std::vector<uint8_t> gone = make_data(SYNC_BLOB_CHUNK_MAX + 5, 22);
+    std::vector<uint8_t> dropped = make_data(SYNC_BLOB_CHUNK_MAX * 2, 23);
+    uint8_t keep_id[32], gone_id[32], dropped_id[32];
+
+    auto file_bytes = [&]() {
+        std::string b;
+        if (std::FILE *f = std::fopen(db.c_str(), "rb")) {
+            char tmp[4096];
+            size_t n;
+            while ((n = std::fread(tmp, 1, sizeof tmp, f)) > 0) b.append(tmp, n);
+            std::fclose(f);
+        }
+        return b;
+    };
+    /* A distinctive slice of the kept payload: on disk iff its chunk record
+     * is durable (payloads are stored verbatim inside plaintext frames). */
+    std::string needle((const char *)keep.data() + 1000, 32);
+
+    ASSERT_EQ(sync_engine_batch_begin(d), SYNC_OK); /* embedder batch */
+    ASSERT_EQ(put(d, ns, keep, keep_id), SYNC_OK);
+    ASSERT_EQ(put(d, ns, gone, gone_id), SYNC_OK);
+    ASSERT_EQ(put(d, ns, dropped, dropped_id), SYNC_OK);
+    ASSERT_EQ(sync_blob_erase(d, B(ns), ns.size(), gone_id), SYNC_OK);
+    ASSERT_EQ(sync_blob_delete(d, B(ns), ns.size(), dropped_id), SYNC_OK);
+
+    /* In-RAM state is live mid-batch (batching defers durability only)... */
+    std::vector<uint8_t> back;
+    ASSERT_EQ(get(d, ns, keep_id, back), SYNC_OK);
+    EXPECT_EQ(back, keep);
+    /* ...but none of it has reached the log yet: SYNC_OK from the blob calls
+     * inside our batch means staged, durable only at OUR outermost commit
+     * (see the size note above: staged bytes stay under the flush bound). */
+    EXPECT_EQ(file_bytes().find(needle), std::string::npos)
+        << "blob payload durable before the embedder's outermost commit";
+
+    ASSERT_EQ(sync_engine_batch_commit(d), SYNC_OK); /* the commit point */
+    EXPECT_NE(file_bytes().find(needle), std::string::npos)
+        << "outermost commit did not make the batch durable";
+
+    /* Lifecycle outcome identical to the unbatched one. */
+    back.clear();
+    ASSERT_EQ(get(d, ns, keep_id, back), SYNC_OK);
+    EXPECT_EQ(back, keep);
+    EXPECT_EQ(get(d, ns, gone_id, back), SYNC_ERR_NOTFOUND);
+    uint64_t size;
+    int complete;
+    EXPECT_EQ(sync_blob_stat(d, B(ns), ns.size(), gone_id, &size, &complete),
+              SYNC_ERR_NOTFOUND);
+    EXPECT_EQ(get(d, ns, dropped_id, back), SYNC_ERR_NOTFOUND);
+
+    /* The erased blob's payload registers (hidden under tombstones) are
+     * EMPTY — the zero-overwrites survived batching in order. */
+    {
+        sync_change *recs = nullptr;
+        size_t n = 0;
+        ASSERT_SYNC_OK(sync_engine_export(d, &recs, &n));
+        for (size_t ci = 0; ci * SYNC_BLOB_CHUNK_MAX < gone.size(); ci++) {
+            size_t off = ci * SYNC_BLOB_CHUNK_MAX;
+            size_t clen = std::min((size_t)SYNC_BLOB_CHUNK_MAX,
+                                   gone.size() - off);
+            uint8_t chash[32];
+            ke::blake2b(gone.data() + off, clen, chash, 32);
+            std::string cent = chunk_entity(chash);
+            bool found = false;
+            for (size_t i = 0; i < n; i++) {
+                const sync_change &c = recs[i];
+                if (c.kind != SYNC_CHANGE_REGISTER || !entity_is(c, cent))
+                    continue;
+                found = true;
+                EXPECT_EQ(c.value_len, 0u)
+                    << "erased chunk " << ci << " still holds payload bytes";
+            }
+            EXPECT_TRUE(found) << "erased chunk register " << ci
+                               << " missing from export";
+        }
+        sync_changes_free(recs, n);
+    }
+
+    /* Digest converges with an in-memory replica via export/apply... */
+    sync_engine *m = cluster::make(0xB8);
+    cluster::replicate(d, m);
+    EXPECT_EQ(cluster::digest(d), cluster::digest(m));
+
+    /* ...and the durable state reopens to the same digest, blob intact. */
+    cluster::Digest dd = cluster::digest(d);
+    sync_engine_destroy(d);
+    d = sync_engine_open(db.c_str(), sd.data());
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(cluster::digest(d), dd);
+    back.clear();
+    ASSERT_EQ(get(d, ns, keep_id, back), SYNC_OK);
+    EXPECT_EQ(back, keep);
+    EXPECT_EQ(get(d, ns, gone_id, back), SYNC_ERR_NOTFOUND);
+
+    sync_engine_destroy(m);
+    sync_engine_destroy(d);
 }

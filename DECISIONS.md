@@ -1321,3 +1321,74 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   Ed25519 double-sign that already dominates that path; `BM_SetOverwrite`
   and `BM_ApplyRegister` (one hash each) come out *faster* (−9.31%, −19.45%)
   from reusing the signing buffer instead of paying a separate re-encode.
+
+## Batch-blob writes: nesting-safe batches with mandatory sub-frame flushing (improvement 3)
+
+- **`Storage::batch_maybe_flush` fires from the engine's own write path — the
+  in-batch branches of `tx_entity`/`tx_entity_field` — never left as a
+  caller-optional call, because the naive shape (stage the whole batch,
+  fsync once at commit) was reviewed and rejected on memory, not just
+  correctness. §3.3's design-review hazard table measured a naive 8 MiB
+  blob put at **+41.7 MB** peak VmHWM against the mandatory-flush design's
+  **~+17.9 MB** — roughly **2.3× worse** — because an unbounded staging
+  buffer holds the *entire* put (256 32 KiB chunks plus framing) in RAM
+  simultaneously before its one fsync. `kBatchFlushBytes` (2 MiB; 256 KiB
+  under `__EMSCRIPTEN__`, since the WASM heap only grows) caps staging at
+  one threshold's worth regardless of batch size, and `Storage.
+  BlobPutFrameBounded` pins the resulting cost on the fsync counter (not
+  frame count — `atomic_replace`'s multi-frame rewrite still costs one
+  fsync pair): 4 mandatory sub-frames + 1 outermost-commit frame + 1
+  compaction rewrite for an 8 MiB put. The corrected memory claim (avoids
+  the regression, restores roughly today's baseline peak, does not improve
+  on it until Phase 4's streaming compactor replaces `serialize_state`'s
+  full-image allocation) is recorded in `docs/PERF.md` chapter 7, not
+  asserted in CI — process-global RSS isn't a CI assertion here.
+- **Every sub-frame carries its own copy of the three clock-meta entries**
+  (`hlc_physical`/`hlc_logical`/`db_clock`, via the new `Storage::
+  stamp_clock_meta` helper shared by `batch_maybe_flush` and the outermost
+  `batch_commit`), so a crash between sub-frames can never leave a durable
+  record whose HLC exceeds the persisted clock — the same "any durable
+  frame with records also carries a covering clock" invariant the log
+  already upheld per-commit, now upheld per-sub-frame. The original
+  `MidBatchCrashPrefix` design was reviewed as vacuous (`Hlc::tick`'s
+  wall-clock branch would make the parent's post-reopen write dominate
+  either way) and was respecified: the child `apply()`s signed remote
+  records carrying a *future* HLC — forcing `clock.receive` to push the
+  engine clock ahead of wall time — inside an open batch, until two
+  sub-frame flushes have fired, then `_exit(0)` with the batch still open
+  (no commit, no unwind). `Storage.MidBatchCrashPrefix` then asserts, on
+  reopen, that the clock replayed to the *future* stamp (not a wall-clock
+  fallback) and that a fresh local write only wins LWW because of it —
+  the one assertion that actually fails without the per-sub-frame stamp.
+  Fork-based, so native-only (WASM has no `fork`).
+- **Capability writes stay outside the batch entirely.** `put_capability`/
+  `put_revocation` (`src/capability.cpp`) bypass `emit()` and call
+  `write_frame` directly, `in_batch()` or not, so `sync_engine_grant`/
+  `sync_engine_revoke` keep today's synchronous fsync durability
+  unconditionally — spec §3.3 point 5. The alternative (wire them into
+  `batch_maybe_flush` like everything else) would let `sync_engine_revoke`
+  return `SYNC_OK` for a revocation a later `batch_abort` can silently
+  discard: a real security regression, since a revocation is how a
+  compromised device gets cut off and the caller has already been told the
+  cut-off happened. Pinned by two tests, not one: `Defensive.
+  RevokeInsideBatchSurvivesAbort` (grant/revoke inside an open batch cost
+  their own fsyncs while a sibling staged mutation costs none, and only
+  the staged mutation is gone after `batch_abort`) and the fork-based
+  `Defensive.RevokeInsideBatchSurvivesCrash` — the abort variant alone
+  can't pin the property because `sync_engine_destroy` commits an open
+  batch on the way out, so only killing the process before any destroy or
+  abort proves the revocation was already durable on its own frame at the
+  moment `sync_engine_revoke` returned.
+- **Per-sub-frame fsync shipped over single-fsync-at-commit — the one open
+  design fork the spec left for the maintainer, resolved to the
+  conservative option as specified.** A single fsync at the outermost
+  commit would save fsyncs on a huge batch, but it downgrades the
+  erase-before-tombstone durable-prefix argument (`EraseTombstonePrefixInvariant`)
+  from unconditional to "holds only if replay stops at the first bad
+  frame" — a torn write during the one giant fsync could otherwise land a
+  tombstone durably while its preceding zero-overwrite is lost, the exact
+  resurrection-of-erased-content ordering bug the whole erase → tombstone
+  recipe exists to prevent. Per-sub-frame fsync keeps every durable frame
+  independently self-consistent (checksum-verified, append-order,
+  clock-stamped), so the existing torn-tail argument at `load()` covers
+  the multi-sub-frame case with no new reasoning.

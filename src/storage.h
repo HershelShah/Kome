@@ -16,6 +16,7 @@
 #ifndef SYNC_STORAGE_H
 #define SYNC_STORAGE_H
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -49,6 +50,35 @@ constexpr uint64_t kSchemaVersion = 2;
  * resurrect a deleted entity (the same bound Earthstar documents). 30 days. */
 constexpr uint64_t kTombstoneTtlMs = 30ull * 24 * 3600 * 1000;
 
+/* Staged-bytes threshold at which an open batch force-flushes a clock-covered
+ * sub-frame (Storage::batch_maybe_flush, fired from the engine's own write
+ * path — not caller-optional), so no batch, however large, holds an unbounded
+ * RAM transient: staging is capped at ~kBatchFlushBytes + one record. Smaller
+ * under Emscripten, where the WASM heap grows but never shrinks, so a large
+ * transient would be a permanent per-page memory cost. */
+#ifdef __EMSCRIPTEN__
+constexpr size_t kBatchFlushBytes = 256u * 1024;
+#else
+constexpr size_t kBatchFlushBytes = 2u * 1024 * 1024;
+#endif
+
+/* Debug/test-only fsync accounting: a process-global counter bumped once per
+ * fsync() the log layer issues on its measured write paths — write_frame's
+ * per-frame fsync, and atomic_replace's two fsyncs (temp file before the
+ * rename, then the best-effort directory fsync). Open-time header fsyncs and
+ * the one-shot torn-tail truncate fsync are NOT counted. Tests (which include
+ * this header) and the bench harness read and reset it through the returned
+ * mutable reference (e.g. `ke::storage_fsync_count() = 0;`); nothing in the
+ * engine itself reads it. std::atomic (relaxed increments): each engine's
+ * write path is single-threaded, but the counter is PROCESS-GLOBAL, and
+ * independent engines driven from independent threads are a supported,
+ * TSan-clean configuration (tests/threading_test.cpp) — a plain uint64_t here
+ * is a data race the moment two durable engines fsync concurrently. A relaxed
+ * increment per multi-millisecond fsync is free; the function-local static
+ * stays free of global-init-order issues and unity-build-safe (single
+ * definition, in storage.cpp). */
+std::atomic<uint64_t> &storage_fsync_count();
+
 class Storage {
 public:
     /* Open (creating if needed) the log at path and validate its header. If
@@ -77,13 +107,62 @@ public:
     bool commit();
     bool rollback();
 
-    /* Bulk-apply batching: stage many records into one fsync'd frame. While a
-     * batch is open the per-mutation tx_* helpers skip their own begin/commit
-     * (and the clock/compaction), so a sync that ingests N records does one
-     * fsync instead of N. */
-    bool in_batch() const { return batching_; }
+    /* Bulk-apply batching: stage many records into few fsync'd frames. While
+     * a batch is open the per-mutation tx_* helpers skip their own
+     * begin/commit (and the clock/compaction), so a sync that ingests N
+     * records does O(1) fsyncs instead of N.
+     *
+     * Batches NEST (exposed to embedders via the sync_engine_batch_* ABI):
+     * batch_begin/batch_commit maintain a depth counter. Only the 0->1 begin
+     * opens the underlying transaction, and only the OUTERMOST commit stamps
+     * the clock meta, writes + fsyncs the final frame, releases the staging
+     * buffer's capacity, and runs maybe_compact; an inner commit merely
+     * decrements and writes nothing. batch_abort poisons the batch
+     * (batch_failed_, which immediately drops the staged tail — see
+     * batch_poison below): the un-flushed tail is never written by the
+     * batch, while sub-frames already flushed by batch_maybe_flush are
+     * durable and are NOT undone (a batch is a durability boundary, not a
+     * rollback mechanism). Nor is the discard an anti-persistence guarantee:
+     * the engine's in-RAM maps keep every mutation regardless of the
+     * batch's fate, and the next compaction — explicit or the automatic
+     * size-triggered one in maybe_compact — re-serializes RAM wholesale,
+     * making "aborted" mutations durable after all (documented at the ABI;
+     * pinned by Storage.AbortedTailReturnsAtCompaction). The batch is
+     * ENGINE-GLOBAL: depth cannot
+     * distinguish holders, so a nested abort condemns every enclosing
+     * caller's un-flushed mutations too. While any batch is open, in_tx_
+     * stays set for its whole lifetime, so compact() refuses BY DESIGN — the
+     * erase-then-tombstone-then-compact physical-erasure pairing must be
+     * performed outside a batch. */
+    bool     in_batch() const { return batch_depth_ > 0; }
+    uint32_t batch_depth() const { return batch_depth_; }
     bool batch_begin();
     bool batch_commit(sync_engine *e);
+    bool batch_abort();
+    /* Mandatory mid-batch flush, fired from the engine's own write path (the
+     * tx_* helpers' in-batch branches), never caller-optional: once staged
+     * bytes exceed kBatchFlushBytes, stamp the three clock-meta entries
+     * (hlc_physical / hlc_logical / db_clock) into the staged sub-frame and
+     * write_frame it. Crash-prefix invariant: ANY durable frame with records
+     * also carries a covering clock, so a crash between sub-frames can never
+     * persist records whose HLC exceeds the persisted clock meta. Returns
+     * false (poisoning the batch) on a write failure, and false immediately
+     * when the batch is already poisoned. No-op outside a batch. */
+    bool batch_maybe_flush(sync_engine *e);
+    /* Poison the open batch (no-op outside one): every subsequent in-batch
+     * tx_* fails immediately (emit() refuses to stage into a poisoned
+     * batch) and the outermost commit discards instead of committing.
+     * Poisoning also drops the staged tail — bytes AND capacity — right
+     * away: the tail is guaranteed to be discarded at the outermost close,
+     * and holding (or worse, growing) condemned staging for the batch's
+     * remaining lifetime would defeat the mandatory kBatchFlushBytes RAM
+     * bound above exactly when it matters (a caller looping over failed
+     * writes). Called by the tx_* write helpers on ANY in-batch failure
+     * (spec §3.3 point 9 — not just a flush failure). */
+    void batch_poison();
+    /* Test/introspection only: bytes currently staged in the open
+     * transaction (0 when none, and always 0 while a batch is poisoned). */
+    size_t staged_bytes() const { return staging_.size(); }
 
     bool put_entity(const std::string &ns, const std::string &ent,
                     bool present, const Hlc &presence_hlc, const PubKey &ex_author,
@@ -110,6 +189,10 @@ private:
 
     /* Stage one entry (in a transaction) or write it as a standalone frame. */
     bool emit(const std::string &entry);
+    /* Stage the three covering clock-meta entries (hlc_physical / hlc_logical
+     * / db_clock) into the open transaction — the crash-prefix stamp every
+     * batch (sub-)frame carries. */
+    bool stamp_clock_meta(sync_engine *e);
     /* Append a complete frame (length + body + checksum) and fsync. */
     bool write_frame(const std::string &body, uint32_t entry_count);
     /* Drop expired tombstones (present=false older than kTombstoneTtlMs) from
@@ -132,12 +215,19 @@ private:
     std::string staging_;        /* entries buffered between begin()/commit() */
     uint32_t    staged_count_ = 0;
     bool        in_tx_ = false;
-    bool        batching_ = false;     /* bulk-apply transaction open */
+    uint32_t    batch_depth_ = 0;      /* nested bulk-apply batch depth */
+    bool        batch_failed_ = false; /* an in-batch failure/abort poisoned
+                                          the whole engine-global batch */
     uint64_t    file_size_ = 0;       /* current log size in bytes */
     uint64_t    compacted_size_ = 0;  /* log size just after the last compaction */
-    bool        tail_torn_ = false;   /* load found bytes past the last good
-                                         frame; truncated on the first write
-                                         (never at open — see load()) */
+    bool        tail_torn_ = false;   /* bytes past the last good frame: load
+                                         found a torn tail, OR write_frame
+                                         failed partway and left a partial
+                                         frame on disk. Truncated back to
+                                         file_size_ on the next write (never
+                                         at open — see load()); leaving it
+                                         would strand every later append
+                                         behind garbage replay stops at. */
     bool        open_compact_pending_ = false; /* load found a bloated log;
                                          compacted on the first mutation
                                          (never at open) */

@@ -256,6 +256,44 @@ wall time ever forces it. (`Stress.DataScale` exceeds its hard-coded 2 s
 Debug snapshot bound in this container on the *base* tree too — ~3.0 s both
 before and after — a pre-existing environment failure, not a regression.)
 
+## Chapter 7 — batched blob writes (§3.3, Phase 3) ✅
+
+Expose the storage layer's internal batching as the nestable
+`sync_engine_batch_begin/commit/abort` ABI and wrap the three blob write
+paths in it, so a large put stages records into few clock-covered, fsync'd
+sub-frames (mandatory flush every `kBatchFlushBytes` = 2 MiB, enforced from
+the engine's own write path) instead of paying one fsync'd frame per record.
+
+**fsync collapse (CI-gated via the debug/test counter, not benched).** The
+pre-batching baseline measured in the Phase-3 design review: an 8 MiB
+`sync_blob_put` cost **273 fsyncs + 7 compaction renames** (one
+frame+fsync per chunk/manifest record, with the log repeatedly tripping the
+doubling heuristic mid-put). Batched, the same put costs **7 counted fsyncs
+and exactly 1 rename**: 4 mandatory sub-frame flushes (8 MiB /
+`kBatchFlushBytes`) + 1 outermost-commit frame + the 2 counted fsyncs (temp
+file + directory) of the single compaction rewrite that the outermost
+commit's `maybe_compact` runs. `Storage.BlobPutFrameBounded` asserts that
+exact count — on the fsync counter, not on-disk frame count, because the
+compaction's `atomic_replace` writes ~258 frames under a single fsync pair
+(spec §3.3 amendment 1).
+
+**Peak memory — the corrected claim (spec §3.3 hazard table).** Naive
+batching (stage everything, one commit) measured **+41.7 MB** VmHWM for the
+8 MiB put and was rejected; the mandatory sub-frame flush caps staging at
+~`kBatchFlushBytes` + one record, which **restores roughly today's +17.9 MB
+peak** — it does **not** drop below it. The residual peak is not the
+batch's: `maybe_compact`'s `serialize_state` still allocates a full log
+image at the outermost commit, and that transient only goes away when
+Phase 4 (stream-compaction, chapter 8) replaces it with the bounded
+streaming writer. Numbers are the design review's measurements (manual
+VmHWM around `sync_blob_put`); process-global RSS is not CI-asserted.
+
+The staging bound holds for POISONED batches too: poisoning drops the
+condemned staged tail immediately and the write path refuses to stage into
+a poisoned batch, so a caller looping over failing post-poison writes holds
+zero staging (pinned by `Storage.PoisonedBatchHoldsNoStaging`), not an
+unbounded transient.
+
 ## Optimization backlog (data-driven, in priority order)
 
 1. ~~**Verify only records that would change state.**~~ ✅ done (chapter 2).

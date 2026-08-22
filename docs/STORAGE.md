@@ -90,6 +90,55 @@ recipe is **erase → tombstone → compact**, in that order:
    so the bytes physically leave the disk. What the rewritten log still holds
    for the entity is its tombstone plus the now-empty registers.
 
+### Write batching and the erase → compact recipe
+
+Large writes (the blob paths in particular) can group many mutations into
+few fsync'd log frames via `sync_engine_batch_begin`/`batch_commit`/
+`batch_abort` — see the "Write batching" section of `include/sync_engine.h`
+for the full ABI contract. Two of its properties bear directly on the
+recipe above:
+
+- **Nesting is depth-counted, not per-caller.** `batch_begin` calls nest —
+  only the first (depth 0→1) opens the log transaction, and only the
+  matching outermost `batch_commit` stamps the clock, writes the final
+  frame, and may trigger compaction; an inner commit just closes its level.
+  The batch itself is **engine-global**: the depth counter cannot tell
+  which caller opened which level, so a `batch_abort` at *any* depth
+  poisons the whole outermost batch, discarding every enclosing caller's
+  un-flushed staged tail too. A component must never open a batch across a
+  call into code it does not control.
+- **Blob durability is conditional on there being no enclosing batch.**
+  `sync_blob_put`/`delete`/`erase` each open their own internal batch, so
+  outside any embedder batch `SYNC_OK` still means fsync'd on return. But
+  nested inside an embedder's own open `sync_engine_batch_begin`, the
+  blob call's commit only closes its nesting level — `SYNC_OK` then means
+  *staged*, not durable, until the embedder's own outermost `batch_commit`
+  succeeds.
+
+**Capability writes are never staged.** `sync_engine_grant`/
+`sync_engine_revoke` bypass batching entirely, batch open or not, and
+always write their own immediately-fsync'd frame. This is a deliberate
+security exclusion, not an oversight: a revocation is how a compromised
+device gets cut off, and a caller that gets back `SYNC_OK` must be able to
+trust the cut-off already happened. Staging it like an ordinary mutation
+would let a later `batch_abort` — possibly issued by unrelated code sharing
+the engine-global batch — silently discard a revocation the caller was
+already told succeeded.
+
+**Batch interaction with the recipe (run it OUTSIDE any write batch).**
+While a `sync_engine_batch_begin` batch is open, step 3 *fails*: the batch
+holds the log transaction for its whole lifetime, so `sync_engine_compact`
+returns `SYNC_ERR_INTERNAL` by design until the outermost
+`batch_commit`/`batch_abort` closes it. Steps 1–2 inside an open batch also
+change meaning: `SYNC_OK` from `sync_engine_erase_field` / `sync_blob_erase`
+/ `sync_engine_delete` then means *staged*, not durable — the records reach
+disk only at the outermost `batch_commit` (an abort defers them further:
+they stay live in RAM and the next compaction persists them — see the
+batching section in `include/sync_engine.h`). Perform the whole
+erase → tombstone → compact sequence with no batch open — or at minimum
+close the batch between step 2 and step 3 — so the compaction that scrubs
+the disk can actually run.
+
 **Interplay with `kTombstoneTtlMs`:** for up to 30 days after the delete, the
 entity's *keys* survive (entity id, field names, a blob manifest's chunk-hash
 list — metadata, not payload) alongside the emptied registers. Once the

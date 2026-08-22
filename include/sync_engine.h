@@ -131,8 +131,14 @@ sync_engine *sync_engine_open_encrypted(const char *path,
                                         const uint8_t seed[SYNC_SEED_LEN],
                                         const uint8_t key[32]);
 
-/* Flush durable state to disk. With write-through this is a no-op safety net;
- * a no-op for in-memory engines. Returns SYNC_OK on success. */
+/* Flush durable state to disk. With write-through this is a no-op safety net
+ * while no batch is open; a no-op for in-memory engines. With an open write
+ * batch (sync_engine_batch_begin) it COMMITS that batch — every nesting
+ * level, engine-global — making all staged mutations durable: this is the
+ * call to make before backgrounding. Returns SYNC_OK on success;
+ * SYNC_ERR_INTERNAL when committing an open batch fails (including a batch
+ * poisoned by an abort, whose un-flushed staged tail was already dropped —
+ * see sync_engine_batch_abort for what that does and does not mean). */
 int sync_engine_flush(sync_engine *e);
 
 /* Rewrite the append-only log to current live state, now, through the same
@@ -151,11 +157,22 @@ int sync_engine_flush(sync_engine *e);
  * Returns SYNC_OK on success; SYNC_ERR_INVALID for an in-memory engine
  * (there is no log to rewrite); SYNC_ERR_INTERNAL when the rewrite refuses
  * to run (a transaction is in flight) or fails — the existing, correct log
- * is left in place either way, so a failure is safe to retry later. */
+ * is left in place either way, so a failure is safe to retry later.
+ *
+ * Batch interaction: while a write batch is open (sync_engine_batch_begin)
+ * the log's transaction is held for the batch's entire lifetime, so compact
+ * returns SYNC_ERR_INTERNAL BY DESIGN until the outermost batch_commit /
+ * batch_abort. In particular the erase-then-compact physical-erasure pairing
+ * described above must be performed OUTSIDE any batch: erase, close the
+ * batch, then compact. */
 int sync_engine_compact(sync_engine *e);
 
-/* Destroy an engine. For durable engines this also closes the database.
- * Safe to call with NULL. */
+/* Destroy an engine. For durable engines this also closes the database; a
+ * write batch still open at destroy is first committed at its outermost
+ * level, so staged mutations are never silently dropped — if that commit
+ * fails (or the batch was poisoned by an abort) a SYNC_LOG_WARN diagnostic
+ * is emitted via the engine's log callback. Prefer balancing your own
+ * batch_commit before destroying. Safe to call with NULL. */
 void sync_engine_destroy(sync_engine *e);
 
 /* Copy this engine's signing public key (its author identity) into out. */
@@ -205,6 +222,98 @@ sync_error sync_engine_erase_field(sync_engine *e,
                                    const uint8_t *ns, size_t ns_len,
                                    const uint8_t *entity, size_t entity_len,
                                    const uint8_t *field, size_t field_len);
+
+/* ---- Write batching ------------------------------------------------------
+ *
+ * Group many mutations into few fsync'd log frames. Between batch_begin and
+ * the matching outermost batch_commit, every mutation on a durable engine
+ * (set / delete / erase_field / apply / the blob write functions) is staged
+ * into one open log transaction instead of paying its own per-mutation
+ * fsync; the outermost commit stamps the persisted clock, writes + fsyncs
+ * the final frame, and may trigger compaction. RAM stays bounded: the
+ * engine's own write path force-flushes a clock-covered sub-frame whenever
+ * staged bytes exceed an internal threshold (~2 MiB), so arbitrarily large
+ * batches cost O(threshold) memory. A batch is therefore a DURABILITY
+ * boundary, not a rollback mechanism: sub-frames already flushed mid-batch
+ * are durable even if the batch is later aborted, and in-memory state keeps
+ * every mutation regardless of the batch's fate.
+ *
+ * BECAUSE in-memory state keeps them, an abort does NOT guarantee the
+ * un-flushed mutations never reach disk — it only guarantees the batch
+ * itself does not write them. The log is periodically compacted by
+ * re-serializing the ENTIRE in-memory state (sync_engine_compact, and an
+ * automatic size-triggered equivalent that ordinary later writes can set
+ * off), and that rewrite persists aborted-but-still-in-RAM mutations along
+ * with everything else. Until the engine is closed, "aborted" therefore
+ * means "not made durable by this batch", never "kept off disk"; the
+ * RAM-vs-disk divergence an abort creates heals in RAM's favor at the next
+ * compaction, or in disk's favor at the next reopen — whichever comes
+ * first. A caller that must keep aborted data off disk should destroy and
+ * reopen the engine instead of writing on.
+ *
+ * NESTING: begin/commit pairs nest via a depth counter. Only the outermost
+ * commit makes the staged tail durable; an inner commit merely closes its
+ * level and writes nothing — SYNC_OK from a mutation (or an inner commit)
+ * inside an enclosing batch does NOT imply durability until the caller's
+ * outermost batch_commit succeeds.
+ *
+ * ENGINE-GLOBAL SCOPE — hard contract: the batch belongs to the ENGINE, not
+ * to any caller, and the depth counter cannot distinguish holders. A
+ * sync_engine_batch_abort at ANY nesting level poisons the ENTIRE outermost
+ * batch: the un-flushed staged tail of every enclosing caller is discarded
+ * when the outermost level closes (which then fails with
+ * SYNC_ERR_INTERNAL). The blob write functions open a nested batch
+ * internally and abort it on failure, so they can poison an enclosing
+ * batch. Never hold a batch open across calls into code you do not
+ * control.
+ *
+ * Interactions (each also documented at the function it affects):
+ *   - sync_engine_flush commits any open batch, all levels.
+ *   - sync_engine_destroy commits an open batch before closing, logging
+ *     SYNC_LOG_WARN on failure — never a silent drop.
+ *   - sync_engine_compact returns SYNC_ERR_INTERNAL while any batch is
+ *     open; the erase-then-compact physical-erasure pairing must run
+ *     OUTSIDE a batch.
+ *   - Capability writes are EXCLUDED from batching: sync_engine_grant /
+ *     sync_engine_revoke always write their own immediately-fsync'd frame,
+ *     batch or no batch — a revocation must never be discardable by a later
+ *     batch_abort.
+ *
+ * On an in-memory engine (sync_engine_create) all three calls are clean
+ * no-ops returning SYNC_OK — there is no log to batch. */
+
+/* Open (or nest one level into) this engine's write batch. Returns SYNC_OK
+ * (including the in-memory no-op); on error no batch level was opened. */
+int sync_engine_batch_begin(sync_engine *e);
+
+/* Close one batch level. The OUTERMOST commit persists the staged tail
+ * (clock-stamped, fsync'd) and may trigger compaction; an inner commit only
+ * decrements the depth and writes nothing. Returns SYNC_ERR_INVALID when no
+ * batch is open (unbalanced commit); SYNC_ERR_INTERNAL when the batch was
+ * poisoned by an abort or an in-batch write failure (the un-flushed staged
+ * tail is then not written) or when the final write itself fails.
+ *
+ * A failing commit still CONSUMES its nesting level: every call except the
+ * SYNC_ERR_INVALID unbalanced case closes exactly one level, success or
+ * not. Do not "clean up" after a SYNC_ERR_INTERNAL commit with
+ * sync_engine_batch_abort — that level is already closed, so the abort
+ * would land on (and poison) an ENCLOSING caller's level, or be flagged as
+ * unbalanced at depth zero. */
+int sync_engine_batch_commit(sync_engine *e);
+
+/* Abort: poison the batch and close one level (like a failing commit, an
+ * abort always consumes its level). The un-flushed staged tail is dropped
+ * and is not written by the batch; sub-frames already force-flushed remain
+ * durable (a batch is not a rollback mechanism) and in-memory state keeps
+ * all mutations either way. NOTE this is a durability boundary only, not a
+ * promise the aborted mutations stay off disk: they remain live in RAM,
+ * and the next log compaction — explicit sync_engine_compact or the
+ * automatic size-triggered one that ordinary later writes can set off —
+ * re-serializes RAM state wholesale and persists them after all (see the
+ * section comment above). Poison is engine-global (see above): an abort at
+ * any level condemns every enclosing level's un-flushed staged mutations
+ * too. Returns SYNC_ERR_INVALID when no batch is open. */
+int sync_engine_batch_abort(sync_engine *e);
 
 /* ---- Reads -------------------------------------------------------------- */
 
@@ -293,7 +402,17 @@ void sync_scan_free(sync_scan_entry *entries, size_t count);
  * MiB) is rejected with SYNC_ERR_INVALID before anything is written.
  *
  * Idempotent: putting the same content again yields the same id and rewrites
- * the same chunk/manifest values (LWW on identical values is harmless). */
+ * the same chunk/manifest values (LWW on identical values is harmless).
+ *
+ * Durability: the put runs inside an internal write batch (see "Write
+ * batching"), so on a durable engine with NO enclosing batch, SYNC_OK means
+ * the chunk and manifest records are fsync'd on return. Inside an enclosing
+ * sync_engine_batch_begin batch, SYNC_OK means staged, NOT yet durable —
+ * the batch writes the records only at the caller's outermost successful
+ * batch_commit. If that batch is instead aborted or poisoned, the batch
+ * does not write them, but the blob stays live in this engine's memory and
+ * the next log compaction persists it anyway — an abort defers durability,
+ * it does not discard the blob (see sync_engine_batch_abort). */
 sync_error sync_blob_put(sync_engine *e, const uint8_t *ns, size_t ns_len,
                          const uint8_t *data, size_t len,
                          uint8_t out_id[SYNC_BLOB_ID_LEN]);
@@ -342,7 +461,14 @@ sync_error sync_blob_stat(sync_engine *e, const uint8_t *ns, size_t ns_len,
  * both. There is no chunk refcounting. Whole-blob content-addressing means
  * this only bites when two distinct blobs happen to share an identical chunk
  * of partial content (identical whole blobs are the same id and the same
- * delete). Accepted for v1. */
+ * delete). Accepted for v1.
+ *
+ * Durability: like sync_blob_put, the tombstones are written inside an
+ * internal write batch — inside an enclosing sync_engine_batch_begin batch,
+ * SYNC_OK means staged, not durable until the caller's outermost
+ * batch_commit succeeds (an abort defers rather than undoes them: they
+ * stay live in RAM and the next compaction persists them — see
+ * sync_engine_batch_abort). */
 sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
                             const uint8_t id[SYNC_BLOB_ID_LEN]);
 
@@ -368,7 +494,16 @@ sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
  * leave at tombstone GC. SYNC_ERR_CORRUPT if a manifest is present but
  * malformed: its chunk list is unusable, so the manifest entity alone is
  * tombstoned (erase what exists) and the error tells the caller that chunk
- * payloads may survive until GC. */
+ * payloads may survive until GC.
+ *
+ * Durability: like sync_blob_put, the erase runs inside an internal write
+ * batch — inside an enclosing sync_engine_batch_begin batch, SYNC_OK means
+ * staged, not durable until the caller's outermost batch_commit succeeds
+ * (an abort defers rather than undoes the erasure records: they stay live
+ * in RAM and the next compaction persists them — see
+ * sync_engine_batch_abort). The paired sync_engine_compact must in any
+ * case run OUTSIDE the batch (it returns SYNC_ERR_INTERNAL while one is
+ * open). */
 sync_error sync_blob_erase(sync_engine *e, const uint8_t *ns, size_t ns_len,
                            const uint8_t id[SYNC_BLOB_ID_LEN]);
 
