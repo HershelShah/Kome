@@ -170,7 +170,91 @@ freed right after re-encoding.
 
 This is the *cold* path (first sync after a write); the cached gossip path
 (chapter 3) is untouched. The remainder is now ~63% per-element SHA-256 — see
-backlog item 7 (BLAKE2b, version-gated).
+backlog item 7 (BLAKE2b, version-gated). (Chapter 6 measures that share
+properly across N — 63% turns out to be the small-N point of a curve that
+reaches ~85% at N=4096 — and then removes it.)
+
+## Chapter 6 — cache per-element reconciliation hashes ✅
+
+Store each cell's 32-byte reconciliation-element hash (SHA-256 of its
+canonical `encode_record` bytes) on the cell itself — `Register::elem_hash`,
+`Entity::ex_hash` — computed at every point that installs or replaces a cell,
+so the cold snapshot build copies a cached hash per element instead of
+re-running SHA-256 over every record. Mutation-time hashing reuses the
+signing/verify buffer each path already builds (the streaming `element_hash`
+overload; the parallel verifiers hash alongside the signature check), so it
+adds no re-encode and no allocation; every hash computation is hoisted above
+the first committed byte so an OOM mid-mutation can never strand a committed
+cell with a stale or zero hash (see the invariant note in `engine.hpp` and
+§3.2 of `docs/IMPROVEMENT_PLAN.md`). Wire bytes, fingerprints, `digest`, and
+the on-disk format are byte-identical; the cache is RAM-only and recomputed
+during the load-verify pass at open.
+
+Measured on the same machine/flags discipline as chapter 1 (Intel Xeon @
+2.10 GHz, GCC, `-O3` Release — as there, treat the ratios and big-O as the
+signal, not the absolute ns): **before** = the P1 baseline at branch point
+`claude/improve-p1-gen-split` (this branch's parent), **after** = this
+change; one `./build/bench` run per side (the harness's own complexity fit
+reports 2% RMS on the before curve); N entities × 2 elements each, and each
+iteration also pays one overwrite `set` to force the rebuild — which is why
+the small-N removed share is lower than the large-N one:
+
+| `BM_SessionBeginCold` | before | after | ratio | share removed |
+|---|---:|---:|---:|---:|
+| N=64 | 220.4 µs | 80.1 µs | **2.75×** | 63.7% |
+| N=256 | 704.5 µs | 159.6 µs | 4.41× | 77.3% |
+| N=1024 | 2.719 ms | 0.499 ms | 5.45× | 81.7% |
+| N=4096 | 13.426 ms | 1.998 ms | **6.72×** | 85.1% |
+
+The complexity fit drops from ~273·N·log N ns (272.96 coefficient, before) to
+~488·N ns (488.39 coefficient, after): with per-element hashing gone the
+rebuild is a pure encode+copy pass.
+
+**Reconciling the earlier ~63% / ~35% share claims.** Both prior figures were
+frame-dependent and both understated the asymptote. Backlog item 7's "~35% of
+the cold build" dated from before chapter 5, when the total still carried the
+export/sort/allocation overhead chapter 5 removed — that is the stale figure;
+this measurement does not support it, and it is corrected in place below
+rather than deleted, so the estimate's history stays visible. Chapter 5's
+"~63%" is the one the new measurement supports: it lines up almost exactly
+with the measured share at N=64 (63.7%) — the smallest, constant-overhead-
+heaviest point. But SHA-256 sat in the N-scaling term, so its share grows
+with N: 77.3% at N=256, 81.7% at N=1024, and 85.1% at N=4096 — the point that
+motivates cold-sync work — where removing it is worth 6.72×, not the
+~1.5–2.7× the ~35% figure implied.
+
+Write-path cost — a new cell now computes two element hashes (presence +
+register); an overwrite and an applied register each compute one (medians
+from the same `./build/bench` run):
+
+| | before | after | delta |
+|---|---:|---:|---:|
+| `BM_SetNewCell` | 104.4 µs | 107.3 µs | **+2.9 µs (+2.76%)** |
+| `BM_SetOverwrite` | 59.6 µs | 54.0 µs | −5.6 µs (−9.31%) |
+| `BM_ApplyRegister` | 93.5 ns | 75.3 ns | −18.2 ns (−19.45%) |
+
+`BM_SetNewCell`'s regression is the expected one: two streaming SHA-256
+computations (presence + register) against the ~86 µs Ed25519 double-sign
+that already dominates a new-cell `set` (backlog item 5) — +2.76% is a cheap
+trade for the cold-build win above. `BM_SetOverwrite` and `BM_ApplyRegister`
+move the other way and measure *faster*, not slower: both paths already build
+a `signing` buffer for sign/verify, and the streaming `element_hash` overload
+plus the compute-then-commit reordering (§3.2's throw-safety amendment) sit
+on that same buffer, so the net effect measures as an improvement rather than
+a flat per-record tax. For scale, streaming SHA-256 over that buffer costs
+`BM_Sha256/64` = 1065 ns (57.3 MB/s) and `BM_Sha256/1024` = 5956 ns
+(164.0 MB/s) on this machine — the same ~1 µs neighborhood as the deltas
+above.
+
+**Debug-assert cost (pre-agreed hazard, measured).** The `emit_element`
+recompute-assert (full per-element, not sampled) re-adds one SHA-256 per
+element on every Debug snapshot build. On the two slowest Debug suites:
+`stress_test` 137.0 s → 141.6 s (+3.4%), `multinode_test` 49.5 s → 50.4 s
+(+1.9%) — nowhere near the feared doubling, so the full assert ships;
+sampling (first/last + every 64th) remains the documented fallback only if CI
+wall time ever forces it. (`Stress.DataScale` exceeds its hard-coded 2 s
+Debug snapshot bound in this container on the *base* tree too — ~3.0 s both
+before and after — a pre-existing environment failure, not a regression.)
 
 ## Optimization backlog (data-driven, in priority order)
 
@@ -186,9 +270,19 @@ Remaining, lower-priority:
    the first register (86 µs). Explore deferring/coalescing.
 6. **Incremental digest** — maintain a running combinable digest so `digest` is
    O(changed) rather than O(N) SHA-256 each call.
-7. **Faster per-element hash** — the snapshot build SHA-256s every element
-   (~35% of the cold build); BLAKE2b is ~4× faster. It's an internal fingerprint
-   detail, but changing it shifts the on-wire fingerprint, so version-gate it.
+7. **Faster per-element hash** — ~~the snapshot build SHA-256s every element~~
+   this item proposed swapping to BLAKE2b for the per-element hash; chapter 6
+   shipped the element-hash **cache** instead — same SHA-256, wire-compatible
+   (fingerprints, `digest`, and the on-disk format are all byte-identical, no
+   schema bump) — because the snapshot build no longer hashes at all (measured
+   63.7–85.1% of the cold build depending on N, [not the ~35% this item
+   originally estimated pre-chapter-5 — that figure is stale; see chapter 6's
+   reconciliation for the corrected, measured shares]). What remains
+   hash-bound is mutation-time (~1–2 µs per signed record, ~3% of a new-cell
+   `set`), where BLAKE2b's ~4× would now buy little against the ~86 µs sign
+   that already dominates that path. Still an internal fingerprint detail if
+   ever revisited: any hash-algorithm change would shift the on-wire
+   fingerprint, so it would need version-gating.
 
 Each subsequent chapter takes one item, re-runs `./build/bench` against this
 baseline, and records the delta here.

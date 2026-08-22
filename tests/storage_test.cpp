@@ -20,12 +20,15 @@
 #include <random>
 #include <set>
 #include <string>
+#include <thread> /* hardware_concurrency: prove the threaded verify branch */
 #include <vector>
 
 #include "byteorder.h" /* T2.4 tampers with the log file directly */
 #include "cluster.hpp"
+#include "codec.h"   /* change_from_* / element_hash / DecodedChange (Phase 2) */
+#include "engine.hpp" /* white-box: cached per-cell element hashes (Phase 2) */
 #include "sha256.h"
-#include "storage.h" /* kSchemaVersion */
+#include "storage.h" /* kSchemaVersion; ke::merge_record (Phase 2) */
 #include "tempdir.hpp"
 
 namespace {
@@ -919,4 +922,219 @@ TEST(Storage, BlobEraseThenCompactShrinksEncryptedLog) {
     EXPECT_EQ(sync_blob_get(r, B(std::string("ph")), 2, id, &out, &out_len),
               SYNC_ERR_NOTFOUND);
     sync_engine_destroy(r);
+}
+
+/* ---- Phase 2: cached element hashes across the load path ----------------- */
+
+namespace {
+
+/* Fresh, from-scratch hash of a cell's canonical record: the SHARED
+ * change_from_* construction (codec.h — exactly what build_snapshot encodes),
+ * hashed by a direct sha256 call rather than element_hash, so the check
+ * shares no hashing code with what it audits. */
+ke::Hash256 fresh_entity_hash(const std::string &ns, const std::string &ent,
+                              const ke::Entity &en) {
+    std::string rec;
+    ke::encode_record(ke::change_from_entity(ns, ent, en), rec);
+    ke::Hash256 h;
+    sync_engine_detail::sha256(rec.data(), rec.size(), h.data());
+    return h;
+}
+
+ke::Hash256 fresh_register_hash(const std::string &ns, const std::string &ent,
+                                const std::string &field,
+                                const ke::Register &r) {
+    std::string rec;
+    ke::encode_record(ke::change_from_register(ns, ent, field, r), rec);
+    ke::Hash256 h;
+    sync_engine_detail::sha256(rec.data(), rec.size(), h.data());
+    return h;
+}
+
+/* memcmp every cell's stored cached hash against the fresh recompute.
+ * Unasserted shells emit no existence element (build_snapshot skips them), so
+ * their ex_hash is skipped here too. Returns cells checked (non-vacuity). */
+size_t verify_all_cell_hashes(sync_engine *e, const char *ctx) {
+    size_t checked = 0;
+    for (const auto &np : e->ns) {
+        for (const auto &ep : np.second) {
+            const ke::Entity &en = ep.second;
+            if (en.asserted()) {
+                ke::Hash256 f = fresh_entity_hash(np.first, ep.first, en);
+                EXPECT_EQ(0, std::memcmp(f.data(), en.ex_hash.data(), 32))
+                    << ctx << ": stale existence hash at ns=" << np.first
+                    << " entity=" << ep.first;
+                checked++;
+            }
+            for (const auto &fp : en.fields) {
+                ke::Hash256 f =
+                    fresh_register_hash(np.first, ep.first, fp.first, fp.second);
+                EXPECT_EQ(0, std::memcmp(f.data(), fp.second.elem_hash.data(), 32))
+                    << ctx << ": stale register hash at ns=" << np.first
+                    << " entity=" << ep.first << " field=" << fp.first;
+                checked++;
+            }
+        }
+    }
+    return checked;
+}
+
+/* Number of records sync_engine_export would emit — a LOWER bound on the
+ * load path's pending-record count n (every live cell was replayed from at
+ * least one log record; superseded duplicates only add to n). Used to prove
+ * the `n >= 64 && workers > 1` threaded-verify branch is really taken. */
+size_t exported_record_count(sync_engine *e) {
+    sync_change *recs = nullptr;
+    size_t n = 0;
+    EXPECT_EQ(sync_engine_export(e, &recs, &n), SYNC_OK);
+    sync_changes_free(recs, n);
+    return n;
+}
+
+} // namespace
+
+/* Reopen recomputes every cell's element hash on the THREADED verify branch
+ * (verify_and_merge in storage.cpp: `n >= 64 && workers > 1`, workers =
+ * min(hardware_concurrency, 8), with per-index disjoint hashes[i] writes).
+ * The branch is provably exercised, not assumed: the record count is proven
+ * >= 64 via the export lower bound, and workers > 1 is asserted from
+ * hardware_concurrency — with a documented skip on a single-vCPU runner,
+ * where the branch is unreachable and the serial path is covered by the
+ * companion test below. */
+TEST(Storage, ReopenPreservesElementHashes) {
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw <= 1)
+        GTEST_SKIP() << "single-vCPU runner: the n>=64 && workers>1 threaded "
+                        "verify branch cannot be taken here; the serial branch "
+                        "is covered by ReopenPreservesElementHashesSerial";
+
+    TempDir dir;
+    std::string db = dir.file("elemhash.db");
+    auto site = site_from(0x40);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    const int N = 120; /* 120 existence + 120 register records >> 64 */
+    for (int i = 0; i < N; i++)
+        cluster::put(e, "ns", "ent" + std::to_string(i), "f",
+                     "value-" + std::to_string(i));
+    /* Shape coverage: tombstones and empty-value registers reload too. */
+    for (int i = 0; i < 6; i++)
+        cluster::del(e, "ns", "ent" + std::to_string(i));
+    for (int i = 6; i < 12; i++) {
+        std::string ent = "ent" + std::to_string(i);
+        ASSERT_EQ(sync_engine_erase_field(e, B(std::string("ns")), 2, B(ent),
+                                          ent.size(), B(std::string("f")), 1),
+                  SYNC_OK);
+    }
+    /* Every one of these live cells was loaded from >= 1 log record, so the
+     * load-path n is at least this — comfortably past the 64 threshold. */
+    ASSERT_GE(exported_record_count(e), 64u);
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(digest(r), d0);
+    size_t checked = verify_all_cell_hashes(r, "threaded reopen");
+    EXPECT_EQ(checked, 2u * N) << "walk did not cover the full cell population";
+    sync_engine_destroy(r);
+}
+
+/* Companion: under 64 records the load verifies (and hashes) on the SERIAL
+ * branch — same disjoint-write code, no threads. 10 fresh entities, one set
+ * each, no overwrites: exactly 20 signed records in the log, < 64 by
+ * construction whether or not a compaction rewrote it (compaction emits one
+ * record per live cell, and there are 20 live cells). */
+TEST(Storage, ReopenPreservesElementHashesSerial) {
+    TempDir dir;
+    std::string db = dir.file("elemhash_serial.db");
+    auto site = site_from(0x41);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    const int N = 10;
+    for (int i = 0; i < N; i++)
+        cluster::put(e, "ns", "s" + std::to_string(i), "f",
+                     "v" + std::to_string(i));
+    ASSERT_LT(exported_record_count(e), 64u)
+        << "test bug: record count reaches the threaded threshold";
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(digest(r), d0);
+    EXPECT_EQ(verify_all_cell_hashes(r, "serial reopen"), 2u * N);
+    sync_engine_destroy(r);
+}
+
+/* The degenerate merge_record tie: a decoded record whose (hlc, author,
+ * value) exactly TIE a freshly default-constructed Register — register_cmp
+ * ignores the signature, so a record with a NONZERO signature still ties —
+ * leaves the DEFAULT cell in the map. The stored hash must then describe that
+ * default cell's own canonical encoding, NOT the incoming record's (their
+ * encodings differ in the signature bytes, so the two hashes differ — which
+ * is what makes this test able to tell the two apart). Drives ke::merge_record
+ * directly (promoted out of storage.cpp's anonymous namespace for exactly
+ * this). */
+TEST(Storage, DefaultInsertedRegisterGetsHash) {
+    sync_engine *e = sync_engine_create(site_from(0x42).data());
+    ASSERT_NE(e, nullptr);
+    const std::string ns = "n", ent = "e", field = "f";
+
+    ke::DecodedChange dc;
+    dc.kind = SYNC_CHANGE_REGISTER;
+    dc.ns = ns;
+    dc.entity = ent;
+    dc.field = field;
+    dc.value = "";              /* ties the default cell's empty value */
+    dc.hlc.physical = 0;        /* ties the default {0,0} hlc */
+    dc.hlc.logical = 0;
+    /* dc.author stays all-zero (ties the default author). The signature is
+     * NOT part of register_cmp, so this record still ties — but its canonical
+     * encoding (and hence its element hash) differs from the default cell's. */
+    dc.signature.fill(0x5A);
+    ke::Hash256 h_in = ke::element_hash(dc.view()); /* the honest caller hash */
+
+    ke::merge_record(e, dc, h_in);
+
+    /* The map now holds a Register on the fresh slot... */
+    auto ni = e->ns.find(ns);
+    ASSERT_NE(ni, e->ns.end());
+    auto ei = ni->second.find(ent);
+    ASSERT_NE(ei, ni->second.end());
+    auto fi = ei->second.fields.find(field);
+    ASSERT_NE(fi, ei->second.fields.end()) << "tie left no cell in the map";
+    const ke::Register &reg = fi->second;
+
+    /* ...and it is the DEFAULT cell (the tie did not install the record). */
+    EXPECT_TRUE(reg.value.empty());
+    EXPECT_EQ(reg.sig, ke::Sig{}) << "tie installed the incoming record";
+
+    /* Its stored hash describes its OWN canonical encoding... */
+    ke::Hash256 own =
+        ke::element_hash(ke::change_from_register(ns, ent, field, reg));
+    EXPECT_EQ(0, std::memcmp(own.data(), reg.elem_hash.data(), 32))
+        << "default-inserted register's hash is not its own encoding's hash";
+    EXPECT_NE(0, std::memcmp(own.data(), ke::Hash256{}.data(), 32))
+        << "hash left zeroed";
+    /* ...NOT the incoming record's — the discriminator that keeps this test
+     * non-vacuous (the two encodings differ only in the signature bytes). */
+    EXPECT_NE(0, std::memcmp(h_in.data(), reg.elem_hash.data(), 32))
+        << "tie path stored the incoming record's hash for the default cell";
+
+    /* Control: a record that WINS the same slot installs the caller's hash. */
+    ke::DecodedChange win = dc;
+    win.value = "w";
+    win.hlc.physical = 5;
+    win.signature.fill(0x77);
+    ke::Hash256 h_win = ke::element_hash(win.view());
+    ke::merge_record(e, win, h_win);
+    const ke::Register &reg2 = e->ns[ns][ent].fields[field];
+    EXPECT_EQ(reg2.value, "w");
+    EXPECT_EQ(0, std::memcmp(h_win.data(), reg2.elem_hash.data(), 32))
+        << "winning merge did not install the incoming record's hash";
+
+    sync_engine_destroy(e);
 }

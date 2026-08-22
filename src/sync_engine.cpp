@@ -11,6 +11,8 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 #include "byteorder.h"
 #include "capability.h"
@@ -87,39 +89,82 @@ std::string to_str(const uint8_t *p, size_t len) {
  * order an incoming existence record against a not-yet-seen entity. */
 const uint8_t kZeroAuthor[SYNC_PUBKEY_LEN] = {0};
 
-/* Fill c->author and c->signature by signing c's canonical content with e. */
-void author_sign(sync_engine *e, sync_change &c) {
+/* Fill c->author and c->signature by signing c's canonical content with e.
+ * The canonical signing bytes are appended to `signing` and left for the
+ * caller, which feeds them to the streaming element_hash overload — the
+ * cached element hash costs no re-encode and no extra allocation. */
+void author_sign(sync_engine *e, sync_change &c, std::string &signing) {
     std::memcpy(c.author, e->identity.sign_pk.data(), SYNC_PUBKEY_LEN);
-    std::string signing;
     ke::encode_signing(c, signing);
     ke::sign(e->identity.sign_sk.data(), signing.data(), signing.size(),
              c.signature);
 }
 
-/* Verify a record's signature against its declared author. */
-bool verify_change(const sync_change *c) {
-    std::string signing;
+/* Verify a record's signature against its declared author. The canonical
+ * signing bytes are left in `signing` for the caller (streaming element_hash
+ * — same reuse as author_sign above). */
+bool verify_change(const sync_change *c, std::string &signing) {
     ke::encode_signing(*c, signing);
     return ke::verify(c->author, signing.data(), signing.size(), c->signature);
 }
 
-/* Sign the entity's current presence assertion (the caller has already set
- * en.present_v and en.presence_hlc) and store the author/signature on the
- * entity. Shared by the add path (set) and the remove path (delete). */
-void sign_existence(sync_engine *e, const std::string &ns,
-                    const std::string &ent, Entity &en) {
+/* A fully built (signed + hashed) presence assertion, held in locals until
+ * commit_existence lands it on the map-resident entity. */
+struct ExistenceAssertion {
+    bool    present = false;
+    Hlc     hlc;
+    PubKey  author{};
+    Sig     sig{};
+    Hash256 hash{};
+};
+
+/* Build, sign, and hash a presence assertion (present bit + hlc) for (ns, ent)
+ * entirely into locals. Every throw point of the presence path lives here —
+ * author_sign's signing-buffer allocation (the streaming element_hash is
+ * stack-only) — strictly before the first committed byte, per the hoisting
+ * rule (§3.2 point 1 / engine.hpp): a std::bad_alloc leaves the entity, and
+ * with it the engine's advertised element set, completely untouched. Shared
+ * by the add path (set) and the remove path (delete). */
+ExistenceAssertion build_existence(sync_engine *e, const std::string &ns,
+                                   const std::string &ent, bool present,
+                                   const Hlc &hlc) {
     sync_change ec;
     std::memset(&ec, 0, sizeof ec);
     ec.kind = SYNC_CHANGE_EXISTENCE;
     ec.ns = (const uint8_t *)ns.data(); ec.ns_len = ns.size();
     ec.entity = (const uint8_t *)ent.data(); ec.entity_len = ent.size();
-    ec.causal_length = en.present_v ? 1 : 0; /* present bit */
-    ec.hlc.physical = en.presence_hlc.physical;
-    ec.hlc.logical = en.presence_hlc.logical;
-    author_sign(e, ec);
-    std::memcpy(en.ex_author.data(), ec.author, SYNC_PUBKEY_LEN);
-    std::memcpy(en.ex_sig.data(), ec.signature, SYNC_SIG_LEN);
+    ec.causal_length = present ? 1 : 0; /* present bit */
+    ec.hlc.physical = hlc.physical;
+    ec.hlc.logical = hlc.logical;
+    std::string signing;
+    author_sign(e, ec, signing);
+    ExistenceAssertion a;
+    a.present = present;
+    a.hlc = hlc;
+    std::memcpy(a.author.data(), ec.author, SYNC_PUBKEY_LEN);
+    std::memcpy(a.sig.data(), ec.signature, SYNC_SIG_LEN);
+    ke::element_hash(signing, ec.signature, a.hash);
+    return a;
 }
+
+/* Commit a built assertion into the map-resident entity: present_v,
+ * presence_hlc, ex_author, ex_sig, and ex_hash land together as one
+ * non-throwing step (POD and std::array assignments only), so the entity can
+ * never be observed holding a new presence with the previous assertion's
+ * signature or cached hash. */
+void commit_existence(Entity &en, const ExistenceAssertion &a) noexcept {
+    en.present_v = a.present;
+    en.presence_hlc = a.hlc;
+    en.ex_author = a.author;
+    en.ex_sig = a.sig;
+    en.ex_hash = a.hash;
+}
+
+/* The register install below relies on move-assignment being a buffer steal,
+ * never an allocating copy, so a committed cell can't be left mid-update. */
+static_assert(std::is_nothrow_move_assignable<Register>::value &&
+                  std::is_nothrow_move_constructible<Register>::value,
+              "Register moves must not throw: install-after-hash depends on it");
 
 /* Emit a diagnostic log line (no record values/keys/namespaces/secrets). */
 void engine_log(sync_engine *e, int level, const char *msg) {
@@ -322,15 +367,28 @@ int sync_engine_set(sync_engine *e,
         std::string nsk = to_str(ns, ns_len);
         std::string entk = to_str(entity, entity_len);
         std::string fk = to_str(field, field_len);
-        Entity &ent = e->ns[nsk][entk];
 
-        if (!ent.present()) {
+        /* Probe with find() — nothing is inserted until every throwing step
+         * (sign + hash of both cells) below has finished. */
+        const Entity *cur = nullptr;
+        {
+            auto ni = e->ns.find(nsk);
+            if (ni != e->ns.end()) {
+                auto ei = ni->second.find(entk);
+                if (ei != ni->second.end()) cur = &ei->second;
+            }
+        }
+        const bool need_presence = !cur || !cur->present();
+
+        /* Phase 1 — build + sign + hash both cells into locals. Every
+         * allocation (and so every throw point except the map-node
+         * allocations in phase 2) happens here, before any committed byte. */
+        ExistenceAssertion ex;
+        if (need_presence)
             /* Assert presence with a fresh LWW timestamp (strictly newer than
              * any prior assertion this engine has seen, so it wins). */
-            ent.present_v = true;
-            ent.presence_hlc = e->clock.tick(now_ms());
-            sign_existence(e, nsk, entk, ent);
-        }
+            ex = build_existence(e, nsk, entk, /*present=*/true,
+                                 e->clock.tick(now_ms()));
 
         Register reg;
         reg.value = to_str(value, value_len);
@@ -346,17 +404,32 @@ int sync_engine_set(sync_engine *e,
             rc.value_len = reg.value.size();
             rc.hlc.physical = reg.hlc.physical;
             rc.hlc.logical = reg.hlc.logical;
-            author_sign(e, rc);
+            std::string signing;
+            author_sign(e, rc, signing);
             std::memcpy(reg.author.data(), rc.author, SYNC_PUBKEY_LEN);
             std::memcpy(reg.sig.data(), rc.signature, SYNC_SIG_LEN);
+            /* Cache the element hash on the still-local register (streaming,
+             * reusing the signing buffer) before it is installed below. */
+            ke::element_hash(signing, rc.signature, reg.elem_hash);
         }
+
+        /* Phase 2 — commit. The map lookups can still throw, but only while
+         * allocating a node, before anything is linked in (strong guarantee);
+         * the worst partial effect is an empty, unasserted entity shell,
+         * which emits no element and carries no hash. Past try_emplace,
+         * everything is non-throwing (a string buffer steal, array copies,
+         * counter bumps — see the static_assert above), so a bad_alloc can
+         * never leave a committed cell whose cached hash is not its own. */
+        Entity &ent = e->ns[nsk][entk];
         /* A fresh local tick dominates any prior state for this cell. */
-        ent.fields[fk] = reg;
+        auto ins = ent.fields.try_emplace(fk, std::move(reg));
+        if (!ins.second) ins.first->second = std::move(reg);
+        if (need_presence) commit_existence(ent, ex);
         e->content_gen++; /* invalidate the reconciliation snapshot cache */
 
         if (e->store) {
             e->db_clock++;
-            if (!tx_entity_field(e, nsk, entk, fk, ent, reg))
+            if (!tx_entity_field(e, nsk, entk, fk, ent, ins.first->second))
                 return SYNC_ERR_INTERNAL;
         }
         return SYNC_OK;
@@ -381,10 +454,15 @@ int sync_engine_delete(sync_engine *e,
         if (ei == ni->second.end()) return SYNC_OK;
         if (ei->second.present()) {
             Entity &ent = ei->second;
-            /* Assert absence with a fresh LWW timestamp (a tombstone). */
-            ent.present_v = false;
-            ent.presence_hlc = e->clock.tick(now_ms());
-            sign_existence(e, nsk, entk, ent);
+            /* Assert absence with a fresh LWW timestamp (a tombstone). Built,
+             * signed, and hashed into locals first; commit_existence then
+             * lands the tombstone as one non-throwing step, so a bad_alloc
+             * leaves the entity still present with its previous,
+             * self-consistent assertion — never a tombstone carrying the old
+             * assertion's cached hash. */
+            ExistenceAssertion ex = build_existence(
+                e, nsk, entk, /*present=*/false, e->clock.tick(now_ms()));
+            commit_existence(ent, ex);
             e->content_gen++; /* invalidate the reconciliation snapshot cache */
             if (e->store) {
                 e->db_clock++;
@@ -562,9 +640,11 @@ void sync_scan_free(sync_scan_entry *entries, size_t count) {
  * verifier. already_verified=true skips only the EdDSA check (the caller
  * verified the signature out of band); the cheap LWW/existence "would this
  * change state?" gate still runs, so verify-on-win and every other invariant
- * hold regardless. */
+ * hold regardless. elem_hash, when non-null, is the record's element hash
+ * precomputed by the caller (the parallel verifier hashes from the signing
+ * buffer it already built — no re-encode, no allocation, no throw here). */
 int ke::apply_change(sync_engine *e, const sync_change *c,
-                     bool already_verified) {
+                     bool already_verified, const Hash256 *elem_hash) {
     if (!e || !c) return SYNC_ERR_INVALID;
     if ((!c->ns && c->ns_len) || (!c->entity && c->entity_len))
         return SYNC_ERR_INVALID;
@@ -607,7 +687,8 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
                 order = std::memcmp(c->author, cur_author, SYNC_PUBKEY_LEN);
             if (order <= 0) return SYNC_OK; /* dominated: no verify, no state */
 
-            if (!already_verified && !verify_change(c)) {
+            std::string signing; /* canonical signing bytes (verify_change) */
+            if (!already_verified && !verify_change(c, signing)) {
                 engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
                 return SYNC_ERR_BADSIG;
             }
@@ -617,11 +698,23 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
                            "apply: write not authorized for namespace");
                 return authz;
             }
+            /* Hoisted: the element hash (which can allocate and throw) is
+             * computed before the first committed byte — the e->ns[nsk][entk]
+             * lookup below itself inserts, so it is already a mutation.
+             * Precomputed by the parallel verifier when available; streaming
+             * from the verify buffer when one was built here; the one-shot
+             * re-encode remains only as the fallback for an already_verified
+             * caller that supplies no hash. */
+            Hash256 eh;
+            if (elem_hash) eh = *elem_hash;
+            else if (already_verified) eh = ke::element_hash(*c);
+            else ke::element_hash(signing, c->signature, eh);
             Entity &ent = e->ns[nsk][entk];
             ent.present_v = (c->causal_length != 0); /* present bit */
             ent.presence_hlc = inc_hlc;
             std::memcpy(ent.ex_author.data(), c->author, SYNC_PUBKEY_LEN);
             std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
+            ent.ex_hash = eh;
             /* Adopt the assertion's HLC so later local writes are strictly newer. */
             e->clock.receive(inc_hlc, now_ms());
             e->content_gen++; /* invalidate the reconciliation snapshot cache */
@@ -647,7 +740,8 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
                 return SYNC_OK; /* dominated: no verify, no clock, no state */
         }
 
-        if (!already_verified && !verify_change(c)) {
+        std::string signing; /* canonical signing bytes (verify_change) */
+        if (!already_verified && !verify_change(c, signing)) {
             engine_log(e, SYNC_LOG_WARN, "apply: signature verification failed");
             return SYNC_ERR_BADSIG;
         }
@@ -658,14 +752,27 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
             return authz;
         }
 
+        /* Hoisted: hash into the still-local candidate before the map
+         * lookups below (whose node inserts are the first committed bytes);
+         * see the EXISTENCE branch for the overload choice. */
+        if (elem_hash) cand.elem_hash = *elem_hash;
+        else if (already_verified) cand.elem_hash = ke::element_hash(*c);
+        else ke::element_hash(signing, c->signature, cand.elem_hash);
+        /* Install by try_emplace + move, not operator[]: operator[] is two
+         * mutations — it default-inserts a zero-hashed Register and only then
+         * runs an allocating copy-assign, so a bad_alloc in between would
+         * commit a default cell whose cached hash is not its own. Here the
+         * node allocation fails before anything is linked (strong guarantee)
+         * and the move is a non-throwing buffer steal (static_assert above). */
         Entity &ent = e->ns[nsk][entk];
-        ent.fields[fkey] = cand;
+        auto ins = ent.fields.try_emplace(fkey, std::move(cand));
+        if (!ins.second) ins.first->second = std::move(cand);
         e->content_gen++; /* invalidate the reconciliation snapshot cache */
         /* Only an accepted record advances the clock; its HLC is now adopted. */
         e->clock.receive({c->hlc.physical, c->hlc.logical}, now_ms());
         if (e->store) {
             e->db_clock++;
-            if (!tx_entity_field(e, nsk, entk, fkey, ent, cand))
+            if (!tx_entity_field(e, nsk, entk, fkey, ent, ins.first->second))
                 return SYNC_ERR_INTERNAL;
         }
         return SYNC_OK;

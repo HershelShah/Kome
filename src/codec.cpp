@@ -7,6 +7,7 @@
 
 #include "byteorder.h"
 #include "crypto.h"
+#include "sha256.h"
 
 namespace ke {
 
@@ -90,6 +91,54 @@ void encode_record(const sync_change &c, std::string &out) {
                 c.value_len + 12 + SYNC_PUBKEY_LEN + SYNC_SIG_LEN);
     encode_signing(c, out);
     out.append(reinterpret_cast<const char *>(c.signature), SYNC_SIG_LEN);
+}
+
+sync_change change_from_entity(const std::string &ns, const std::string &entity,
+                               const Entity &en) {
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_EXISTENCE;
+    c.ns = (const uint8_t *)ns.data();         c.ns_len = ns.size();
+    c.entity = (const uint8_t *)entity.data(); c.entity_len = entity.size();
+    c.causal_length = en.present_v ? 1 : 0; /* present bit */
+    c.hlc.physical = en.presence_hlc.physical;
+    c.hlc.logical = en.presence_hlc.logical;
+    std::memcpy(c.author, en.ex_author.data(), SYNC_PUBKEY_LEN);
+    std::memcpy(c.signature, en.ex_sig.data(), SYNC_SIG_LEN);
+    return c;
+}
+
+sync_change change_from_register(const std::string &ns,
+                                 const std::string &entity,
+                                 const std::string &field, const Register &r) {
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_REGISTER;
+    c.ns = (const uint8_t *)ns.data();         c.ns_len = ns.size();
+    c.entity = (const uint8_t *)entity.data(); c.entity_len = entity.size();
+    c.field = (const uint8_t *)field.data();   c.field_len = field.size();
+    c.value = (const uint8_t *)r.value.data(); c.value_len = r.value.size();
+    c.hlc.physical = r.hlc.physical;
+    c.hlc.logical = r.hlc.logical;
+    std::memcpy(c.author, r.author.data(), SYNC_PUBKEY_LEN);
+    std::memcpy(c.signature, r.sig.data(), SYNC_SIG_LEN);
+    return c;
+}
+
+Hash256 element_hash(const sync_change &c) {
+    std::string rec;
+    encode_record(c, rec);
+    Hash256 out;
+    sync_engine_detail::sha256(rec.data(), rec.size(), out.data());
+    return out;
+}
+
+void element_hash(const std::string &signing_bytes,
+                  const uint8_t sig[SYNC_SIG_LEN], Hash256 &out) {
+    sync_engine_detail::Sha256 h;
+    h.update(signing_bytes.data(), signing_bytes.size());
+    h.update(sig, SYNC_SIG_LEN);
+    h.finish(out.data());
 }
 
 bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,

@@ -424,9 +424,11 @@ struct Replay {
     uint8_t seed[32];
 };
 
-/* Merge one already-verified record into engine state by the same LWW rule the
- * engine uses, so replay is order-independent and idempotent. */
-void merge_decoded(sync_engine *e, const DecodedChange &dc) {
+} // namespace
+
+/* See storage.h. (In ke, not the anonymous namespace, so tests can link it;
+ * existence_cmp stays anonymous above.) */
+void merge_record(sync_engine *e, const DecodedChange &dc, const Hash256 &h) {
     Hlc hlc{dc.hlc.physical, dc.hlc.logical};
     if (dc.kind == SYNC_CHANGE_EXISTENCE) {
         Entity &en = e->ns[dc.ns][dc.entity];
@@ -435,6 +437,7 @@ void merge_decoded(sync_engine *e, const DecodedChange &dc) {
             en.presence_hlc = hlc;
             en.ex_author = dc.author;
             en.ex_sig = dc.signature;
+            en.ex_hash = h;
         }
     } else { /* REGISTER */
         Register r;
@@ -442,19 +445,50 @@ void merge_decoded(sync_engine *e, const DecodedChange &dc) {
         r.hlc = hlc;
         r.author = dc.author;
         r.sig = dc.signature;
-        Register &cur = e->ns[dc.ns][dc.entity].fields[dc.field];
-        if (register_cmp(r, cur) > 0) cur = std::move(r);
+        r.elem_hash = h;
+        auto &fields = e->ns[dc.ns][dc.entity].fields;
+        auto fi = fields.find(dc.field);
+        if (fi != fields.end()) {
+            if (register_cmp(r, fi->second) > 0)
+                fi->second = std::move(r); /* non-throwing move-assign */
+            return;
+        }
+        /* Fresh cell: decide against the default Register it would otherwise
+         * tie with, WITHOUT committing that default first. On a win the
+         * incoming record lands already carrying its own hash. On the
+         * degenerate tie/loss (all-zero hlc/author, empty value) the default
+         * cell is what lands — hash what will actually be stored, via the
+         * same shared construction build_snapshot uses, into the still-local
+         * cell BEFORE the insert (hoisting rule, §3.2 point 1: element_hash
+         * allocates, and a throw must not leave a committed zero-hashed
+         * cell). Either way try_emplace's node allocation is the only
+         * remaining throw point, and it fails before anything is linked. */
+        if (register_cmp(r, Register{}) > 0) {
+            fields.try_emplace(dc.field, std::move(r));
+        } else {
+            Register def;
+            def.elem_hash = element_hash(
+                change_from_register(dc.ns, dc.entity, dc.field, def));
+            fields.try_emplace(dc.field, std::move(def));
+        }
     }
 }
+
+namespace {
 
 /* Re-verify the signatures of the collected records in parallel (native) and
  * merge the valid ones. Verification is the dominant load cost (~150 us each),
  * so a many-record reopen is otherwise serial-bound. A forged record is dropped;
- * the merge is order-independent so parallel verification is safe. */
+ * the merge is order-independent so parallel verification is safe. The same
+ * pass computes each record's element hash into a side vector (streaming over
+ * the signing bytes it already encoded; per-index disjoint writes, exactly the
+ * ok[] pattern) — unconditionally, not gated on ok[i]: branchless, and a
+ * dropped record's hash is simply never installed. */
 void verify_and_merge(sync_engine *e, std::vector<DecodedChange> &pending) {
     const size_t n = pending.size();
     if (n == 0) return;
     std::vector<char> ok(n, 0);
+    std::vector<Hash256> hashes(n);
     auto verify_range = [&](size_t lo, size_t hi) {
         for (size_t i = lo; i < hi; i++) {
             std::string signing;
@@ -462,6 +496,7 @@ void verify_and_merge(sync_engine *e, std::vector<DecodedChange> &pending) {
             encode_signing(c, signing);
             ok[i] = verify(c.author, signing.data(), signing.size(),
                            c.signature) ? 1 : 0;
+            element_hash(signing, c.signature, hashes[i]);
         }
     };
 #ifndef __EMSCRIPTEN__
@@ -483,7 +518,7 @@ void verify_and_merge(sync_engine *e, std::vector<DecodedChange> &pending) {
         verify_range(0, n);
 
     for (size_t i = 0; i < n; i++)
-        if (ok[i]) merge_decoded(e, pending[i]);
+        if (ok[i]) merge_record(e, pending[i], hashes[i]);
 }
 
 /* Decode one entry. META/CAP are handled immediately; signed existence/register
