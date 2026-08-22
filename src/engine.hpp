@@ -175,7 +175,7 @@ struct sync_engine {
      * snapshot per peer, keyed by raw pubkey bytes, valid at scoped_cache_gens;
      * cleared wholesale when either gen advances (a write, apply, or capability
      * change). Initialized to {UINT64_MAX, UINT64_MAX} — never a live gens()
-     * value — so the first ensure_scoped_cache call clears unconditionally.
+     * value — so the first ensure_scoped_source call clears unconditionally.
      * Holds only peers whose scope is time-INdependent: a fully-open peer (an
      * alias to the shared unscoped snapshot) or a permanently-restricted one (a
      * distinct filtered snapshot). A peer whose scope can change with the clock

@@ -274,7 +274,9 @@ and exactly 1 rename**: 4 mandatory sub-frame flushes (8 MiB /
 file + directory) of the single compaction rewrite that the outermost
 commit's `maybe_compact` runs. `Storage.BlobPutFrameBounded` asserts that
 exact count — on the fsync counter, not on-disk frame count, because the
-compaction's `atomic_replace` writes ~258 frames under a single fsync pair
+compaction wrote ~258 frames under a single fsync pair (via the then-current
+`atomic_replace`; Phase 4 replaced it with the streamed writer of chapter 8,
+which keeps the same two counted fsyncs — so the arithmetic below is unchanged)
 (spec §3.3 amendment 1).
 
 **Peak memory — the corrected claim (spec §3.3 hazard table).** Naive
@@ -350,6 +352,7 @@ discriminator: the pre-Phase-4 `serialize_state` built the whole image as one
 `std::string`, so its single largest allocation was >= the image size — this
 test fails on that code in both directions the assertions pin (bound
 exceeded; image not large enough relative to the bound).
+
 ## Chapter 9 — deadline-cached read-scoped range views ✅
 
 A peer whose read scope depends on a finite-expiry capability used to be

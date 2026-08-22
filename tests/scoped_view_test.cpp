@@ -31,6 +31,7 @@
 #include "engine.hpp"    /* white-box: gens + the two per-peer caches */
 #include "recon_wire.hpp"/* the adversarial message vehicle (§3.5 fix 4) */
 #include "reconcile.h"   /* kBuckets, for the derived reply bound */
+#include "tempdir.hpp"  /* store-backed cross-phase cases */
 
 namespace {
 
@@ -1203,6 +1204,219 @@ TEST(ScopedView, WireVehicleGuardIsDiscriminating) {
     EXPECT_FALSE(recon_wire::decoder_accepts(under))
         << "a message under-reporting its descriptor count was accepted: the "
            "guard cannot see a builder that stops emitting a block";
+}
+
+
+/* ---- Cross-phase: the view path on a STORE-BACKED engine -----------------
+ *
+ * Found by the integration review: every test that creates a finite-expiry
+ * delegation (the only way to reach the ReconView path) used an in-memory
+ * engine, and every test that compacts or batches used an expiry-0
+ * delegation — so the P5 x P3 and P5 x P4 seams had zero permanent coverage.
+ * Nothing pinned that tombstone GC evicts a cached view, and the leak that
+ * gap hides is real: neutering `if (removed) e->content_gen++;` in
+ * gc_tombstones (src/storage.cpp) makes the assertions below fail with a
+ * GC'd tombstone replicated to a peer out of a stale scoped view. */
+
+/* Apply a signed EXISTENCE record at a chosen (here: ancient) HLC, so the
+ * tombstone is already past kTombstoneTtlMs when compaction runs. */
+void apply_existence_at(sync_engine *e, const std::string &ns,
+                        const std::string &ent, bool present, uint64_t phys,
+                        uint32_t seed) {
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_EXISTENCE;
+    c.ns = cluster::B(ns); c.ns_len = ns.size();
+    c.entity = cluster::B(ent); c.entity_len = ent.size();
+    c.causal_length = present ? 1 : 0;
+    c.hlc.physical = phys;
+    auto sd = cluster::seed_from(seed);
+    ASSERT_SYNC_OK(sync_change_sign(&c, sd.data()));
+    ASSERT_SYNC_OK(sync_engine_apply(e, &c));
+}
+
+bool has_entity(sync_engine *e, const std::string &ns, const std::string &ent) {
+    auto ni = e->ns.find(ns);
+    return ni != e->ns.end() && ni->second.find(ent) != ni->second.end();
+}
+
+/* Begin + step + end one scoped session, purely to populate the caches. */
+void touch_scoped(sync_engine *e, const uint8_t ppk[SYNC_PUBKEY_LEN]) {
+    sync_session *s = sync_session_begin_scoped(e, 1, ppk);
+    ASSERT_NE(s, nullptr);
+    uint8_t *o = nullptr; size_t ol = 0; int d = 0;
+    sync_session_step(s, nullptr, 0, &o, &ol, &d);
+    if (o) sync_free(o);
+    sync_session_end(s);
+}
+
+TEST(ScopedView, TombstoneGcEvictsCachedViewOnStoreBackedEngine) {
+    synctest::TempDir dir;
+    std::string db = dir.file("scoped_gc.db");
+    auto sd = cluster::seed_from(0xA2);
+    sync_engine *e = sync_engine_open(db.c_str(), sd.data());
+    ASSERT_NE(e, nullptr);
+
+    sync_engine *peer = make(0xC7);
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    identity(peer, ppk);
+
+    /* A FINITE expiry is what files this peer under scoped_view_cache — the
+     * whole point of the case. */
+    sync_capability *root = own_ns(e, e, "alpha");
+    sync_capability *deleg = grant_read(e, e, root, ppk, 4000000000000ull);
+    for (int i = 0; i < 6; i++)
+        put(e, "alpha", "a" + std::to_string(i), "f", "v" + std::to_string(i));
+
+    /* Unowned namespace: world-readable, so it is inside the peer's scope.
+     * Its tombstones are ancient, so compaction's GC drops them. */
+    const int kGone = 5;
+    for (int i = 0; i < kGone; i++) {
+        std::string ent = "gone" + std::to_string(i);
+        cluster::apply_register(e, "zopen", ent, "leftover", "payload", 2000, 0,
+                                0xC7);
+        apply_existence_at(e, "zopen", ent, /*present=*/false, 1000, 0xC7);
+    }
+    put(e, "zopen", "keep", "f", "alive");
+    for (int i = 0; i < kGone; i++)
+        ASSERT_TRUE(has_entity(e, "zopen", "gone" + std::to_string(i)))
+            << "expired tombstone must exist before GC";
+
+    warm_base(e);
+    touch_scoped(e, ppk);
+
+    std::string pkey((const char *)ppk, SYNC_PUBKEY_LEN);
+    auto vit = e->scoped_view_cache.find(pkey);
+    ASSERT_NE(vit, e->scoped_view_cache.end())
+        << "a finite-expiry peer must be served from scoped_view_cache — "
+           "without this the rest of the test is vacuous";
+    const void *view0 = vit->second.get();
+    EXPECT_EQ(e->scoped_cache.find(pkey), e->scoped_cache.end())
+        << "a deadline-bearing peer must not land in the deadline-free cache";
+    const uint64_t cg0 = e->content_gen, sg0 = e->scope_gen;
+
+    /* Streamed compaction (P4) runs gc_tombstones (P1's content bump). */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    for (int i = 0; i < kGone; i++)
+        EXPECT_FALSE(has_entity(e, "zopen", "gone" + std::to_string(i)))
+            << "expired tombstone survived compaction";
+    EXPECT_TRUE(has_entity(e, "zopen", "keep")) << "live entity lost to GC";
+    EXPECT_NE(e->content_gen, cg0)
+        << "gc_tombstones must bump content_gen on the streamed path";
+    EXPECT_EQ(e->scope_gen, sg0) << "compaction must not touch scope_gen";
+
+    /* The cached view must be evicted, not re-served. */
+    touch_scoped(e, ppk);
+    auto vit2 = e->scoped_view_cache.find(pkey);
+    ASSERT_NE(vit2, e->scoped_view_cache.end());
+    EXPECT_NE(vit2->second.get(), view0)
+        << "stale scoped view served after tombstone GC";
+
+    /* Wire-level proof: the peer must not receive GC'd entities. */
+    sync_engine *fresh = make(0xC7); /* same identity as peer */
+    sync_session *sa = sync_session_begin_scoped(e, 1, ppk);
+    sync_session *sb = sync_session_begin(fresh, 0);
+    ASSERT_NE(sa, nullptr);
+    ASSERT_NE(sb, nullptr);
+    {
+        uint8_t *out = nullptr; size_t ol = 0; int done = 0;
+        sync_session_step(sa, nullptr, 0, &out, &ol, &done);
+        std::vector<uint8_t> msg(out, out + ol);
+        if (out) sync_free(out);
+        sync_session *turn = sb, *other = sa;
+        int empties = (ol == 0) ? 1 : 0;
+        for (int i = 0; i < 10000 && empties < 2; i++) {
+            out = nullptr; ol = 0; done = 0;
+            sync_session_step(turn, msg.data(), msg.size(), &out, &ol, &done);
+            std::vector<uint8_t> nxt(out, out + ol);
+            if (out) sync_free(out);
+            empties = nxt.empty() ? empties + 1 : 0;
+            msg.swap(nxt);
+            std::swap(turn, other);
+        }
+    }
+    sync_session_end(sa);
+    sync_session_end(sb);
+    for (int i = 0; i < kGone; i++)
+        EXPECT_FALSE(has_entity(fresh, "zopen", "gone" + std::to_string(i)))
+            << "a GC'd tombstone reached a peer through a stale scoped view";
+    EXPECT_TRUE(has_entity(fresh, "zopen", "keep"));
+    EXPECT_TRUE(has_entity(fresh, "alpha", "a0"));
+
+    sync_engine_destroy(fresh);
+    sync_capability_free(deleg);
+    sync_capability_free(root);
+    sync_engine_destroy(peer);
+    sync_engine_destroy(e);
+}
+
+/* A revoke issued INSIDE an open write batch must cut a cached view at once:
+ * capability writes bypass batching (P3) and bump scope_gen (P1), and the
+ * view cache keys on that (P5). If the cut waited for the batch to commit, a
+ * revoked peer would keep being served its cached visibility. */
+TEST(ScopedView, RevokeInsideOpenBatchEvictsCachedViewImmediately) {
+    synctest::TempDir dir;
+    std::string db = dir.file("scoped_batch_revoke.db");
+    auto sd = cluster::seed_from(0xB4);
+    sync_engine *e = sync_engine_open(db.c_str(), sd.data());
+    ASSERT_NE(e, nullptr);
+
+    sync_engine *peer = make(0xD9);
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    identity(peer, ppk);
+
+    sync_capability *root = own_ns(e, e, "secret");
+    sync_capability *deleg = grant_read(e, e, root, ppk, 4000000000000ull);
+    put(e, "secret", "s1", "f", "classified");
+
+    warm_base(e);
+    touch_scoped(e, ppk);
+    std::string pkey((const char *)ppk, SYNC_PUBKEY_LEN);
+    ASSERT_NE(e->scoped_view_cache.find(pkey), e->scoped_view_cache.end())
+        << "peer must be on the view path for this test to mean anything";
+    const uint64_t sg0 = e->scope_gen;
+
+    /* Open a batch, revoke inside it, and do NOT commit yet. */
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK);
+    ASSERT_EQ(sync_engine_revoke(e, "secret", ppk), SYNC_OK);
+    EXPECT_NE(e->scope_gen, sg0)
+        << "a revoke inside a batch must still bump scope_gen";
+
+    /* Still inside the open batch: the peer must already be cut off. */
+    sync_engine *fresh = make(0xD9); /* same identity as the revoked peer */
+    sync_session *sa = sync_session_begin_scoped(e, 1, ppk);
+    sync_session *sb = sync_session_begin(fresh, 0);
+    ASSERT_NE(sa, nullptr);
+    ASSERT_NE(sb, nullptr);
+    {
+        uint8_t *out = nullptr; size_t ol = 0; int done = 0;
+        sync_session_step(sa, nullptr, 0, &out, &ol, &done);
+        std::vector<uint8_t> msg(out, out + ol);
+        if (out) sync_free(out);
+        sync_session *turn = sb, *other = sa;
+        int empties = (ol == 0) ? 1 : 0;
+        for (int i = 0; i < 10000 && empties < 2; i++) {
+            out = nullptr; ol = 0; done = 0;
+            sync_session_step(turn, msg.data(), msg.size(), &out, &ol, &done);
+            std::vector<uint8_t> nxt(out, out + ol);
+            if (out) sync_free(out);
+            empties = nxt.empty() ? empties + 1 : 0;
+            msg.swap(nxt);
+            std::swap(turn, other);
+        }
+    }
+    sync_session_end(sa);
+    sync_session_end(sb);
+    EXPECT_FALSE(has_entity(fresh, "secret", "s1"))
+        << "a revoked peer was served from a cached view because the revoke "
+           "happened inside an open batch";
+
+    ASSERT_EQ(sync_engine_batch_commit(e), SYNC_OK);
+    sync_engine_destroy(fresh);
+    sync_capability_free(deleg);
+    sync_capability_free(root);
+    sync_engine_destroy(peer);
+    sync_engine_destroy(e);
 }
 
 } // namespace
