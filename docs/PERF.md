@@ -93,7 +93,7 @@ the per-sync snapshot — exactly backlog item 2.
 
 `session_begin` used to re-`export` + re-encode + re-SHA-256 + re-sort the whole
 state every time. The engine now keeps that sorted, hashed snapshot in a
-`shared_ptr<const ReconSnapshot>`, rebuilt lazily only when a `state_gen`
+`shared_ptr<const ReconSnapshot>`, rebuilt lazily only when a `content_gen`
 counter (bumped on every write/delete/accepted-apply) shows it's stale. A
 session holds the snapshot by `shared_ptr`, so it stays stable even as records
 applied mid-sync replace the engine's cached copy. (Invalidation pinned by

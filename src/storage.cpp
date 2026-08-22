@@ -839,7 +839,8 @@ void Storage::gc_tombstones(sync_engine *e) {
             }
         }
     }
-    if (removed) e->state_gen++; /* invalidate the cached reconcile snapshot */
+    if (removed) e->content_gen++; /* entities left the element set: invalidate
+                                    * the cached reconcile snapshot */
 }
 
 bool Storage::compact(sync_engine *e) {

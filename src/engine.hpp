@@ -81,6 +81,20 @@ uint64_t now_ms();
  * "would this change state?" gate still runs either way). */
 int apply_change(sync_engine *e, const sync_change *c, bool already_verified);
 
+/* The engine's two cache-invalidation counters taken together (see the fields
+ * on sync_engine below). Comparable so a cache stamped with a pair can ask
+ * "did either counter advance?" with one inequality. */
+struct GenPair {
+    uint64_t content = 0;
+    uint64_t scope = 0;
+    friend bool operator==(const GenPair &a, const GenPair &b) {
+        return a.content == b.content && a.scope == b.scope;
+    }
+    friend bool operator!=(const GenPair &a, const GenPair &b) {
+        return !(a == b);
+    }
+};
+
 class Storage;          /* defined in storage.h (M2) */
 class CapStore;         /* defined in capability.h (M4) */
 struct ReconSnapshot;   /* defined in reconcile.cpp (M3): cached sync snapshot */
@@ -99,23 +113,44 @@ struct sync_engine {
     sync_log_fn      log_fn = nullptr;
     void            *log_ctx = nullptr;
 
-    /* Reconciliation snapshot cache (M3 perf): the sorted, hashed element set a
-     * session reconciles over. state_gen bumps on every state change; the cache
-     * is rebuilt lazily on the next session_begin when its gen is stale. Shared
-     * via shared_ptr so an in-flight session keeps the snapshot it began with
-     * even as later writes replace the engine's cached one. */
-    uint64_t                                  state_gen = 0;
+    /* Cache-invalidation counters (M3 perf). Two independent monotonic gens
+     * classify every invalidation — bump exactly one per mutation:
+     *   content_gen — the element set changed (a write, delete, accepted
+     *                 apply, or tombstone GC): the unscoped snapshot is stale.
+     *   scope_gen   — who may read/write changed (a capability grant, revoke,
+     *                 or wire ingest): the element set is untouched, so the
+     *                 unscoped snapshot stays valid, but every per-peer scoped
+     *                 snapshot is suspect.
+     * Ordering caveat (pre-existing, not introduced by the split): the local
+     * mutation paths in sync_engine.cpp allocate (sign/encode) between the
+     * first committed byte and the content_gen++ — a bad_alloc in that window
+     * leaves state mutated with no bump, so recon_cache can serve a stale
+     * snapshot until the next accepted mutation. New code must not widen that
+     * window: compute anything that can throw before committing state, then
+     * bump (Phase 2 hoists its element hashing accordingly). */
+    uint64_t         content_gen = 0;
+    uint64_t         scope_gen = 0;
+    ke::GenPair      gens() const { return {content_gen, scope_gen}; }
+
+    /* Reconciliation snapshot cache: the sorted, hashed element set a session
+     * reconciles over — a pure function of ns, so it is keyed on content_gen
+     * alone and rebuilt lazily on the next session_begin when that gen is
+     * stale. Shared via shared_ptr so an in-flight session keeps the snapshot
+     * it began with even as later writes replace the engine's cached one. */
     std::shared_ptr<const ke::ReconSnapshot>  recon_cache;
 
     /* Per-peer read-scoped snapshot cache (steady-state perf). A scoped session
      * filters the snapshot to what one peer may read, so unlike recon_cache it
      * cannot be shared across peers — but for a converged, idle gossip link it
      * was being rebuilt (encode + hash every record) every cycle. Cache one
-     * snapshot per peer, keyed by raw pubkey bytes, valid at scoped_cache_gen;
-     * cleared wholesale when state_gen advances (a write, apply, or capability
-     * change). Snapshots whose scope is time-bound (a finite-expiry cap) are not
+     * snapshot per peer, keyed by raw pubkey bytes, valid at scoped_cache_gens;
+     * cleared wholesale when either gen advances (a write, apply, or capability
+     * change). Initialized to {UINT64_MAX, UINT64_MAX} — never a live gens()
+     * value — so the first ensure_scoped_cache call clears unconditionally.
+     * Snapshots whose scope is time-bound (a finite-expiry cap) are not
      * cached — see reconcile.cpp ensure_scoped_cache. */
-    uint64_t                                  scoped_cache_gen = UINT64_MAX;
+    ke::GenPair                               scoped_cache_gens{UINT64_MAX,
+                                                                UINT64_MAX};
     std::map<std::string,
              std::shared_ptr<const ke::ReconSnapshot>> scoped_cache;
 };

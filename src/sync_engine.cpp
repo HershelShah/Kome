@@ -352,7 +352,7 @@ int sync_engine_set(sync_engine *e,
         }
         /* A fresh local tick dominates any prior state for this cell. */
         ent.fields[fk] = reg;
-        e->state_gen++; /* invalidate the reconciliation snapshot cache */
+        e->content_gen++; /* invalidate the reconciliation snapshot cache */
 
         if (e->store) {
             e->db_clock++;
@@ -385,7 +385,7 @@ int sync_engine_delete(sync_engine *e,
             ent.present_v = false;
             ent.presence_hlc = e->clock.tick(now_ms());
             sign_existence(e, nsk, entk, ent);
-            e->state_gen++; /* invalidate the reconciliation snapshot cache */
+            e->content_gen++; /* invalidate the reconciliation snapshot cache */
             if (e->store) {
                 e->db_clock++;
                 if (!tx_entity(e, nsk, entk, ent))
@@ -624,7 +624,7 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
             std::memcpy(ent.ex_sig.data(), c->signature, SYNC_SIG_LEN);
             /* Adopt the assertion's HLC so later local writes are strictly newer. */
             e->clock.receive(inc_hlc, now_ms());
-            e->state_gen++; /* invalidate the reconciliation snapshot cache */
+            e->content_gen++; /* invalidate the reconciliation snapshot cache */
             if (e->store) {
                 e->db_clock++;
                 if (!tx_entity(e, nsk, entk, ent)) return SYNC_ERR_INTERNAL;
@@ -660,7 +660,7 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
 
         Entity &ent = e->ns[nsk][entk];
         ent.fields[fkey] = cand;
-        e->state_gen++; /* invalidate the reconciliation snapshot cache */
+        e->content_gen++; /* invalidate the reconciliation snapshot cache */
         /* Only an accepted record advances the clock; its HLC is now adopted. */
         e->clock.receive({c->hlc.physical, c->hlc.logical}, now_ms());
         if (e->store) {

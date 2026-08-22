@@ -531,11 +531,13 @@ One line of rationale per non-obvious choice, newest last.
 
 - `session_begin` no longer rebuilds the sorted/hashed element set every time.
   The engine caches it in `std::shared_ptr<const ReconSnapshot>`, rebuilt lazily
-  only when `state_gen` (bumped on every write/delete/accepted-apply) shows it's
-  stale. A session takes a `shared_ptr` to the snapshot at begin, so it observes
-  a stable point-in-time view even though records it applies mid-sync bump
-  `state_gen` and cause the *next* begin to build a fresh one — the in-flight
-  session keeps the old via the refcount (no copy, no dangling).
+  only when `content_gen` (bumped on every write/delete/accepted-apply; at the
+  time of this decision a single `state_gen`, since split in two — see the
+  Gen-split entry below) shows it's stale. A session takes a `shared_ptr` to
+  the snapshot at begin, so it observes a stable point-in-time view even though
+  records it applies mid-sync bump `content_gen` and cause the *next* begin to
+  build a fresh one — the in-flight session keeps the old via the refcount (no
+  copy, no dangling).
 - `ReconSnapshot`/`Element`/`SortKey` moved out of reconcile.cpp's anonymous
   namespace into named `ke` so the engine can hold a `shared_ptr<const
   ReconSnapshot>` without tripping `-Wsubobject-linkage` under `-Werror`.
@@ -1214,3 +1216,36 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   erase → tombstone → compact recipe, the 30-day tombstone interplay, and the
   cooperative-deletion limits; the designed next step (signed per-record
   `expires_at`, a protocol rev) is parked in `docs/DATA_TODO.md`.
+
+## Gen-split: `state_gen` → `content_gen` + `scope_gen` (improvement 1)
+
+- **The single invalidation counter is now two.** `state_gen` bumped on every
+  mutation — writes, applies, tombstone GC, *and* capability grants/revokes/
+  ingest — so a grant or revoke discarded a perfectly valid O(N) unscoped RBSR
+  snapshot (`recon_cache`) even though the element set it encodes had not
+  changed by a byte. The engine now keeps `content_gen` (the element set
+  changed: set/delete/accepted-apply/tombstone GC) and `scope_gen` (who may
+  read/write changed: grant/revoke/wire ingest). The unscoped snapshot is a
+  pure function of `ns`, so `ensure_cache` and the snapshot stamp key on
+  `content_gen` alone; the per-peer scoped cache is keyed on the pair
+  (`ke::GenPair`, `sync_engine::scoped_cache_gens`), because a scope-only
+  change must still drop every cached per-peer view — a fully-open peer then
+  cheaply re-aliases the still-valid unscoped snapshot instead of rebuilding.
+- **`state_gen` is deleted, not aliased — that is the mechanism.** Every one
+  of the old read/write sites fails to compile until its author classifies the
+  invalidation as content or scope, and any future `e->state_gen++` from an
+  unrebased branch is a compile error rather than a silently mis-keyed cache.
+  `ReconSnapshot::gen` stays a bare content-only `uint64_t` (documented at the
+  field); scoped validity lives on the engine, not the snapshot object.
+- **`SecurePeerSession` copies the gens as two loose `uint64_t`s
+  (`sess_content_gen_`/`sess_scope_gen_`), not a `ke::GenPair`.** Naming
+  `GenPair` in `transport/connection.h` would require including `engine.hpp`,
+  and that header deliberately keeps `sync_engine` opaque — it is included by
+  komed, the examples, and the transport test suites, so the include would
+  silently widen the dependency surface for all of them. Two plain counters
+  compared with `||` at the responder's cycle boundary reproduce the exact
+  "either changed" semantics with zero new includes.
+- **External consumers must migrate.** Anything reading `e->state_gen`
+  directly through the internal headers (the Circles app shim did) no longer
+  compiles; the replacement is `gens()` (or the individual counters) with the
+  content/scope classification made explicit at the call site.

@@ -279,10 +279,12 @@ void cap_ingest_delegations(sync_engine *e,
         if (!cap_sig_valid(c)) continue;    /* verify once, on first sight */
         if (!e->caps) e->caps = new CapStore();
         e->caps->add(c);
-        e->state_gen++; /* a new delegation can change read-scope: invalidate
-                         * cached snapshots. Only genuinely-new caps reach here
-                         * (known sigs are skipped above), so a converged session
-                         * re-ingesting the same caps does not bump. */
+        e->scope_gen++; /* a new delegation can change read-scope: invalidate
+                         * cached scoped snapshots (the unscoped content snapshot
+                         * stays valid — no element changed). Only genuinely-new
+                         * caps reach here (known sigs are skipped above), so a
+                         * converged session re-ingesting the same caps does not
+                         * bump. */
     }
 }
 
@@ -306,7 +308,8 @@ void rev_ingest(sync_engine *e, const std::vector<std::string> &blobs) {
         if (!authoritative && e->caps->rev_count() >= kMaxIngestedRevs)
             continue;
         e->caps->add_rev(r);
-        e->state_gen++; /* a revocation changes read-scope: invalidate snapshots */
+        e->scope_gen++; /* a revocation changes read-scope: invalidate scoped
+                         * snapshots (the unscoped content snapshot stays valid) */
         /* Persist authoritative revocations so the cut-off survives a reopen
          * without persisting unrelated/junk ones. */
         if (e->store && authoritative) {
@@ -439,7 +442,8 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
         if (!cap_sig_valid(*c)) return SYNC_ERR_BADSIG;
         if (!e->caps) e->caps = new ke::CapStore();
         e->caps->add(*c);
-        e->state_gen++; /* read-scope changed: invalidate cached snapshots */
+        e->scope_gen++; /* read-scope changed: invalidate cached scoped snapshots
+                         * (the unscoped content snapshot stays valid) */
         /* Persist so the grant survives a reopen. */
         if (e->store) {
             std::string blob;
@@ -471,7 +475,8 @@ int sync_engine_revoke(sync_engine *e, const char *ns,
         rev_signing_bytes(r, s);
         sign(e->identity.sign_sk.data(), s.data(), s.size(), r.sig.data());
         e->caps->add_rev(r);
-        e->state_gen++; /* read-scope changed: invalidate cached snapshots */
+        e->scope_gen++; /* read-scope changed: invalidate cached scoped snapshots
+                         * (the unscoped content snapshot stays valid) */
         if (e->store) {
             std::string blob;
             rev_encode(r, blob);

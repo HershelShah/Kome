@@ -76,13 +76,15 @@ void SecurePeerSession::enable_after_handshake_() {
 }
 
 /* (Re)begin a fresh, re-snapshotted reconcile cycle, read-scoped to the
- * authenticated peer. Records the engine state_gen the snapshot was taken at so
- * a later cycle boundary can tell whether our state has since advanced. Does not
- * send — callers pump if they want to emit the first message. */
+ * authenticated peer. Records the engine gens (content and scope) the snapshot
+ * was taken at so a later cycle boundary can tell whether our state — the
+ * element set or the peer's read-scope — has since advanced. Does not send —
+ * callers pump if they want to emit the first message. */
 void SecurePeerSession::begin_cycle_() {
     if (sess_) { sync_session_end(sess_); sess_ = nullptr; }
     sess_ = sync_session_begin_scoped(e_, initiator_ ? 1 : 0, peer_pk_.data());
-    sess_gen_ = e_->state_gen;
+    sess_content_gen_ = e_->content_gen;
+    sess_scope_gen_ = e_->scope_gen;
     sess_done_ = false;
 }
 
@@ -146,7 +148,7 @@ void SecurePeerSession::on_datagram(const std::string &dg, uint64_t now_mono,
                  * when our own state has since advanced is handled at the cycle
                  * boundary in poll() (link idle) — NOT here mid-cycle, which would
                  * rebuild the O(state) snapshot on every datagram that applied a
-                 * record (apply_change bumps state_gen) and tear down the in-flight
+                 * record (apply_change bumps content_gen) and tear down the in-flight
                  * reconcile. See poll(). */
                 if (interval_ > 0 && !initiator_ && (!sess_ || sess_done_))
                     begin_cycle_();
@@ -171,14 +173,15 @@ void SecurePeerSession::poll(uint64_t now_mono, std::vector<std::string> &out) {
     } else {
         /* Responder (FINDING-1): refresh a stale snapshot at a cycle boundary —
          * when the link is idle (the previous cycle fully drained) and our state
-         * has advanced past the session's snapshot. This is what lets a value
-         * written (or learned) faster than the gossip interval eventually ship: a
-         * session whose `sess_done_` never flips would otherwise stay frozen on a
-         * stale snapshot forever. Gating on link_.idle() keeps it to once per
-         * settled cycle rather than rebuilding the O(state) snapshot on every
-         * datagram that applied a record. No send — the responder reconciles on
-         * the next inbound fingerprint. */
-        if (link_.idle() && e_->state_gen != sess_gen_)
+         * — content or read-scope — has advanced past the session's snapshot.
+         * This is what lets a value written (or learned) faster than the gossip
+         * interval eventually ship: a session whose `sess_done_` never flips
+         * would otherwise stay frozen on a stale snapshot forever. Gating on
+         * link_.idle() keeps it to once per settled cycle rather than rebuilding
+         * the O(state) snapshot on every datagram that applied a record. No
+         * send — the responder reconciles on the next inbound fingerprint. */
+        if (link_.idle() && (e_->content_gen != sess_content_gen_ ||
+                             e_->scope_gen != sess_scope_gen_))
             begin_cycle_();
     }
 }
@@ -191,7 +194,8 @@ void SecurePeerSession::reset(uint64_t now_mono, std::vector<std::string> &out) 
     peer_ok_ = false;
     failed_ = false;
     sess_done_ = false;
-    sess_gen_ = 0;
+    sess_content_gen_ = 0;
+    sess_scope_gen_ = 0;
     last_kick_ = 0;
     start(now_mono, out);
 }

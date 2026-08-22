@@ -970,7 +970,8 @@ TEST(Security, ExpiringScopeNotCachedPastExpiry) {
     std::this_thread::sleep_for(std::chrono::milliseconds(550)); /* cross expiry */
 
     /* A fresh peer with P's identity syncs after expiry. With no write to bump
-     * state_gen, a wrongly-cached scope would still serve z. */
+     * content_gen (and no capability change to bump scope_gen), a wrongly-cached
+     * scope would still serve z. */
     sync_engine *p2 = sync_engine_create(seed_from(0x92).data()); /* same identity as p */
     {
         sync_session *sv = sync_session_begin_scoped(v, 1, ppk);
