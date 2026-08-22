@@ -89,6 +89,47 @@ sync_error parse_manifest(const uint8_t *m, size_t mlen, Manifest &out) {
     return SYNC_OK;
 }
 
+/* BatchGuard — RAII over the engine-global write batch, driven through the
+ * public sync_engine_batch_* ABI only (preserving this file's pure-layer
+ * rule). Constructed immediately before a multi-record mutation sequence —
+ * never before the read-only validation that precedes one, so an early
+ * NOTFOUND/CORRUPT return cannot touch (or poison) a caller's batch.
+ * commit() closes the guard on the success path; the destructor aborts on
+ * any other exit, discarding the sequence's staged, un-flushed tail rather
+ * than committing a half-written blob.
+ *
+ * ENGINE-GLOBAL SCOPE (spec §3.3 point 7): the batch belongs to the engine,
+ * not to this guard. Nested inside an embedder's own open batch, commit()
+ * merely closes one level — durability then arrives only at the embedder's
+ * outermost commit (the header documents this at the three blob write
+ * functions) — and an abort here POISONS the embedder's whole outer batch,
+ * discarding the un-flushed tail of everything it staged. That is the
+ * documented hard contract: never hold a batch open across calls into code
+ * you do not control. For in-memory engines every sync_engine_batch_* call
+ * is a clean no-op, so the guard is one too — it only ever changes behavior
+ * on store-backed engines. */
+class BatchGuard {
+public:
+    explicit BatchGuard(sync_engine *e)
+        : e_(e), armed_(sync_engine_batch_begin(e) == SYNC_OK) {}
+    BatchGuard(const BatchGuard &) = delete;
+    BatchGuard &operator=(const BatchGuard &) = delete;
+    ~BatchGuard() {
+        if (armed_) sync_engine_batch_abort(e_);
+    }
+    /* Success path: commit this nesting level. SYNC_OK inside an enclosing
+     * embedder batch means staged, not yet durable (see above). */
+    sync_error commit() {
+        if (!armed_) return SYNC_OK;
+        armed_ = false;
+        return (sync_error)sync_engine_batch_commit(e_);
+    }
+
+private:
+    sync_engine *e_;
+    bool armed_;
+};
+
 /* Expected payload length of chunk index i (0-based) under a validated
  * manifest. */
 size_t chunk_len_at(const Manifest &mf, uint32_t i) {
@@ -147,6 +188,12 @@ sync_error sync_blob_put(sync_engine *e, const uint8_t *ns, size_t ns_len,
         put_u64le(manifest, (uint64_t)len);
         put_u32le(manifest, chunk_count);
 
+        /* One batch for the whole put: N chunk records + the manifest land
+         * in O(1) bounded, clock-covered frames instead of one fsync per
+         * record. The guard aborts (discarding the staged tail) on any early
+         * return below. */
+        BatchGuard batch(e);
+
         for (uint32_t i = 0; i < chunk_count; i++) {
             size_t off = (size_t)i * SYNC_BLOB_CHUNK_MAX;
             size_t clen = off + SYNC_BLOB_CHUNK_MAX <= len
@@ -169,6 +216,9 @@ sync_error sync_blob_put(sync_engine *e, const uint8_t *ns, size_t ns_len,
                                  (const uint8_t *)manifest.data(),
                                  manifest.size());
         if (rc != SYNC_OK) return (sync_error)rc;
+
+        sync_error brc = batch.commit();
+        if (brc != SYNC_OK) return brc;
 
         std::memcpy(out_id, blob_id, SYNC_BLOB_ID_LEN);
         return SYNC_OK;
@@ -302,6 +352,11 @@ sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
         sync_error err = load_manifest(e, ns, ns_len, id, mf, &raw, &raw_len);
         if (err != SYNC_OK) return err; /* NOTFOUND or CORRUPT: nothing deleted */
 
+        /* One batch for the N chunk tombstones + the manifest tombstone
+         * (constructed only after validation, so the NOTFOUND/CORRUPT paths
+         * above never touch a caller's batch); aborted on any early return. */
+        BatchGuard batch(e);
+
         for (uint32_t i = 0; i < mf.chunk_count; i++) {
             const uint8_t *chash = mf.hashes + (size_t)i * SYNC_BLOB_ID_LEN;
             EntityKey ckey = make_key('c', chash);
@@ -316,7 +371,8 @@ sync_error sync_blob_delete(sync_engine *e, const uint8_t *ns, size_t ns_len,
 
         EntityKey mkey = make_key('b', id);
         int rc = sync_engine_delete(e, ns, ns_len, mkey.bytes, sizeof mkey.bytes);
-        return (sync_error)rc;
+        if (rc != SYNC_OK) return (sync_error)rc;
+        return batch.commit();
     } catch (...) {
         return SYNC_ERR_INTERNAL;
     }
@@ -342,6 +398,19 @@ sync_error sync_blob_erase(sync_engine *e, const uint8_t *ns, size_t ns_len,
             return rc == SYNC_OK ? SYNC_ERR_CORRUPT : (sync_error)rc;
         }
         if (err != SYNC_OK) return err; /* NOTFOUND: nothing left to reach */
+
+        /* One batch for the zero-overwrites + tombstones (constructed after
+         * the validation/CORRUPT paths above, so they never touch a caller's
+         * batch; aborted on any early return). Staging preserves append
+         * order AMONG STAGED RECORDS and sub-frames fsync in append order,
+         * so the zero-before-tombstone durable-prefix property below
+         * survives batching — load() stops at the first bad frame. (The one
+         * writes that jump the staging queue are capability/revocation
+         * frames, excluded from batching by §3.3 point 5; this sequence
+         * emits only records, so the durable-prefix argument is unaffected —
+         * and even an interleaved cap frame would be harmless, since load()
+         * merges records only after the whole replay.) */
+        BatchGuard batch(e);
 
         /* Zero every locally present chunk's payload BEFORE any tombstone
          * lands — a set on a tombstoned entity would resurrect it. Absent
@@ -378,7 +447,8 @@ sync_error sync_blob_erase(sync_engine *e, const uint8_t *ns, size_t ns_len,
 
         EntityKey mkey = make_key('b', id);
         int rc = sync_engine_delete(e, ns, ns_len, mkey.bytes, sizeof mkey.bytes);
-        return (sync_error)rc;
+        if (rc != SYNC_OK) return (sync_error)rc;
+        return batch.commit();
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
     } catch (...) {

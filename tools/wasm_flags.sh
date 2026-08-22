@@ -14,6 +14,7 @@ WASM_EXPORTS='["_sync_engine_create","_sync_engine_open","_sync_engine_open_encr
 "_sync_engine_destroy",
 "_sync_engine_flush","_sync_engine_compact","_sync_engine_identity","_sync_engine_site_id",
 "_sync_engine_set","_sync_engine_delete","_sync_engine_erase_field",
+"_sync_engine_batch_begin","_sync_engine_batch_commit","_sync_engine_batch_abort",
 "_sync_engine_get","_sync_engine_exists",
 "_sync_engine_scan","_sync_scan_free",
 "_sync_blob_put","_sync_blob_get","_sync_blob_stat","_sync_blob_delete",

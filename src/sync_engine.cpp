@@ -201,13 +201,27 @@ bool persist_meta_clock(sync_engine *e) {
 
 /* Persist an entity row (and clock) in one transaction. During a bulk-apply
  * batch the record is only staged — the batch owns the transaction, clock, and
- * compaction (one fsync for the whole batch). */
+ * compaction (O(1) fsyncs for the whole batch) — followed by the MANDATORY
+ * bounded-staging flush hook. Any in-batch failure (a false return OR a
+ * throw) poisons the whole engine-global batch (spec §3.3 point 9): a
+ * poisoned batch fails every subsequent tx_* immediately and its outermost
+ * commit discards the un-flushed tail instead of committing it. */
 bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
                const Entity &en) {
     Storage *s = e->store;
-    if (s->in_batch())
-        return s->put_entity(ns, ent, en.present_v, en.presence_hlc,
-                             en.ex_author, en.ex_sig, e->db_clock);
+    if (s->in_batch()) {
+        bool ok = false;
+        try {
+            ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                               en.ex_author, en.ex_sig, e->db_clock) &&
+                 s->batch_maybe_flush(e);
+        } catch (...) {
+            s->batch_poison();
+            throw;
+        }
+        if (!ok) s->batch_poison();
+        return ok;
+    }
     if (!s->begin()) return false;
     bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
                             en.ex_author, en.ex_sig, e->db_clock) &&
@@ -218,16 +232,29 @@ bool tx_entity(sync_engine *e, const std::string &ns, const std::string &ent,
     return true;
 }
 
-/* Persist an entity row + one field register (and clock) in one transaction. */
+/* Persist an entity row + one field register (and clock) in one transaction.
+ * In-batch semantics identical to tx_entity above: stage, then the mandatory
+ * flush hook; any failure — including a put_* short-circuit — poisons the
+ * batch (spec §3.3 point 9). */
 bool tx_entity_field(sync_engine *e, const std::string &ns,
                      const std::string &ent, const std::string &field,
                      const Entity &en, const Register &reg) {
     Storage *s = e->store;
-    if (s->in_batch())
-        return s->put_entity(ns, ent, en.present_v, en.presence_hlc,
-                             en.ex_author, en.ex_sig, e->db_clock) &&
-               s->put_field(ns, ent, field, reg.value, reg.hlc, reg.author,
-                            reg.sig, e->db_clock);
+    if (s->in_batch()) {
+        bool ok = false;
+        try {
+            ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
+                               en.ex_author, en.ex_sig, e->db_clock) &&
+                 s->put_field(ns, ent, field, reg.value, reg.hlc, reg.author,
+                              reg.sig, e->db_clock) &&
+                 s->batch_maybe_flush(e);
+        } catch (...) {
+            s->batch_poison();
+            throw;
+        }
+        if (!ok) s->batch_poison();
+        return ok;
+    }
     if (!s->begin()) return false;
     bool ok = s->put_entity(ns, ent, en.present_v, en.presence_hlc,
                             en.ex_author, en.ex_sig, e->db_clock) &&
@@ -320,14 +347,36 @@ sync_engine *sync_engine_open_encrypted(const char *path,
 
 int sync_engine_flush(sync_engine *e) {
     if (!e) return SYNC_ERR_INVALID;
-    /* Write-through keeps disk current; WAL checkpoints on close. Nothing to
-     * force here, but validate the handle for a clean contract. */
-    return SYNC_OK;
+    try {
+        /* Write-through keeps disk current outside a batch, so with no batch
+         * open there is nothing to force. With an open batch
+         * (sync_engine_batch_begin) flush is precisely the "make everything
+         * durable now" call an embedder issues before backgrounding, so it
+         * COMMITS the batch — every nesting level, engine-global — rather
+         * than silently violating its documented no-op-safety-net contract
+         * (spec §3.3 point 3). */
+        if (e->store && e->store->in_batch()) {
+            bool ok = true;
+            while (e->store->in_batch())
+                if (!e->store->batch_commit(e)) ok = false;
+            if (!ok) return SYNC_ERR_INTERNAL;
+        }
+        return SYNC_OK;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
 }
 
 int sync_engine_compact(sync_engine *e) {
     if (!e || !e->store) return SYNC_ERR_INVALID; /* no log to rewrite */
     try {
+        /* compact() refuses while a transaction is in flight — including for
+         * a batch's WHOLE lifetime (a batch holds the transaction open), so
+         * this returns SYNC_ERR_INTERNAL while any sync_engine_batch_begin
+         * batch is open (spec §3.3 point 4). The erase-then-compact
+         * physical-erasure pairing must run outside a batch. */
         return e->store->compact(e) ? SYNC_OK : SYNC_ERR_INTERNAL;
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
@@ -338,6 +387,27 @@ int sync_engine_compact(sync_engine *e) {
 
 void sync_engine_destroy(sync_engine *e) {
     if (!e) return;
+    if (e->store && e->store->in_batch()) {
+        /* Destroy with an open batch is a defined, non-silent path (spec
+         * §3.3 point 2): ~Storage() would otherwise drop the staged tail
+         * with no commit, no rollback, no diagnostic. Run the outermost
+         * commit so staged mutations land durably; on failure (including a
+         * poisoned batch, whose tail is discarded by contract) warn via the
+         * log callback — never a silent drop. */
+        try {
+            bool ok = true;
+            while (e->store->in_batch())
+                if (!e->store->batch_commit(e)) ok = false;
+            if (!ok)
+                engine_log(e, SYNC_LOG_WARN,
+                           "destroy: open batch failed to commit; staged "
+                           "mutations were not persisted");
+        } catch (...) {
+            engine_log(e, SYNC_LOG_WARN,
+                       "destroy: open batch failed to commit; staged "
+                       "mutations were not persisted");
+        }
+    }
     delete e->store;
     delete e->caps;
     delete e;
@@ -501,6 +571,50 @@ sync_error sync_engine_erase_field(sync_engine *e,
                                            field, field_len, nullptr, 0);
     } catch (const std::bad_alloc &) {
         return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+/* ---- Write batching (additive ABI; contracts in include/sync_engine.h) ---
+ * Thin wrappers over Storage's nesting-safe batch machinery. In-memory
+ * engines (no store) have no log to batch, so all three are clean no-ops
+ * returning SYNC_OK; on a store-backed engine an unbalanced commit/abort
+ * (no batch open) is SYNC_ERR_INVALID. */
+
+int sync_engine_batch_begin(sync_engine *e) {
+    if (!e) return SYNC_ERR_INVALID;
+    if (!e->store) return SYNC_OK; /* in-memory: no-op */
+    try {
+        return e->store->batch_begin() ? SYNC_OK : SYNC_ERR_INTERNAL;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+int sync_engine_batch_commit(sync_engine *e) {
+    if (!e) return SYNC_ERR_INVALID;
+    if (!e->store) return SYNC_OK; /* in-memory: no-op */
+    try {
+        if (!e->store->in_batch()) return SYNC_ERR_INVALID; /* unbalanced */
+        /* false = poisoned batch (outermost: staged tail discarded) or a
+         * write failure at the outermost commit. */
+        return e->store->batch_commit(e) ? SYNC_OK : SYNC_ERR_INTERNAL;
+    } catch (const std::bad_alloc &) {
+        return SYNC_ERR_NOMEM;
+    } catch (...) {
+        return SYNC_ERR_INTERNAL;
+    }
+}
+
+int sync_engine_batch_abort(sync_engine *e) {
+    if (!e) return SYNC_ERR_INVALID;
+    if (!e->store) return SYNC_OK; /* in-memory: no-op */
+    try {
+        if (!e->store->in_batch()) return SYNC_ERR_INVALID; /* unbalanced */
+        return e->store->batch_abort() ? SYNC_OK : SYNC_ERR_INTERNAL;
     } catch (...) {
         return SYNC_ERR_INTERNAL;
     }

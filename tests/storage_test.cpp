@@ -7,12 +7,14 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/resource.h> /* RLIMIT_FSIZE: forced mid-frame write failure */
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
+#include <csignal> /* SIGXFSZ must be ignored for EFBIG partial writes */
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +29,7 @@
 #include "cluster.hpp"
 #include "codec.h"   /* change_from_* / element_hash / DecodedChange (Phase 2) */
 #include "engine.hpp" /* white-box: cached per-cell element hashes (Phase 2) */
+#include "log_frames.hpp" /* frame walker + fsync counter (Phase 3, §3.3) */
 #include "sha256.h"
 #include "storage.h" /* kSchemaVersion; ke::merge_record (Phase 2) */
 #include "tempdir.hpp"
@@ -1137,4 +1140,746 @@ TEST(Storage, DefaultInsertedRegisterGetsHash) {
         << "winning merge did not install the incoming record's hash";
 
     sync_engine_destroy(e);
+}
+
+/* ---- Phase 3 (§3.3): batched blob writes -------------------------------- *
+ * Gate tests for the nesting-safe write batch: fsync-counter cost bound for
+ * a large blob put, single-commit-point nesting, abort semantics (durability
+ * boundary, not rollback), and the erase-before-tombstone durable-prefix
+ * invariant under batching. All assertions on write cost go through the
+ * debug/test fsync counter (ke::storage_fsync_count via log_frames.hpp), NOT
+ * on-disk frame counts — the outermost commit of a large batch ends with a
+ * maybe_compact full rewrite whose atomic_replace writes many frames under a
+ * single fsync pair (spec §3.3 amendment 1). */
+
+namespace {
+
+/* Deterministic pseudo-random fill (blob_test.cpp's generator): an all-zero
+ * buffer would make every chunk content-address to the same entity. */
+std::vector<uint8_t> blob_data(size_t n, uint32_t s) {
+    std::vector<uint8_t> v(n);
+    uint32_t x = s ? s : 1;
+    for (size_t i = 0; i < n; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        v[i] = (uint8_t)x;
+    }
+    return v;
+}
+
+} // namespace
+
+/* An 8 MiB blob put must cost O(size / kBatchFlushBytes) fsyncs — the
+ * mandatory sub-frame flushes — plus one final commit frame and exactly one
+ * compaction rewrite. Asserted on the fsync counter, with the compaction
+ * separately pinned both by counter arithmetic and structurally.
+ *
+ * Arithmetic (plaintext log, ns="blobs"):
+ *   8 MiB / SYNC_BLOB_CHUNK_MAX (32 KiB) = 256 chunk records, staged as one
+ *   entity entry (~151 B) + one field entry (32768 B payload + ~155 B framing)
+ *   per chunk, ~33.07 KiB staged per chunk. batch_maybe_flush fires at
+ *   staging >= kBatchFlushBytes (2 MiB): 64 chunks stage >= 64*32768 =
+ *   kBatchFlushBytes exactly, while 63 chunks stage at most 63*(32768+306) =
+ *   2,083,662 < 2,097,152 — so a sub-frame flushes after every 64th chunk for
+ *   any per-chunk overhead in [0, 520] B (current: 306 B). 256 chunks =>
+ *   exactly 4 sub-frame fsyncs. The manifest record (+ the tail's clock-meta
+ *   stamp) then lands in the outermost commit's frame: +1 fsync. That commit's
+ *   maybe_compact sees an ~8.6 MB log against the fresh-log 64 KiB floor and
+ *   rewrites it: atomic_replace = +2 counted fsyncs (temp file + directory).
+ *   Total: 4 + 1 + 2 = 7. */
+TEST(Storage, BlobPutFrameBounded) {
+    TempDir dir;
+    std::string db = dir.file("batch_blob.db");
+    auto site = site_from(0x61);
+    const std::string ns = "blobs";
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+
+    /* The arithmetic above needs the flush threshold to be a whole number of
+     * chunks; fail loudly if a retune breaks that before trusting the sums. */
+    ASSERT_EQ(ke::kBatchFlushBytes % SYNC_BLOB_CHUNK_MAX, 0u);
+    const uint64_t chunks_per_flush = ke::kBatchFlushBytes / SYNC_BLOB_CHUNK_MAX;
+    const size_t kBlobLen = 8u * 1024 * 1024;
+    const uint64_t chunks = kBlobLen / SYNC_BLOB_CHUNK_MAX; /* 256, exact */
+    ASSERT_EQ(chunks % chunks_per_flush, 0u);
+    const uint64_t subframes = chunks / chunks_per_flush; /* 4 */
+
+    std::vector<uint8_t> data = blob_data(kBlobLen, 0xB10B);
+    uint8_t id[SYNC_BLOB_ID_LEN];
+    synctest::fsync_reset();
+    ASSERT_EQ(sync_blob_put(e, B(ns), ns.size(), data.data(), data.size(), id),
+              SYNC_OK);
+    uint64_t fsyncs = synctest::fsync_count();
+
+    /* subframes + 1 outermost-commit frame + 2 for exactly one
+     * compaction-driven atomic_replace (temp-file fsync + directory fsync;
+     * one rename). A second compaction would show up as +2 here. */
+    EXPECT_EQ(fsyncs, subframes + 1 + 2) << "8 MiB put cost the wrong number "
+                                            "of fsyncs (sub-frame bound or "
+                                            "compaction count broken)";
+
+    /* Structural pin for "exactly one compaction": the log on disk is exactly
+     * the live-state image the rewrite produces — 1 meta frame + one frame
+     * per entity (256 chunk entities + 1 manifest entity) — not the batch's
+     * append history (which would be ~6 giant frames). */
+    synctest::LogWalk w = synctest::walk_log_file(db);
+    ASSERT_TRUE(w.ok);
+    EXPECT_FALSE(w.encrypted);
+    EXPECT_EQ(w.trailing, 0u);
+    EXPECT_EQ(w.frames.size(), 1u + chunks + 1u);
+
+    /* And nothing was lost to the batching: full round-trip after reopen. */
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d0);
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    ASSERT_EQ(sync_blob_get(e, B(ns), ns.size(), id, &out, &out_len), SYNC_OK);
+    ASSERT_EQ(out_len, kBlobLen);
+    EXPECT_EQ(0, std::memcmp(out, data.data(), kBlobLen));
+    sync_free(out);
+    sync_engine_destroy(e);
+}
+
+/* Nested begin/begin/commit/commit: only the OUTERMOST commit writes — the
+ * fsync counter stays at zero across the inner commit and every staged
+ * mutation — and the whole batch lands as ONE frame whose clock meta is
+ * stamped once per (sub-)frame, not once per record. */
+TEST(Storage, NestedBatchSingleCommitPoint) {
+    TempDir dir;
+    std::string db = dir.file("nested_batch.db");
+    auto site = site_from(0x62);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    size_t frames_before = synctest::walk_log_file(db).frames.size();
+
+    synctest::fsync_reset();
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* depth 1 */
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* depth 2 */
+    cluster::put(e, "ns", "k1", "f", "v1");
+    cluster::put(e, "ns", "k2", "f", "v2");
+    EXPECT_EQ(synctest::fsync_count(), 0u) << "staged writes hit the disk";
+
+    ASSERT_EQ(sync_engine_batch_commit(e), SYNC_OK); /* inner: depth 2 -> 1 */
+    EXPECT_EQ(synctest::fsync_count(), 0u)
+        << "inner commit wrote/fsynced; durability must arrive only at the "
+           "outermost commit";
+
+    cluster::put(e, "ns", "k3", "f", "v3");
+    cluster::put(e, "ns", "k4", "f", "v4");
+    EXPECT_EQ(synctest::fsync_count(), 0u);
+
+    ASSERT_EQ(sync_engine_batch_commit(e), SYNC_OK); /* outermost */
+    EXPECT_EQ(synctest::fsync_count(), 1u)
+        << "outermost commit must be the single durability point (one frame, "
+           "one fsync; log small enough that no compaction follows)";
+
+    /* One frame for the whole batch; its entry count is 4 mutations x
+     * (entity + field entry) + exactly 3 clock-meta entries (hlc_physical /
+     * hlc_logical / db_clock) stamped once for the frame — a per-record (or
+     * per-mutation) clock stamp would inflate this count. */
+    std::string raw = read_file(db);
+    synctest::LogWalk w = synctest::walk_frames(raw);
+    ASSERT_TRUE(w.ok);
+    EXPECT_EQ(w.trailing, 0u);
+    ASSERT_EQ(w.frames.size(), frames_before + 1);
+    EXPECT_EQ(synctest::frame_entry_count(raw, w.frames.back()), 4u * 2u + 3u);
+
+    /* Digest correct on reopen: the single frame carried everything. */
+    Digest d0 = digest(e);
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d0);
+    for (const char *k : {"k1", "k2", "k3", "k4"})
+        EXPECT_EQ(cluster::exists(e, "ns", k), true) << k;
+    sync_engine_destroy(e);
+}
+
+/* Abort discards STAGED (not-yet-flushed) bytes only. The contract pinned
+ * here, read off the implementation (Storage::batch_abort + the tx_* in-batch
+ * branches): a batch is a DURABILITY boundary, not a rollback mechanism —
+ * in-RAM engine state keeps every mutation (they were committed to the maps
+ * before the tx_* staging step), so after an abort RAM and disk genuinely
+ * diverge for those keys. This test keeps the log below the auto-compact
+ * threshold, so nothing here re-persists them and the divergence resolves in
+ * disk's favor at the next reopen (the aborted mutations are simply gone).
+ * That is deliberately NOT a general keep-off-disk guarantee: a compaction's
+ * serialize_state rewrites the log from RAM wholesale, so once the batch is
+ * closed, an explicit sync_engine_compact — or the size-triggered
+ * auto-compaction that ordinary later writes set off — persists the aborted
+ * mutations after all. That half of the contract is documented at
+ * sync_engine_batch_abort and pinned by AbortedTailReturnsAtCompaction
+ * below; compact() refusing mid-batch only defers it. A nested abort poisons
+ * the whole engine-global batch: subsequent in-batch writes fail fast and
+ * the outermost commit reports failure instead of committing. */
+TEST(Storage, AbortSemantics) {
+    TempDir dir;
+    std::string db = dir.file("abort.db");
+    auto site = site_from(0x63);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "ns", "keep", "f", "v0"); /* write-through, durable */
+
+    /* -- 1. Plain abort: staged tail discarded, RAM keeps the mutation. -- */
+    synctest::fsync_reset();
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK);
+    cluster::put(e, "ns", "gone", "f", "staged");
+    EXPECT_EQ(cluster::get(e, "ns", "gone", "f"), "staged"); /* RAM immediate */
+    ASSERT_EQ(sync_engine_batch_abort(e), SYNC_OK);
+    EXPECT_EQ(synctest::fsync_count(), 0u)
+        << "aborted batch wrote to disk (staged tail must be discarded)";
+    EXPECT_EQ(cluster::get(e, "ns", "gone", "f"), "staged")
+        << "abort must NOT roll back in-memory state (durability boundary, "
+           "not rollback)";
+
+    /* Engine fully usable after the abort: ordinary write-through resumes. */
+    cluster::put(e, "ns", "later", "f", "v1");
+
+    /* -- 2. Nested abort poisons the outer batch, engine-global. -- */
+    synctest::fsync_reset();
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* outer */
+    cluster::put(e, "ns", "outer1", "f", "vo");
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* inner */
+    cluster::put(e, "ns", "inner1", "f", "vi");
+    ASSERT_EQ(sync_engine_batch_abort(e), SYNC_OK); /* inner abort: poison */
+
+    /* Poisoned: the write path fails immediately... */
+    const std::string pns = "ns", pent = "poisoned", pf = "f", pv = "vp";
+    EXPECT_EQ(sync_engine_set(e, B(pns), pns.size(), B(pent), pent.size(),
+                              B(pf), pf.size(), B(pv), pv.size()),
+              SYNC_ERR_INTERNAL);
+    /* ...though its RAM commit had already happened (same boundary rule). */
+    EXPECT_EQ(cluster::get(e, "ns", "poisoned", "f"), "vp");
+
+    /* The outermost commit reports the poisoning and persists nothing. */
+    EXPECT_EQ(sync_engine_batch_commit(e), SYNC_ERR_INTERNAL);
+    EXPECT_EQ(synctest::fsync_count(), 0u)
+        << "poisoned batch still wrote a frame";
+
+    /* Batch fully closed and the engine healthy again. */
+    EXPECT_EQ(sync_engine_batch_commit(e), SYNC_ERR_INVALID); /* unbalanced */
+    cluster::put(e, "ns", "after", "f", "v2");
+
+    /* Reopen: durable writes present; every aborted/poisoned mutation gone —
+     * the RAM-vs-disk divergence heals in disk's favor. */
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(cluster::get(e, "ns", "keep", "f"), "v0");
+    EXPECT_EQ(cluster::get(e, "ns", "later", "f"), "v1");
+    EXPECT_EQ(cluster::get(e, "ns", "after", "f"), "v2");
+    for (const char *k : {"gone", "outer1", "inner1", "poisoned"})
+        EXPECT_EQ(cluster::exists(e, "ns", k), false)
+            << k << ": aborted mutation survived on disk";
+    sync_engine_destroy(e);
+}
+
+/* The abort boundary is durability-only: aborted mutations stay live in RAM,
+ * and the next compaction — the explicit ABI call here; the automatic
+ * size-triggered one behaves identically — re-serializes RAM into the log,
+ * making them durable after all. This pins the corrected public contract
+ * (sync_engine_batch_abort and the blob write functions promise exactly
+ * this): "aborted" means "not written by the batch", never "kept off disk".
+ * If aborts ever grow real rollback semantics, update those header docs in
+ * the same change that turns this test around. */
+TEST(Storage, AbortedTailReturnsAtCompaction) {
+    TempDir dir;
+    std::string db = dir.file("abort_compact.db");
+    auto site = site_from(0x67);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK);
+    cluster::put(e, "ns", "aborted", "f", "v");
+    ASSERT_EQ(sync_engine_batch_abort(e), SYNC_OK);
+
+    /* Not written by the batch (AbortSemantics pins that side) — but still
+     * live in RAM... */
+    EXPECT_EQ(cluster::get(e, "ns", "aborted", "f"), "v");
+    /* ...so the next compaction persists it wholesale. */
+    ASSERT_EQ(sync_engine_compact(e), SYNC_OK);
+    sync_engine_destroy(e);
+
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(cluster::get(e, "ns", "aborted", "f"), "v")
+        << "compaction no longer re-persists aborted-but-in-RAM mutations — "
+           "the sync_engine_batch_abort docs say it does; change them "
+           "together";
+    sync_engine_destroy(e);
+}
+
+/* A poisoned batch must hold — and keep holding — ZERO staged bytes: poison
+ * drops the condemned tail immediately (Storage::batch_poison) and the write
+ * path refuses to stage into it (emit()'s poison check), because that tail
+ * is guaranteed to be discarded at the outermost close anyway. Without both,
+ * a caller looping over post-poison writes — each failing SYNC_ERR_INTERNAL,
+ * e.g. a bulk ingest that ignores per-record errors — would grow staging_
+ * without bound while batch_maybe_flush (which bails out on poison before
+ * its size check) never fires: the exact unbounded RAM transient the
+ * mandatory-flush amendment exists to prevent (spec §3.3). White-box via
+ * Storage::staged_bytes(). */
+TEST(Storage, PoisonedBatchHoldsNoStaging) {
+    TempDir dir;
+    std::string db = dir.file("poison_ram.db");
+    auto site = site_from(0x68);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* outer */
+    cluster::put(e, "ns", "pre", "f", std::string(1000, 'x'));
+    EXPECT_GT(e->store->staged_bytes(), 0u) << "healthy batch not staging";
+    ASSERT_EQ(sync_engine_batch_begin(e), SYNC_OK); /* inner */
+    ASSERT_EQ(sync_engine_batch_abort(e), SYNC_OK); /* poison at depth 1 */
+    EXPECT_EQ(e->store->staged_bytes(), 0u)
+        << "poison kept the condemned staged tail in RAM";
+
+    /* Push ~2.5x kBatchFlushBytes through the poisoned batch: every set
+     * fails fast (RAM keeps the value — the boundary rule), nothing may be
+     * staged, and no condemned sub-frame may be flushed. */
+    const std::string ns = "ns", field = "f";
+    const std::string val(64u * 1024, 'y');
+    const int n = (int)(ke::kBatchFlushBytes * 5 / 2 / val.size()) + 1;
+    synctest::fsync_reset();
+    for (int i = 0; i < n; i++) {
+        std::string ent = "p" + std::to_string(i);
+        EXPECT_EQ(sync_engine_set(e, B(ns), ns.size(), B(ent), ent.size(),
+                                  B(field), field.size(), B(val), val.size()),
+                  SYNC_ERR_INTERNAL);
+        ASSERT_EQ(e->store->staged_bytes(), 0u)
+            << "write " << i
+            << " grew a poisoned batch's staging (unbounded RAM transient)";
+    }
+    EXPECT_EQ(synctest::fsync_count(), 0u)
+        << "a poisoned batch flushed a condemned sub-frame";
+
+    EXPECT_EQ(sync_engine_batch_commit(e), SYNC_ERR_INTERNAL); /* outermost */
+    /* Healthy again: write-through resumes and survives reopen. */
+    cluster::put(e, "ns", "after", "f", "v");
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(cluster::get(e, "ns", "after", "f"), "v");
+    sync_engine_destroy(e);
+}
+
+/* A FAILED frame write must not strand the log. A short write leaves partial
+ * frame bytes on disk past the last good frame; if later appends landed
+ * after that garbage they would return SYNC_OK yet be unreachable by replay
+ * (load() stops at the first bad frame) — silently lost at the next reopen.
+ * write_frame therefore marks the tail torn on any write/fsync failure, so
+ * the NEXT write truncates back to the last good frame before appending
+ * (the same deferred-cleanup mechanism load() uses for crash-torn tails).
+ * Forced deterministically with RLIMIT_FSIZE: with SIGXFSZ ignored, the
+ * over-limit write writes what fits and then fails with EFBIG — a genuine
+ * torn mid-log region. */
+TEST(Storage, FailedFrameWriteDoesNotOrphanLaterWrites) {
+    TempDir dir;
+    std::string db = dir.file("efbig.db");
+    auto site = site_from(0x69);
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "ns", "anchor", "f", "v0"); /* durable, pre-failure */
+
+    /* Cap the file at its current size + 100 bytes: the next ~4.5 KiB frame
+     * write fails partway through. */
+    struct rlimit old {};
+    ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &old), 0);
+    const size_t pre_size = read_file(db).size();
+    struct rlimit lim = old;
+    lim.rlim_cur = (rlim_t)pre_size + 100;
+    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &lim), 0);
+    auto oldsig = std::signal(SIGXFSZ, SIG_IGN);
+    ASSERT_NE(oldsig, SIG_ERR);
+
+    const std::string ns = "ns", ent = "lost", field = "f";
+    const std::string big(4096, 'z');
+    EXPECT_EQ(sync_engine_set(e, B(ns), ns.size(), B(ent), ent.size(),
+                              B(field), field.size(), B(big), big.size()),
+              SYNC_ERR_INTERNAL)
+        << "precondition: the capped write was supposed to fail";
+    EXPECT_GT(read_file(db).size(), pre_size)
+        << "precondition: the failed write was supposed to leave partial "
+           "bytes (a torn region) on disk";
+
+    std::signal(SIGXFSZ, oldsig);
+    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &old), 0);
+
+    /* Recovery: later writes must truncate the garbage first, then land
+     * replayably. Before the torn-tail marking these returned SYNC_OK and
+     * vanished at reopen. */
+    cluster::put(e, "ns", "after1", "f", "v1");
+    cluster::put(e, "ns", "after2", "f", "v2");
+    synctest::LogWalk w = synctest::walk_log_file(db);
+    ASSERT_TRUE(w.ok);
+    EXPECT_EQ(w.trailing, 0u)
+        << "torn mid-log region still present after successful writes";
+
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(cluster::get(e, "ns", "anchor", "f"), "v0");
+    EXPECT_EQ(cluster::get(e, "ns", "after1", "f"), "v1")
+        << "post-failure write returned SYNC_OK but was lost on reopen";
+    EXPECT_EQ(cluster::get(e, "ns", "after2", "f"), "v2")
+        << "post-failure write returned SYNC_OK but was lost on reopen";
+    /* The failed key itself: RAM kept it (boundary rule) but its frame never
+     * reached disk — reopen heals in disk's favor. */
+    EXPECT_EQ(cluster::exists(e, "ns", "lost"), false);
+    sync_engine_destroy(e);
+}
+
+/* Batched sync_blob_erase stages its records in append order — every zeroing
+ * overwrite BEFORE any tombstone — and sub-frames fsync in append order, so
+ * every durable prefix of the log satisfies: no chunk tombstone precedes its
+ * zeroing overwrite (a violating prefix would reopen with a non-empty payload
+ * hidden under a tombstone, unreachable by a re-erase). Verified by a
+ * truncation sweep: every frame boundary (plus mid-frame cuts, which load()
+ * drops as a torn tail) reopens to a state where every non-empty chunk
+ * payload still belongs to a PRESENT (un-tombstoned) entity.
+ *
+ * PINNED AS NEAR-VACUOUS TODAY, BY DESIGN (spec §3.3, minor hazard): with
+ * kMaxChunks = 1000 an erase stages ~200 B/record, far below kBatchFlushBytes,
+ * so the whole erase lands in ONE frame and every prefix contains none or all
+ * of it. The sweep is kept as a pin against a future kBatchFlushBytes
+ * reduction (or per-record staging growth) that would split an erase across
+ * sub-frames — the append-order staging + append-order sub-frame fsync +
+ * load()'s stop-at-first-bad-frame argument is what must keep each prefix
+ * safe on that day, and this test is what will catch its violation. */
+TEST(Storage, EraseTombstonePrefixInvariant) {
+    TempDir dir;
+    std::string db = dir.file("erase_prefix.db");
+    auto site = site_from(0x64);
+    const std::string ns = "blobs";
+
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+
+    /* 80 chunks (2.5 MiB): the batched put crosses one sub-frame boundary
+     * (flush after chunk 64), then its outermost commit compacts the log into
+     * a per-entity image; the erase then appends its single batch frame. */
+    const size_t kBlobLen = 80u * SYNC_BLOB_CHUNK_MAX;
+    std::vector<uint8_t> data = blob_data(kBlobLen, 0xE7A5);
+    uint8_t id[SYNC_BLOB_ID_LEN];
+    ASSERT_EQ(sync_blob_put(e, B(ns), ns.size(), data.data(), data.size(), id),
+              SYNC_OK);
+    ASSERT_EQ(sync_blob_erase(e, B(ns), ns.size(), id), SYNC_OK);
+    sync_engine_destroy(e);
+
+    std::string raw = read_file(db);
+    synctest::LogWalk w = synctest::walk_frames(raw);
+    ASSERT_TRUE(w.ok);
+    ASSERT_EQ(w.trailing, 0u);
+    ASSERT_GE(w.frames.size(), 3u); /* meta + entities + the erase frame */
+
+    /* Cut points: after the header, after every frame, and a few mid-frame
+     * offsets inside the last (erase) frame — those reopen identically to the
+     * boundary before them, exercising the stop-at-first-bad-frame path. */
+    std::vector<size_t> cuts;
+    cuts.push_back(w.header_size);
+    for (const synctest::LogFrame &f : w.frames)
+        cuts.push_back(f.offset + f.size);
+    const synctest::LogFrame &last = w.frames.back();
+    cuts.push_back(last.offset + 1);
+    cuts.push_back(last.offset + last.size / 2);
+    cuts.push_back(last.offset + last.size - 1);
+
+    for (size_t cut : cuts) {
+        std::string prefix = raw.substr(0, cut);
+        std::string pdb = dir.file("prefix.db");
+        write_file(pdb, prefix);
+        sync_engine *p = sync_engine_open(pdb.c_str(), site.data());
+        ASSERT_NE(p, nullptr) << "prefix at " << cut << " failed to open";
+
+        /* The invariant: every chunk register still holding payload bytes
+         * must belong to a present entity — a tombstone durable before its
+         * zeroing overwrite would surface here as a hidden non-empty payload
+         * (export sees registers hidden under tombstones). */
+        sync_change *recs = nullptr;
+        size_t n = 0;
+        ASSERT_EQ(sync_engine_export(p, &recs, &n), SYNC_OK);
+        for (size_t i = 0; i < n; i++) {
+            const sync_change &c = recs[i];
+            if (c.kind != SYNC_CHANGE_REGISTER || c.value_len == 0) continue;
+            if (c.entity_len != 34 || c.entity[0] != 'c' || c.entity[1] != 0)
+                continue;
+            int present = 0;
+            ASSERT_EQ(sync_engine_exists(p, c.ns, c.ns_len, c.entity,
+                                         c.entity_len, &present),
+                      SYNC_OK);
+            EXPECT_EQ(present, 1)
+                << "prefix at " << cut << ": tombstone durable before its "
+                << "zeroing overwrite (non-empty payload under a tombstone)";
+        }
+        sync_changes_free(recs, n);
+        sync_engine_destroy(p);
+    }
+}
+
+/* ---- Phase 3 (§3.3): fork-based mid-batch crash prefix (RESPECIFIED) ----- *
+ * The naive form of this test ("crash mid-batch, reopen, write, everything
+ * converges") is VACUOUS: Hlc::tick's wall-clock branch makes any post-reopen
+ * local write dominate any wall-clock-stamped record whether or not the
+ * sub-frames carried clock meta, so it passes with the stamp deleted. The
+ * respecified form (spec §3.3 hazard table) makes the clock itself the
+ * subject: the crashing child applies SIGNED REMOTE records whose HLC
+ * physical lies decades ahead of the wall clock, so each accepted apply's
+ * e->clock.receive() pushes the engine clock far past now_ms(). The
+ * per-sub-frame clock-meta stamp (Storage::batch_maybe_flush) is then the
+ * ONLY thing that persists that future clock: load() restores the clock from
+ * meta entries alone (storage.cpp, replay epilogue) and never receive()s a
+ * replayed record's HLC. With the stamp, the reopened clock has replayed past
+ * the future HLCs and a fresh local write ticks {future, n+1} — strictly
+ * newer, it wins LWW everywhere. Without it, the reopened clock falls back to
+ * the last pre-batch (wall-clock) meta, the local write ticks ~now_ms() and
+ * LOSES the LWW merge to the durable future-HLC record on the next replay —
+ * the exact "durable records whose HLC exceeds the persisted clock" crash
+ * hazard the stamp exists to close.
+ *
+ * Native-only by construction: this file is registered under
+ * if(NOT EMSCRIPTEN) in CMakeLists.txt (fork/waitpid, like CrashAtomicity
+ * above), so no per-test guard is needed. */
+
+namespace {
+
+/* The one future instant every batched record carries: 2100-01-01T00:00:00Z
+ * in ms. Far enough ahead that no test-runner wall clock reaches it; the test
+ * asserts that precondition rather than assuming it. */
+constexpr uint64_t kFutureMs = 4102444800000ull;
+
+/* Per-record payload size. kBatchFlushBytes must divide by it so the
+ * sub-frame boundary falls on a whole record count (same arithmetic as
+ * BlobPutFrameBounded): with value_len = 32 KiB a record stages
+ * 32768 + ~238 B (117 B entity shell row + 121 B field-entry framing), so the
+ * mandatory flush fires after every 64th apply for any per-record overhead in
+ * [0, 520] B — 63 records stage at most 63*(32768+520) = 2,097,144 <
+ * kBatchFlushBytes while 64 stage at least 64*32768 = kBatchFlushBytes. */
+constexpr size_t kFutureValLen = 32u * 1024;
+constexpr int    kFutureRecords = 160; /* 2 full sub-frames + a 32-record
+                                        * staged tail the crash discards */
+
+std::string future_ent(int i) {
+    char b[16];
+    std::snprintf(b, sizeof b, "r%03d", i);
+    return std::string(b);
+}
+
+/* Build, sign, and apply record i: REGISTER n/r{i}/f = 32 KiB pseudo-random
+ * payload, HLC {kFutureMs, i}, authored by one fixed REMOTE identity (not the
+ * engine's own). Ed25519 signing is deterministic, so the child (feeding the
+ * crashing batch) and the parent (rebuilding the expected committed prefix
+ * independently) construct byte-identical records. */
+bool apply_future_record(sync_engine *e, int i) {
+    const std::string ns = "n", ent = future_ent(i), field = "f";
+    std::vector<uint8_t> val = blob_data(kFutureValLen, 0xC0DE0000u + (uint32_t)i);
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_REGISTER;
+    c.ns = B(ns);
+    c.ns_len = ns.size();
+    c.entity = B(ent);
+    c.entity_len = ent.size();
+    c.field = B(field);
+    c.field_len = field.size();
+    c.value = val.data();
+    c.value_len = val.size();
+    c.hlc.physical = kFutureMs;
+    c.hlc.logical = (uint32_t)i;
+    auto s = cluster::seed_from(0xF07u); /* the remote author's seed */
+    if (sync_change_sign(&c, s.data()) != SYNC_OK) return false;
+    return sync_engine_apply(e, &c) == SYNC_OK;
+}
+
+/* White-box register lookup (find-only — never inserts). */
+const ke::Register *find_reg(sync_engine *e, const std::string &ns,
+                             const std::string &ent, const std::string &field) {
+    auto ni = e->ns.find(ns);
+    if (ni == e->ns.end()) return nullptr;
+    auto ei = ni->second.find(ent);
+    if (ei == ni->second.end()) return nullptr;
+    auto fi = ei->second.fields.find(field);
+    return fi == ei->second.fields.end() ? nullptr : &fi->second;
+}
+
+} // namespace
+
+TEST(Storage, MidBatchCrashPrefix) {
+    TempDir dir;
+    std::string db = dir.file("midbatch.db");
+    auto site = site_from(0x65);
+
+    /* Precondition for the whole construction: the record HLCs really are in
+     * the future (retune kFutureMs before the year 2100). */
+    ASSERT_GT(kFutureMs, ke::now_ms() + 3600u * 1000u)
+        << "kFutureMs is no longer far ahead of the wall clock";
+
+    ASSERT_EQ(ke::kBatchFlushBytes % kFutureValLen, 0u)
+        << "retune kFutureValLen: the sub-frame arithmetic needs the flush "
+           "threshold to be a whole number of records";
+    const int per_flush = (int)(ke::kBatchFlushBytes / kFutureValLen); /* 64 */
+    const int expect_survivors = 2 * per_flush;                       /* 128 */
+    ASSERT_LT(expect_survivors, kFutureRecords); /* a tail must be staged */
+
+    /* Seed a committed pre-batch anchor. Its write-through commit persists
+     * wall-clock meta — exactly the stale clock a stamp-less reopen would
+     * fall back to. Mirror it into `expected`, the independently-built
+     * committed-prefix oracle (in-memory, different site). */
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    cluster::put(e, "n", "anchor", "f", "v0");
+    auto oracle_site = site_from(0x66);
+    sync_engine *expected = sync_engine_create(oracle_site.data());
+    ASSERT_NE(expected, nullptr);
+    replicate(e, expected);
+    sync_engine_destroy(e);
+    const size_t frames_pre = synctest::walk_log_file(db).frames.size();
+
+    /* Child: open the durable engine, open a batch, apply the future-HLC
+     * records — each accepted apply receive()s {kFutureMs, i} into the engine
+     * clock — until the mandatory flush has cut exactly two durable
+     * sub-frames, then _exit(0) WITHOUT committing: a mid-batch crash with a
+     * staged, never-written tail. No gtest in the child; it self-validates
+     * and reports through its exit code. */
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        sync_engine *c = sync_engine_open(db.c_str(), site.data());
+        if (!c) _exit(2);
+        synctest::fsync_reset();
+        if (sync_engine_batch_begin(c) != SYNC_OK) _exit(3);
+        for (int i = 0; i < kFutureRecords; i++)
+            if (!apply_future_record(c, i)) _exit(4);
+        /* Exactly the two sub-frame flushes hit the disk — nothing else may
+         * fsync inside a batch (no per-record frames, no compaction). */
+        if (synctest::fsync_count() != 2) _exit(5);
+        /* The applies really pushed the clock past the wall time. */
+        if (c->clock.physical != kFutureMs) _exit(6);
+        _exit(0); /* crash: no batch_commit, no destroy, no unwind */
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0)
+        << "child failed (2=open 3=batch_begin 4=apply 5=sub-frame fsync "
+           "count != 2 6=clock not pushed to kFutureMs)";
+
+    /* On-disk shape: the two durable sub-frames and NOTHING for the staged
+     * tail. Each sub-frame carries per_flush records (2 entries each: entity
+     * shell + field register) + the 3 clock-meta entries stamped once per
+     * sub-frame by batch_maybe_flush — the entry count pins the stamp's
+     * presence structurally before the semantic checks below. */
+    {
+        std::string raw = read_file(db);
+        synctest::LogWalk w = synctest::walk_frames(raw);
+        ASSERT_TRUE(w.ok);
+        EXPECT_EQ(w.trailing, 0u);
+        ASSERT_EQ(w.frames.size(), frames_pre + 2)
+            << "expected exactly the two crash-surviving sub-frames";
+        for (size_t fi = frames_pre; fi < w.frames.size(); fi++)
+            EXPECT_EQ(synctest::frame_entry_count(raw, w.frames[fi]),
+                      (uint32_t)(per_flush * 2 + 3))
+                << "sub-frame " << (fi - frames_pre)
+                << ": missing the per-sub-frame clock-meta stamp (3 meta "
+                   "entries) beside its " << per_flush << " records";
+    }
+
+    /* Reopen. The committed prefix must be exactly the two sub-frames'
+     * records; the staged tail must be gone. */
+    sync_engine *r = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r, nullptr);
+
+    int survivors = 0;
+    bool prefix_exact = true;
+    for (int i = 0; i < kFutureRecords; i++) {
+        bool have = find_reg(r, "n", future_ent(i), "f") != nullptr;
+        if (have) {
+            if (i != survivors) prefix_exact = false; /* gap: not a prefix */
+            survivors++;
+        }
+    }
+    EXPECT_TRUE(prefix_exact) << "surviving records are not a log prefix";
+    ASSERT_GT(survivors, 0) << "flushed sub-frames lost";
+    ASSERT_LT(survivors, kFutureRecords)
+        << "uncommitted staged tail survived the crash";
+    EXPECT_EQ(survivors, expect_survivors)
+        << "sub-frame boundary drifted (per-record staging overhead left the "
+           "[0, 520] B window? see the arithmetic at kFutureValLen)";
+
+    /* Reopen state == the committed prefix, built independently: the oracle
+     * engine applies the same deterministic signed records 0..survivors-1
+     * (plus the anchor it already mirrored). */
+    for (int i = 0; i < survivors; i++)
+        ASSERT_TRUE(apply_future_record(expected, i)) << "oracle apply " << i;
+    EXPECT_EQ(digest(r), digest(expected))
+        << "reopened state is not exactly the committed prefix";
+
+    /* Spot-checks: a surviving record's payload round-tripped, and the cell
+     * the local write below must beat still carries its future HLC. */
+    {
+        const ke::Register *r1 = find_reg(r, "n", future_ent(1), "f");
+        ASSERT_NE(r1, nullptr);
+        std::vector<uint8_t> want = blob_data(kFutureValLen, 0xC0DE0000u + 1u);
+        EXPECT_TRUE(r1->value.size() == want.size() &&
+                    std::memcmp(r1->value.data(), want.data(), want.size()) == 0)
+            << "surviving record payload corrupted";
+        const ke::Register *r0 = find_reg(r, "n", future_ent(0), "f");
+        ASSERT_NE(r0, nullptr);
+        EXPECT_EQ(r0->hlc.physical, kFutureMs);
+        EXPECT_EQ(r0->hlc.logical, 0u);
+    }
+
+    /* THE MECHANISM: the reopened clock must have replayed PAST every
+     * surviving future HLC — restorable only from the sub-frames' own clock
+     * meta (the last stamp wrote {kFutureMs, survivors}; the anchor's meta
+     * holds mere wall time). */
+    EXPECT_EQ(r->clock.physical, kFutureMs)
+        << "reopened clock fell back to wall-clock meta: the sub-frames did "
+           "not carry the batch's clock";
+    EXPECT_GE(r->clock.logical, (uint32_t)survivors)
+        << "reopened clock logical is behind the flushed sub-frames' stamp";
+
+    /* THE DISCRIMINATING ASSERTION: a fresh LOCAL write to a future-HLC cell
+     * must WIN LWW — its tick must be strictly newer than {kFutureMs,
+     * survivors-1} (the newest durable record). Without the per-sub-frame
+     * stamp it ticks ~now_ms() << kFutureMs and loses. */
+    cluster::put(r, "n", future_ent(0), "f", "local-wins");
+    {
+        const ke::Register *lw = find_reg(r, "n", future_ent(0), "f");
+        ASSERT_NE(lw, nullptr);
+        /* RAM always shows the value (set installs unconditionally) — the
+         * HLC is what decides every future merge/replay. */
+        EXPECT_TRUE(lw->value == "local-wins");
+        EXPECT_TRUE(lw->hlc.physical > kFutureMs ||
+                    (lw->hlc.physical == kFutureMs &&
+                     lw->hlc.logical > (uint32_t)(survivors - 1)))
+            << "fresh local write does NOT dominate the replayed future HLC "
+               "(got {" << lw->hlc.physical << "," << lw->hlc.logical
+            << "} vs record {" << kFutureMs << "," << (survivors - 1)
+            << "}): the local write LOSES LWW to a record the engine itself "
+               "durably holds";
+    }
+    Digest pre_destroy = digest(r);
+    sync_engine_destroy(r);
+
+    /* And the LWW verdict must survive a replay: on the next reopen the
+     * future record and the local write meet in merge_record, and the local
+     * write must be the winner. A wall-clock-ticked write would lose here —
+     * disk would resurrect the future-HLC value over the caller's own
+     * committed update. */
+    sync_engine *r2 = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(r2, nullptr);
+    EXPECT_TRUE(cluster::get(r2, "n", future_ent(0), "f") == "local-wins")
+        << "replay resurrected the future-HLC record over the fresh local "
+           "write: the local write lost LWW on reopen";
+    EXPECT_EQ(digest(r2), pre_destroy)
+        << "reopened state diverged from the engine that wrote it";
+    sync_engine_destroy(r2);
+    sync_engine_destroy(expected);
 }

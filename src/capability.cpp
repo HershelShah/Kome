@@ -311,7 +311,10 @@ void rev_ingest(sync_engine *e, const std::vector<std::string> &blobs) {
         e->scope_gen++; /* a revocation changes read-scope: invalidate scoped
                          * snapshots (the unscoped content snapshot stays valid) */
         /* Persist authoritative revocations so the cut-off survives a reopen
-         * without persisting unrelated/junk ones. */
+         * without persisting unrelated/junk ones. Like sync_engine_revoke,
+         * put_revocation writes its own immediately-fsync'd frame even inside
+         * an open batch (spec §3.3 point 5) — a durable cut-off must not be
+         * discardable by a later batch_abort. */
         if (e->store && authoritative) {
             std::string b;
             rev_encode(r, b);
@@ -444,7 +447,10 @@ int sync_engine_grant(sync_engine *e, const sync_capability *c) {
         e->caps->add(*c);
         e->scope_gen++; /* read-scope changed: invalidate cached scoped snapshots
                          * (the unscoped content snapshot stays valid) */
-        /* Persist so the grant survives a reopen. */
+        /* Persist so the grant survives a reopen. put_capability bypasses any
+         * open write batch and writes its own immediately-fsync'd frame
+         * (spec §3.3 point 5): SYNC_OK from grant means durable NOW, never
+         * "staged and discardable by a later batch_abort". */
         if (e->store) {
             std::string blob;
             cap_encode(*c, blob);
@@ -477,6 +483,11 @@ int sync_engine_revoke(sync_engine *e, const char *ns,
         e->caps->add_rev(r);
         e->scope_gen++; /* read-scope changed: invalidate cached scoped snapshots
                          * (the unscoped content snapshot stays valid) */
+        /* Security: put_revocation bypasses any open write batch and writes
+         * its own immediately-fsync'd frame (spec §3.3 point 5). A revocation
+         * that could be discarded by a later batch_abort would silently undo
+         * a "remove a stolen device" cut-off the caller was told succeeded,
+         * so revoke keeps synchronous fsync durability unconditionally. */
         if (e->store) {
             std::string blob;
             rev_encode(r, blob);

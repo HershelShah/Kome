@@ -9,6 +9,8 @@
 #include "sync_engine.h"
 
 #include "cluster.hpp"
+#include "log_frames.hpp" /* fsync counter (durable-engines race pin) */
+#include "tempdir.hpp"
 
 #include <gtest/gtest.h>
 
@@ -70,4 +72,40 @@ TEST(Threading, IndependentEnginesNoSharedState) {
     }
     for (auto &th : ts) th.join();
     EXPECT_EQ(converged.load(), kThreads);
+}
+
+/* Independent DURABLE engines driven from independent threads must be just as
+ * clean: the storage layer's only process-global mutable state is the
+ * debug/test fsync counter (ke::storage_fsync_count), which every durable
+ * write path increments — a plain uint64_t there is a data race the moment
+ * two durable engines fsync concurrently, invisible to the in-memory test
+ * above. Run under TSan this pins the counter's atomicity; natively the
+ * exact final count also proves relaxed increments lose nothing. */
+TEST(Threading, IndependentDurableEnginesNoSharedState) {
+    const int kThreads = 4;
+    const int kSetsPerThread = 100; /* ~30 KB/log: stays under the 64 KiB
+                                     * auto-compact floor, so every set is
+                                     * exactly one fsync'd frame */
+    synctest::TempDir dir;
+    synctest::fsync_reset();
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; t++) {
+        ts.emplace_back([t, &dir]() {
+            std::string db = dir.file("durable_" + std::to_string(t) + ".db");
+            auto sd = seed_from(0x3000 + t);
+            sync_engine *e = sync_engine_open(db.c_str(), sd.data());
+            if (!e) return; /* asserted via the fsync arithmetic below */
+            for (int i = 0; i < kSetsPerThread; i++) {
+                std::string ent = "e" + std::to_string(i);
+                cluster::put(e, "ns", ent, "f", "v");
+            }
+            sync_engine_destroy(e);
+        });
+    }
+    for (auto &th : ts) th.join();
+    /* Per engine: 1 frame for the fresh log's schema+seed stamp, then one
+     * frame per set. An engine that failed to open, a lost (raced) counter
+     * increment, or an unexpected auto-compaction all break the sum. */
+    EXPECT_EQ(synctest::fsync_count(),
+              (uint64_t)kThreads * (1u + kSetsPerThread));
 }
