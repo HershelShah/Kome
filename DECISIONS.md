@@ -1716,7 +1716,26 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   rejection rests on it. `docs/DATA_MODEL.md`'s planned v2→v3 migration had the
   same defect from the other direction — it synthesized `hlc = {0, C}`, mapping
   a legacy `causal_length = 0` onto the sentinel — and is respecified to
-  `{0, C + 1}`. `reconcile` ignores
+  `{0, C + 1}`.
+- **The first attempt at that carry was itself wrong, in two ways, and a second
+  review round caught both.** It decided the carry from `logical == 0` *after*
+  the increment, which cannot distinguish a wrap from `receive`'s fourth branch
+  — where `logical = 0` is a deliberate reset because the wall clock advanced
+  past both sides — so every ordinary apply pushed `physical` one millisecond
+  past `now`, breaking `receive`'s own `physical <= max(local, remote, now)`
+  bound. And its `physical += 1` was unguarded, so at `physical == UINT64_MAX`
+  it wrapped to `0` with `logical` already `0`: the sentinel again, reached from
+  the other end. That one was *remote-triggerable* — `receive` adopts a peer's
+  physical with no clamp on future timestamps, so a single signed record at
+  `{UINT64_MAX, UINT32_MAX-1}` plus one local write minted `{0,0}` and silently
+  lost the local write. Strictly worse than the hole it was closing.
+  `Hlc::bump_logical` decides the carry from the *pre-increment* counter, so
+  only a real wrap carries, and saturates at `{UINT64_MAX, UINT32_MAX}` instead
+  of wrapping: a repeated timestamp costs only progress (LWW ties on author and
+  the later write is dropped), where wrapping mints a phantom. Recorded because
+  the pattern generalises — "detect the overflow from the post-state" is the
+  bug, and the carry itself needed its own overflow guard.
+- `reconcile` ignores
   `apply_change`'s return value, so a rejection drops one record rather than
   aborting a session: no DoS, no stall.
 - **`present()` now means `asserted() && present_v`.** A no-op after the above,
