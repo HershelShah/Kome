@@ -843,12 +843,19 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
              * assertion to replay. Do NOT materialise a shell for it: an entity
              * that still has fields is re-created on demand by its kField
              * records (merge_record indexes e->ns[ns][ent]), while one with no
-             * fields carries no reconciliation element at all -- and an
-             * element-less entity key is exactly what RBSR can never equalise,
-             * so resurrecting it here would re-poison the digest on every
-             * reopen and re-emit it on every compaction (rewrite_log_streamed
-             * writes back every entity in e->ns unconditionally). Dropping it
-             * makes the entity-key set equal the element-carrying set. */
+             * fields carries no reconciliation element at all.
+             *
+             * This is hygiene, not correctness -- and deliberately NOT
+             * justified by the digest: sync_engine_digest now gates its
+             * presence block on asserted(), so a materialised shell would
+             * contribute nothing to it either way. What dropping it buys is
+             * that the entity-key set actually equals the element-carrying set:
+             * no map node retained for a key nothing can ever reference, and no
+             * write-back of it on the next compaction (rewrite_log_streamed
+             * re-emits every entity in e->ns unconditionally, so a shell would
+             * otherwise persist itself forever). It is also what lets a
+             * database poisoned by a pre-fix binary shed the phantom entirely
+             * on upgrade rather than keeping it as an empty shell. */
         }
         return true;
     }

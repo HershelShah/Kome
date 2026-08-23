@@ -36,9 +36,10 @@ struct Hlc {
     Hlc tick(uint64_t now_ms);
     /* Merge a remote timestamp on receive; keeps the clock monotonic. */
     void receive(const Hlc &remote, uint64_t now_ms);
-    /* Carry a uint32 wrap of `logical` into `physical`, so neither tick nor
-     * receive can ever land on the reserved {0,0} sentinel (see asserted()). */
-    void carry_logical_overflow();
+    /* logical = base + 1, carrying a uint32 wrap into `phys` (and saturating
+     * rather than wrapping when the clock is exhausted), so neither tick nor
+     * receive can ever land on the reserved {0,0} sentinel -- see asserted(). */
+    void bump_logical(uint64_t &phys, uint32_t base);
 };
 
 /* Total order on HLC: physical, then logical. <0 / 0 / >0. */
@@ -96,9 +97,10 @@ struct Entity {
      *
      * DERIVED, not stored: {0,0} is a RESERVED sentinel meaning "no assertion",
      * so no assertion may ever carry it. Hlc::tick cannot produce it -- the
-     * now > physical branch gives physical >= 1, and the else branch's
-     * logical += 1 is followed by carry_logical_overflow(), without which a
-     * uint32 wrap of `logical` at physical == 0 lands exactly here. Both apply
+     * now > physical branch gives physical >= 1, and the else branch goes
+     * through bump_logical, which carries a uint32 wrap of `logical` into
+     * physical and saturates instead of wrapping when physical is itself at
+     * UINT64_MAX. Both apply
      * paths (ke::apply_change and ke::merge_record) also reject a {0,0}
      * EXISTENCE record outright -- see DECISIONS.md. A future maintainer who
      * introduces a legitimate zero-HLC producer will have their data silently
