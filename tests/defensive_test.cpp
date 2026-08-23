@@ -159,6 +159,8 @@ TEST(Defensive, VerifyOnlyWhenRecordWouldChangeState) {
         c.kind = SYNC_CHANGE_EXISTENCE;
         c.ns = b(n); c.ns_len = 1; c.entity = b(x); c.entity_len = 1;
         c.causal_length = 1;
+        c.hlc.physical = 1; /* a real assertion: {0,0} is the "no assertion"
+                             * sentinel and apply refuses it */
         ASSERT_EQ(sync_change_sign(&c, seed(7).data()), SYNC_OK);
         ASSERT_EQ(sync_engine_apply(e, &c), SYNC_OK);
     }

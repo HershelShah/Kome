@@ -764,6 +764,24 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
         return SYNC_ERR_INVALID;
     if (c->kind != SYNC_CHANGE_EXISTENCE && c->kind != SYNC_CHANGE_REGISTER)
         return SYNC_ERR_INVALID;
+    if (c->kind == SYNC_CHANGE_EXISTENCE) {
+        /* {0,0} is the "no assertion" SENTINEL, not a timestamp: Entity::
+         * asserted() (engine.hpp) *derives* "does this entity carry a presence
+         * assertion?" from a non-zero presence_hlc rather than storing a bit.
+         * So a record stamped {0,0} is malformed, and accepting one used to
+         * commit present_v/ex_author/ex_sig onto a cell that asserted() still
+         * reported as unasserted -- exists() said 1, digest moved,
+         * build_snapshot advertised no element, and the reload dropped it
+         * (storage.cpp re-derives asserted() at load).
+         *
+         * Refusing it cannot drop an honest peer's record: Hlc::tick stamps
+         * wall-clock ms and returns {0,0} on neither branch (now > physical
+         * gives physical >= 1; otherwise logical >= 1), both local existence
+         * producers go through it, and build_snapshot only ever advertises
+         * asserted() cells -- so no honest writer can emit {0,0} in the first
+         * place. */
+        if (c->hlc.physical == 0 && c->hlc.logical == 0) return SYNC_ERR_INVALID;
+    }
     if (c->kind == SYNC_CHANGE_REGISTER) {
         if (!c->field && c->field_len) return SYNC_ERR_INVALID;
         if (!c->value && c->value_len) return SYNC_ERR_INVALID;
@@ -989,15 +1007,31 @@ int sync_engine_digest(sync_engine *e, uint8_t out[SYNC_DIGEST_LEN]) {
             for (auto &ep : np.second) {
                 const std::string &entk = ep.first;
                 Entity &ent = ep.second;
-                const uint8_t tagE = 'E';
-                h.update(&tagE, 1);
-                feed(h, nsk.data(), nsk.size());
-                feed(h, entk.data(), entk.size());
-                const uint8_t present = ent.present_v ? 1 : 0;
-                h.update(&present, 1);
-                feed_u64(h, ent.presence_hlc.physical);
-                feed_u32(h, ent.presence_hlc.logical);
-                h.update(ent.ex_author.data(), SYNC_PUBKEY_LEN);
+                /* Only an ASSERTED presence contributes a presence block --
+                 * the same gate build_snapshot/export apply, so the digest
+                 * quantifies over exactly the element set reconciliation
+                 * replicates. An unasserted shell (an entity that reached the
+                 * map via a register whose existence record has not arrived)
+                 * has no assertion to hash: its block would be the constant
+                 * "no assertion" tuple (present=0, hlc {0,0}, zero author),
+                 * whose only information is "this key is in the map" -- which
+                 * is precisely what RBSR does not replicate. Hashing it let
+                 * two replicas that reconciliation calls fully converged hold
+                 * different digests, with no route to repair (an unasserted
+                 * shell survives both gc_tombstones and compaction). Its
+                 * registers below are still hashed: real state, still
+                 * advertised, still replicated. */
+                if (ent.asserted()) {
+                    const uint8_t tagE = 'E';
+                    h.update(&tagE, 1);
+                    feed(h, nsk.data(), nsk.size());
+                    feed(h, entk.data(), entk.size());
+                    const uint8_t present = ent.present_v ? 1 : 0;
+                    h.update(&present, 1);
+                    feed_u64(h, ent.presence_hlc.physical);
+                    feed_u32(h, ent.presence_hlc.logical);
+                    h.update(ent.ex_author.data(), SYNC_PUBKEY_LEN);
+                }
                 for (auto &fp : ent.fields) {
                     const std::string &fk = fp.first;
                     Register &r = fp.second;

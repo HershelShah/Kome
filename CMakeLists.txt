@@ -301,6 +301,7 @@ if(SYNC_BUILD_TESTS)
     sync_add_test(gen_split_test tests/gen_split_test.cpp)
     sync_add_test(elemhash_test tests/elemhash_test.cpp)
     sync_add_test(scoped_view_test tests/scoped_view_test.cpp)
+    sync_add_test(zero_hlc_test tests/zero_hlc_test.cpp)
 
     # Opt-in adversarial / large-scale stress suite (slow; in-process). OFF by
     # default so it stays out of the normal/CI run; enable with -DSYNC_STRESS=ON.
