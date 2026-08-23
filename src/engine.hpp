@@ -81,9 +81,23 @@ struct Entity {
     Hash256                           ex_hash{};
     std::map<std::string, Register>   fields;
 
-    bool present() const { return present_v; }
+    /* Present == an assertion exists AND it says present. The asserted() term
+     * is a no-op while the {0,0} reservation below holds (nothing can set
+     * present_v without a real HLC), and is kept so that a future path
+     * re-introducing present-without-assertion is caught by construction
+     * rather than by a repro: every read API (exists/get/scan/delete/
+     * erase_field, and set's need_presence) routes through here. */
+    bool present() const { return asserted() && present_v; }
     /* True once a presence assertion (add or delete) exists; an entity that only
-     * holds fields (a register arrived before any existence record) has none. */
+     * holds fields (a register arrived before any existence record) has none.
+     *
+     * DERIVED, not stored: {0,0} is a RESERVED sentinel meaning "no assertion",
+     * so no assertion may ever carry it. Hlc::tick cannot produce it on either
+     * branch (now > physical gives physical >= 1; otherwise logical >= 1), and
+     * both apply paths (ke::apply_change and ke::merge_record) reject a {0,0}
+     * EXISTENCE record outright -- see DECISIONS.md. A future maintainer who
+     * introduces a legitimate zero-HLC producer will have their data silently
+     * dropped, which is the price of deriving this instead of storing a bit. */
     bool asserted() const {
         return presence_hlc.physical != 0 || presence_hlc.logical != 0;
     }

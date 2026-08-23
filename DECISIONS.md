@@ -1636,3 +1636,77 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   tense (P4 deleted it), and the plan's Phase-5 gate text still described the
   visible-fraction heuristic it *anticipated* rather than the
   `base_is_current || fully_open` gate that measurement actually produced.
+
+## Zero-HLC existence records: `{0,0}` is a reserved sentinel (bug fix)
+
+- **`sync_engine_digest` changes value for any engine holding an unasserted
+  entity.** Stated first because it is the headline: the digest is the
+  documented convergence oracle. A *healthy, converged* replica holds no
+  unasserted entity (`sync_engine_set` emits the presence assertion and the
+  register together), so no healthy digest moves. What moves is an engine
+  holding an entity key that carries no reconciliation element: a register that
+  arrived before its existence record, a shell left by the compute-then-commit
+  `bad_alloc` path, or a replica poisoned by the bug below. Wire bytes, RBSR
+  fingerprints and the on-disk frame format are untouched; no golden digest
+  vector exists anywhere in the repo (every digest assertion in the suite is
+  engine-to-engine within one run). The real exposure is a mixed-version fleet
+  comparing digests mid-sync across a field-before-existence transient.
+- **The bug.** `Entity::asserted()` *derives* "does this entity carry a presence
+  assertion?" from `presence_hlc != {0,0}` instead of storing a bit. But
+  `apply_change`'s EXISTENCE branch compared `(hlc, author)` against a
+  synthesised `{0,0}` + `kZeroAuthor` tuple for an absent cell, so an incoming
+  record stamped `{0,0}` *tied* on HLC and *won* the `memcmp` tie-break for any
+  real public key. It then committed `present_v`/`ex_author`/`ex_sig` onto a
+  cell that `asserted()` still reported unasserted. Four subsystems disagreed
+  about one cell: `exists` said 1, `digest` moved, `build_snapshot` advertised
+  no element, and `Storage::apply_entry` re-derived `asserted()` at load and
+  discarded the presence bit, author and signature. Reachable from the wire by
+  any peer with namespace write access — and reachable *by accident*, because
+  the public header still documented the pre-LWW contract (`hlc` marked
+  "REGISTER only", "unused" for EXISTENCE), so `memset`-then-fill — the natural
+  way to hand-build a `sync_change` — produced exactly this record.
+- **Why the digest fix is not optional.** The entity-key set is not the element
+  set, and RBSR can only ever equalise the element set — so *any* entity key
+  carrying zero elements is permanently un-reconcilable and permanently
+  digest-visible. Two replicas that reconciliation reports as fully converged
+  held permanently different digests, with no route to repair: `gc_tombstones`
+  deliberately keeps unasserted shells and `rewrite_log_streamed` re-emits every
+  entity unconditionally, so a shell survives both GC and compaction forever.
+  Rejecting `{0,0}` at apply closes only one of three shell producers; the
+  second is `apply_entry`'s unasserted branch and the third is the `bad_alloc`
+  shell that compute-then-commit *deliberately blesses* (`engine.hpp`). The
+  third cannot be closed at the source without abandoning that invariant, so the
+  digest itself has to be shell-immune. `docs/DATA_STRUCTURE_REVIEW.md` predicted
+  this for a hypothetical incremental digest; it was already true of the O(N) one.
+- **This restores the digest's documented contract rather than changing it.**
+  `DECISIONS.md` promises the digest reflects *all state* — it still hashes every
+  tombstone and every register hidden under one; what it stops hashing is the
+  *absence* of an assertion, a constant tuple (`present=0`, `hlc {0,0}`, zero
+  author) whose only information is "this key is in the map", which is precisely
+  what RBSR does not replicate. Three written promises were false before this
+  fix and are true after it: the header's "two engines that have merged the same
+  set of records produce identical digests", "digest preserved across reopen",
+  and "the digest is unchanged across a compaction".
+- **Rejected: an explicit stored `asserted` bit.** It is the honest
+  representation, and the wire would *not* need to change (a record on the wire
+  is always an assertion; there is no "no assertion" record to encode). But the
+  in-memory `Entity` and the on-disk `kEntity` entry would, and `Storage::load`
+  rejects an unknown schema version outright — so it costs a format bump plus a
+  migration. What that buys is the ability to represent an assertion from a peer
+  whose clock reads exactly `{0,0}`: a record that loses LWW to every other
+  assertion in existence, and which that same peer's next tick would emit
+  correctly as `{0,1}`. A format break to preserve a degenerate case.
+- **`{0,0}` is therefore reserved by rule, not by accident**, and that is the
+  lasting cost of keeping the derived predicate: a future maintainer who
+  introduces a legitimate zero-HLC producer will have their data dropped. It is
+  documented at `Entity::asserted()`, at `sync_change` in the public header, and
+  enforced in both apply paths. `Hlc::tick` cannot return `{0,0}` on either
+  branch (`now > physical` gives `physical >= 1`; otherwise `logical >= 1`), both
+  local existence producers go through it, and `build_snapshot` only ever
+  advertises `asserted()` cells — so no honest writer can emit `{0,0}`, and the
+  rejection can never refuse an honest peer's record. `reconcile` ignores
+  `apply_change`'s return value, so a rejection drops one record rather than
+  aborting a session: no DoS, no stall.
+- **`present()` now means `asserted() && present_v`.** A no-op after the above,
+  kept so that a future path re-introducing present-without-assertion is caught
+  by construction rather than by a repro.

@@ -75,8 +75,14 @@ typedef enum sync_change_kind {
 
 /* A single change record — the unit of replication.
  *
- * For SYNC_CHANGE_EXISTENCE: (ns, entity, causal_length) are meaningful;
- *   field/value/hlc are unused.
+ * For SYNC_CHANGE_EXISTENCE: (ns, entity, causal_length, hlc) are meaningful;
+ *   field/value are unused. causal_length is a bare present bit (0 = absent /
+ *   tombstone, non-zero = present) and hlc is the LWW timestamp of the
+ *   assertion — presence merges by (hlc, author), not by counter. hlc MUST be
+ *   non-zero: {0,0} is the reserved "no assertion" sentinel, and apply rejects
+ *   a {0,0} existence record with SYNC_ERR_INVALID. Records built by the
+ *   engine always satisfy this; a hand-built record must stamp a real
+ *   timestamp (see sync_change_sign).
  * For SYNC_CHANGE_REGISTER: (ns, entity, field, value, hlc) are meaningful;
  *   causal_length is unused.
  *
@@ -94,10 +100,10 @@ typedef struct sync_change {
     const uint8_t *entity; size_t entity_len;
     const uint8_t *field;  size_t field_len;  /* REGISTER only */
 
-    uint64_t       causal_length;             /* EXISTENCE only */
+    uint64_t       causal_length;             /* EXISTENCE only: present bit */
 
     const uint8_t *value;  size_t value_len;  /* REGISTER only */
-    sync_hlc       hlc;                        /* REGISTER only */
+    sync_hlc       hlc;      /* both kinds; EXISTENCE: never {0,0} */
 
     uint8_t        author[SYNC_PUBKEY_LEN];   /* writer's signing public key */
     uint8_t        signature[SYNC_SIG_LEN];   /* EdDSA over canonical content */

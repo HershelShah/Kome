@@ -690,6 +690,13 @@ struct Replay {
 void merge_record(sync_engine *e, const DecodedChange &dc, const Hash256 &h) {
     Hlc hlc{dc.hlc.physical, dc.hlc.logical};
     if (dc.kind == SYNC_CHANGE_EXISTENCE) {
+        /* Same {0,0}-sentinel refusal as ke::apply_change (sync_engine.cpp):
+         * {0,0} means "no assertion", so it can never BE one. apply_entry's
+         * kEntity branch already filters these out before they are queued, so
+         * this is defence in depth for the second, independent apply path --
+         * and it also stops the operator[] below from materialising a shell
+         * entity for a record that must not land. */
+        if (hlc.physical == 0 && hlc.logical == 0) return;
         Entity &en = e->ns[dc.ns][dc.entity];
         if (existence_cmp(hlc, dc.author, en.presence_hlc, en.ex_author) > 0) {
             en.present_v = (dc.causal_length != 0);
@@ -832,9 +839,16 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
             dc.signature = sg;
             pending.push_back(std::move(dc));
         } else {
-            /* Unasserted shell carries no signed content — just hold the entity
-             * for its (separately verified) fields. */
-            (void)e->ns[ns][ent];
+            /* An unasserted kEntity entry carries no signed content and no
+             * assertion to replay. Do NOT materialise a shell for it: an entity
+             * that still has fields is re-created on demand by its kField
+             * records (merge_record indexes e->ns[ns][ent]), while one with no
+             * fields carries no reconciliation element at all -- and an
+             * element-less entity key is exactly what RBSR can never equalise,
+             * so resurrecting it here would re-poison the digest on every
+             * reopen and re-emit it on every compaction (rewrite_log_streamed
+             * writes back every entity in e->ns unconditionally). Dropping it
+             * makes the entity-key set equal the element-carrying set. */
         }
         return true;
     }
