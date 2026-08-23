@@ -1700,11 +1700,23 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
   lasting cost of keeping the derived predicate: a future maintainer who
   introduces a legitimate zero-HLC producer will have their data dropped. It is
   documented at `Entity::asserted()`, at `sync_change` in the public header, and
-  enforced in both apply paths. `Hlc::tick` cannot return `{0,0}` on either
-  branch (`now > physical` gives `physical >= 1`; otherwise `logical >= 1`), both
-  local existence producers go through it, and `build_snapshot` only ever
-  advertises `asserted()` cells — so no honest writer can emit `{0,0}`, and the
-  rejection can never refuse an honest peer's record. `reconcile` ignores
+  enforced in both apply paths. `Hlc::tick` cannot return `{0,0}`, both local
+  existence producers go through it, and `build_snapshot` only ever advertises
+  `asserted()` cells — so no honest writer can emit `{0,0}`, and the rejection
+  can never refuse an honest peer's record.
+- **That last claim was not true when first written, and adversarial review
+  caught it.** `Hlc::logical` is `uint32_t` and both increment sites were a bare
+  `+= 1`, so a clock at `{p, UINT32_MAX}` wrapped to `{p, 0}` — and at `p == 0`
+  (a host whose `now_ms()` is stuck at the epoch: no RTC, which is exactly the
+  embedded/WASM case) that is the sentinel itself. `Hlc::carry_logical_overflow`
+  now carries the wrap into `physical`, which keeps the result strictly greater
+  than the pre-tick value (`{p,MAX} < {p+1,0}`) and makes "a ticked clock is
+  never `{0,0}`" a *total* invariant rather than an overwhelmingly likely one.
+  A latent HLC overflow independent of this bug, fixed here because the whole
+  rejection rests on it. `docs/DATA_MODEL.md`'s planned v2→v3 migration had the
+  same defect from the other direction — it synthesized `hlc = {0, C}`, mapping
+  a legacy `causal_length = 0` onto the sentinel — and is respecified to
+  `{0, C + 1}`. `reconcile` ignores
   `apply_change`'s return value, so a rejection drops one record rather than
   aborting a session: no DoS, no stall.
 - **`present()` now means `asserted() && present_v`.** A no-op after the above,

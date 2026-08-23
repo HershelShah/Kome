@@ -141,6 +141,46 @@ void expect_zero_hlc_refused(sync_engine *e, const char *label) {
 
 } // namespace
 
+/* ---- 0. The clock can never MINT the sentinel --------------------------- *
+ * The whole fix rests on "no honest writer can emit {0,0}", which rests on
+ * Hlc::tick never returning it. `logical` is uint32_t and both increment sites
+ * were a bare +1, so {p, UINT32_MAX} wrapped to {p, 0} -- and at p == 0 (a host
+ * whose now_ms() is stuck at the epoch: no RTC) that is exactly the sentinel.
+ * PRE-FIX both lines below returned {0,0}. */
+TEST(ZeroHlcExistence, ClockNeverMintsTheSentinel) {
+    ke::Hlc t;
+    t.physical = 0;
+    t.logical = 0xFFFFFFFFu;
+    const ke::Hlc before = t;
+    t.tick(0);
+    EXPECT_FALSE(t.physical == 0 && t.logical == 0)
+        << "tick wrapped onto the reserved {0,0} sentinel";
+    EXPECT_GT(ke::hlc_cmp(t, before), 0) << "tick must be strictly monotonic";
+
+    ke::Hlc r;
+    r.physical = 0;
+    r.logical = 0xFFFFFFFEu;
+    ke::Hlc remote;
+    remote.physical = 0;
+    remote.logical = 0xFFFFFFFFu;
+    r.receive(remote, 0);
+    EXPECT_FALSE(r.physical == 0 && r.logical == 0)
+        << "receive wrapped onto the reserved {0,0} sentinel";
+    EXPECT_GT(ke::hlc_cmp(r, remote), 0)
+        << "receive must dominate the remote timestamp";
+
+    /* The ordinary paths are untouched. */
+    ke::Hlc n;
+    n.physical = 5;
+    n.logical = 3;
+    n.tick(9);
+    EXPECT_EQ(n.physical, 9u);
+    EXPECT_EQ(n.logical, 0u);
+    n.tick(9);
+    EXPECT_EQ(n.physical, 9u);
+    EXPECT_EQ(n.logical, 1u);
+}
+
 /* ---- 1. In-memory engine: no storage, no compaction, no batching --------- */
 TEST(ZeroHlcExistence, MemoryEngineRefusesZeroHlc) {
     sync_engine *e = cluster::make(0x33);

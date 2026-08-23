@@ -149,10 +149,18 @@ Pre-1.0 / R&D, so a wire change is acceptable. Bump **codec v2 → v3**:
   to `(…, present:u8, hlc:{physical:u64, logical:u32}, author)`
   (`src/codec.cpp:55-69` `encode_signing`).
 - **DB upgrade on open of a v2 file**: for each entity with `causal_length = C`,
-  synthesize `present = (C & 1)` and `hlc = {physical: 0, logical: C}` so the
+  synthesize `present = (C & 1)` and `hlc = {physical: 0, logical: C + 1}` so the
   relative order is preserved and any new real-HLC write dominates legacy state;
   drop value bytes for entities that migrate to `present=false`. One-time, gated
   by the existing `meta.schema_version` guard (`sync_engine_open`).
+  > **The `+ 1` is load-bearing.** `{0,0}` is the reserved "no assertion"
+  > sentinel that `Entity::asserted()` derives its answer from, and both apply
+  > paths reject an EXISTENCE record carrying it. The original form of this
+  > migration used `logical = C`, which maps `C = 0` (a legacy absent entity)
+  > onto exactly that sentinel — so those entities would be silently dropped on
+  > upgrade. Offsetting by one preserves the relative order of every `C` and
+  > keeps the whole range clear of the sentinel. See DECISIONS.md, "Zero-HLC
+  > existence records".
 - Bindings (Python/WASM) and `netnode` need no API change — `set`/`delete`/`get`
   signatures are unchanged; only the on-wire/at-rest existence encoding changes.
 
