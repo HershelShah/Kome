@@ -31,16 +31,31 @@ uint64_t now_ms() {
         .count();
 }
 
-/* Carry a logical-counter overflow into physical. `logical` is uint32_t and
- * both increment sites below are bare +1, so without this a clock parked at
- * physical == p with logical == UINT32_MAX wraps to {p, 0} -- and at p == 0
- * (a host whose now_ms() is stuck at the epoch, e.g. no RTC) that is exactly
- * {0,0}, the reserved "no assertion" sentinel (Entity::asserted(), engine.hpp).
- * Carrying keeps the value strictly greater than the pre-tick one ({p,MAX} <
- * {p+1,0} under hlc_cmp) and makes "a ticked clock is never {0,0}" a total
- * invariant rather than an overwhelmingly-likely one. */
-void Hlc::carry_logical_overflow() {
-    if (logical == 0) physical += 1; /* only reachable via a wrap to zero */
+/* logical = base + 1, carrying a uint32 overflow into `phys`.
+ *
+ * `logical` is uint32_t and every increment site is a bare +1, so a clock at
+ * {p, UINT32_MAX} wraps to {p, 0} -- and at p == 0 (a host whose now_ms() is
+ * stuck at the epoch: no RTC) that is exactly {0,0}, the reserved "no
+ * assertion" sentinel (Entity::asserted(), engine.hpp). Carrying into physical
+ * keeps the result strictly greater than the pre-bump value ({p,MAX} <
+ * {p+1,0} under hlc_cmp).
+ *
+ * The carry MUST be decided from the pre-increment counter, not from
+ * "logical == 0" afterwards: receive's fourth branch sets logical = 0
+ * deliberately (the wall clock advanced past both sides), and a carry there
+ * would push physical past `now` on every ordinary apply.
+ *
+ * `phys` is remote-influenced -- receive adopts a peer's physical with no
+ * clamp on future timestamps -- so the increment needs its own overflow guard.
+ * On the one degenerate input where no larger HLC exists at all
+ * (phys == UINT64_MAX and base == UINT32_MAX) the clock SATURATES rather than
+ * wrapping: a repeated timestamp costs only progress (LWW then ties on author
+ * and the later write is dropped), whereas wrapping would land on the sentinel
+ * and mint a phantom. */
+void Hlc::bump_logical(uint64_t &phys, uint32_t base) {
+    if (base != UINT32_MAX) { logical = base + 1; return; }
+    if (phys != UINT64_MAX) { phys += 1; logical = 0; return; }
+    logical = UINT32_MAX; /* clock exhausted: saturate, never wrap to {0,0} */
 }
 
 Hlc Hlc::tick(uint64_t now) {
@@ -48,8 +63,7 @@ Hlc Hlc::tick(uint64_t now) {
         physical = now;
         logical = 0;
     } else {
-        logical += 1;
-        carry_logical_overflow();
+        bump_logical(physical, logical);
     }
     return *this;
 }
@@ -61,16 +75,15 @@ void Hlc::receive(const Hlc &remote, uint64_t now) {
     if (now > new_p) new_p = now;
 
     if (new_p == old_p && new_p == remote.physical) {
-        logical = (logical > remote.logical ? logical : remote.logical) + 1;
+        bump_logical(new_p, logical > remote.logical ? logical : remote.logical);
     } else if (new_p == old_p) {
-        logical += 1;
+        bump_logical(new_p, logical);
     } else if (new_p == remote.physical) {
-        logical = remote.logical + 1;
+        bump_logical(new_p, remote.logical);
     } else {
-        logical = 0;
+        logical = 0; /* wall clock advanced past both: a real reset, not a wrap */
     }
     physical = new_p;
-    carry_logical_overflow(); /* same uint32 wrap as tick -- see above */
 }
 
 int hlc_cmp(const Hlc &a, const Hlc &b) {
@@ -789,11 +802,12 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
          * (storage.cpp re-derives asserted() at load).
          *
          * Refusing it cannot drop an honest peer's record: Hlc::tick cannot
-         * return {0,0} (now > physical gives physical >= 1; the else branch's
-         * logical += 1 carries a uint32 wrap into physical -- see
-         * carry_logical_overflow), both local existence producers go through
-         * it, and build_snapshot only ever advertises asserted() cells -- so no
-         * honest writer can emit {0,0} in the first place. */
+         * return {0,0} (now > physical gives physical >= 1; the else branch
+         * goes through bump_logical, which carries a uint32 wrap of logical
+         * into physical and saturates rather than wrapping at the top), both
+         * local existence producers go through it, and build_snapshot only
+         * ever advertises asserted() cells -- so no honest writer can emit
+         * {0,0} in the first place. */
         if (c->hlc.physical == 0 && c->hlc.logical == 0) return SYNC_ERR_INVALID;
     }
     if (c->kind == SYNC_CHANGE_REGISTER) {

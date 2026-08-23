@@ -179,6 +179,56 @@ TEST(ZeroHlcExistence, ClockNeverMintsTheSentinel) {
     n.tick(9);
     EXPECT_EQ(n.physical, 9u);
     EXPECT_EQ(n.logical, 1u);
+
+    /* receive's fourth branch sets logical = 0 DELIBERATELY (the wall clock
+     * advanced past both sides). Deciding the carry from "logical == 0" after
+     * the fact fires here and pushes physical one past `now` on every ordinary
+     * apply, breaking receive's own bound physical <= max(local, remote, now). */
+    ke::Hlc w;
+    w.physical = 1000;
+    w.logical = 7;
+    ke::Hlc past;
+    past.physical = 900;
+    past.logical = 3;
+    w.receive(past, 2000);
+    EXPECT_EQ(w.physical, 2000u) << "receive pushed physical past now";
+    EXPECT_EQ(w.logical, 0u);
+
+    /* The carry itself must not overflow. `physical` is remote-influenced
+     * (receive adopts a peer's physical with no clamp on future timestamps), so
+     * an unguarded physical += 1 at UINT64_MAX wraps to 0 with logical already
+     * 0 -- landing on the sentinel from the other direction. Saturate instead. */
+    ke::Hlc top;
+    top.physical = UINT64_MAX;
+    top.logical = 0xFFFFFFFFu;
+    top.tick(0);
+    EXPECT_FALSE(top.physical == 0 && top.logical == 0)
+        << "the carry overflowed physical straight onto the sentinel";
+}
+
+/* A peer-reachable version of the same hazard: one signed record at a far-future
+ * HLC drives the local clock to the top of its range, and the next LOCAL write
+ * must still produce a usable assertion rather than the sentinel. */
+TEST(ZeroHlcExistence, FarFutureRecordCannotPoisonTheNextLocalWrite) {
+    sync_engine *e = cluster::make(0x71);
+    ASSERT_NE(e, nullptr);
+
+    ASSERT_EQ(apply_existence_at(e, "ns", "poison", true, UINT64_MAX,
+                                 0xFFFFFFFEu, 0xA5),
+              SYNC_OK)
+        << "a far-future HLC is accepted verbatim today; that is the premise";
+
+    cluster::put(e, "ns", "mydoc", "title", "hello");
+
+    EXPECT_TRUE(cluster::exists(e, "ns", "mydoc"))
+        << "the local write after a far-future record must still land";
+    EXPECT_EQ(cluster::get(e, "ns", "mydoc", "title"), "hello");
+
+    const ke::Entity &en = e->ns["ns"]["mydoc"];
+    EXPECT_TRUE(en.asserted())
+        << "the local assertion was stamped with the reserved sentinel";
+    EXPECT_TRUE(en.present());
+    sync_engine_destroy(e);
 }
 
 /* ---- 1. In-memory engine: no storage, no compaction, no batching --------- */
