@@ -220,9 +220,18 @@ TEST(ZeroHlcExistence, DigestIgnoresElementlessEntityKeys) {
     ASSERT_NE(plain, nullptr);
     ASSERT_NE(shelled, nullptr);
 
-    cluster::put(plain, "ns", "real", "f", "v");
-    cluster::put(shelled, "ns", "real", "f", "v");
-    ASSERT_EQ(cluster::digest(plain), cluster::digest(shelled));
+    /* Build identical state with EXPLICIT timestamps. cluster::put stamps from
+     * the engine's own wall clock, so two engines whose puts straddle a
+     * millisecond boundary would diverge here for a reason that has nothing to
+     * do with what this test is about (observed under ASan and the
+     * amalgamation build, which are slow enough to cross one). */
+    for (sync_engine *e : {plain, shelled}) {
+        ASSERT_EQ(apply_existence_at(e, "ns", "real", true, 1000, 0, 0x61),
+                  SYNC_OK);
+        cluster::apply_register(e, "ns", "real", "f", "v", 1001, 0, 0x61);
+    }
+    ASSERT_EQ(cluster::digest(plain), cluster::digest(shelled))
+        << "the two engines must start byte-identical";
 
     /* Exactly the state engine.hpp's bad_alloc path is documented to leave. */
     (void)shelled->ns["ns"]["orphan"];
