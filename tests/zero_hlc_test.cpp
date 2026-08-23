@@ -37,6 +37,7 @@
 
 #include "cluster.hpp"
 #include "engine.hpp" /* ke::Entity — the white-box shell-immunity case */
+#include "storage.h"  /* Storage::put_meta_u64 — the clock-restore case */
 #include "tempdir.hpp"
 
 namespace {
@@ -229,6 +230,51 @@ TEST(ZeroHlcExistence, FarFutureRecordCannotPoisonTheNextLocalWrite) {
         << "the local assertion was stamped with the reserved sentinel";
     EXPECT_TRUE(en.present());
     sync_engine_destroy(e);
+}
+
+/* ---- 0b. The persisted clock must never be restored BACKWARDS ----------- *
+ * `logical` is written to the meta frame as 8 bytes (put_meta_u64) but held as
+ * uint32_t, so the restore narrows. A truncating cast can hand back a clock
+ * strictly smaller than the one persisted, and a clock that moves backwards
+ * lets the next local write tie or lose LWW against a record already on disk --
+ * dropping that write silently, which is the same failure mode the {0,0}
+ * reservation exists to prevent. A log this code writes can never store more
+ * than UINT32_MAX, so the hazard only reaches a corrupt or hand-edited file --
+ * which is exactly what this test writes.
+ *
+ * PRE-FIX the cast truncated: 0x1_0000_0007 came back as 7. */
+TEST(ZeroHlcExistence, OversizedPersistedLogicalClampsInsteadOfTruncating) {
+    TempDir dir;
+    ASSERT_FALSE(dir.path.empty());
+    const std::string path = dir.file("clock.db");
+    auto seed = cluster::seed_from(0x81);
+
+    {
+        sync_engine *e = sync_engine_open(path.c_str(), seed.data());
+        ASSERT_NE(e, nullptr);
+        cluster::put(e, "ns", "ent", "f", "v"); /* make the log non-trivial */
+        ASSERT_NE(e->store, nullptr);
+        /* Wider than uint32 by exactly one, plus a small remainder: a truncating
+         * restore yields 7, a clamping one yields UINT32_MAX. */
+        ASSERT_TRUE(e->store->put_meta_u64("hlc_logical", 0x100000007ull));
+        ASSERT_EQ(sync_engine_flush(e), SYNC_OK);
+        sync_engine_destroy(e);
+    }
+
+    sync_engine *r = sync_engine_open(path.c_str(), seed.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->clock.logical, 0xFFFFFFFFu)
+        << "an out-of-range persisted logical must clamp, not wrap around to a "
+           "smaller clock";
+
+    /* And the clock still makes progress from the clamp: tick carries into
+     * physical rather than wrapping onto the sentinel. */
+    const ke::Hlc before = r->clock;
+    const ke::Hlc after = r->clock.tick(0);
+    EXPECT_GT(ke::hlc_cmp(after, before), 0) << "clamped clock cannot advance";
+    EXPECT_FALSE(after.physical == 0 && after.logical == 0);
+
+    sync_engine_destroy(r);
 }
 
 /* ---- 1. In-memory engine: no storage, no compaction, no batching --------- */

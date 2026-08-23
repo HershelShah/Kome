@@ -807,7 +807,19 @@ bool apply_entry(sync_engine *e, Replay &rp, const uint8_t *&p,
         } else if (k == "hlc_physical" && v.size() == 8) {
             rp.hlc_physical = read_u64le((const uint8_t *)v.data());
         } else if (k == "hlc_logical" && v.size() == 8) {
-            rp.hlc_logical = (uint32_t)read_u64le((const uint8_t *)v.data());
+            /* Persisted as 8 bytes (put_meta_u64) but held as uint32_t in
+             * memory, so the restore has to narrow. CLAMP, don't truncate: a
+             * truncating cast can restore a clock strictly SMALLER than the one
+             * persisted, and a clock that moves backwards lets the next local
+             * write tie or lose LWW against a record already on disk -- which
+             * drops that write silently, the same failure mode this file's
+             * {0,0} reservation exists to prevent. Clamping keeps the restore
+             * monotone-non-decreasing, and Hlc::tick still makes progress from
+             * UINT32_MAX by carrying into physical (bump_logical). A log written
+             * by this code can never store more than UINT32_MAX here, so this
+             * only ever fires on a corrupt or hand-edited file. */
+            const uint64_t l = read_u64le((const uint8_t *)v.data());
+            rp.hlc_logical = l > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)l;
         } else if (k == "db_clock" && v.size() == 8) {
             rp.db_clock = read_u64le((const uint8_t *)v.data());
         }
