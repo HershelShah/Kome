@@ -554,7 +554,13 @@ void sync_change_free_decoded(sync_change *c);
 /* Sign an externally-constructed record in place: derives the identity keypair
  * from seed, sets c->author to its signing public key, and fills c->signature
  * with an EdDSA signature over the canonical content. Useful for tests and for
- * constructing records outside an engine. Returns SYNC_OK on success. */
+ * constructing records outside an engine. Returns SYNC_OK on success.
+ *
+ * This is a signing primitive: apart from the record kind it validates nothing
+ * and signs *c verbatim. In particular it does NOT enforce the EXISTENCE
+ * hlc != {0,0} rule documented on sync_change above -- it will happily sign a
+ * record that every apply path then rejects with SYNC_ERR_INVALID. Stamp a real
+ * timestamp before calling. */
 int sync_change_sign(sync_change *c, const uint8_t seed[SYNC_SEED_LEN]);
 
 /* ---- Reconciliation session (M3): sync only the difference --------------- */
