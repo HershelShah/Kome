@@ -31,12 +31,25 @@ uint64_t now_ms() {
         .count();
 }
 
+/* Carry a logical-counter overflow into physical. `logical` is uint32_t and
+ * both increment sites below are bare +1, so without this a clock parked at
+ * physical == p with logical == UINT32_MAX wraps to {p, 0} -- and at p == 0
+ * (a host whose now_ms() is stuck at the epoch, e.g. no RTC) that is exactly
+ * {0,0}, the reserved "no assertion" sentinel (Entity::asserted(), engine.hpp).
+ * Carrying keeps the value strictly greater than the pre-tick one ({p,MAX} <
+ * {p+1,0} under hlc_cmp) and makes "a ticked clock is never {0,0}" a total
+ * invariant rather than an overwhelmingly-likely one. */
+void Hlc::carry_logical_overflow() {
+    if (logical == 0) physical += 1; /* only reachable via a wrap to zero */
+}
+
 Hlc Hlc::tick(uint64_t now) {
     if (now > physical) {
         physical = now;
         logical = 0;
     } else {
         logical += 1;
+        carry_logical_overflow();
     }
     return *this;
 }
@@ -57,6 +70,7 @@ void Hlc::receive(const Hlc &remote, uint64_t now) {
         logical = 0;
     }
     physical = new_p;
+    carry_logical_overflow(); /* same uint32 wrap as tick -- see above */
 }
 
 int hlc_cmp(const Hlc &a, const Hlc &b) {
@@ -774,12 +788,12 @@ int ke::apply_change(sync_engine *e, const sync_change *c,
          * build_snapshot advertised no element, and the reload dropped it
          * (storage.cpp re-derives asserted() at load).
          *
-         * Refusing it cannot drop an honest peer's record: Hlc::tick stamps
-         * wall-clock ms and returns {0,0} on neither branch (now > physical
-         * gives physical >= 1; otherwise logical >= 1), both local existence
-         * producers go through it, and build_snapshot only ever advertises
-         * asserted() cells -- so no honest writer can emit {0,0} in the first
-         * place. */
+         * Refusing it cannot drop an honest peer's record: Hlc::tick cannot
+         * return {0,0} (now > physical gives physical >= 1; the else branch's
+         * logical += 1 carries a uint32 wrap into physical -- see
+         * carry_logical_overflow), both local existence producers go through
+         * it, and build_snapshot only ever advertises asserted() cells -- so no
+         * honest writer can emit {0,0} in the first place. */
         if (c->hlc.physical == 0 && c->hlc.logical == 0) return SYNC_ERR_INVALID;
     }
     if (c->kind == SYNC_CHANGE_REGISTER) {
