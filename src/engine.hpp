@@ -45,6 +45,33 @@ struct Hlc {
 /* Total order on HLC: physical, then logical. <0 / 0 / >0. */
 int hlc_cmp(const Hlc &a, const Hlc &b);
 
+/* The highest remote `physical` this engine will ADOPT into its own clock.
+ *
+ * bump_logical's saturating branch is a FIXED POINT: at {UINT64_MAX,
+ * UINT32_MAX} tick() returns a value EQUAL to the pre-tick one, because no
+ * larger HLC exists. That silently breaks tick()'s contract -- the local write
+ * paths (sync_engine_set/sync_engine_delete) commit tick()'s value with NO LWW
+ * gate, on the documented assumption that it is "strictly newer than any prior
+ * assertion this engine has seen, so it wins", while apply_change gates every
+ * REMOTE record on `order <= 0`. At the fixed point a local write therefore
+ * lands locally and is dropped by every peer (it ties its own earlier record on
+ * hlc, then on author): silent, permanent divergence rather than lost progress.
+ *
+ * receive() adopts a peer's physical with no clamp, so ONE signed record at the
+ * top of the range pins the engine-global clock -- and because the record then
+ * replicates, each peer's receive() pins it too. Reserving 2^32 ms of headroom
+ * below the exhausted state keeps tick() strictly monotonic for the life of any
+ * real process and any real database.
+ *
+ * Clamping ADOPTION is not clamping ACCEPTANCE: apply_change decides accept or
+ * reject purely from the record's own (hlc, author), never from this clock, so
+ * the merge function stays deterministic and convergence is untouched
+ * (SECURITY.md's objection to bounded-drift REJECTION does not apply here). A
+ * record stamped above the ceiling still wins LWW on its own cell -- correct,
+ * it really is later. We simply stop dragging the whole engine up with it, so
+ * one absurd record can no longer break writes to every OTHER entity. */
+constexpr uint64_t kMaxAdoptablePhysical = UINT64_MAX - (1ull << 32);
+
 /* An LWW register: a field's value plus the timestamp/author that wrote it,
  * and the author's signature over the canonical record. */
 struct Register {
@@ -113,7 +140,15 @@ struct Entity {
 using Entities   = std::map<std::string, Entity>;
 using Namespaces = std::map<std::string, Entities>;
 
-/* Current wall-clock time in milliseconds since the Unix epoch. */
+/* Convert a signed millisecond count since the Unix epoch (what
+ * std::chrono::milliseconds::rep is) into the unsigned domain every consumer
+ * here assumes, clamping a pre-epoch (negative) count to 0 rather than letting
+ * it wrap. Split out of now_ms() so the boundary is reachable from a test: the
+ * system clock is not settable from one. */
+uint64_t ms_since_epoch(int64_t count);
+
+/* Current wall-clock time in milliseconds since the Unix epoch. Never
+ * decreases below 0 and never wraps -- see ms_since_epoch. */
 uint64_t now_ms();
 
 /* Apply one change. The public sync_engine_apply is a thin wrapper with

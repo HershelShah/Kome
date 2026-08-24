@@ -23,6 +23,7 @@
 #include "cluster.hpp"
 #include "sync_drive.hpp"
 #include "transport/reliable.h"
+#include "transport/ws.h"
 #include "transport/stun.h"
 #include "transport/udp.h"
 
@@ -338,4 +339,109 @@ TEST(Reliable, NoAckBeforeAnyInOrderDelivery) {
     uint32_t ack_seq = (uint8_t)ack[2] | ((uint8_t)ack[3] << 8) |
                        ((uint8_t)ack[4] << 16) | ((uint32_t)(uint8_t)ack[5] << 24);
     EXPECT_EQ(ack_seq, 0u);
+}
+
+/* ---------------------------------------------------------------------------
+ * Integer-boundary regressions: a reserved value minted at a counter wrap or a
+ * narrowing cast. Same shape as the HLC {0,0} sentinel bug.
+ * ------------------------------------------------------------------------ */
+
+/* recv_seq_ == 0 means "nothing delivered in order yet" (the F8 rule above),
+ * and the ack decision used to be spelled `recv_seq_ > 0`. That reads the
+ * counter's zero as a sentinel — true only until a live uint32 counter WRAPS
+ * back onto it. After 2^32 in-order deliveries recv_seq_ is 0 again, the ack
+ * for a frame that WAS delivered is suppressed, and the link wedges forever:
+ * the sender never clears in_flight_ and retransmits every kRtoMs, idle() never
+ * returns true again.
+ *
+ * 2^32 real deliveries are not drivable from a test, so seed the counters at
+ * the boundary instead (test_seed_seqs).
+ *
+ * PRE-FIX: the poll() below produced no datagram at all. */
+TEST(Reliable, AckSurvivesTheSeqWrap) {
+    ke::ReliableLink b;
+    b.test_seed_seqs(/*send_seq=*/0, /*recv_seq=*/0xFFFFFFFFu,
+                     /*have_delivered=*/true);
+
+    /* The 2^32-th in-order frame: delivered, and recv_seq_ wraps to 0. */
+    std::vector<std::string> del;
+    EXPECT_TRUE(b.on_datagram(mk_frame(0, 0, 0xFFFFFFFFu, "last"), del));
+    ASSERT_EQ(del.size(), 1u);
+    EXPECT_EQ(del.front(), "last");
+
+    std::vector<std::string> out;
+    b.poll(out, 0);
+    ASSERT_FALSE(out.empty())
+        << "the ack was suppressed: recv_seq_ wrapped onto its own sentinel";
+    const std::string &ack = out.front();
+    ASSERT_GE(ack.size(), 6u);
+    EXPECT_EQ((uint8_t)ack[1], 1); /* kAck */
+    uint32_t ack_seq = (uint8_t)ack[2] | ((uint8_t)ack[3] << 8) |
+                       ((uint8_t)ack[4] << 16) | ((uint32_t)(uint8_t)ack[5] << 24);
+    EXPECT_EQ(ack_seq, 0xFFFFFFFFu)
+        << "the cumulative ack must name the frame actually delivered";
+
+    /* And the stream keeps going across the wrap. */
+    EXPECT_TRUE(b.on_datagram(mk_frame(0, 0, 0, "next"), del));
+    ASSERT_EQ(del.size(), 2u);
+    EXPECT_EQ(del.back(), "next");
+
+    /* The F8 rule itself is untouched: a fresh link still stays silent. */
+    ke::ReliableLink fresh;
+    std::vector<std::string> d2, o2;
+    EXPECT_FALSE(fresh.on_datagram(mk_frame(0, 0, 5, "x"), d2));
+    fresh.poll(o2, 0);
+    EXPECT_TRUE(o2.empty()) << "F8 regressed: acked before any in-order delivery";
+}
+
+/* RFC 6455 5.5: a control frame carries at most 125 payload bytes and is never
+ * fragmented. The second WebSocket header byte is MASK(1) || len(7), in which
+ * 126 and 127 are RESERVED escapes ("a 16- or 64-bit length follows") and 0x80
+ * means "a 4-byte mask key follows". recv_frame echoes a ping by writing
+ * `(char)(mb | payload.size())` into that byte, so an oversized ping did not
+ * merely mis-frame the pong — it MINTED those markers while appending the full
+ * payload, desynchronizing the peer's parser on bytes the sender chose. It also
+ * let a 64 MiB ping be buffered and echoed 1:1.
+ *
+ * PRE-FIX: ws_parse_frame returned 1 for every case below. */
+TEST(Ws, OversizedControlFrameIsRejected) {
+    auto ctrl = [](uint8_t opcode, size_t n, bool fin) {
+        std::string f;
+        f.push_back((char)((fin ? 0x80 : 0x00) | opcode));
+        if (n < 126) {
+            f.push_back((char)n);
+        } else {
+            f.push_back((char)126);
+            f.push_back((char)(n >> 8));
+            f.push_back((char)(n & 0xff));
+        }
+        f.append(n, 'x');
+        return f;
+    };
+    bool fin = false;
+    uint8_t op = 0;
+    std::string payload;
+    size_t consumed = 0;
+    auto parse = [&](const std::string &f) {
+        return ke::ws_parse_frame((const uint8_t *)f.data(), f.size(), fin, op,
+                              payload, consumed);
+    };
+
+    /* 126 is the smallest oversized control payload — and the exact length that
+     * truncates onto the reserved 16-bit-length escape. */
+    EXPECT_EQ(parse(ctrl(0x9, 126, true)), -1) << "126-byte ping accepted";
+    EXPECT_EQ(parse(ctrl(0x9, 127, true)), -1) << "127-byte ping accepted";
+    EXPECT_EQ(parse(ctrl(0x9, 200, true)), -1) << "MASK-bit-forging ping accepted";
+    EXPECT_EQ(parse(ctrl(0x9, 256, true)), -1) << "zero-length-forging ping accepted";
+    EXPECT_EQ(parse(ctrl(0x8, 300, true)), -1) << "oversized close accepted";
+    EXPECT_EQ(parse(ctrl(0xA, 300, true)), -1) << "oversized pong accepted";
+    EXPECT_EQ(parse(ctrl(0x9, 10, false)), -1) << "fragmented control accepted";
+
+    /* Conforming control frames and ordinary data frames are unaffected. */
+    EXPECT_EQ(parse(ctrl(0x9, 125, true)), 1) << "a legal 125-byte ping was rejected";
+    EXPECT_EQ(payload.size(), 125u);
+    EXPECT_EQ(parse(ctrl(0x9, 0, true)), 1) << "an empty ping was rejected";
+    EXPECT_EQ(parse(ctrl(0x2, 500, true)), 1)
+        << "the 125-byte bound must apply to control frames only";
+    EXPECT_EQ(payload.size(), 500u);
 }

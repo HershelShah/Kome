@@ -196,8 +196,12 @@ int sync_engine_site_id(sync_engine *e, uint8_t out[SYNC_SITE_ID_LEN]);
  * Value size and transport: a record is replicated atomically, so a single value
  * must fit one transport message. Over UDP that ceiling is ~60 KB (a 64 KB
  * datagram minus framing) and a larger value will not sync — chunk large media
- * into multiple sub-60 KB records app-side. TCP/WebSocket transports frame up to
- * 64 MB and have no practical per-value limit. */
+ * into multiple sub-60 KB records app-side. TCP and WebSocket frame up to 64 MB
+ * (kMaxFrameBytes / kMaxWsMessageBytes), which is a hard limit, not the absence
+ * of one. Durable engines have a second ceiling: an on-disk frame carries a
+ * u32le length prefix, so one frame's body must fit 4 GiB — oversized writes are
+ * refused (SYNC_ERR_INTERNAL) rather than truncated, because a truncated prefix
+ * can mint the reserved end-of-log marker. */
 int sync_engine_set(sync_engine *e,
                     const uint8_t *ns, size_t ns_len,
                     const uint8_t *entity, size_t entity_len,

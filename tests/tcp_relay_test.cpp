@@ -575,3 +575,38 @@ TEST(TcpRelayBlindness, ServerSideNeverDecryptsOrSigns) {
     EXPECT_FALSE(daemon.find("x25519") != std::string::npos);
     EXPECT_FALSE(daemon.find("aead_decrypt") != std::string::npos);
 }
+
+/* The relay stamps its connection deadlines from the WALL clock, not a steady
+ * one, so `now` can legitimately be LESS than a stamp taken moments earlier —
+ * an ordinary NTP step backwards is enough, with no attacker and no broken RTC.
+ * A bare `now - start` underflows to a value near UINT64_MAX, which every
+ * deadline test in poll_once reads as "elapsed time exceeded the bound"
+ * (kIdleTimeoutMs, kFrameProgressMs, kTxStallMs): one backward step reaps every
+ * live connection on the relay at once.
+ *
+ * PRE-FIX: ke::elapsed_ms did not exist and all three tests were bare
+ * subtractions. */
+TEST(TcpRelay, ElapsedTimeSaturatesAcrossABackwardClockStep) {
+    /* Forward time behaves exactly as the subtraction did. */
+    EXPECT_EQ(ke::elapsed_ms(10, 5), 5u);
+    EXPECT_EQ(ke::elapsed_ms(5, 5), 0u);
+    EXPECT_EQ(ke::elapsed_ms(UINT64_MAX, 0), UINT64_MAX);
+
+    /* A backward step reads as "no time has passed", never as "overdue". */
+    EXPECT_EQ(ke::elapsed_ms(5, 10), 0u)
+        << "a backward clock step underflowed into an astronomical elapsed time";
+    EXPECT_EQ(ke::elapsed_ms(0, 1), 0u);
+    EXPECT_EQ(ke::elapsed_ms(0, UINT64_MAX), 0u);
+
+    /* The property the reap loop actually depends on: after any backward step,
+     * no deadline can read as exceeded. */
+    const uint64_t stamps[] = {1ull, 1000ull, 1755000000000ull, UINT64_MAX};
+    const uint64_t nows[] = {0ull, 1ull, 999ull};
+    for (uint64_t stamp : stamps) {
+        for (uint64_t now : nows) {
+            if (now >= stamp) continue;
+            EXPECT_LE(ke::elapsed_ms(now, stamp), 0u)
+                << "now=" << now << " stamp=" << stamp;
+        }
+    }
+}

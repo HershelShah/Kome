@@ -222,16 +222,36 @@ bool CapStore::authorized(const uint8_t author[32], const std::string &ns,
      * are already filtered out by usable(), and expiry is one-way, so the
      * minimum collected here is always >= now. */
     struct Expiring { bool saw = false; uint64_t min_ms = UINT64_MAX; };
+    /* "Permanent" has to mean the SAME thing on both sides of this function,
+     * and UINT64_MAX is the one value where the two natural spellings diverge.
+     * The deadline side accumulates over `expiry != 0` seeded at
+     * min_ms = UINT64_MAX; the permanent-only re-solve skips on the same
+     * `expiry != 0`. A cap whose expiry IS UINT64_MAX therefore sets saw = true
+     * while leaving min_ms on its own initialiser -- publishing a
+     * valid_until_ms byte-identical to the RESERVED "cannot change with time
+     * alone" sentinel (capability.h) while time_bound says the opposite. That
+     * is exactly the pair reconcile.cpp asserts is impossible, so one gossiped
+     * delegation aborts every assert-enabled peer.
+     *
+     * `now` is uint64 ms, so an expiry of UINT64_MAX can never lapse: classing
+     * it with 0 is not a policy change, it is the truthful classification, and
+     * it matches usable() below, which already accepts it forever. Do NOT clamp
+     * expiry in cap_decode instead -- expiry is covered by cap_signing_bytes, so
+     * mutating it after decode invalidates the signature and silently drops the
+     * capability. */
+    auto never_expires = [](const Capability &c) {
+        return c.expiry == 0 || c.expiry == UINT64_MAX;
+    };
     auto solve = [&](bool permanent_only, Expiring *expiring) -> Result {
         const Capability *root = nullptr;
         std::map<std::string, std::vector<const Capability *>> by_issuer;
         for (const auto &c : caps_) {
             if (!usable(c) || c.ns != ns) continue;
-            if (expiring && c.expiry != 0) {
+            if (expiring && !never_expires(c)) {
                 expiring->saw = true;
                 if (c.expiry < expiring->min_ms) expiring->min_ms = c.expiry;
             }
-            if (permanent_only && c.expiry != 0) continue;
+            if (permanent_only && !never_expires(c)) continue;
             if (c.is_root()) {
                 if (!root) root = &c;
             } else {

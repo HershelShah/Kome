@@ -277,6 +277,144 @@ TEST(ZeroHlcExistence, OversizedPersistedLogicalClampsInsteadOfTruncating) {
     sync_engine_destroy(r);
 }
 
+/* ---- 0c. A pre-epoch wall clock must not wrap into the top of the range --*
+ * std::chrono::milliseconds::rep is SIGNED, so a host whose clock reads before
+ * 1970 hands now_ms() a negative count -- and a bare (uint64_t) cast is a
+ * modular wrap, not a clamp. Every consumer treats now_ms() as a BOUNDED
+ * wall-clock ms (tick's monotonicity gate, gc_tombstones' cutoff, capability
+ * expiry, ReconView deadlines), and tick's gate is one-way, so one local write
+ * on such a host pins the engine-global clock ~584 million years ahead for the
+ * life of the process and of the database.
+ *
+ * PRE-FIX: ms_since_epoch did not exist and now_ms() returned
+ * 18446741864720751616 for 1900-01-01 and UINT64_MAX for one ms before the
+ * epoch. */
+TEST(ZeroHlcExistence, PreEpochClockClampsToTheEpoch) {
+    EXPECT_EQ(ke::ms_since_epoch(-1), 0u)
+        << "one millisecond before the epoch wrapped to UINT64_MAX";
+    EXPECT_EQ(ke::ms_since_epoch(-2208988800000ll), 0u) << "1900-01-01 wrapped";
+    EXPECT_EQ(ke::ms_since_epoch(INT64_MIN), 0u);
+
+    /* The ordinary domain is untouched. */
+    EXPECT_EQ(ke::ms_since_epoch(0), 0u);
+    EXPECT_EQ(ke::ms_since_epoch(1), 1u);
+    EXPECT_EQ(ke::ms_since_epoch(1755000000000ll), 1755000000000ull);
+
+    /* Clamping to 0 is safe against the {0,0} reservation: at now == 0 tick
+     * takes the else branch into bump_logical, which yields logical >= 1. */
+    ke::Hlc t;
+    t.physical = 0;
+    t.logical = 0;
+    t.tick(ke::ms_since_epoch(-1));
+    EXPECT_FALSE(t.physical == 0 && t.logical == 0)
+        << "a clamped clock must still not mint the reserved sentinel";
+}
+
+/* ---- 0d. One far-future record must not pin the engine-global clock ------ *
+ * bump_logical's saturating branch is a FIXED POINT: at {UINT64_MAX,
+ * UINT32_MAX} tick() returns a value EQUAL to the pre-tick one, because no
+ * larger HLC exists. receive() adopted a peer's physical with no ceiling, so
+ * ONE signed record at the top of the range put the engine there -- and the
+ * local write paths commit tick()'s value with no LWW gate, on the documented
+ * assumption that it "wins", while apply_change gates every remote record on
+ * `order <= 0`. The result is not lost progress but silent, permanent
+ * DIVERGENCE, engine-wide: the write lands locally and dies at every peer.
+ *
+ * PRE-FIX both halves failed: `a` adopted UINT64_MAX, and the second write to
+ * "doc" (and the delete) tied its own earlier record and was dropped by `b`. */
+TEST(ZeroHlcExistence, FarFutureRecordCannotPinTheEngineClock) {
+    /* Unit half: receive refuses to adopt above the ceiling, and tick stays
+     * strictly monotonic afterwards. */
+    ke::Hlc c;
+    c.physical = 1000;
+    c.logical = 0;
+    ke::Hlc top;
+    top.physical = UINT64_MAX;
+    top.logical = 0xFFFFFFFFu;
+    c.receive(top, 1000);
+    EXPECT_LE(c.physical, ke::kMaxAdoptablePhysical)
+        << "receive adopted a physical past the ceiling and pinned the clock";
+    const ke::Hlc before = c;
+    const ke::Hlc after = c.tick(0);
+    EXPECT_GT(ke::hlc_cmp(after, before), 0)
+        << "tick is no longer strictly monotonic: bump_logical's fixed point";
+
+    /* End-to-end half: a poisoned engine must still converge with a peer. */
+    sync_engine *a = cluster::make(0x91);
+    sync_engine *b = cluster::make(0x92);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+
+    ASSERT_EQ(apply_existence_at(a, "ns", "poison", true, UINT64_MAX,
+                                 0xFFFFFFFFu, 0xA5),
+              SYNC_OK)
+        << "a top-of-range HLC is still accepted verbatim; that is the premise";
+    EXPECT_LE(a->clock.physical, ke::kMaxAdoptablePhysical)
+        << "one applied record pinned the engine-global clock";
+
+    /* Values chosen so the later write is lexicographically SMALLER: at the
+     * fixed point register_cmp ties on (hlc, author) and falls through to the
+     * value, so "b" then "a" is the ordering that actually exposes the bug. */
+    cluster::put(a, "ns", "doc", "f", "b");
+    cluster::sync2(a, b);
+    ASSERT_EQ(cluster::get(b, "ns", "doc", "f"), "b") << "the pump must work";
+
+    cluster::put(a, "ns", "doc", "f", "a");
+    cluster::sync2(a, b);
+    EXPECT_EQ(cluster::get(a, "ns", "doc", "f"), "a");
+    EXPECT_EQ(cluster::get(b, "ns", "doc", "f"), "a")
+        << "the second local write landed locally but was dropped by the peer";
+
+    cluster::del(a, "ns", "doc");
+    cluster::sync2(a, b);
+    EXPECT_FALSE(cluster::exists(a, "ns", "doc"));
+    EXPECT_FALSE(cluster::exists(b, "ns", "doc"))
+        << "the tombstone tied its own presence assertion and never replicated";
+    EXPECT_EQ(cluster::digest(a), cluster::digest(b))
+        << "replicas diverged permanently after one far-future record";
+
+    sync_engine_destroy(a);
+    sync_engine_destroy(b);
+}
+
+/* ---- 0e. A persisted physical past the ceiling must clamp on restore ----- *
+ * The clock is persisted verbatim, so a database written by a binary without
+ * the adoption ceiling -- or a corrupt meta frame -- would restore an engine
+ * straight onto the fixed point above. Clamping on restore is what lets such a
+ * database heal on upgrade instead of carrying the pin forever. Same shape as
+ * the hlc_logical clamp two tests up, applied to the sibling field.
+ *
+ * PRE-FIX: r->clock.physical came back as UINT64_MAX and tick() was a no-op. */
+TEST(ZeroHlcExistence, PoisonedPersistedPhysicalClampsOnRestore) {
+    TempDir dir;
+    ASSERT_FALSE(dir.path.empty());
+    const std::string path = dir.file("pinned.db");
+    auto seed = cluster::seed_from(0x82);
+
+    {
+        sync_engine *e = sync_engine_open(path.c_str(), seed.data());
+        ASSERT_NE(e, nullptr);
+        cluster::put(e, "ns", "ent", "f", "v"); /* make the log non-trivial */
+        ASSERT_NE(e->store, nullptr);
+        ASSERT_TRUE(e->store->put_meta_u64("hlc_physical", UINT64_MAX));
+        ASSERT_TRUE(e->store->put_meta_u64("hlc_logical", 0xFFFFFFFFull));
+        ASSERT_EQ(sync_engine_flush(e), SYNC_OK);
+        sync_engine_destroy(e);
+    }
+
+    sync_engine *r = sync_engine_open(path.c_str(), seed.data());
+    ASSERT_NE(r, nullptr);
+    EXPECT_LE(r->clock.physical, ke::kMaxAdoptablePhysical)
+        << "a persisted physical past the ceiling restored the fixed point";
+
+    const ke::Hlc before = r->clock;
+    const ke::Hlc after = r->clock.tick(0);
+    EXPECT_GT(ke::hlc_cmp(after, before), 0)
+        << "the restored clock cannot advance: tick is a no-op at the fixed point";
+
+    sync_engine_destroy(r);
+}
+
 /* ---- 1. In-memory engine: no storage, no compaction, no batching --------- */
 TEST(ZeroHlcExistence, MemoryEngineRefusesZeroHlc) {
     sync_engine *e = cluster::make(0x33);

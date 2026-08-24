@@ -355,6 +355,30 @@ TEST(Reconcile, CodecGoldenVector) {
  * record: convergence-safe, but it mismatches the content fingerprint (hashed
  * over the raw bytes in reconcile) and forces redundant re-transmission — a
  * bandwidth-amplification vector. Decoding must reject the non-minimal form. */
+/* A real, signed EXISTENCE record's wire bytes, ns = "n", entity = "e", so the
+ * fixed-width prefix is ver(1) kind(1) ns_len(1) ns(1) ent_len(1) ent(1) and
+ * the present bit sits at offset 6. Produced by the shipping encoder, so it
+ * cannot drift out of step with kCodecVersion the way a hand-written vector
+ * can. */
+static std::vector<uint8_t> golden_existence_record() {
+    sync_change c;
+    std::memset(&c, 0, sizeof c);
+    c.kind = SYNC_CHANGE_EXISTENCE;
+    c.ns = (const uint8_t *)"n";
+    c.ns_len = 1;
+    c.entity = (const uint8_t *)"e";
+    c.entity_len = 1;
+    c.causal_length = 1; /* present */
+    c.hlc.physical = 1000;
+    c.hlc.logical = 0;
+    std::array<uint8_t, SYNC_SEED_LEN> seed{};
+    seed.fill(0x5A);
+    EXPECT_EQ(sync_change_sign(&c, seed.data()), SYNC_OK);
+    std::vector<uint8_t> buf(sync_change_encode(&c, nullptr, 0));
+    EXPECT_EQ(sync_change_encode(&c, buf.data(), buf.size()), buf.size());
+    return buf;
+}
+
 TEST(Reconcile, VarintsAreCanonical) {
     /* Minimal encodings round-trip. */
     std::vector<uint64_t> vals = {0u,     1u,      127u, 128u, 300u,
@@ -384,17 +408,75 @@ TEST(Reconcile, VarintsAreCanonical) {
                          0x7F}));
 
     /* A whole record with a non-minimal length prefix is rejected by decode.
-     * Golden existence vector, but ns_len (0x01) rewritten as {0x81,0x00}. */
-    std::vector<uint8_t> rec = {0x02, 0x00, /*ns_len*/ 0x81, 0x00, 0x6E,
-                                /*ent_len*/ 0x01, 0x65,
-                                0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    for (int i = 0; i < (int)SYNC_PUBKEY_LEN; i++) rec.push_back(0xAA);
-    for (int i = 0; i < (int)SYNC_SIG_LEN; i++) rec.push_back(0xCC);
+     * Built from the real encoder rather than hand-assembled: the previous
+     * hand-written vector began 0x02 while kCodecVersion is 3, so decode bailed
+     * at the version check and this assertion passed without ever reaching the
+     * varint it names. */
+    std::vector<uint8_t> good = golden_existence_record();
     sync_change out;
     size_t consumed = 0;
+    ASSERT_EQ(sync_change_decode(good.data(), good.size(), &out, &consumed),
+              SYNC_OK)
+        << "control: the unmutated golden record must decode";
+    sync_change_free_decoded(&out);
+
+    /* Same record, ns_len (0x01) rewritten as the non-minimal {0x81, 0x00}. */
+    std::vector<uint8_t> rec(good.begin(), good.begin() + 2);
+    rec.push_back(0x81);
+    rec.push_back(0x00);
+    rec.insert(rec.end(), good.begin() + 3, good.end());
+    consumed = 0;
     EXPECT_NE(sync_change_decode(rec.data(), rec.size(), &out, &consumed),
               SYNC_OK)
         << "decode accepted a non-minimal varint length prefix";
+}
+
+/* The EXISTENCE present bit is a BOUNDED 1-bit field — encode_signing emits
+ * only 0x00 or 0x01 — but decode NORMALIZED it (`(*p++ != 0) ? 1 : 0`) instead
+ * of rejecting out-of-domain values. That left 255 distinct byte strings
+ * decoding to the same logical record, breaking the canonicality guarantee the
+ * varint-minimality rule above exists to uphold.
+ *
+ * The signature does not catch it, and that is the load-bearing part:
+ * verify_change and change_sig_ok both RE-ENCODE from the decoded struct rather
+ * than verifying the received bytes, so a byte-flipped record verifies under
+ * the honest author's signature and applies as authentic. reconcile's dedup
+ * check is the concrete casualty — it hashes the peer's RAW bytes and compares
+ * them against our canonical element hash, so a non-canonical form defeats it.
+ *
+ * PRE-FIX every mutation below decoded with SYNC_OK. */
+TEST(Reconcile, PresentBitIsCanonical) {
+    const std::vector<uint8_t> good = golden_existence_record();
+    /* ver(1) kind(1) ns_len(1) ns(1) ent_len(1) ent(1) -> the present bit. */
+    const size_t kPresentOff = 6;
+    ASSERT_LT(kPresentOff, good.size());
+    ASSERT_EQ(good[kPresentOff], 0x01) << "the golden record must assert presence";
+
+    sync_change out;
+    size_t consumed = 0;
+    for (uint8_t bad : {(uint8_t)0x02, (uint8_t)0x03, (uint8_t)0x7F,
+                        (uint8_t)0x80, (uint8_t)0xFF}) {
+        std::vector<uint8_t> rec = good;
+        rec[kPresentOff] = bad;
+        consumed = 0;
+        EXPECT_NE(sync_change_decode(rec.data(), rec.size(), &out, &consumed),
+                  SYNC_OK)
+            << "decode normalized an out-of-domain present byte: 0x" << std::hex
+            << (int)bad;
+    }
+
+    /* Both legal values still decode, and to the value they encode. */
+    for (uint8_t ok : {(uint8_t)0x00, (uint8_t)0x01}) {
+        std::vector<uint8_t> rec = good;
+        rec[kPresentOff] = ok;
+        consumed = 0;
+        ASSERT_EQ(sync_change_decode(rec.data(), rec.size(), &out, &consumed),
+                  SYNC_OK)
+            << "a legal present byte was rejected: 0x" << std::hex << (int)ok;
+        EXPECT_EQ(out.causal_length, (uint64_t)ok);
+        EXPECT_EQ(consumed, rec.size());
+        sync_change_free_decoded(&out);
+    }
 }
 
 /* ---- T3.3 Correctness vs oracle ---------------------------------------- */

@@ -62,6 +62,20 @@ constexpr size_t kBatchFlushBytes = 256u * 1024;
 constexpr size_t kBatchFlushBytes = 2u * 1024 * 1024;
 #endif
 
+/* The largest frame body the on-disk format can describe. A frame is
+ * [body_len:u32le][body...], and 0 is RESERVED in that prefix: load()'s replay
+ * loop treats body_len == 0 as a clean end of log. A body that does not fit the
+ * u32 must therefore be REFUSED, never narrowed -- at an exact 4 GiB multiple
+ * the cast mints the terminator itself. Exposed as a predicate so the boundary
+ * is testable without allocating 4 GiB. */
+inline bool frame_body_too_large(uint64_t body_bytes) {
+    return body_bytes > (uint64_t)UINT32_MAX;
+}
+
+/* Maximum batch nesting depth. Capped rather than left to wrap, because 0 is
+ * the reserved "no batch open" sentinel — see Storage::batch_begin. */
+constexpr uint32_t kMaxBatchDepth = 1024;
+
 /* Debug/test-only fsync accounting: a process-global counter bumped once per
  * fsync() the log layer issues on its measured write paths — write_frame's
  * per-frame fsync, and rewrite_log_streamed's two fsyncs (temp file before

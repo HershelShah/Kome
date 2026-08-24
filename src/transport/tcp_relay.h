@@ -49,6 +49,22 @@ namespace ke {
 
 /* ---- wire constants (shared by server, client helpers, and tests) ------ */
 
+/* Milliseconds from `start` to `now`, saturating at 0 instead of underflowing.
+ *
+ * The relay stamps its deadlines from the WALL clock, not a steady one, so
+ * `now` can legitimately be LESS than a stamp taken moments earlier -- an
+ * ordinary NTP step backwards is enough, with no attacker and no broken RTC
+ * involved. A bare `now - start` then underflows to a value near UINT64_MAX,
+ * which every deadline test in poll_once reads as "elapsed time exceeded the
+ * bound": one backward step reaps every live connection on the relay at once.
+ * Elapsed time is bounded below by 0 by construction; say so. The same guard
+ * already exists at Storage::gc_tombstones' cutoff and at RateLimits::charge --
+ * this applies the rule to the sites that were missed. Exposed here so the
+ * boundary is testable, like ke::frame_body_too_large in storage.h. */
+inline uint64_t elapsed_ms(uint64_t now, uint64_t start) {
+    return now > start ? now - start : 0;
+}
+
 constexpr char kTcpRelayOpHello    = 'H'; /* server -> client, on accept    */
 constexpr char kTcpRelayOpOk       = 'O'; /* server -> client               */
 constexpr char kTcpRelayOpErr      = 'E'; /* server -> client               */

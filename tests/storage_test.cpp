@@ -2747,3 +2747,82 @@ TEST(Storage, EnospcMidStreamFailsCleanly) {
               std::string(4096, (char)('a' + 199 % 26)));
     sync_engine_destroy(e);
 }
+
+
+/* ---------------------------------------------------------------------------
+ * Integer-boundary regressions: a reserved value minted at a narrowing cast or
+ * a counter wrap.
+ * ------------------------------------------------------------------------ */
+
+/* A frame is [body_len:u32le][body...], and 0 is RESERVED in that prefix:
+ * load()'s replay loop reads body_len == 0 as a clean end of log — the same
+ * break as real EOF. `full.size()` is a size_t, so `(uint32_t)full.size()` did
+ * not merely mis-frame an oversized body: at an exact 4 GiB multiple it MINTED
+ * that terminator, and every frame after it was silently discarded on the next
+ * open with load() still returning SYNC_OK. On the compaction path that means
+ * the capability and revocation frames — written last, and fsynced
+ * synchronously by put_revocation precisely so they cannot be dropped.
+ *
+ * CI cannot allocate 4 GiB, so the boundary is pinned through the predicate the
+ * fix is expressed in. PRE-FIX there was no predicate and no check at all. */
+TEST(Storage, OversizedFrameBodyIsRefusedNotTruncated) {
+    /* Everything representable in the u32 prefix stays writable. */
+    EXPECT_FALSE(ke::frame_body_too_large(0));
+    EXPECT_FALSE(ke::frame_body_too_large(1));
+    EXPECT_FALSE(ke::frame_body_too_large(0xFFFFFFFEull));
+    EXPECT_FALSE(ke::frame_body_too_large(0xFFFFFFFFull));
+
+    /* One past the prefix, and the two sizes that truncate onto the reserved
+     * terminator itself (exact multiples of 2^32). */
+    EXPECT_TRUE(ke::frame_body_too_large(0x100000000ull))
+        << "a 4 GiB body truncates to body_len == 0, the end-of-log marker";
+    EXPECT_TRUE(ke::frame_body_too_large(0x100000001ull));
+    EXPECT_TRUE(ke::frame_body_too_large(0x200000000ull));
+    EXPECT_TRUE(ke::frame_body_too_large(UINT64_MAX));
+}
+
+/* batch_depth_ is a uint32 and 0 is the reserved "no batch open" sentinel —
+ * in_batch(), batch_commit, batch_abort, batch_maybe_flush and batch_poison all
+ * read it. An uncapped `batch_depth_++` mints that sentinel while in_tx_ is
+ * still set and staging_ still holds the batch's records, after which the tx_*
+ * helpers take their non-batch branch into begin(), which CLEARS staging_ and
+ * silently drops records the caller was told were staged.
+ *
+ * PRE-FIX batch_begin() returned true unconditionally, so there was no depth at
+ * which it refused. */
+TEST(Storage, BatchDepthRefusesRatherThanWrapping) {
+    TempDir dir;
+    ASSERT_FALSE(dir.path.empty());
+    const std::string db = dir.file("depth.db");
+    auto site = cluster::seed_from(0xD1);
+    sync_engine *e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    ASSERT_NE(e->store, nullptr);
+
+    for (uint32_t i = 0; i < ke::kMaxBatchDepth; i++)
+        ASSERT_TRUE(e->store->batch_begin()) << "refused at legitimate depth " << i;
+    EXPECT_EQ(e->store->batch_depth(), ke::kMaxBatchDepth);
+
+    EXPECT_FALSE(e->store->batch_begin())
+        << "the depth counter wrapped instead of refusing";
+    EXPECT_EQ(e->store->batch_depth(), ke::kMaxBatchDepth)
+        << "a refused begin must not move the depth";
+    EXPECT_TRUE(e->store->in_batch())
+        << "the batch was closed out from under its holders";
+
+    /* The batch is intact: a write staged at full depth still lands, and every
+     * matching commit unwinds cleanly. */
+    cluster::put(e, "ns", "deep", "f", "v");
+    for (uint32_t i = 0; i < ke::kMaxBatchDepth; i++)
+        ASSERT_TRUE(e->store->batch_commit(e)) << "unbalanced unwind at " << i;
+    EXPECT_FALSE(e->store->in_batch());
+    EXPECT_EQ(cluster::get(e, "ns", "deep", "f"), "v");
+
+    const Digest d = digest(e);
+    sync_engine_destroy(e);
+    e = sync_engine_open(db.c_str(), site.data());
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(digest(e), d) << "records staged at full depth were dropped";
+    EXPECT_EQ(cluster::get(e, "ns", "deep", "f"), "v");
+    sync_engine_destroy(e);
+}

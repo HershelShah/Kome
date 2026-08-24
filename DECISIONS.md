@@ -1741,3 +1741,189 @@ Instrumented the convergence pump to report `rounds`, `wire_bytes`, `max_msg`,
 - **`present()` now means `asserted() && present_v`.** A no-op after the above,
   kept so that a future path re-introducing present-without-assertion is caught
   by construction rather than by a repro.
+
+## Integer-boundary sweep: reserved values minted at a wrap, a cast, or a restore (bug fixes)
+
+Fixing the zero-HLC bug turned up three more defects of one shape, all by
+accident: the `uint32` wrap in `Hlc::logical` that could MINT the reserved
+`{0,0}`, `carry_logical_overflow` being wrong at both call sites, and the
+persisted logical clock TRUNCATING rather than clamping on restore. Three
+accidental finds is the tell that the *class* is under-swept, not that the
+instances were unlucky. This is the deliberate sweep for it.
+
+**The class.** A value with a RESERVED or BOUNDED meaning being minted or
+mangled at an integer boundary. Both halves are required. The value must carry a
+meaning beyond its magnitude — a sentinel (`{0,0}` = no assertion, `0` = no batch
+open, `0` = end of log, `UINT64_MAX` = never expires), a domain invariant (a
+counter that must be strictly monotonic, a 1-bit field), or a bound (a frame that
+must fit its length prefix). And the arithmetic must reach a boundary — an
+unsigned wrap, a narrowing cast, a sign conversion, a truncation where a clamp or
+a refusal was meant. The bug is the intersection: arithmetic at the boundary
+FORGES a value the rest of the system reads as special. A plain overflow of a
+value with no reserved meaning is not in class, and a reserved value handled
+correctly is not either.
+
+Nine defects, each fixed by the remedy this codebase already uses for the
+seed three — clamp, cap, or refuse, and say why in a block comment above it.
+None changes an on-disk or on-wire format.
+
+- **`now_ms()` sign-converted a pre-epoch clock into the top of the range.**
+  `std::chrono::milliseconds::rep` is *signed*, and `(uint64_t)count` is a
+  modular wrap, not a clamp: 1900-01-01 came back as `18446741864720751616`, one
+  millisecond before the epoch as `UINT64_MAX` exactly. Every consumer reads
+  `now_ms()` as a bounded wall-clock ms — `tick`'s monotonicity gate,
+  `gc_tombstones`' cutoff, capability expiry, `ReconView` deadlines — and the
+  tick gate is one-way, so one local write pinned the clock ~584 million years
+  ahead for the life of the process *and* of the database (the value is
+  persisted). Reachable with no attacker: the WASM build follows the host's
+  user-settable date, Windows' `SetSystemTime` accepts pre-1970, a bare-metal RTC
+  with a dead cell powers on at 1900. (Linux rejects a negative `settimeofday`,
+  landing at `0` — the already-documented "stuck at the epoch" case.) Split into
+  `ke::ms_since_epoch(int64_t)` so the boundary is testable, and clamped to `0`,
+  which is safe against the `{0,0}` reservation because `tick(0)` routes through
+  `bump_logical` and yields `logical >= 1`.
+
+- **`bump_logical`'s saturating state is a FIXED POINT, and it was one record
+  away.** Saturating at `{UINT64_MAX, UINT32_MAX}` instead of wrapping onto
+  `{0,0}` was the right call, and the entry above justified its cost as "a
+  repeated timestamp costs only progress". That accounting was wrong. `tick()`
+  there returns a value *equal* to the pre-tick one, and the local write paths
+  commit `tick()`'s value with **no LWW gate**, on the documented assumption that
+  it is "strictly newer than any prior assertion this engine has seen, so it
+  wins" — while `apply_change` gates every remote record on `order <= 0`. So a
+  local write landed locally and was dropped by every peer as a tie against its
+  own earlier record: not lost progress but silent, permanent DIVERGENCE, across
+  every namespace, with no route to repair. `receive` adopted a peer's physical
+  with no ceiling, so ONE signed record put the engine there — and since the
+  record replicates, each peer's `receive` put it there too. Registers degraded
+  from "latest write wins" to "lexicographically greatest value wins"
+  (`register_cmp`'s last tie-break). Fixed by reserving headroom:
+  `ke::kMaxAdoptablePhysical` (`UINT64_MAX - 2^32`) bounds what `Hlc::receive`
+  ADOPTS and what the persisted clock restores. Clamping adoption is not
+  clamping acceptance — `apply_change` still decides from the record's own
+  `(hlc, author)` — so `SECURITY.md`'s objection to bounded-drift *rejection*
+  breaking deterministic convergence does not apply, and the merge function is
+  untouched. `SECURITY.md`'s "though convergence is preserved" was false and is
+  corrected there.
+
+- **The on-disk frame length truncated instead of refusing, and `0` is the
+  end-of-log marker.** `put_u32le(framed, (uint32_t)full.size())` narrowed an
+  unbounded `size_t`. At an exact 4 GiB multiple that MINTS `body_len == 0`,
+  which `load()`'s replay loop reads as a clean end of log — the same `break` as
+  real EOF, with `load()` still returning `SYNC_OK`. Off-multiple sizes fail the
+  digest/AEAD check and stop replay just the same. On the compaction path the
+  loss commits at the `rename`: `rewrite_log_streamed` writes the capability and
+  revocation frames *last*, so one oversized entity frame silently rolls back
+  revocations that `put_revocation` fsyncs synchronously precisely so they cannot
+  be dropped. Refused at `seal_frame`, the single choke point both paths pass
+  through, via `ke::frame_body_too_large` — reusing the empty-return failure
+  signal already used for the F2 RNG failure. Known follow-up: an entity whose
+  records exceed 4 GiB in one frame is now uncompactable (fail-closed and stuck,
+  rather than silent loss); splitting the per-entity compaction frame is the fix.
+
+- **A capability expiry of `UINT64_MAX` aliased the reserved "unbounded"
+  deadline.** Two spellings of "permanent" straddled one value: the deadline
+  accumulator ran over `expiry != 0` seeded at `min_ms = UINT64_MAX`, while the
+  permanent-only re-solve skipped on the same `expiry != 0`. A cap with
+  `expiry == UINT64_MAX` set `saw = true` — claiming a finite deadline exists —
+  while leaving `min_ms` on its own initialiser, publishing
+  `(time_bound = true, valid_until_ms = UINT64_MAX)`: exactly the pair
+  `reconcile.cpp` asserts is impossible. One gossiped delegation aborted every
+  assert-enabled peer, and any READ holder can mint one (`granted = access & ha`
+  — there is no separate delegate bit). Unified behind a `never_expires`
+  predicate. `now` is `uint64` ms, so such a cap can never lapse: classing it
+  with `0` is the truthful classification, and it already matched `usable()`.
+  Deliberately NOT clamped in `cap_decode` — `expiry` is inside
+  `cap_signing_bytes`, so mutating it post-decode invalidates the signature and
+  "clamp" would silently behave as "reject", after the verify.
+
+- **The WebSocket pong minted the reserved 126/127 length escapes.** The second
+  header byte is `MASK(1) || len(7)`, in which `126` and `127` are RESERVED
+  ("a 16- or 64-bit length follows") and `0x80` means "a mask key follows".
+  `recv_frame` echoed a ping with `(char)(mb | payload.size())` while appending
+  the *full* payload, so a 126-byte ping emitted `0x7E`, 128..255 set MASK on a
+  server→client frame, and 256 emitted `0x00` — a declared empty pong trailed by
+  256 unaccounted bytes. RFC 6455 §5.5's 125-byte control-frame bound was
+  enforced nowhere. Fixed at the decoder (`ws_parse_frame`), not only at the
+  emitter, because the same missing bound let a 64 MiB ping be buffered and
+  echoed 1:1 through `send_all`, which loops on `EAGAIN` with no overall
+  deadline — an unauthenticated peer stalls the recv thread holding ~128 MiB.
+  Putting the rule in the decoder also puts it where `fuzz_ws` reaches it; the
+  fuzzer drives only `ws_parse_frame` and never the pong emitter, which is why
+  this survived fuzzing. The emitter clamp stays as belt-and-braces.
+
+- **The EXISTENCE present bit was normalized, not range-checked.**
+  `out.causal_length = (*p++ != 0) ? 1 : 0` folded a full `uint8` onto a 1-bit
+  domain, so 255 distinct wire byte-strings decoded to one logical record —
+  re-opening the canonicality hole the varint-minimality rule closed. The
+  signature does not catch it, and that is the load-bearing part: `verify_change`
+  and `change_sig_ok` both RE-ENCODE from the decoded struct rather than verify
+  the received bytes, so a byte-flipped record verifies under the honest author's
+  signature and applies as authentic. `reconcile`'s dedup check is the casualty —
+  it hashes the peer's RAW bytes against our canonical element hash. Now rejected
+  like a non-minimal varint. This refuses records previously accepted, but only
+  records no conforming encoder can produce.
+
+- **`recv_seq_` wrapped onto its own sentinel and wedged the link.**
+  `recv_seq_ == 0` means "nothing delivered in order yet" (the F8 rule), and the
+  ack decision was spelled `recv_seq_ > 0` — true only until a live `uint32`
+  counter wraps back onto it. After 2^32 in-order deliveries the ack for a frame
+  that *was* delivered is suppressed, the sender never clears `in_flight_`, and
+  it retransmits every `kRtoMs` forever while `idle()` never returns true again.
+  Moved into its own `have_delivered_` flag. `ack_seq_ = recv_seq_ - 1` stays:
+  at the wrap it yields `0xFFFFFFFF`, exactly the last delivered seq, and the
+  sender's `send_seq_` wraps in lockstep. Note the F7 gate
+  (`keyed_ && !authed && seq >= recv_seq_`) is also degraded by the wrap — it
+  becomes vacuously true and drops all unauthenticated DATA. That is fail-closed
+  and is now commented so a later reader does not "fix" it into a wrap-aware
+  comparison and open the forgery window.
+
+- **`batch_depth_++` minted the reserved "no batch open" value.** `0` is read by
+  `in_batch()`, `batch_commit`, `batch_abort`, `batch_maybe_flush` and
+  `batch_poison`. Wrapping mints it while `in_tx_` is still set and `staging_`
+  still holds the batch's records, after which the `tx_*` helpers take their
+  non-batch branch into `begin()`, which CLEARS `staging_` — silently dropping
+  records the caller was told were staged — and `maybe_compact`'s `if (in_tx_)`
+  guard no longer blocks the mid-batch compaction `storage.h` forbids by design.
+  Capped at `kMaxBatchDepth`. Runaway nesting is API misuse either way; failing
+  closed turns it into a clean `SYNC_ERR_INTERNAL` instead of silent data loss.
+
+- **The relay's deadlines underflowed across a backward clock step.**
+  `tcp_relay.cpp` carries its own `wall_ms()` — an independent copy of the same
+  sign conversion as `now_ms()` above — and `poll_once` tested three connection
+  deadlines with a bare `now - stamp`. These are WALL-clock stamps, not steady
+  ones, so `now` can legitimately be less than a stamp taken moments earlier: an
+  ordinary NTP step backwards is enough, no attacker and no broken RTC required.
+  The subtraction underflows to a value near `UINT64_MAX`, which
+  `kIdleTimeoutMs`, `kFrameProgressMs` and `kTxStallMs` all read as
+  astronomically overdue — one backward step reaps every live connection on the
+  relay at once. Both halves fixed: `wall_ms()` clamps, and the deadline tests go
+  through `ke::elapsed_ms`, which saturates at 0. Notable because the guard was
+  already in this codebase twice — `Storage::gc_tombstones`' cutoff and
+  `RateLimits::charge`, the latter in this very file — so the rule was known and
+  simply not applied here. That is the same "applied per-incident, not as a rule"
+  failure the sweep found everywhere else.
+
+**What the sweep says about the codebase.** Five of the nine are one shape: a
+sentinel sharing a domain with values a live counter or a cast can reach. The
+remedy was already here and already correct at `storage.cpp`'s `hlc_logical`
+clamp and at `bump_logical` — it had just been applied per-incident rather than
+as a rule. The rule: where a sentinel shares a domain with live values, either
+reserve headroom (`kMaxAdoptablePhysical`) or move the sentinel out-of-band into
+its own flag (`have_delivered_`, `Expiring::saw`). The second is strictly better,
+and `Expiring::saw` shows why — it was already reaching for exactly that shape
+before the `UINT64_MAX` aliasing undid it.
+
+**Also fixed, out of class.** `Reconcile.VarintsAreCanonical`'s golden vector
+began `0x02` while `kCodecVersion` is `3`, so `decode_record` bailed at the
+version check and the final `EXPECT_NE` passed without ever reaching the
+non-minimal varint it names. It is now built by the shipping encoder, so it
+cannot drift out of step again.
+
+**Considered and rejected.** `reconcile.cpp`'s `desc_size` charging a flat 18
+bytes for two variable-length key bounds is a real message-budget
+under-count, but it is a bound miscalculation, not a reserved value at an
+integer boundary — out of class, left for its own change. The missing RAII batch
+guard at `reconcile.cpp`'s `apply_records` is likewise real (the first leaked
+level disables compaction for the process lifetime) and likewise out of class: a
+resource leak with no integer boundary in it.

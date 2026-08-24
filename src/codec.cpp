@@ -156,7 +156,20 @@ bool decode_record(const uint8_t *buf, size_t len, DecodedChange &out,
     if (!get_bytes(p, end, out.entity)) return false;
     if (kind == SYNC_CHANGE_EXISTENCE) {
         if (p >= end) return false;
-        out.causal_length = (*p++ != 0) ? 1 : 0; /* present bit */
+        /* The present bit is a BOUNDED 1-bit field: encode_signing emits only
+         * 0x00 or 0x01. Normalizing 0x02..0xFF to 1 instead of rejecting them
+         * leaves 255 distinct byte strings decoding to the same logical record,
+         * which breaks this codec's canonicality guarantee (see the varint
+         * minimality rule above) -- and it is unrecoverable downstream, because
+         * verify_change and change_sig_ok both RE-ENCODE from the decoded
+         * struct rather than verifying the received bytes, so a byte-flipped
+         * record verifies under the honest author's signature and applies as
+         * authentic. reconcile's dedup check is the concrete casualty: it
+         * hashes the peer's RAW bytes and compares them against our canonical
+         * element hash, so a non-canonical form silently defeats it. Reject,
+         * exactly as a non-minimal varint is rejected. */
+        if (*p > 1) return false;
+        out.causal_length = *p++; /* present bit */
         if (!get_u64le(p, end, out.hlc.physical)) return false;
         if (!get_u32le(p, end, out.hlc.logical)) return false;
     } else {
