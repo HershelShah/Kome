@@ -22,11 +22,18 @@ namespace ke {
 
 namespace {
 
+/* Same contract as ke::now_ms (sync_engine.cpp), kept local so a transport file
+ * does not pull in the engine's internal state model. milliseconds::rep is
+ * SIGNED, and a bare (uint64_t) cast is a modular wrap, not a clamp: a
+ * pre-epoch wall clock lands within ~2.2e12 of UINT64_MAX, and every deadline
+ * below is an unsigned `now - then` that would then read as astronomically
+ * overdue and reap every live connection. */
 uint64_t wall_ms() {
     using namespace std::chrono;
-    return (uint64_t)duration_cast<milliseconds>(
-               system_clock::now().time_since_epoch())
-        .count();
+    const auto c = duration_cast<milliseconds>(
+                       system_clock::now().time_since_epoch())
+                       .count();
+    return c < 0 ? 0 : (uint64_t)c;
 }
 
 /* DELIVER budget: below the 1 MiB per-mailbox cap, so a mailbox at the cap
@@ -152,7 +159,8 @@ bool MailboxLog::store(const uint8_t pk[32], const std::string &blob,
 
     if (out_wakes) {
         for (auto &h : mb.push_handles) {
-            if (!h.ever_woken || now_ms - h.last_wake_ms >= kPushDebounceMs) {
+            if (!h.ever_woken ||
+                elapsed_ms(now_ms, h.last_wake_ms) >= kPushDebounceMs) {
                 out_wakes->push_back({h.provider, h.handle});
                 h.last_wake_ms = now_ms;
                 h.ever_woken = true;
@@ -636,10 +644,14 @@ bool TcpRelayServer::step(int timeout_ms) {
     for (auto it = conns_.begin(); it != conns_.end();) {
         Conn &c = it->second;
         bool drop = c.closing;
-        if (!drop && now - c.last_activity_ms > kIdleTimeoutMs) drop = true;
-        if (!drop && c.frame_started_ms && now - c.frame_started_ms > kFrameProgressMs)
+        if (!drop && elapsed_ms(now, c.last_activity_ms) > kIdleTimeoutMs)
             drop = true;
-        if (!drop && !c.tx.empty() && now - c.tx_progress_ms > kTxStallMs) drop = true;
+        if (!drop && c.frame_started_ms &&
+            elapsed_ms(now, c.frame_started_ms) > kFrameProgressMs)
+            drop = true;
+        if (!drop && !c.tx.empty() &&
+            elapsed_ms(now, c.tx_progress_ms) > kTxStallMs)
+            drop = true;
         if (drop) {
             reap(c);
             it = conns_.erase(it);
@@ -648,7 +660,7 @@ bool TcpRelayServer::step(int timeout_ms) {
         }
     }
 
-    if (now - last_sweep_ms_ >= kSweepIntervalMs) {
+    if (elapsed_ms(now, last_sweep_ms_) >= kSweepIntervalMs) {
         log_.sweep_all(now);
         last_sweep_ms_ = now;
     }

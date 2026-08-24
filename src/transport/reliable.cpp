@@ -89,14 +89,29 @@ bool ReliableLink::on_datagram(const std::string &dg,
         if (advances) {
             delivered.push_back(payload);
             recv_seq_++;
+            have_delivered_ = true;
             progress = true;
         }
         /* Only emit a cumulative ack once something has actually been delivered
-         * in order. When recv_seq_ == 0 there is nothing to acknowledge, so we
-         * stay silent rather than (a) underflowing recv_seq_-1 to 0xFFFFFFFF or
-         * (b) acking seq 0, which a sender at send_seq_==0 would wrongly read as
-         * delivery of its first, never-delivered frame (F8). */
-        if (recv_seq_ > 0) {
+         * in order: acking seq 0 before any delivery would be read by a sender
+         * at send_seq_ == 0 as delivery of its first, never-delivered frame
+         * (F8). That test used to be `recv_seq_ > 0`, which reads the counter's
+         * zero as a sentinel -- true only until the counter WRAPS onto it. After
+         * 2^32 in-order deliveries recv_seq_ is 0 again, the ack for a frame
+         * that WAS delivered is suppressed, and the link wedges: the sender
+         * never clears in_flight_ and retransmits every kRtoMs forever, while
+         * idle() never returns true again. Carry the fact in its own flag so the
+         * ack decision no longer depends on a value a live counter can reach.
+         *
+         * ack_seq_ = recv_seq_ - 1 stays as it is: at the wrap it yields
+         * 0xFFFFFFFF, which is exactly the last delivered seq, and the sender's
+         * send_seq_ wraps in lockstep.
+         *
+         * (The F7 gate above, `keyed_ && !authed && seq >= recv_seq_`, becomes
+         * vacuously true at recv_seq_ == 0 and drops all unauthenticated DATA.
+         * That is fail-closed and deliberate — do not "fix" it into a
+         * wrap-aware comparison, which would open the forgery window.) */
+        if (have_delivered_) {
             ack_pending_ = true;
             ack_seq_ = recv_seq_ - 1;
         }

@@ -24,11 +24,39 @@
 
 namespace ke {
 
+/* std::chrono::milliseconds::rep is a SIGNED integer, so a host whose wall
+ * clock reads before 1970 yields a negative count -- and a bare (uint64_t) cast
+ * is a modular wrap, not a clamp: 1900-01-01 comes back as 18446741864720751616
+ * and one millisecond before the epoch as UINT64_MAX exactly.
+ *
+ * Every consumer reads this as a BOUNDED wall-clock millisecond count:
+ * Hlc::tick's `now > physical` monotonicity gate, Storage::gc_tombstones'
+ * `cutoff = now - kTombstoneTtlMs`, capability expiry, and ReconView deadlines.
+ * The tick gate is one-way, so a single local write on such a host pins the
+ * engine-global clock ~584 million years ahead for the life of the process AND
+ * of the database (the value is persisted by stamp_clock_meta and restored),
+ * lands the clock in the exhausted-state neighbourhood kMaxAdoptablePhysical
+ * exists to keep out of reach, purges every tombstone at the next compaction,
+ * and expires every finite capability.
+ *
+ * Reachable without an attacker: the WASM/browser build follows the host's
+ * user-settable date, Windows' SetSystemTime accepts years back to 1601, and a
+ * bare-metal RTC with a dead backup cell powers on at 1900. (Linux rejects a
+ * negative settimeofday, so there the host lands at 0 instead -- the already
+ * documented "stuck at the epoch" case.)
+ *
+ * Clamping to 0 is safe against the {0,0} reservation: with now == 0, tick
+ * takes the else branch into bump_logical, which yields logical >= 1. That is
+ * exactly the case ZeroHlcExistence.ClockNeverMintsTheSentinel pins. */
+uint64_t ms_since_epoch(int64_t count) {
+    return count < 0 ? 0 : (uint64_t)count;
+}
+
 uint64_t now_ms() {
     using namespace std::chrono;
-    return (uint64_t)duration_cast<milliseconds>(
-               system_clock::now().time_since_epoch())
-        .count();
+    return ms_since_epoch((int64_t)duration_cast<milliseconds>(
+                              system_clock::now().time_since_epoch())
+                              .count());
 }
 
 /* logical = base + 1, carrying a uint32 overflow into `phys`.
@@ -68,10 +96,21 @@ Hlc Hlc::tick(uint64_t now) {
     return *this;
 }
 
+/* Merge a remote timestamp, keeping the clock monotonic.
+ *
+ * The remote physical is ADOPTED only up to kMaxAdoptablePhysical (engine.hpp).
+ * Without that ceiling one signed record at the top of the uint64 range drives
+ * this clock onto bump_logical's saturating FIXED POINT, after which tick()
+ * stops being strictly monotonic and every local write -- to any entity, in any
+ * namespace -- lands locally but is dropped by every peer as a tie. The clamp
+ * bounds what we adopt, never what we accept: apply_change still compares the
+ * record's own (hlc, author), so the merge stays deterministic. A record above
+ * the ceiling still wins its own cell; we just do not let it pin the engine. */
 void Hlc::receive(const Hlc &remote, uint64_t now) {
     uint64_t old_p = physical;
     uint64_t new_p = old_p;
-    if (remote.physical > new_p) new_p = remote.physical;
+    if (remote.physical > new_p && remote.physical <= kMaxAdoptablePhysical)
+        new_p = remote.physical;
     if (now > new_p) new_p = now;
 
     if (new_p == old_p && new_p == remote.physical) {

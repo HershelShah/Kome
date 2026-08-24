@@ -238,7 +238,13 @@ attacks; availability of third-party relay/rendezvous infrastructure itself.
   holds no capability), but such keys should be rejected for defense in depth.
 - **HLC from a valid writer.** An authorized writer (or a compromised key) can
   push the HLC far into the future; future writes then lose merges until wall
-  time catches up. Bounding accepted skew is a planned hardening.
+  time catches up. Since the integer-boundary sweep, what a peer can push the
+  *engine-global* clock to is bounded: `Hlc::receive` adopts a remote physical
+  only up to `ke::kMaxAdoptablePhysical` (`UINT64_MAX - 2^32`), because above
+  that `bump_logical`'s saturating branch is a fixed point where `tick()` stops
+  being strictly monotonic — see the entry below. Adoption is clamped, never
+  acceptance, so the merge function is untouched. The record still wins LWW on
+  its own cell, so "wall time catches up" remains unreachable *for that cell*.
 - **Handshake-phase reliability frames** are unauthenticated (no session key
   exists yet); they are the Noise handshake itself, which Noise authenticates,
   so the worst case is a handshake-time DoS, not a compromise.
@@ -275,15 +281,37 @@ than patched, with the design-level fix noted.
   saturate. The residual is the same HLC far-future property below (a malicious
   *authorized* writer can pin `present=true@hlc=MAX`), consolidated into one
   limitation instead of two.
-- **HLC physical is engine-global and adopts the max remote timestamp.** An
-  authorized far-future write (or any write in an open namespace) pins the
-  engine's wall-clock component network-wide, degrading the *quality* of
-  conflict resolution (writes resolve by the logical counter instead of real
-  time) across all namespaces — though convergence is preserved and unauthorized
-  far-future writes are rejected before they can touch the clock (regression:
-  `UnauthorizedFutureWriteDoesNotPoisonClock`). Bounded-drift rejection is
-  deliberately not done because a clock-dependent accept/reject would break
-  deterministic convergence. Design-level fix: per-namespace clock domains.
+- **HLC physical is engine-global and adopts the max remote timestamp — now
+  bounded.** An authorized far-future write (or any write in an open namespace)
+  pins the engine's wall-clock component network-wide, degrading the *quality*
+  of conflict resolution (writes resolve by the logical counter instead of real
+  time) across all namespaces. Unauthorized far-future writes are rejected
+  before they can touch the clock (regression:
+  `UnauthorizedFutureWriteDoesNotPoisonClock`).
+
+  This entry previously claimed "convergence is preserved". That was **false at
+  the top of the uint64 range**, and the integer-boundary sweep fixed it.
+  `bump_logical` saturates at `{UINT64_MAX, UINT32_MAX}` rather than wrapping
+  onto the reserved `{0,0}` sentinel — but that saturating state is a *fixed
+  point*: `tick()` returns a value equal to the pre-tick one, because no larger
+  HLC exists. The local write paths (`sync_engine_set`/`sync_engine_delete`)
+  commit `tick()`'s value with no LWW gate, on the documented assumption that it
+  is strictly newer, while `apply_change` gates every remote record on
+  `order <= 0`. So once the clock reached that state — reachable in **one**
+  signed record, since `receive` adopted a peer's physical with no ceiling —
+  every later local write landed locally and was dropped by every peer as a tie
+  against its own earlier record. Replicas genuinely diverged, permanently, with
+  no route to repair. Registers degraded from "latest write wins" to
+  "lexicographically greatest value wins" (`register_cmp`'s final tie-break).
+
+  Fixed by clamping *adoption*, not acceptance: `Hlc::receive` and the persisted
+  clock restore both cap `physical` at `ke::kMaxAdoptablePhysical`, reserving
+  2^32 ticks of headroom below the exhausted state. `apply_change` still decides
+  accept/reject purely from the record's own `(hlc, author)`, so bounded-drift
+  REJECTION is still deliberately not done — a clock-dependent accept/reject
+  would break deterministic convergence — and this clamp is not that. Regression:
+  `ZeroHlcExistence.FarFutureRecordCannotPinTheEngineClock`. Design-level fix
+  remains per-namespace clock domains.
 
 ## Deployment guidance
 

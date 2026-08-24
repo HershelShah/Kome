@@ -1101,3 +1101,79 @@ TEST(Security, CrossNamespaceMisuse) {
     sync_engine_destroy(writer);
     sync_engine_destroy(v);
 }
+
+
+/* A capability expiry of UINT64_MAX is the largest representable deadline — and
+ * byte-identical to the RESERVED "this answer cannot change with time alone"
+ * value that authorized() publishes through valid_until_ms (capability.h).
+ * Two different predicates for "permanent" straddled it: the deadline side
+ * accumulated over `expiry != 0` seeded at min_ms = UINT64_MAX, while the
+ * permanent-only re-solve skipped on the same `expiry != 0`. So such a cap set
+ * saw = true (claiming a finite deadline exists) while leaving min_ms on its
+ * own initialiser — publishing (time_bound = true, valid_until_ms = UINT64_MAX),
+ * exactly the pair reconcile.cpp asserts is impossible. One gossiped delegation
+ * aborted every assert-enabled peer.
+ *
+ * `now` is uint64 ms, so a UINT64_MAX expiry can never lapse; classing it with 0
+ * is the truthful classification, and it matches usable(), which already accepts
+ * it forever.
+ *
+ * PRE-FIX: tb came back true with vu == UINT64_MAX, tripping the assert. */
+TEST(Security, MaxExpiryIsClassedAsPermanent) {
+    sync_engine *owner = sync_engine_create(seed_from(0x71).data());
+    sync_engine *v = sync_engine_create(seed_from(0x72).data());
+    sync_engine *p = sync_engine_create(seed_from(0x73).data());
+    uint8_t ppk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(p, ppk);
+    const uint64_t now = ke::now_ms();
+
+    sync_capability *root =
+        sync_capability_root(owner, "ns", SYNC_ACCESS_READ | SYNC_ACCESS_WRITE);
+    ASSERT_NE(root, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, root), SYNC_OK);
+    sync_capability *forever =
+        sync_capability_delegate(owner, root, ppk, SYNC_ACCESS_READ, UINT64_MAX);
+    ASSERT_NE(forever, nullptr);
+    ASSERT_EQ(sync_engine_grant(v, forever), SYNC_OK);
+
+    bool tb = true;
+    uint64_t vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", now, &tb, &vu))
+        << "a UINT64_MAX expiry can never lapse; the read must be allowed";
+    EXPECT_FALSE(tb)
+        << "a never-lapsing cap must not be flagged time-bound";
+    EXPECT_EQ(vu, UINT64_MAX)
+        << "...and its deadline must be the unbounded sentinel";
+    /* The invariant reconcile.cpp asserts, stated here directly. */
+    EXPECT_TRUE(!tb || vu != UINT64_MAX) << "time-bound scope without a deadline";
+
+    /* The classification holds at the far end of the clock too. */
+    tb = true;
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, ppk, "ns", UINT64_MAX - 1, &tb, &vu));
+    EXPECT_FALSE(tb);
+    EXPECT_EQ(vu, UINT64_MAX);
+
+    /* Control: an ordinary finite expiry in the same namespace is still
+     * correctly flagged, so this is not an over-broad reclassification. */
+    sync_engine *q = sync_engine_create(seed_from(0x74).data());
+    uint8_t qpk[SYNC_PUBKEY_LEN];
+    sync_engine_identity(q, qpk);
+    const uint64_t kFarFuture = 4000000000000ull;
+    sync_capability *temp =
+        sync_capability_delegate(owner, root, qpk, SYNC_ACCESS_READ, kFarFuture);
+    ASSERT_EQ(sync_engine_grant(v, temp), SYNC_OK);
+    tb = false;
+    vu = 0;
+    EXPECT_TRUE(ke::cap_authorize_read(v, qpk, "ns", now, &tb, &vu));
+    EXPECT_TRUE(tb) << "a genuinely finite expiry must still be time-bound";
+    EXPECT_EQ(vu, kFarFuture);
+
+    sync_capability_free(root);
+    sync_capability_free(forever);
+    sync_capability_free(temp);
+    sync_engine_destroy(owner);
+    sync_engine_destroy(v);
+    sync_engine_destroy(p);
+    sync_engine_destroy(q);
+}

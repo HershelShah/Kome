@@ -394,6 +394,28 @@ std::string Storage::seal_frame(const std::string &body, uint32_t count) const {
     std::string full;
     put_u32le(full, count);
     full += body;
+    /* The frame length is a u32le prefix and 0 is RESERVED in it: load()'s
+     * replay loop reads `body_len == 0` as a clean end of log, the same break
+     * as real EOF. `full.size()` is a size_t, so a narrowing cast does not
+     * merely mis-frame an oversized body -- at an exact 4 GiB multiple it MINTS
+     * that terminator, and every frame after it (on the compaction path, the
+     * whole capability and revocation set, which put_revocation fsyncs
+     * synchronously precisely so it cannot be dropped) is silently discarded on
+     * the next open, with load() still returning SYNC_OK. Off-multiple sizes
+     * fare no better: the wrong prefix fails the digest/AEAD check and replay
+     * stops there just the same.
+     *
+     * Refuse instead of truncating. An empty return is this function's existing
+     * hard-failure signal (write_frame's `if (framed.empty()) return false;`
+     * and add_frame's `sink.ok = false`, both used for the F2 RNG failure), so
+     * the caller surfaces SYNC_ERR_INTERNAL or aborts the compaction with the
+     * old log intact -- never a lying SYNC_OK over bytes that vanish on reopen.
+     *
+     * NOTE: an entity whose records exceed this in one frame becomes
+     * uncompactable (rewrite_log_streamed packs one entity plus all its fields
+     * into a single frame). That is fail-closed and stuck rather than silent
+     * loss; splitting the per-entity compaction frame is the follow-up. */
+    if (frame_body_too_large((uint64_t)full.size())) return std::string();
     if (!encrypted_) return make_frame_full(full);
 
     uint8_t nonce[24];
@@ -511,9 +533,21 @@ bool Storage::rollback() {
 }
 
 /* Nesting-safe batches — see the contract in storage.h. Only the 0->1 begin
- * opens the transaction; inner begins just join it. */
+ * opens the transaction; inner begins just join it.
+ *
+ * The depth is CAPPED rather than left to wrap. 0 is the reserved "no batch
+ * open" sentinel (in_batch(), batch_commit, batch_abort, batch_maybe_flush and
+ * batch_poison all read it), so an unbounded uint32 increment mints that
+ * sentinel while in_tx_ is still set and staging_ still holds the batch's
+ * records: the tx_* helpers then take their non-batch branch into begin(),
+ * which clears staging_ and silently drops records the caller was told were
+ * staged, and maybe_compact's `if (in_tx_) return;` no longer blocks the
+ * mid-batch compaction storage.h forbids by design. Runaway nesting is API
+ * misuse either way; failing closed turns it into a clean SYNC_ERR_INTERNAL at
+ * the ABI instead of silent data loss. */
 bool Storage::batch_begin() {
     if (batch_depth_ > 0) {
+        if (batch_depth_ >= kMaxBatchDepth) return false; /* refuse, never wrap */
         batch_depth_++;
         return true;
     }
@@ -1030,7 +1064,19 @@ bool Storage::load(sync_engine *e, const uint8_t seed[32], sync_error *err) {
     e->identity = keypair_from_seed(rp.seed);
     secure_wipe(rp.seed, sizeof rp.seed);
     site_id_from_pubkey(e->identity.sign_pk.data(), e->site_id.data());
-    e->clock.physical = rp.hlc_physical;
+    /* Clamp the restored physical to the same ceiling receive() adopts under.
+     * The clock is persisted verbatim, so a database written by a binary
+     * without that ceiling -- or a corrupt/hand-edited meta frame -- would
+     * otherwise restore an engine straight onto bump_logical's saturating fixed
+     * point, where tick() stops being strictly monotonic and every local write
+     * lands locally but is dropped by every peer (see kMaxAdoptablePhysical,
+     * engine.hpp). Clamping here is what lets such a database heal on upgrade
+     * instead of carrying the pin forever. RAM-only, exactly like the
+     * hlc_logical clamp above: the on-disk format is unchanged, and the next
+     * stamp_clock_meta simply persists the healed value. */
+    e->clock.physical = rp.hlc_physical > ke::kMaxAdoptablePhysical
+                            ? ke::kMaxAdoptablePhysical
+                            : rp.hlc_physical;
     e->clock.logical = rp.hlc_logical;
     e->db_clock = rp.db_clock;
 

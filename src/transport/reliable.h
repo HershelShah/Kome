@@ -43,6 +43,15 @@ public:
     /* True when nothing is queued, outstanding, or awaiting ack. */
     bool idle() const;
 
+    /* Test-only seam. The u32 sequence-space wrap is 2^32 in-order stop-and-wait
+     * deliveries away, which no test can drive, so seed the counters at the
+     * boundary instead. Not called from any shipped code path. */
+    void test_seed_seqs(uint32_t send_seq, uint32_t recv_seq, bool have_delivered) {
+        send_seq_ = send_seq;
+        recv_seq_ = recv_seq;
+        have_delivered_ = have_delivered;
+    }
+
     /* Retransmission timeout, milliseconds. */
     static constexpr uint64_t kRtoMs = 50;
 
@@ -58,6 +67,10 @@ private:
 
     /* Inbound. */
     uint32_t    recv_seq_ = 0;             /* next expected DATA seq */
+    /* "Has anything been delivered in order yet?" — carried in its own flag
+     * rather than derived from recv_seq_ != 0, which is true only until the
+     * counter WRAPS back onto that same value. See ReliableLink::on_datagram. */
+    bool        have_delivered_ = false;
     bool        ack_pending_ = false;
     uint32_t    ack_seq_ = 0;
 

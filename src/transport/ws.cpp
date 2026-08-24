@@ -192,6 +192,27 @@ int ws_parse_frame(const uint8_t *buf, size_t len, bool &fin, uint8_t &op,
     }
     /* Reject before the size math (hdr + masklen + plen) can overflow size_t. */
     if (plen > kMaxWsMessageBytes) return -1;
+    /* RFC 6455 5.5: a control frame carries at most 125 payload bytes and is
+     * never fragmented. Enforced HERE, at the decoder, rather than only at the
+     * pong builder, for two reasons.
+     *
+     * The second header byte is MASK(1) || len(7), in which 126 and 127 are
+     * RESERVED escapes ("a 16- or 64-bit length follows") and 0x80 means "a
+     * 4-byte mask key follows". recv_frame echoes a ping by writing
+     * `(char)(mb | payload.size())` into that byte, so an oversized ping does
+     * not merely mis-frame the pong -- it MINTS those markers (a 126-byte ping
+     * yields 0x7E, 128..255 sets MASK on a server->client frame, 256 yields
+     * 0x00: a declared empty pong trailed by 256 unaccounted bytes) while the
+     * body appended is the full payload. The peer's parser desynchronizes on
+     * bytes we chose.
+     *
+     * And without a bound here a 64 MiB ping is buffered and echoed 1:1 through
+     * TcpStream::send_all, which loops on EAGAIN with no overall deadline: an
+     * unauthenticated peer that sends one and then stops reading stalls the
+     * recv thread while we hold ~128 MiB. Rejecting at the decoder fixes both,
+     * and puts the rule where fuzz_ws can reach it -- the fuzzer drives only
+     * ws_parse_frame and never the pong emitter, which is why this survived. */
+    if ((op & 0x8) && (plen > 125 || !fin)) return -1;
     size_t masklen = masked ? 4 : 0;
     if (len < hdr + masklen + plen) return 0;
     const uint8_t *mk = buf + hdr;
@@ -225,13 +246,20 @@ bool WsStream::recv_frame(std::string &out, int timeout_ms) {
             std::string pong;
             pong.push_back((char)0x8A);
             uint8_t mb = is_client_ ? 0x80 : 0x00;
-            pong.push_back((char)(mb | payload.size()));
+            /* Belt-and-braces against the length byte above: ws_parse_frame
+             * already refuses a control frame over 125 bytes, so `n` is a no-op
+             * today. It stays so the declared length and the appended byte
+             * count can never disagree -- and so the RESERVED 126/127 escapes
+             * and the MASK bit can never be minted here -- even if the decoder
+             * rule is later relaxed. */
+            const size_t n = payload.size() > 125 ? 125 : payload.size();
+            pong.push_back((char)(mb | (uint8_t)n));
             if (is_client_) {
                 uint8_t m[4]; random_bytes(m, 4); pong.append((const char *)m, 4);
-                for (size_t i = 0; i < payload.size(); i++)
+                for (size_t i = 0; i < n; i++)
                     pong.push_back(payload[i] ^ m[i % 4]);
             } else {
-                pong += payload;
+                pong.append(payload, 0, n);
             }
             tcp.send_all(pong.data(), pong.size());
             continue;
