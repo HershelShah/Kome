@@ -1,8 +1,8 @@
 # Candidate D — "Best of the field, from the literature"
 
-Angle: take the strongest *proven* idea for each sub-problem from shipped
-systems and peer-reviewed work, and assemble them into one design that
-satisfies H1–H8. Every load-bearing claim carries a URL.
+Angle: take the strongest *proven* idea per sub-problem from shipped systems
+and peer-reviewed work and assemble one design satisfying H1–H8. Every
+load-bearing claim carries a URL.
 
 ## 1. Summary
 
@@ -28,8 +28,8 @@ satisfies H1–H8. Every load-bearing claim carries a URL.
    X25519 key and rotated on removal (Jazz / Sender Keys), not TreeKEM.
 9. Relays carry only Noise-wrapped ciphertext; a private-interest-overlap
    handshake (Willow) hides even which collections a peer holds.
-10. The trusted core is: a strict partial order, a max-set semilattice, a view
-    function, and a fingerprint monoid — each a short Lean statement.
+10. Trusted core: a strict partial order, a max-set semilattice, a view
+    function and a fingerprint monoid — each a short Lean statement.
 
 ## 2. Survey table
 
@@ -83,8 +83,7 @@ prunes b") iff either
   (prefix), and `(ts_a > ts_b)` or `(ts_a = ts_b ∧ path(a) = path(b) ∧ h_a > h_b)`;
 - or `kind(a) = Rev`, `subject(a) = author(b)`, and `b` is `Value`/`Tomb`.
 
-`≻` is irreflexive and transitive (T-1). Nothing prunes `Cap`, `Rev`, `Clamp`,
-`Seal`.
+`≻` is irreflexive and transitive (T-1). Nothing prunes auth records.
 
 **Store.** `store(S) = { r ∈ S : valid(r) ∧ ¬∃ r' ∈ S. r' ≻ r }`, the
 `≻`-maximal valid elements. `join(A, B) = store(A ∪ B)`. Because `≻` is a
@@ -172,38 +171,34 @@ primitives. A range-summarizable order-statistics tree (Meyer §4;
 [arXiv 2603.19820](https://arxiv.org/abs/2603.19820)) gives any range's
 fingerprint in `O(log n)`.
 
-**Protocol.** Initiator sends `(range, fingerprint)` for the whole
-collection; on mismatch the responder splits into `b = 16` subranges or,
-when it holds ≤ `t = 32` items, sends the item list; matching ranges are
-skipped. Rounds `≤ 2 + 2⌈log_16 n⌉` (Meyer §3.3), bytes `O(n_Δ · log n)`.
-Messages are self-delimiting frames ≤ 4 KiB by default (BLE-friendly;
-negotiable up to 64 KiB); when a frame is full, remaining ranges are
-coalesced into one deferred fingerprint range exactly as Negentropy's frame
-size limit does. No state about the peer survives the session (H4).
-
-**Transfer.** Items are the ciphertext records themselves; the receiver
-validates, applies `store`, and the next round's fingerprints already reflect
-them. Both sides end with the union of their valid records (T-7).
+**Protocol.** Initiator sends `(range, fingerprint)` for the collection;
+on mismatch the responder splits into `b = 16` subranges or, holding ≤
+`t = 32` items, sends them; matching ranges are skipped. Rounds
+`≤ 2 + 2⌈log_16 n⌉` (Meyer §3.3), bytes `O(n_Δ · log n)`. Frames are
+self-delimiting, ≤ 4 KiB by default (BLE-friendly, negotiable to 64 KiB);
+when a frame fills, remaining ranges coalesce into one deferred fingerprint
+range as in Negentropy. No peer state survives the session (H4). Items are
+the ciphertext records; the receiver validates and applies `store`, and both
+sides end with the union of their valid records (T-7).
 
 **Digest.** `digest(store) = BLAKE2b-256` over the sorted `h` list of the
-same element set the fingerprint ranges over. It is a function of the store
-only (T-5) and is what `exists`, snapshot and load must all derive from.
+same element set the fingerprint ranges over — a function of the store only
+(T-5), from which `exists`, snapshot and load all derive.
 
-**Privacy.** Before reconciling, peers run private interest overlap: each
-sends `BLAKE2b(salt ‖ collection_id)` for the collections it holds under a
-per-session salt; only intersections are named. A stranger learns nothing; a
-relay sees Noise ciphertext of fixed-size frames. Dial-by-key with
-hole-punch-then-relay follows Iroh.
+**Privacy.** Peers first run private interest overlap: each sends
+`BLAKE2b(salt ‖ collection_id)` under a per-session salt; only intersections
+are named. A stranger learns nothing; a relay sees Noise ciphertext of
+fixed-size frames. Dial-by-key with hole-punch-then-relay follows Iroh.
 
 ## 6. Authorization, encryption, revocation
 
-**Write capabilities.** `Cap` records form chains rooted at the collection
-root key. Each link names `(subject pk, area = (subspace = subject, path
-prefix), [not_before, not_after], may_delegate, depth)` and must be a
-subset of its parent in every dimension (meadowcap narrowing). Depth ≤ 4,
-window ≤ 2^44 µs. Every writer, including the owner's own devices, holds a
-windowed capability; renewal is a new `Cap`. Expired capabilities stay in the
-set (records minted under them remain valid), bounded by `W × renewals`.
+**Write capabilities.** `Cap` chains are rooted at the collection root key.
+Each link names `(subject pk, area = (subspace = subject, path prefix),
+[not_before, not_after], may_delegate)` and is a subset of its parent in
+every dimension (meadowcap narrowing); depth ≤ 4, window ≤ 2^44 µs. Every
+writer, including the owner's devices, holds a windowed capability; renewal
+is a new `Cap`. Expired capabilities stay (records minted under them remain
+valid), bounded by `W × renewals`.
 
 **Revocation.** `Rev(K)` is a root-signed record; it prunes `K`'s data (§3)
 and is never pruned. Where it has not arrived, `K`'s records are accepted and
@@ -234,11 +229,11 @@ resolve" and BeeKEM is unaudited.
 
 ## 7. Storage and GC
 
-**Storage.** Append-only log of ciphertext records with periodic Bitcask
-compaction (Kome today; BEC's append-only `M`). Indexes: per collection a
-B-tree on `(ts, h)` whose internal nodes carry fingerprint sums (the monoid
-tree), and a B-tree on `(author, path)` for pruning and the view. Each index
-entry is fixed-size; all bounds are compile-time constants (SPARK).
+**Storage.** Append-only log of ciphertext records with Bitcask compaction
+(Kome today; BEC's append-only `M`). Per collection: a B-tree on `(ts, h)`
+whose internal nodes carry fingerprint sums (the monoid tree), and a B-tree
+on `(author, path)` for pruning and the view. Entries are fixed-size; all
+bounds are compile-time constants (SPARK).
 
 **Exact GC rule.** A replica may physically drop a record `r` at local time
 `now` iff one of:
@@ -249,15 +244,12 @@ entry is fixed-size; all bounds are compile-time constants (SPARK).
 - (G3) `¬valid(r)` after its pending-buffer timeout.
 
 Nothing else is ever dropped. `T_gc` is a collection constant (default 90
-days, at least the capability horizon of any writer). G1 preserves the store
-by definition. G2 changes the store only by forgetting a tombstone; the only
-observable effect is that a record by the same author, older than the
-tombstone and absent from every replica that already dropped it, may be
-re-admitted if some replica offline for more than `T_gc` still holds it —
-the Earthstar bound, now confined to one author's cells. Per-replica state is
-bounded by `Σ_authors |live records| + |unexpired tombstones| + |Cap, Rev,
-Clamp, Seal|`, each term with an explicit bound; per cell, ≤ `W = 64`
-candidate records.
+days, ≥ any writer's horizon). G1 preserves the store by definition. G2 only
+forgets a tombstone; its sole observable effect is that a same-author record
+older than it may be re-admitted from a replica offline longer than `T_gc` —
+the Earthstar bound, confined to one author's cells. Per-replica state is
+`Σ_authors |live records| + |unexpired tombstones| + |Cap, Rev, Clamp,
+Seal|`, each term explicitly bounded; per cell ≤ `W = 64` candidates.
 
 ## 8. Assumptions
 
@@ -338,9 +330,9 @@ subset of a finite `S ⊆ R`, and `view` as in §3.
   `receive` never moves the clock backwards nor beyond `not_after`;
   `e hb f ⇒ ts_e < ts_f` for events of one honest device.
 
-T-1..T-5 and T-9..T-11 are short Lean inductions over finite sets; T-7 is the
-substantial one (induction over the range split, as `MATH_MODEL.md` §4
-anticipates); T-6 and T-12 are reductions, stated in Lean and proved on paper.
+T-1..T-5 and T-9..T-11 are short Lean inductions over finite sets; T-7 is
+the substantial one (induction over the range split, as `MATH_MODEL.md` §4
+anticipates); T-6 and T-12 are cryptographic reductions proved on paper.
 
 ## 11. Self-score
 
