@@ -1,3 +1,4 @@
 obj/
 bin/
 gnatprove/
+vectors/gen/scratch_*
