@@ -53,7 +53,7 @@ theorem Version.lt_trichotomy (a b : Version) :
 /-- T1: the version order is a strict total order. -/
 instance : StrictTotal Version where
   lt := Version.lt
-  dec := fun a b => inferInstance
+  dec := fun _ _ => inferInstance
   irrefl := Version.lt_irrefl
   trans := Version.lt_trans
   trichotomy := Version.lt_trichotomy
@@ -88,7 +88,9 @@ the lemma the frontier homomorphism rests on, and the reason `revoke` must not
 dominate anything. -/
 theorem dominates_trans {x y z : Record} (hyx : dominates y x = true)
     (hzy : dominates z y = true) : dominates z x = true := by
-  cases x <;> cases y <;> cases z <;> simp [dominates, Version.lt] at * <;> omega
+  cases x <;> cases y <;> cases z <;>
+    simp only [dominates, decide_eq_true_eq, Bool.false_eq_true] at * <;>
+    (try simp only [Version.lt] at *) <;> omega
 
 /-- T12 (part): a revocation is never dominated. -/
 theorem revoke_never_dominated (q : Record) (a f s : Nat) :
@@ -153,7 +155,7 @@ theorem exists_max_dominator :
   | nil =>
     intro x hx
     obtain ⟨q, hq, _⟩ := hx
-    exact absurd hq (List.not_mem_nil q)
+    exact absurd hq List.not_mem_nil
   | cons q H' ih =>
     intro x hx
     obtain ⟨d, hd, hdx⟩ := hx
@@ -406,7 +408,7 @@ theorem ceilAll_eq (c : Nat) (l : List Record) : ceilAll c l = max c (maxCeil l)
 
 theorem maxCeil_ge {r : Record} {l : List Record} (h : r ∈ l) : ceilOf r ≤ maxCeil l := by
   induction l with
-  | nil => exact absurd h (List.not_mem_nil r)
+  | nil => exact absurd h List.not_mem_nil
   | cons q l ih =>
     simp only [maxCeil]
     rcases List.mem_cons.mp h with hq | hl

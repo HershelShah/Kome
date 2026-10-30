@@ -96,7 +96,7 @@ theorem applyAll_perm {l l' : List (Rec Key α)} (h : l.Perm l') :
 theorem applyAll_mem_cons {r : Rec Key α} {l : List (Rec Key α)} (h : r ∈ l) :
     ∀ s : Store Key α, applyAll s (r :: l) = applyAll s l := by
   induction l with
-  | nil => exact absurd h (List.not_mem_nil r)
+  | nil => exact absurd h List.not_mem_nil
   | cons r' l ih =>
     intro s
     by_cases hr : r = r'

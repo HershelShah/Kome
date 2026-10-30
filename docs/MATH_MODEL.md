@@ -118,10 +118,11 @@ be translated until the theorems above are checked.
 
 ## 6. Status
 
-The Lean development is written against Lean 4.21 using only the core library,
-so it builds without network access. It has **not yet been machine-checked**:
-no Lean toolchain could be installed in the authoring environment (no distro
-package; the download of `elan` was blocked by the session's permission
-policy). The first `lake build` will likely need a few tactic-level
-adjustments; the definitions and theorem statements are the deliverable and
-were written from the C++ directly.
+The Lean development uses only the core library and is **machine-checked**
+under Lean 4.35.0 (`formal/lean/build.sh`): every theorem in §2 and the
+redesign's theorems in `Kome/Frontier.lean` (see `docs/redesign/DESIGN.md`
+§9) build with no `sorry` and only Lean's standard axioms. The first build
+needed four kinds of tactic-level fix, none touching a statement: a renamed
+core lemma, `omega` not seeing through `True ∧ …` after `simp only`, `omega`
+not seeing through an `abbrev` for `Nat`, and `decide` needing to be unwrapped
+before a definition under it is unfolded.

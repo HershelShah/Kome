@@ -12,6 +12,8 @@ see them.
   L_MAX     = 2^32 - 1 = 4294967295
   MAX_ADOPT = P_MAX - 2^32 = 18446744069414584319   (engine.hpp kMaxAdoptablePhysical)
 -/
+set_option linter.unusedSimpArgs false
+
 namespace Kome
 
 structure HLC where
@@ -51,7 +53,7 @@ theorem lt_asymm {a b : HLC} (h : lt a b) : ¬ lt b a := by
 theorem lt_trichotomy (a b : HLC) : lt a b ∨ a = b ∨ lt b a := by
   obtain ⟨p, l⟩ := a
   obtain ⟨p', l'⟩ := b
-  simp only [lt, HLC.mk.injEq]
+  simp only [lt, HLC.mk.injEq, true_and, and_true]
   omega
 
 theorem le_refl (a : HLC) : le a a := Or.inr rfl
@@ -80,7 +82,7 @@ def bump (p l : Nat) : HLC :=
 
 theorem bump_ne_zero (p l : Nat) : bump p l ≠ zero := by
   unfold bump zero
-  split <;> (try split) <;> (intro h; simp only [HLC.mk.injEq] at h; omega)
+  split <;> (try split) <;> (intro h; simp only [HLC.mk.injEq, true_and, and_true] at h; omega)
 
 theorem bump_phys_ge (p l : Nat) : p ≤ (bump p l).physical := by
   unfold bump
@@ -93,7 +95,7 @@ theorem le_bump (c : HLC) (m : Nat) (h : c.logical ≤ m) : le c (bump c.physica
   obtain ⟨p, l⟩ := c
   change l ≤ m at h
   unfold bump le lt
-  split <;> (try split) <;> simp only [HLC.mk.injEq] at * <;> omega
+  split <;> (try split) <;> simp only [HLC.mk.injEq, true_and, and_true] at * <;> omega
 
 theorem bump_wf (p l : Nat) (hp : p ≤ 18446744073709551615) (hl : l ≤ 4294967295) :
     WF (bump p l) := by
@@ -110,7 +112,7 @@ def tick (c : HLC) (now : Nat) : HLC :=
 theorem tick_ne_zero (c : HLC) (now : Nat) : tick c now ≠ zero := by
   unfold tick
   split
-  · intro h; simp only [zero, HLC.mk.injEq] at h; omega
+  · intro h; simp only [zero, HLC.mk.injEq, true_and, and_true] at h; omega
   · exact bump_ne_zero _ _
 
 /-- T-HLC-2: tick is strictly increasing, except at the documented saturating
@@ -119,7 +121,7 @@ theorem tick_lt (c : HLC) (now : Nat) (hwf : WF c) : lt c (tick c now) ∨ c = t
   obtain ⟨p, l⟩ := c
   simp only [WF] at hwf
   unfold tick bump top
-  split <;> (try split) <;> (try split) <;> simp only [lt, HLC.mk.injEq] at * <;> omega
+  split <;> (try split) <;> (try split) <;> simp only [lt, HLC.mk.injEq, true_and, and_true] at * <;> omega
 
 theorem tick_wf (c : HLC) (now : Nat) (hwf : WF c) (hnow : now ≤ 18446744073709551615) :
     WF (tick c now) := by
@@ -183,7 +185,7 @@ theorem receive_ne_zero (c r : HLC) (now : Nat) : receive c r now ≠ zero := by
   split
   · exact bump_ne_zero _ _
   · intro h
-    simp only [zero, HLC.mk.injEq] at h
+    simp only [zero, HLC.mk.injEq, true_and, and_true] at h
     have h1 := newPhys_cases c r now
     have h2 := adoptPhys_cases c r
     omega
