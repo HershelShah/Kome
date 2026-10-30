@@ -18,8 +18,9 @@ cd formal/lean && lake build
 | `Kome/Equivocation.lean` | the existence order as implemented | T-EQUIV-1..2: it is not total, and its merge is order-dependent |
 | `Kome/Frontier.lean` | **the redesign** (`docs/redesign/DESIGN.md`): records, the version order, domination, the frontier, ceiling admission | T1, T2, T2', T3 (frontier homomorphism via a sandwich lemma), T4 (convergence with GC and admission, any order, any duplication), T4', T5, T8, T9, T12, T13 |
 
-**Status:** written against Lean `v4.21.0` but not yet machine-checked, because
-no Lean toolchain could be installed in the authoring environment (no distro
-package; the elan download was blocked). Expect a handful of tactic-level
-fixes on first build; the statements are the deliverable. See
-`docs/MATH_MODEL.md` for the model in prose and the theorems still to state.
+**Status:** machine-checked. Every theorem in the table builds under Lean
+4.35.0 with no `sorry`; the only axioms used are Lean's standard `propext`,
+`Classical.choice` and `Quot.sound` (the two counterexample theorems in
+`Equivocation.lean` use none). `./build.sh` builds it, fetching Lean from
+nixpkgs when `lake` is not installed. See `docs/MATH_MODEL.md` for the model
+in prose and the theorems still to state.

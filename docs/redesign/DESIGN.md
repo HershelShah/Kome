@@ -336,10 +336,11 @@ syncs with some member at least once per `del_ttl`. A5 Writers persist
    T8, T9, T12 and part of T13 over finite lists, with `maxceil` as a stored
    max-register. T3 is derived from a general "sandwich" lemma (a subset that
    still contains the frontier has the same frontier), which also yields the
-   GC-under-admission half of T4. Not yet machine-checked (see item 2). T7
-   remains.
-2. **Toolchain.** Lean cannot be installed in the current environment; the
-   proofs will be written and must be checked on a machine with `elan`.
+   GC-under-admission half of T4. **Machine-checked** under Lean 4.35.0
+   (`formal/lean/build.sh`), no `sorry`, standard axioms only. T7 remains.
+2. **Toolchain.** Lean comes from nixpkgs (`nix shell nixpkgs#lean4`), since
+   `elan` could not be downloaded in the authoring environment; `lean-toolchain`
+   names 4.35.0 for anyone using `elan`.
 3. **The accumulator.** monocypher has no BLAKE2b XOF; `acc(e)` is sixteen
    independent BLAKE2b-256 calls with a counter, and 4096-bit addition is a
    64-limb loop. Both trivial in SPARK; the prefix-sum index needs its own
