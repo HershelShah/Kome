@@ -331,11 +331,13 @@ syncs with some member at least once per `del_ttl`. A5 Writers persist
 
 ## 10. What is open
 
-1. **Lean model of this design.** `formal/lean/` currently models the present
-   engine. The next step is `Kome/Frontier.lean`: records as a sum type, `v`
-   as a lexicographic order (T1 reuses `StrictTotal`), `dom`, `F`, T2, T2',
-   T3, T4 over finite lists with the `maxceil` component. T3 is the one that
-   carries the design and should be proved first. T7 follows later.
+1. **Lean model of this design.** Written: `formal/lean/Kome/Frontier.lean`
+   states and proves T1, T2, T2', T3, T4 (with GC and admission), T4', T5,
+   T8, T9, T12 and part of T13 over finite lists, with `maxceil` as a stored
+   max-register. T3 is derived from a general "sandwich" lemma (a subset that
+   still contains the frontier has the same frontier), which also yields the
+   GC-under-admission half of T4. Not yet machine-checked (see item 2). T7
+   remains.
 2. **Toolchain.** Lean cannot be installed in the current environment; the
    proofs will be written and must be checked on a machine with `elan`.
 3. **The accumulator.** monocypher has no BLAKE2b XOF; `acc(e)` is sixteen
