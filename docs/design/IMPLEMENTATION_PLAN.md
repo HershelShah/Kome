@@ -9,7 +9,7 @@ proves it, and its contracts name the Lean theorems they refine.
 
 | Phase | Packages | DESIGN.md | Lean | State |
 |---|---|---|---|---|
-| 0 | `Kome` (bounds, status), `Kome.Byteorder`, `Kome.SHA256` | §2 bounds | — | done, proved |
+| 0 | `Kome` (bounds, status), `Kome.Byteorder`, `Kome.SHA256` | §2 bounds | — | done; Byteorder proved; SHA256 tested, 64 of 568 checks open |
 | 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` | §2, §3, §4 | T1, T2', T4', `applyA`/`keep` refinement | done, proved |
 | 2 | `Kome.Crypto` (monocypher binding), `Kome.Records` (canonical encoding, hashing, signing, well-formedness) | §2 | T13 | next |
 | 3 | `Kome.Store` (append-only log, index `cell → (offset, v)`, compaction = rewrite `F`), tombstone expiry | §7 | T11 (liveness, stated) | |
