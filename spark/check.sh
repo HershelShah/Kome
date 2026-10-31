@@ -31,6 +31,18 @@ run_one() {
     echo "== $m: prove"
     gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -u "kome-$m.adb" \
       --level=3 --mode=all --report=fail --warnings=continue
+    # gnatprove exits 0 even with unproved checks; read the summary and fail
+    # unless the module is listed in PROOF_WIP (proof known incomplete).
+    local total unproved
+    total=$(grep -E '^Total ' "obj/$m/gnatprove/gnatprove.out" | head -1)
+    unproved=$(echo "$total" | awk '{ if ($NF == ".") print 0; else print $(NF-1) }')
+    echo "== $m: $(echo "$total" | sed 's/  */ /g')"
+    if [ "$unproved" != "0" ]; then
+      case " ${PROOF_WIP:-sha256} " in
+        *" $m "*) echo "== $m: $unproved unproved checks (listed in PROOF_WIP, not fatal)" ;;
+        *) echo "== $m: $unproved UNPROVED checks"; return 1 ;;
+      esac
+    fi
   else
     echo "== $m: proof skipped (contracts checked at run time via -gnata)"
   fi

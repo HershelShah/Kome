@@ -16,7 +16,7 @@ rather than local (the history is in git; the analysis is in
 | The design search: eight candidates, two rounds, three adversarial judges | `docs/design/candidates/`, `docs/design/judges/` | done |
 | The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
 | Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T5, T8, T9, T12, T13 proved; T7 open |
-| The implementation, in SPARK, proved against the Lean model | `spark/` | lattice core (versions, headers, registers, frontier) built, tested and fully proved |
+| The implementation, in SPARK, proved against the Lean model | `spark/` | lattice core (versions, headers, registers, frontier) built, tested and fully proved; byteorder proved; SHA-256 tested, proof 89% (64 of 568 checks open) |
 
 ## The design in one paragraph
 
@@ -56,7 +56,10 @@ PROVE=0 ./spark/check.sh all   # tests only
 ```
 
 `spark/check.sh` uses GNAT 14, gprbuild, gnatprove 14 and the cvc5 and z3
-provers. CI (`.github/workflows/ci.yml`) runs both commands on every push.
+provers, and fails if a module has an unproved check, except modules listed
+in `PROOF_WIP` (today only `sha256`, whose proof was written before a prover
+was available and still has 64 open checks). CI (`.github/workflows/ci.yml`)
+runs both commands on every push.
 
 ## How the SPARK code relates to the Lean proofs
 
