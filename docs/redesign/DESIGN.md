@@ -9,6 +9,11 @@ judges produced. The judges' reports are in `judges/`; the candidates in
 `candidates/`. The reasoning is in §1, the design in §2–§8, the theorems in
 §9, and what is still open in §10.
 
+A second round (§1.1) searched four further designs and two modules against
+this one. The core survived unchanged; the round contributed three repairs
+(§4, §7, §9), one protocol module (§8), one authorization module (§6), and
+one specified extension (§4, candidate F) that is not on the critical path.
+
 ## 1. Why this and not the others
 
 Four designs were produced independently and judged by three adversarial
@@ -37,6 +42,35 @@ What follows is that design. Candidate B's hash-chained epoch keys are
 adopted for read control. Nothing from C survives except its observation that
 a thief's post-theft writes should be voidable retroactively, which A already
 had.
+
+### 1.1 Round two: the search for a better design
+
+Four more candidates were written against this design as the baseline (S)
+and judged by the same three reviewers (`judges/round2-*.md`):
+
+| Candidate | Idea | Math | Attacker | Implementer | Verdict |
+|---|---|---|---|---|---|
+| E height versions | order by a chasing `height`, keep `t` honest for expiry | 2nd | 2nd | 1st | **Rejected.** Fixes two real baseline warts (cleanup tombstones live `δ + del_ttl`; sub-ceiling pins Lamport-ize a cell) but opens a new one: expiry is by writer-chosen `t` while domination is by `height`, so a `DEL` with `t = 0` and a higher `height` dominates the owner's tombstone and expires at once, leaving no tombstone and letting old signed `PUT`s resurrect the entity. Deleter-chosen tombstone lifetime is a new attacker primitive S does not have. Also incompatible with H. |
+| F typed fields | per-`(cell, author)` records joined per type (counter, set, multi-value) | 3rd | **1st** | 2nd | **Adopted as a specified extension, phase 2.** Composes with S (same-author domination by the full `v` keeps T2'/T3); needs the `W` register (§4) or per-cell state is unbounded. Gives up nothing S has; changes `get` and the index to `(cell, author)`. Built when an application needs engine-side counters or sets. |
+| G causal multi-value | per-author store, parent hashes resolved in the view, no clock in the order | 4th | 3rd | 3rd | **Rejected.** The strongest anti-pin statement of both rounds (no `PUT` can be shadowed), but resolved siblings are retained not freed, "last modified" leaves the engine, and a forged height after each roster can exhaust the ceiling space on the attacker's schedule. Its `W` register is kept (§4). Stays as the answer if a multi-person-list application wants visible conflicts. |
+| H snapshot GC | root-signed per-entity kill levels replace `del_ttl` | 5th | 4th | 4th | **Rejected.** The lattice is sound and "no resurrection ever" is the cleanest theorem of the round, but the liveness assumption it removes from the drop rule reappears as a completeness obligation on the root with *destruction* of synced data as the failure mode (a restored root's chunk kills a re-created entity everywhere); a stolen root key becomes an unrevocable one-record wipe; snapshot traffic scales with live entities, not deletions; and its `t`-keyed kill set is not a down-set of any height order, so it cannot be combined with E or G. |
+| I one-round sketch | IBLT round 0 before the range split | accept | accept | accept | **Adopted** (§8), capped so the sketch fits one message. |
+| J multi-root | several root keys, rotation, per-field writer sets | accept with fix | accept | half | **Adopted without field rules** (§6): root loss becomes recoverable; `roots_ever` must be joined in the handshake and root additions gated by the founding key. Field rules cut (labels only). |
+
+The three judges disagreed on E (the implementer wanted it, the other two
+did not) and on how soon F belongs on the critical path; they agreed that
+H and G lose, that I is free, and that the baseline's lattice could not be
+broken. What the round did find in the baseline were two prose faults, both
+repaired below and neither touching a checked theorem: `maxceil` is replica
+state the sync protocol never joined, so a latecomer could refuse a record
+every other replica admits until a root refresh (fixed by joining the
+grow-only registers in the session handshake, §4); and assumption A4 was
+too weak as stated (restated in §7).
+
+The governing rule the math judge extracted, which decides every future
+proposal: **the frontier lattice is sound iff every kill predicate is a
+down-set of the record order on its key.** Every rejected combination in
+this round fails exactly that test.
 
 ## 2. Objects
 
@@ -116,9 +150,16 @@ field; a deleted entity is a `DEL` and nothing else.
 ## 4. Admission
 
 Every well-formed record is admitted **except** a `PUT`/`DEL` with
-`t > maxceil`, where `maxceil` is a per-collection max-register updated from
-`ceiling_t` of every `ROSTER` ever applied (including rosters dominated on
-arrival). `maxceil` is stored, not derived, and only grows.
+`t > maxceil` or `author ∉ W`, where `maxceil` is a per-collection
+max-register updated from `ceiling_t` of every `ROSTER` ever applied
+(including rosters dominated on arrival), and `W` is a per-collection
+grow-only set of every `sign_pk` that any applied `ROSTER` has ever listed
+(candidate G's register, adopted in round two). Both are stored, not
+derived, and only grow. `W` bounds who can occupy the store: without it a
+member could relay records under unrostered ground keys and make a cell's
+state unbounded (the math judge's finding against F), and typed cells (§4,
+F) would have no per-cell bound at all. Removal from `W` does not exist;
+removal of a writer is `REVOKE` (§6).
 
 This replaces A's gate ("inadmissible under the currently maximal roster"),
 which the mathematics judge broke with two rosters of equal generation. The
@@ -131,8 +172,35 @@ form for exactly this reason). The ceiling keeps the top of the version order
 unreachable: no admissible record can pin a cell beyond `maxceil`, and every
 roster refresh moves `maxceil` up.
 
-The state of a replica is therefore the pair `(F, maxceil)`; its join is
-`(F(F₁ ∪ F₂), max(c₁, c₂))`.
+The state of a replica is therefore the triple `(F, maxceil, W)`; its join
+is `(F(F₁ ∪ F₂), max(c₁, c₂), W₁ ∪ W₂)`.
+
+**The registers are reconciled, not only the records (round-two repair).**
+`maxceil`, `W` and `roots_ever` (§6) are replica state, and §8 reconciles
+only the records of `F`. A roster that raised `maxceil` on some replicas
+and was then dominated everywhere never reaches a replica that joins later,
+and the design's own "root restored from backup" row produces exactly that:
+an equal-generation roster with a lower ceiling that wins by `h` leaves a
+record admissible at one replica and refused at another after every
+exchange until some root issues a higher ceiling. So every session's HELLO
+carries `(maxceil, W, roots_ever)` and each side joins them componentwise
+`(max, ∪, ∪)` before any element is offered. Admission stays monotone, no
+theorem changes, and the exchange clause of T4 becomes true. A replica is
+never worse off for joining: the registers only ever widen what is
+admissible.
+
+**Typed fields (extension, candidate F).** When an application needs
+counters, grow-only sets or multi-value registers in the engine, a `PUT`
+may carry `ftype : u8 ∈ {LWW, GSET, PNCOUNTER, MVREG, MAXREG}` as part of
+the cell key, the author's full state for that field as its value, and the
+`PUT`-over-`PUT` clause of `dom` gains the condition `(ftype = LWW ∨ same
+author)`. The frontier then holds at most one record per `(cell, author)`,
+bounded by `|W|`, and the cell's value is a join over the surviving,
+non-void per-author records. LWW cells are unchanged. The specification is
+`candidates/F-typed-fields.md`, as repaired by the round-two judges (`W`
+required; the fold saturates; view output read through a cursor). It is
+not on the critical path: an application can get the same semantics today
+with one LWW sub-cell per device.
 
 ## 5. Clocks and writing
 
@@ -188,6 +256,25 @@ finding against A: accepting the previous epoch let a removed member write
 into up-to-date replicas for a whole epoch). Both gates decide who you talk
 to, never what a record means.
 
+**Several roots (module J, adopted in round two).** A `ROSTER` lists
+`n_roots ≤ 4` root keys and `prev_h`, the hash of the roster it extends.
+`ROSTER`, `REVOKE` and the epoch key may be issued by any listed root; a
+root may be revoked like a member. A root is *added* only by a roster signed
+by the founding key (the one `ns` is derived from), so a stolen secondary
+root cannot mint an unbounded chain of successors; a root is removed by any
+root. `roots_ever` is a grow-only register of every root any applied roster
+has listed, joined in the HELLO with `maxceil` and `W`; `ROSTER`/`REVOKE`
+admission is `signer ∈ roots_ever`. Roster domination is per signer
+(`same signer ∧ (gen, h)` greater), and the effective roster is the view
+`ROSTER_eff := max_(gen,h)` over frontier rosters whose signer is not
+`root_void`. Two roots racing equal generations resolve by `h` as before;
+`REVOKE`s are grow-only so nothing a race can do loses one. The payoff is
+that losing the root device is recoverable whenever `n_roots ≥ 2`. Per-field
+writer sets were part of module J and are cut: enforced at admission they
+are non-monotone (the math judge's D counterexample), and as a view flag
+they are a label that cannot stop an unauthorized write from freeing an
+authorized value's bytes.
+
 **Revocation** is `REVOKE(X, from_t)`: grow-only, never dominated, root-signed.
 Its effect is the view flag `void` on `X`'s records with `t ≥ from_t`, plus
 the roster that follows it (fresh epoch, `X` removed). It is deliberately
@@ -232,6 +319,26 @@ which the user re-deletes. That requires a device offline for longer than
 `del_ttl` (default 180 days); it is a liveness assumption (A4), stated as such,
 not hidden in a safety theorem.
 
+**A4, restated (round-two repair).** "Every member syncs with some member
+once per `del_ttl`" is not enough: the math judge gave a four-member
+schedule satisfying it in which the `DEL` reaches two members, both expire
+it, and a third member that never saw it re-seeds the entity everywhere.
+The assumption expiry needs is **A4′: every `DEL` reaches every member
+within `del_ttl` of `d.t`**, that is, sync-graph diameter times sync period
+is below `del_ttl`. Its failure mode is resurrection of deleted data, never
+destruction of live data, which is why this clause was kept over candidate
+H's snapshots.
+
+**Chased tombstones (residual found by candidate E).** A `DEL` that
+dominates a far-future `PUT` must chase to `t > p.t`, so its tombstone lives
+`δ + del_ttl` where `δ` is how far ahead the pinning clock was, bounded by
+`maxceil − now`. Candidate E removed this by ordering on a separate counter
+and was rejected because a writer-chosen expiry clock is worse than an
+inflated one (§1.1). The residual is storage of one tombstone frame per
+pinned entity for at most one horizon beyond `del_ttl`. Compute
+`x.t + del_ttl` in 64 bits; at `x.t = 2^48 − 1` a 48-bit sum wraps and
+would turn an immortal tombstone into an instant one.
+
 **Bounds.** `|F(ns)| ≤ live cells + DELs younger than del_ttl + 1 roster +
 revocations (≤ 1024, then the collection is re-founded)`. No vectors, no
 per-peer state, no shells, no pending buffers.
@@ -261,6 +368,19 @@ the attacker judge accepted its security: a k-sum attack on a 4096-bit modulus
 costs about 2^128 and needs 2^64 inserted records. The current 256-bit sum is
 breakable in about 2^32 by a member, which is why the size changes.
 
+**Round 0: one-round set difference (module I, adopted in round two).**
+After the HELLO (which also joins the registers, §4) each side sends an
+invertible Bloom lookup table over the 32-byte element hashes of `F`,
+sized from the two sides' `|F|` and clamped so one sketch fits in one
+message (at most 1 000 cells of 44 bytes). Subtracting the two tables and
+peeling yields the exact symmetric difference in one round when it is small,
+which is the common case; peeling failure and a false decode are both
+detected (every recovered hash must verify against a held or received
+record) before any state is written, and the session falls through to the
+range protocol below. The sketch is homomorphic, so it is cached per
+collection and updated per record. It adds nothing to the trusted core:
+every element it names is still delivered and checked as a record.
+
 **Protocol.** Range-based set reconciliation as today: both sides snapshot
 `F`, exchange `(lo, hi, fp)`, split 16-way on mismatch, ship elements for
 ranges of at most 4, finish with a HAVE round. Descriptors are self-contained;
@@ -286,12 +406,15 @@ Core-Lean-provable ones are marked ✓; the two hard ones are marked ✗.
 - **T4 ✓ Convergence.** With state `(F, maxceil)` and `apply(S, r)` admitting
   `r` iff `r.t ≤ maxceil` (for data records): two replicas that applied the
   same set of records in any order with any duplication hold the same `F`
-  and `maxceil`; and after a complete reconciliation, two replicas hold
-  `F(H_A ∪ H_B)` and `max(c_A, c_B)`, including records that were
-  inadmissible at one side when first offered.
-- **T4' ✓ Monotone admission.** `adm(r, c) ∧ c ≤ c' ⇒ adm(r, c')`, and
-  `maxceil` never decreases under any sequence of rosters, including rosters
-  of lower generation.
+  and `maxceil`; and, given that the session HELLO joins the registers
+  (§4), after a complete reconciliation two replicas hold `F(H_A ∪ H_B)`
+  and `max(c_A, c_B)`, including records that were inadmissible at one side
+  when first offered. (Without the HELLO join the exchange clause is false:
+  round-two math judge, counterexample 1 against S.)
+- **T4' ✓ Monotone admission.** `adm(r, c, W) ∧ c ≤ c' ∧ W ⊆ W' ⇒
+  adm(r, c', W')`, and neither `maxceil` nor `W` nor `roots_ever` ever
+  shrinks under any sequence of rosters, including rosters of lower
+  generation. (`W` is not yet in the Lean model; §10.)
 - **T5 ✓ View determinism.** `deleted_at`, `cell`, `exists`, `void` are
   functions of `F` alone.
 - **T6 ✓ Digest.** `digest(ns) = fp(F|ns)`; `ACC(R₁ ⊎ R₂) = ACC(R₁) +
@@ -309,7 +432,7 @@ Core-Lean-provable ones are marked ✓; the two hard ones are marked ✗.
   is unshadowed.
 - **T10 ✓ Equivocation.** Two distinct records with equal `(author, seq)`
   are ordered identically everywhere; `F` is unaffected by arrival order.
-- **T11 (liveness) Tombstone expiry.** Under A4, after every replica has
+- **T11 (liveness) Tombstone expiry.** Under A4′, after every replica has
   expired `d`, no replica holds a record `d` dominated; and apply-then-expire
   guarantees that two replicas differing only in whether `d` has expired
   agree again after one exchange.
@@ -325,9 +448,11 @@ Core-Lean-provable ones are marked ✓; the two hard ones are marked ✗.
 **Assumptions.** A1 Ed25519 unforgeable; the root key is honest. A2 BLAKE2b
 collision-resistant; the 4096-bit sum is k-sum hard. A3 Some root device
 refreshes the roster within each horizon (writes degrade to ceiling ties
-otherwise; convergence unaffected). A4 For tombstone expiry only: every member
-syncs with some member at least once per `del_ttl`. A5 Writers persist
-`seq_self` (violations are detected). **No clock assumption for convergence.**
+otherwise; convergence unaffected). A4′ For tombstone expiry only: every
+`DEL` reaches every member within `del_ttl` of `d.t`. A5 Writers persist
+`seq_self` (violations are detected). A6 Every session joins the grow-only
+registers `(maxceil, W, roots_ever)` in its HELLO (a protocol obligation,
+checkable per session). **No clock assumption for convergence.**
 
 ## 10. What is open
 
@@ -338,6 +463,12 @@ syncs with some member at least once per `del_ttl`. A5 Writers persist
    still contains the frontier has the same frontier), which also yields the
    GC-under-admission half of T4. **Machine-checked** under Lean 4.35.0
    (`formal/lean/build.sh`), no `sorry`, standard axioms only. T7 remains.
+   Round-two deltas not yet in the model: the `W` register as a second
+   component of `State` (same shape as `ceil`); per-signer roster
+   domination and `roots_ever` (module J); and one alignment, noted by the
+   math judge: the model *holds* inadmissible records and filters them out
+   of the view, while this document discards them and relies on re-offer.
+   Both converge; the model should discard, since holding them is unbounded.
 2. **Toolchain.** Lean comes from nixpkgs (`nix shell nixpkgs#lean4`), since
    `elan` could not be downloaded in the authoring environment; `lean-toolchain`
    names 4.35.0 for anyone using `elan`.
@@ -349,9 +480,11 @@ syncs with some member at least once per `del_ttl`. A5 Writers persist
    (they sort first) so that a stale-ceiling peer admits as much as possible
    in one pass; correctness does not depend on it.
 5. **Conflict visibility.** This design keeps one value per cell and frees
-   losers' bytes. Candidate D's one-candidate-per-author view was the best
-   conflict surface of the four; it costs O(authors) per contested cell and
-   was judged not worth it for records. Revisit if applications ask for it.
+   losers' bytes. Round two wrote the alternative out in full as candidate G
+   (per-author store, parents resolved in the view) and rejected it for
+   records (§1.1); its sibling view is F's `MVREG` type plus parent hashes,
+   so an application that wants visible conflicts gets them through the F
+   extension rather than a different lattice.
 6. **Quotas.** Floods by an authorized writer are bounded only by revocation
    and owner `DEL`s. A per-author byte quota in the roster is a view-level
    addition that would not touch the lattice.
@@ -360,7 +493,16 @@ syncs with some member at least once per `del_ttl`. A5 Writers persist
    `grant/revoke/capability_*` become roster and revoke operations;
    `sync_engine_digest` keeps its contract and gains the "digest equals
    fingerprint" guarantee.
+8. **Phase 2: typed fields.** Candidate F is specified and composes; build
+   it after `W` is in the model and T7 is proved, when an application asks
+   for engine-side counters or sets. Estimated at about 7.5 person-weeks over
+   the core by the implementer judge.
+9. **Module I sizing.** The sketch cap (1 000 cells) is set by the current
+   maximum message length; raising the message bound raises the cap. Below
+   the cap the common sync is two round trips; above it the range protocol
+   runs as before.
 
-Effort, per the implementer judge's estimate for A, which this design
-matches in shape: roughly 24 person-weeks for the Lean theorems plus the
-SPARK core, with T7 the long pole.
+Effort, per the implementer judge's estimates across both rounds: roughly
+24 person-weeks for the Lean theorems plus the SPARK core, about 3.5 more
+for module I outside the trusted core, about 3 for module J, and about 7.5
+for the F extension when it is built; T7 is the long pole throughout.
