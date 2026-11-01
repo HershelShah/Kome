@@ -1,6 +1,7 @@
 --  Test main for Kome.SHA256. Contract corner cases, the ghost laws run at
---  run time (-gnata evaluates their postconditions), and the differential
---  vectors in vectors/sha256.txt produced by vectors/gen/sha256_gen.cpp.
+--  run time (-gnata evaluates their postconditions), and the vectors in
+--  vectors/sha256.txt (NIST examples plus lines cross-checked against an
+--  independent SHA-256; see the file header).
 pragma Ada_2022;
 with Ada.Assertions;
 with Ada.Command_Line;   use Ada.Command_Line;
@@ -33,7 +34,7 @@ procedure Test_SHA256 with SPARK_Mode => Off is
          when 'A' .. 'F' => Character'Pos (C) - Character'Pos ('A') + 10,
          when others     => raise Constraint_Error with "bad hex");
 
-   --  "-" denotes the empty byte string (the generator's convention).
+   --  "-" denotes the empty byte string (vectors/sha256.txt convention).
    function From_Hex (S : String) return Byte_Array is
    begin
       if S = "-" then
@@ -222,7 +223,7 @@ procedure Test_SHA256 with SPARK_Mode => Off is
          Check ("empty_updated_is_identity", Updated (Ctx, Empty) = Ctx);
       end;
 
-      --  Reset after Finish gives a fresh object: the C++ "reset to reuse".
+      --  Reset after Finish gives a fresh object ("reset to reuse").
       Reset (Ctx);
       Update (Ctx, Ascii ("garbage that must not leak"));
       Finish (Ctx, D);
@@ -317,6 +318,30 @@ procedure Test_SHA256 with SPARK_Mode => Off is
                 and then Hash (M (0 .. 63)) /= Hash (M (0 .. 64))
                 and then Hash (M (1 .. 0)) /= Hash (M (0 .. 0)));
       end;
+
+      --  One long Update and one long Hash (16 MiB). Under -gnata the
+      --  model equation `= Absorbed (Ctx, Data)` used to be executed for
+      --  every Update and recursed Data'Length / 64 levels deep, which
+      --  overflowed the stack from 4 MiB on; it is now checked only up to
+      --  Model_Check_Len (spec), so long inputs run. Expected digest from
+      --  Python hashlib: sha256 (b"a" * 2**24).
+      declare
+         type Big_Access is access Byte_Array;
+         Big : constant Big_Access := new Byte_Array'(0 .. 2**24 - 1 => 16#61#);
+         Want : constant String :=
+           "5b6ff2e19d0da0fe323061018fc381393492884e74af8296c81ab9cb2694783a";
+         Ok : Boolean;
+      begin
+         begin
+            Reset (Ctx);
+            Update (Ctx, Big.all);
+            Finish (Ctx, D);
+            Ok := To_Hex (D) = Want and then To_Hex (Hash (Big.all)) = Want;
+         exception
+            when others => Ok := False;
+         end;
+         Check ("long_update_16mib", Ok);
+      end;
    end Corner_Cases;
 
    ---------------------------------------------------------------------------
@@ -326,6 +351,50 @@ procedure Test_SHA256 with SPARK_Mode => Off is
    procedure Laws is
       Ok : Boolean := True;
    begin
+      --  The substitution lemmas, and the client chains they exist for
+      --  (the spec's comment on Lemma_Updated_Eq): Update then Finish is
+      --  Hash, and two Updates then Finish is Hash of the concatenation.
+      declare
+         A   : Byte_Array (0 .. 69);
+         B   : Byte_Array (10 .. 139);
+         Ctx : Context := Initial;
+         C2  : Context;
+         D   : Hash256;
+      begin
+         for I in A'Range loop
+            A (I) := Byte ((I * 29 + 7) mod 256);
+         end loop;
+         for I in B'Range loop
+            B (I) := Byte ((I * 43 + 1) mod 256);
+         end loop;
+         Update (Ctx, A);
+         C2 := Ctx;
+         Lemma_Updated_Eq (Ctx, C2, B);
+         Lemma_Updated_Eq (Ctx, Updated (Initial, A), B);
+         Lemma_Digest_Of_Eq (Ctx, C2);
+         Lemma_Digest_Of_Eq (Ctx, Updated (Initial, A));
+         Finish (C2, D);
+         Ok := Ok and then D = Hash (A);
+         Update (Ctx, B);
+         Lemma_Update_Concat (Initial, A, B);
+         Lemma_Digest_Of_Eq (Ctx, Updated (Updated (Initial, A), B));
+         Lemma_Digest_Of_Eq (Updated (Initial, A & B),
+                             Updated (Updated (Initial, A), B));
+         Finish (Ctx, D);
+         Ok := Ok and then D = Hash (A & B);
+         for Fill in 0 .. 63 loop
+            Reset (Ctx);
+            Update (Ctx, B (10 .. 9 + Fill));
+            C2 := Ctx;
+            Lemma_Updated_Eq (Ctx, C2, A);
+            Lemma_Digest_Of_Eq (Ctx, C2);
+         end loop;
+      exception
+         when others => Ok := False;
+      end;
+      Check ("lemma_updated_eq_digest_of_eq", Ok);
+      Ok := True;
+
       declare
          A : Byte_Array (0 .. 99);
          B : Byte_Array (0 .. 129);
@@ -657,10 +726,9 @@ procedure Test_SHA256 with SPARK_Mode => Off is
          end if;
       end Do_Kat;
 
-      --  The C++ generator feeds 4096-byte chunks; the mirror feeds the same
-      --  byte stream through rotating chunk sizes around the block size (and
-      --  big ones for the 2**29-byte vector), so the buffer logic is hit at
-      --  every fill level while the total grows past 2**32 bits.
+      --  Feed the byte stream through rotating chunk sizes around the block
+      --  size (and big ones for the 2**29-byte vector), so the buffer logic
+      --  is hit at every fill level while the total grows past 2**32 bits.
       Rotation : constant array (0 .. 7) of Natural :=
         [1, 63, 64, 65, 4095, 4096, 4097, 65_536];
 
