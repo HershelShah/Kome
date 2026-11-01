@@ -1,37 +1,43 @@
---  Kome.SHA256: SPARK mirror of src/sha256.h / src/sha256.cpp (FIPS 180-4
---  SHA-256, incremental Update/Finish plus the one-shot helper). The C++ is
---  the deterministic state digest primitive; this package is a full
---  reimplementation, not a binding (CONVENTIONS.md: SHA-256 is translated).
+--  Kome.SHA256: FIPS 180-4 SHA-256 in SPARK, incremental (Update/Finish)
+--  plus the one-shot helper. CONVENTIONS.md: SHA-256 is part of the fixed
+--  primitive set and is implemented here rather than bound from C; its
+--  reference is the standard (FIPS 180-4 §5.1.1 padding, §5.3.3 initial
+--  hash value, §6.2 computation), and vectors/sha256.txt checks it against
+--  the NIST examples and against an independent implementation.
 --
---  Observable semantics mirrored exactly: same digest for the same byte
---  stream, however it is chunked; Finish pads (0x80, zeros to 56 mod 64,
---  64-bit big-endian bit length) and leaves the object needing a Reset.
+--  Observable semantics: the same digest for the same byte stream, however
+--  it is chunked; Finish pads (0x80, zeros to 56 mod 64, the 64-bit
+--  big-endian bit length) and leaves the object needing a Reset.
 --
---  Counter discipline. The C++ holds `bitlen_` as a uint64 bit count and
---  bumps it with `bitlen_ += len * 8`, which wraps silently once more than
---  2**61 - 1 bytes have been fed. The mirror counts *bytes* (Byte_Count) and
---  refuses, by precondition, any Update that would carry the count past
+--  Counter discipline. FIPS 180-4 limits a message to fewer than 2**64
+--  bits. The context counts *bytes* (Byte_Count) and refuses, by
+--  precondition, any Update that would carry the count past
 --  Max_Message_Bytes, so the bit length written by Finish never wraps.
 --
---  Functional model. The private part defines the C++ update loop as a
+--  Functional model. The private part defines the update loop as a
 --  function: `Fill` is one iteration (copy `take` bytes into the buffer,
 --  compress when it is full) and the ghost `Absorbed` is the loop itself,
---  recursive over the chunks the C++ takes. `Absorb`, the implementation,
---  has `Absorb'Result = Absorbed (Ctx, Data)` as its postcondition and
---  `Updated` is `Absorb`; the chunking law `Lemma_Update_Concat` is then a
---  proof by induction over `Absorbed` (see the body), not an assumption.
+--  recursive over the chunks it takes. `Absorb`, the implementation, has
+--  `Absorb'Result = Absorbed (Ctx, Data)` as its postcondition and `Updated`
+--  is `Absorb` (through `Absorb_Message`, which carries the U64 bound); the
+--  chunking law `Lemma_Update_Concat` is then a proof by induction over
+--  `Absorbed` (see the body), not an assumption. Finish's digest is defined
+--  in the private part as the big-endian image of the state after absorbing
+--  `Padding`, so equal contexts give equal digests (Lemma_Digest_Of_Eq).
+--
+--  Proof status (gnatprove --level=3, cvc5 + z3): every check is proved,
+--  with no pragma Assume and no Annotate. The U64 image of the byte counter
+--  is related to integer addition by Lemma_U64_Add in the body, proved from
+--  bit-level facts the solvers do discharge (see the body).
 pragma Ada_2022;
 package Kome.SHA256 with SPARK_Mode, Pure is
 
-   Block_Len : constant := 64;   --  sha256.cpp: buf_[64]
+   Block_Len : constant := 64;   --  FIPS 180-4: 512-bit blocks
 
-   --  Largest message the bit counter can describe: 8 * N must fit in U64.
-   --  (sha256.cpp: bitlen_ is uint64_t and is bumped by len * 8 unguarded.)
-   --  DIVERGENCE CANDIDATE: Sha256::update does `bitlen_ += (uint64_t)len * 8`
-   --  with no guard, so past 2**61 - 1 total bytes the C++ wraps the length
-   --  it later pads with (a wrong digest, silently). The mirror refuses such
-   --  an Update by precondition (Update/Updated below); the proof wants the
-   --  C++ to guard or saturate the counter. Unreachable with real inputs.
+   --  Largest message the bit counter can describe: 8 * N must fit in U64
+   --  (FIPS 180-4 §5.1.1: the length field is 64 bits). An Update past it is
+   --  refused by precondition (Update/Updated below) rather than wrapping
+   --  the length that Finish pads with. Unreachable with real inputs.
    Max_Message_Bytes : constant U64 := 2**61 - 1;
 
    --  Longest single Update. Byte_Array is indexed by Natural, so a full-range
@@ -41,13 +47,9 @@ package Kome.SHA256 with SPARK_Mode, Pure is
 
    type Context is private;
 
-   --  True once Finish has run; the C++ comment says "the object must be
-   --  reset to reuse", and the mirror makes that a precondition.
-   --  DIVERGENCE CANDIDATE: the C++ does not enforce its own comment. A
-   --  second update()/finish() on a finished Sha256 silently hashes the
-   --  padding bytes as message (bitlen_ already counts them) and pads again.
-   --  Every caller in src/ uses a fresh object, so nothing observable depends
-   --  on it; the mirror refuses by precondition instead of reproducing it.
+   --  True once Finish has run. A finished context must be Reset before it
+   --  is reused: Update and Finish refuse it by precondition (absorbing more
+   --  bytes after the padding would hash the padding as message).
    --  (No Post: Byte_Count's Post names Is_Finished, so a Post here naming
    --  Byte_Count would recurse at run time; Lemma_Finished_Block_Aligned
    --  states what a finished context satisfies.)
@@ -55,8 +57,8 @@ package Kome.SHA256 with SPARK_Mode, Pure is
      with Global => null;
 
    --  Bytes absorbed so far. Before Finish this is the message length; after
-   --  Finish it also counts the padding (the C++ bitlen_ does the same since
-   --  finish() pads through update()).
+   --  Finish it also counts the padding, which Finish absorbs like message
+   --  bytes.
    function Byte_Count (Ctx : Context) return U64
      with Global => null,
           Post => (if not Is_Finished (Ctx)
@@ -74,7 +76,7 @@ package Kome.SHA256 with SPARK_Mode, Pure is
           Post   => not Is_Finished (Initial'Result)
                     and then Byte_Count (Initial'Result) = 0;
 
-   --  Sha256::reset(): IV, zero counters.
+   --  FIPS 180-4 §5.3.3 initial hash value, zero counters.
    procedure Reset (Ctx : out Context)
      with Global => null,
           Post   => Ctx = Initial;
@@ -91,7 +93,7 @@ package Kome.SHA256 with SPARK_Mode, Pure is
                     and then Byte_Count (Updated'Result) = Byte_Count (Ctx) + U64 (Data'Length)
                     and then (if Data'Length = 0 then Updated'Result = Ctx);
 
-   --  Sha256::update(data, len).
+   --  Absorb Data into the context.
    procedure Update (Ctx : in out Context; Data : Byte_Array)
      with Global => null,
           Pre    => not Is_Finished (Ctx)
@@ -106,7 +108,7 @@ package Kome.SHA256 with SPARK_Mode, Pure is
      with Global => null,
           Pre    => not Is_Finished (Ctx);
 
-   --  Sha256::finish(out): pad, absorb the length, emit the state big-endian.
+   --  Pad (FIPS 180-4 §5.1.1), absorb the padding, emit the state big-endian.
    procedure Finish (Ctx : in out Context; Digest : out Hash256)
      with Global => null,
           Pre    => not Is_Finished (Ctx),
@@ -116,7 +118,7 @@ package Kome.SHA256 with SPARK_Mode, Pure is
                     and then Byte_Count (Ctx) - Byte_Count (Ctx'Old) in 9 .. 72
                     and then Digest = Digest_Of (Ctx'Old);
 
-   --  sha256(data, len, out): the one-shot helper.
+   --  The one-shot helper.
    function Hash (Data : Byte_Array) return Hash256
      with Global => null,
           Pre    => Data'Length <= Max_Update_Len,
@@ -158,6 +160,37 @@ package Kome.SHA256 with SPARK_Mode, Pure is
                              <= Max_Message_Bytes - Byte_Count (Ctx),
           Post   => Updated (Ctx, A & B) = Updated (Updated (Ctx, A), B);
 
+   --  Equal contexts stay equal under Updated and give equal digests.
+   --  Context holds arrays, so its "=" is Ada equality, which the prover does
+   --  not substitute under a function (CONVENTIONS.md, rule 1); these two
+   --  lemmas are the substitution steps a caller needs to chain the
+   --  contracts above, e.g. from `Update (Ctx, A); Finish (Ctx, D)` (Update's
+   --  Post: Ctx = Updated (Initial, A)) to `D = Hash (A)`:
+   --
+   --     Update (Ctx, A);
+   --     Lemma_Digest_Of_Eq (Ctx, Updated (Initial, A));
+   --     Finish (Ctx, D);   --  D = Digest_Of (Updated (Initial, A)) = Hash (A)
+   --
+   --  and, with Lemma_Update_Concat, from two Updates to `Hash (A & B)`.
+   procedure Lemma_Updated_Eq (C1, C2 : Context; Data : Byte_Array)
+     with Ghost,
+          Global => null,
+          Pre    => C1 = C2
+                    and then not Is_Finished (C1)
+                    and then Data'Length <= Max_Update_Len
+                    and then U64 (Data'Length) <= Max_Message_Bytes - Byte_Count (C1),
+          Post   => not Is_Finished (C2)
+                    and then Byte_Count (C2) = Byte_Count (C1)
+                    and then Updated (C1, Data) = Updated (C2, Data);
+
+   procedure Lemma_Digest_Of_Eq (C1, C2 : Context)
+     with Ghost,
+          Global => null,
+          Pre    => C1 = C2 and then not Is_Finished (C1),
+          Post   => not Is_Finished (C2)
+                    and then Byte_Count (C2) = Byte_Count (C1)
+                    and then Digest_Of (C1) = Digest_Of (C2);
+
    --  A finished context holds a whole number of blocks, at least one
    --  (follows from the Type_Invariant on Context).
    procedure Lemma_Finished_Block_Aligned (Ctx : Context)
@@ -183,30 +216,40 @@ private
    subtype Block is Byte_Array (0 .. Block_Len - 1);
    subtype Buffer_Fill is Natural range 0 .. Block_Len - 1;
 
-   --  sha256.cpp Sha256::reset(): FIPS 180-4 §5.3.3 initial hash value.
+   --  The byte counter is a semantic integer, so it is a range type
+   --  (CONVENTIONS.md: modular types only for wire encoding and hashing);
+   --  every addition to it is then an overflow obligation, not a wrap, and
+   --  the model below reasons in plain integer arithmetic. Byte_Count is its
+   --  U64 image. Max_Message is Max_Message_Bytes as a named number; a
+   --  finished context also counts the padding (at most 72 bytes, see
+   --  Lemma_Padded_Length), hence the upper bound.
+   Max_Message : constant := 2**61 - 1;
+   Max_Total   : constant := Max_Message + 72;
+   type Byte_Total is range 0 .. Max_Total with Size => 64;
+
+   --  FIPS 180-4 §5.3.3 initial hash value.
    Initial_State : constant State_Words :=
      [16#6a09e667#, 16#bb67ae85#, 16#3c6ef372#, 16#a54ff53a#,
       16#510e527f#, 16#9b05688c#, 16#1f83d9ab#, 16#5be0cd19#];
 
-   --  Defaults equal Initial, mirroring the C++ constructor calling reset().
-   --  Buf is zeroed (the C++ leaves it indeterminate; its bytes beyond
-   --  Buf_Len are never observable, and zeroing makes Context equality in
-   --  the contracts well defined).
+   --  Defaults equal Initial. Buf is zeroed: its bytes beyond Buf_Len are
+   --  never observable, and zeroing makes Context equality in the contracts
+   --  well defined.
    type Context is record
       State    : State_Words := Initial_State;
-      Total    : U64         := 0;        --  bytes absorbed (bitlen_ / 8)
+      Total    : Byte_Total  := 0;        --  bytes absorbed
       Buf      : Block       := [others => 0];
-      Buf_Len  : Buffer_Fill := 0;        --  buflen_, always < 64 between calls
+      Buf_Len  : Buffer_Fill := 0;        --  bytes in Buf, always < 64 between calls
       Finished : Boolean     := False;
    end record
      with Type_Invariant =>
        Context.Buf_Len = Natural (Context.Total mod Block_Len)
        and then (if Context.Finished
                  then Context.Buf_Len = 0 and then Context.Total >= Block_Len
-                 else Context.Total <= Max_Message_Bytes);
+                 else Context.Total <= Max_Message);
 
    function Is_Finished (Ctx : Context) return Boolean is (Ctx.Finished);
-   function Byte_Count (Ctx : Context) return U64 is (Ctx.Total);
+   function Byte_Count (Ctx : Context) return U64 is (U64 (Ctx.Total));
 
    function Initial return Context is
      (State    => Initial_State,
@@ -216,23 +259,63 @@ private
       Finished => False);
 
    ---------------------------------------------------------------------------
-   --  Functional model of Sha256::update. Everything below is declared in the
+   --  Functional model of Update. Everything below is declared in the
    --  private part, so none of it is a boundary subprogram of Context (SPARK
    --  RM 7.3.2): the Type_Invariant is neither assumed on arguments nor
    --  checked on results, and the facts each needs are in its own Pre.
+   --
+   --  Every Pre that compares a 'Length with an Integer expression first
+   --  bounds it against a named number: a Byte_Array may span all of
+   --  Natural, whose 'Length (2**31) does not fit in Integer.
    ---------------------------------------------------------------------------
 
-   --  Sha256::block(p) as a function: one 64-byte block into the state.
-   function Compressed (S : State_Words; P : Block) return State_Words
+   --  FIPS 180-4 §6.2.2 as a function: one 64-byte block into the state.
+   --  The compression proper (Compress_Words) takes records of words, not
+   --  arrays, and Compressed only loads them: Ada equality on an array is
+   --  not logical equality for the prover (CONVENTIONS.md, rule 1), so an
+   --  opaque function of arrays could not be shown to return equal results
+   --  on elementwise-equal arguments. On records of scalars it can, and
+   --  every chunking lemma below needs exactly that step.
+   type Hash_Words is record
+      H0, H1, H2, H3, H4, H5, H6, H7 : U32;
+   end record;
+
+   --  FIPS 180-4 §6.2.2 step 1, W0 .. W15: the block as big-endian words.
+   type Message_Words is record
+      M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15 : U32;
+   end record;
+
+   function Compress_Words (H : Hash_Words; M : Message_Words) return State_Words
      with Global => null;
 
-   --  memcpy(buf_ + buflen_, p, take): Chunk written into Buf at Pos, as an
+   --  Bytes 4I .. 4I + 3 of P as a big-endian word.
+   function Big_Endian_Word (P : Block; I : Natural) return U32 is
+     (U32 (P (4 * I)) * 2**24 + U32 (P (4 * I + 1)) * 2**16
+      + U32 (P (4 * I + 2)) * 2**8 + U32 (P (4 * I + 3)))
+     with Global => null,
+          Pre    => I < 16;
+
+   function Compressed (S : State_Words; P : Block) return State_Words is
+     (Compress_Words
+        ((S (0), S (1), S (2), S (3), S (4), S (5), S (6), S (7)),
+         (Big_Endian_Word (P, 0),  Big_Endian_Word (P, 1),
+          Big_Endian_Word (P, 2),  Big_Endian_Word (P, 3),
+          Big_Endian_Word (P, 4),  Big_Endian_Word (P, 5),
+          Big_Endian_Word (P, 6),  Big_Endian_Word (P, 7),
+          Big_Endian_Word (P, 8),  Big_Endian_Word (P, 9),
+          Big_Endian_Word (P, 10), Big_Endian_Word (P, 11),
+          Big_Endian_Word (P, 12), Big_Endian_Word (P, 13),
+          Big_Endian_Word (P, 14), Big_Endian_Word (P, 15))))
+     with Global => null;
+
+   --  Chunk copied into Buf at Pos, as an
    --  aggregate so that the elementwise definition every lemma below reasons
    --  from is the function itself (no loop, so no executed loop invariant).
    --  Pos may be Block_Len only with an empty Chunk (writes nothing).
    function Written (Buf : Block; Pos : Natural; Chunk : Byte_Array) return Block
      with Global => null,
-          Pre    => Pos <= Block_Len
+          Pre    => Chunk'Length <= Block_Len
+                    and then Pos <= Block_Len
                     and then Chunk'Length <= Block_Len - Pos;
 
    function Written (Buf : Block; Pos : Natural; Chunk : Byte_Array) return Block is
@@ -241,40 +324,44 @@ private
           then Chunk (Chunk'First + (I - Pos))
           else Buf (I))]);
 
-   --  size_t take = 64 - buflen_; if (take > len) take = len;
+   --  How many of Len bytes the next iteration takes: the room left.
    function Take_Len (Ctx : Context; Len : Natural) return Natural is
      (Natural'Min (Block_Len - Ctx.Buf_Len, Len))
      with Global => null;
 
-   --  One iteration of the C++ update loop: copy Chunk (at most the room
-   --  left in the buffer) and compress when the block is complete. The C++
-   --  bumps bitlen_ once before its loop; adding Chunk'Length here per chunk
-   --  sums to the same count and is not observable between the two.
+   --  One iteration of the update loop: copy Chunk (at most the room left
+   --  in the buffer), count it, and compress when the block is complete.
    --  Filled is the step on the already written buffer W, so that Fill
    --  evaluates Written once.
    function Filled (Ctx : Context; W : Block; Len : Natural) return Context is
      (if Ctx.Buf_Len + Len = Block_Len
       then (State    => Compressed (Ctx.State, W),
-            Total    => Ctx.Total + U64 (Len),
+            Total    => Ctx.Total + Byte_Total (Len),
             Buf      => W,
             Buf_Len  => 0,
             Finished => Ctx.Finished)
       else (State    => Ctx.State,
-            Total    => Ctx.Total + U64 (Len),
+            Total    => Ctx.Total + Byte_Total (Len),
             Buf      => W,
             Buf_Len  => Ctx.Buf_Len + Len,
             Finished => Ctx.Finished))
      with Global => null,
           Pre    => Len <= Block_Len - Ctx.Buf_Len
-                    and then U64 (Len) <= U64'Last - Ctx.Total;
+                    and then Byte_Total (Len) <= Max_Total - Ctx.Total;
 
    function Fill (Ctx : Context; Chunk : Byte_Array) return Context is
      (Filled (Ctx, Written (Ctx.Buf, Ctx.Buf_Len, Chunk), Chunk'Length))
      with Global => null,
-          Pre    => Chunk'Length <= Block_Len - Ctx.Buf_Len
-                    and then U64 (Chunk'Length) <= U64'Last - Ctx.Total;
+          Pre    => Chunk'Length <= Block_Len
+                    and then Chunk'Length <= Block_Len - Ctx.Buf_Len
+                    and then Byte_Total (Chunk'Length) <= Max_Total - Ctx.Total,
+          Post   => Fill'Result.Total = Ctx.Total + Byte_Total (Chunk'Length)
+                    and then Fill'Result.Finished = Ctx.Finished
+                    and then Fill'Result.Buf_Len
+                             = (if Ctx.Buf_Len + Chunk'Length = Block_Len then 0
+                                else Ctx.Buf_Len + Chunk'Length);
 
-   --  The whole update loop as a recursive function over the chunks the C++
+   --  The whole update loop as a recursive function over the chunks it
    --  takes (Take_Len bytes per iteration, so at most Data'Length / 64 + 1
    --  levels). Ghost: this is the specification Absorb is proven against,
    --  and the object Lemma_Update_Concat's induction runs over.
@@ -283,11 +370,8 @@ private
           Global => null,
           Subprogram_Variant => (Decreases => Data'Length),
           Pre    => Data'Length <= Max_Update_Len
-                    and then U64 (Data'Length) <= U64'Last - Ctx.Total,
-          Post   => Absorbed'Result.Total = Ctx.Total + U64 (Data'Length)
-                    and then Absorbed'Result.Buf_Len
-                             = Natural ((U64 (Ctx.Buf_Len) + U64 (Data'Length))
-                                        mod Block_Len)
+                    and then Byte_Total (Data'Length) <= Max_Total - Ctx.Total,
+          Post   => Absorbed'Result.Total = Ctx.Total + Byte_Total (Data'Length)
                     and then Absorbed'Result.Finished = Ctx.Finished
                     and then (if Data'Length = 0 then Absorbed'Result = Ctx);
 
@@ -299,24 +383,48 @@ private
                                .. Data'First + Take_Len (Ctx, Data'Length) - 1)),
               Data (Data'First + Take_Len (Ctx, Data'Length) .. Data'Last)));
 
-   --  The implementation: the loop of Sha256::update without the bit-count
-   --  guard, shared by Updated (message bytes) and Finalize (padding bytes),
-   --  so the counter bound is a precondition of the public Update, not of
-   --  this. Post: it computes the model.
-   function Absorb (Ctx : Context; Data : Byte_Array) return Context
-     with Global => null,
-          Pre    => Data'Length <= Max_Update_Len
-                    and then U64 (Data'Length) <= U64'Last - Ctx.Total
-                    and then Ctx.Buf_Len = Natural (Ctx.Total mod Block_Len),
-          Post   => Absorb'Result = Absorbed (Ctx, Data)
-                    and then Absorb'Result.Total = Ctx.Total + U64 (Data'Length)
-                    and then Absorb'Result.Buf_Len
-                             = Natural (Absorb'Result.Total mod Block_Len)
-                    and then Absorb'Result.Finished = Ctx.Finished
-                    and then (if Data'Length = 0 then Absorb'Result = Ctx);
+   ---------------------------------------------------------------------------
+   --  Finish. Padding and the digest bytes are expression functions of
+   --  scalars and of the state words, so the digest is a function of the
+   --  context that respects its equality (Lemma_Digest_Of_Eq).
+   ---------------------------------------------------------------------------
 
-   function Updated (Ctx : Context; Data : Byte_Array) return Context is
-     (Absorb (Ctx, Data));
+   function Shift_Right (Value : U32; Amount : Natural) return U32
+     with Import, Convention => Intrinsic, Global => null;
+   function Shift_Right (Value : U64; Amount : Natural) return U64
+     with Import, Convention => Intrinsic, Global => null;
+
+   --  FIPS 180-4 §5.1.1: 0x80, then zeros up to 56 mod 64, then the 8-byte
+   --  length, after a message whose last block holds B bytes. The padding
+   --  is 64 - B bytes when the length still fits in that block (B <= 55),
+   --  and runs into one more block (128 - B bytes) otherwise.
+   subtype Pad_Count is Positive range 9 .. 72;
+
+   function Pad_Len (B : Buffer_Fill) return Pad_Count is
+     (if B <= 55 then Block_Len - B else 2 * Block_Len - B)
+     with Global => null;
+
+   --  Byte I of the N-byte padding of a T-byte message: the length field is
+   --  the bit count 8 * T, big-endian, in the last 8 bytes.
+   function Pad_Byte (T : Byte_Total; N : Pad_Count; I : Natural) return Byte is
+     (if I = 0 then 16#80#
+      elsif I < N - 8 then 0
+      else Byte (Shift_Right (U64 (T) * 8, 8 * (N - 1 - I)) and 16#FF#))
+     with Global => null,
+          Pre    => T <= Max_Message and then I < N;
+
+   function Padding (T : Byte_Total; B : Buffer_Fill) return Byte_Array is
+     ([for I in 0 .. Pad_Len (B) - 1 => Pad_Byte (T, Pad_Len (B), I)])
+     with Global => null,
+          Pre    => T <= Max_Message,
+          Post   => Padding'Result'First = 0
+                    and then Padding'Result'Length = Pad_Len (B);
+
+   --  FIPS 180-4 §6.2.2 step 4 output: the eight state words, big-endian.
+   function Digest_Bytes (S : State_Words) return Hash256 is
+     ([for I in 0 .. Hash_Len - 1 =>
+         Byte (Shift_Right (S (I / 4), 24 - 8 * (I mod 4)) and 16#FF#)])
+     with Global => null;
 
    --  Finish produces both the finalized context and the digest; Digest_Of
    --  is the projection so that Finish's postcondition can name it.
@@ -333,7 +441,7 @@ private
    function Finalize (Ctx : Context) return Finish_Result
      with Global => null,
           Pre    => not Ctx.Finished
-                    and then Ctx.Total <= Max_Message_Bytes
+                    and then Ctx.Total <= Max_Message
                     and then Ctx.Buf_Len = Natural (Ctx.Total mod Block_Len),
           Post   => Is_Finished (Finalize'Result.State)
                     and then Byte_Count (Finalize'Result.State)
@@ -343,9 +451,72 @@ private
                     --  What Finish needs to re-establish the invariant on
                     --  its (boundary) return: the padding ends a block.
                     and then Finalize'Result.State.Buf_Len = 0
-                    and then Byte_Count (Finalize'Result.State) >= Block_Len;
+                    and then Finalize'Result.State.Total mod Block_Len = 0
+                    and then Finalize'Result.State.Total >= Block_Len
+                    --  The digest: the state after absorbing the padding.
+                    and then Finalize'Result.Digest
+                             = Digest_Bytes
+                                 (Absorbed (Ctx, Padding (Ctx.Total, Ctx.Buf_Len)).State);
 
    function Digest_Of (Ctx : Context) return Hash256 is
      (Finalize (Ctx).Digest);
+
+   ---------------------------------------------------------------------------
+   --  The implementation of Update. Run-time assertion policy: the two Posts
+   --  below state `= Absorbed (Ctx, Data)`, and the ghost Absorbed recurses
+   --  once per chunk, Data'Length / 64 levels deep, so an executed Post
+   --  (-gnata, as kome_spark.gpr builds) would exhaust the stack on a long
+   --  Update (a 4 MiB Update did). gnatprove proves Posts whatever the
+   --  policy, so the contracts are unchanged; at run time Absorb_Message
+   --  checks the model equation itself for Updates of up to Model_Check_Len
+   --  bytes (body), and the cheap facts are checked again by Updated's Post.
+   --  The pragma applies from here to the end of this private part (the
+   --  body keeps the policy it is compiled with).
+   ---------------------------------------------------------------------------
+
+   Model_Check_Len : constant := 2**16;
+
+   pragma Assertion_Policy (Post => Ignore);
+
+   --  The implementation: the update loop without the message bound, shared
+   --  by Updated (message bytes) and Finalize (padding bytes), so the bound
+   --  is a precondition of the public Update, not of this. Post: it computes
+   --  the model.
+   function Absorb (Ctx : Context; Data : Byte_Array) return Context
+     with Global => null,
+          Pre    => Data'Length <= Max_Update_Len
+                    and then Byte_Total (Data'Length) <= Max_Total - Ctx.Total
+                    and then Ctx.Buf_Len = Natural (Ctx.Total mod Block_Len),
+          Post   => Absorb'Result = Absorbed (Ctx, Data)
+                    and then Absorb'Result.Total = Ctx.Total + Byte_Total (Data'Length)
+                    and then Absorb'Result.Buf_Len
+                             = Natural (Absorb'Result.Total mod Block_Len)
+                    and then Absorb'Result.Finished = Ctx.Finished
+                    and then (if Data'Length = 0 then Absorb'Result = Ctx);
+
+   --  Absorb under the public Update precondition, which bounds the count
+   --  in U64. The body carries that bound over to Byte_Total and the sum
+   --  back to U64 (Lemma_U64_Add in the body), so Updated's contract, which
+   --  speaks of Byte_Count, follows from this Post.
+   function Absorb_Message (Ctx : Context; Data : Byte_Array) return Context
+     with Global => null,
+          Pre    => not Ctx.Finished
+                    and then Ctx.Total <= Max_Message
+                    and then Ctx.Buf_Len = Natural (Ctx.Total mod Block_Len)
+                    and then Data'Length <= Max_Update_Len
+                    and then U64 (Data'Length) <= Max_Message_Bytes - U64 (Ctx.Total),
+          Post   => Absorb_Message'Result = Absorbed (Ctx, Data)
+                    and then Absorb_Message'Result.Total
+                             = Ctx.Total + Byte_Total (Data'Length)
+                    and then Absorb_Message'Result.Total <= Max_Message
+                    and then U64 (Absorb_Message'Result.Total)
+                             = U64 (Ctx.Total) + U64 (Data'Length)
+                    and then Absorb_Message'Result.Buf_Len
+                             = Natural (Absorb_Message'Result.Total mod Block_Len)
+                    and then not Absorb_Message'Result.Finished
+                    and then (if Data'Length = 0 then Absorb_Message'Result = Ctx);
+
+   function Updated (Ctx : Context; Data : Byte_Array) return Context is
+     (Absorb_Message (Ctx, Data));
 
 end Kome.SHA256;

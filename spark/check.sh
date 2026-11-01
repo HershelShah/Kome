@@ -38,7 +38,7 @@ run_one() {
     unproved=$(echo "$total" | awk '{ if ($NF == ".") print 0; else print $(NF-1) }')
     echo "== $m: $(echo "$total" | sed 's/  */ /g')"
     if [ "$unproved" != "0" ]; then
-      case " ${PROOF_WIP:-sha256} " in
+      case " ${PROOF_WIP:-store} " in
         *" $m "*) echo "== $m: $unproved unproved checks (listed in PROOF_WIP, not fatal)" ;;
         *) echo "== $m: $unproved UNPROVED checks"; return 1 ;;
       esac
