@@ -17,6 +17,19 @@ if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>
   fi
 fi
 
+# gnatwhy3 hangs if TMPDIR names a missing directory, and concurrent runs that
+# share the default why3server socket in /tmp crash; give each run its own.
+if [ -z "${KOME_TMPDIR_SET:-}" ]; then
+  export KOME_TMPDIR_SET=1
+  TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/kome-check.XXXXXX")"
+  export TMPDIR
+  trap 'rm -rf -- "$TMPDIR"' EXIT
+fi
+
+# PROOF_WIP lists modules whose unproved checks are not fatal. Unset means
+# the default list; set and empty means none.
+PROOF_WIP_LIST="${PROOF_WIP-store}"
+
 run_one() {
   local m="$1"
   if [ -f "tests/test_$m.adb" ]; then
@@ -38,7 +51,7 @@ run_one() {
     unproved=$(echo "$total" | awk '{ if ($NF == ".") print 0; else print $(NF-1) }')
     echo "== $m: $(echo "$total" | sed 's/  */ /g')"
     if [ "$unproved" != "0" ]; then
-      case " ${PROOF_WIP:-store} " in
+      case " $PROOF_WIP_LIST " in
         *" $m "*) echo "== $m: $unproved unproved checks (listed in PROOF_WIP, not fatal)" ;;
         *) echo "== $m: $unproved UNPROVED checks"; return 1 ;;
       esac
@@ -48,7 +61,14 @@ run_one() {
   fi
 }
 if [ "${1:-}" = "all" ]; then
-  for f in src/kome-*.adb; do m="${f#src/kome-}"; run_one "${m%.adb}"; done
+  # Run every module even after a failure, then report all failures.
+  failed=""
+  for f in src/kome-*.adb; do
+    m="${f#src/kome-}"; m="${m%.adb}"
+    if ! "$0" "$m"; then failed="$failed $m"; fi
+  done
+  if [ -n "$failed" ]; then echo "== FAILED:$failed"; exit 1; fi
+  echo "== all modules green"
 else
   run_one "$1"
 fi
