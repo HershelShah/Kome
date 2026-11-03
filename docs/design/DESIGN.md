@@ -5,9 +5,8 @@ signed records under one strict total order, with every policy question
 (authorization, far-future clocks, revocation) moved out of the merge and into
 either a monotone admission rule or a pure view. This is candidate A's core
 with candidate D's hygiene, corrected for every counterexample the three
-judges produced. The judges' reports are in `history/judges/`; the
-candidates in `history/candidates/`. The reasoning is in §1, the design in
-§2–§8, the theorems in §9, and what is still open in §10.
+judges produced. The reasoning is in §1, the design in §2–§8, the theorems
+in §9, and what is still open in §10.
 
 A second round (§1.1) searched four further designs and two modules against
 this one. The core survived unchanged; the round contributed three repairs
@@ -60,7 +59,7 @@ had.
 ### 1.1 Round two: the search for a better design
 
 Four more candidates were written against this design as the baseline (S)
-and judged by the same three reviewers (`history/judges/round2-*.md`):
+and judged by the same three reviewers:
 
 | Candidate | Idea | Math | Attacker | Implementer | Verdict |
 |---|---|---|---|---|---|
@@ -403,9 +402,8 @@ the cell key, the author's full state for that field as its value, and the
 `PUT`-over-`PUT` clause of `dom` gains the condition `(ftype = LWW ∨ same
 author)`. The frontier then holds at most one record per `(cell, author)`,
 bounded by `|W|`, and the cell's value is a join over the surviving,
-non-void per-author records. LWW cells are unchanged. The specification is
-`history/candidates/F-typed-fields.md`, as repaired by the round-two judges
-(`W` required; the fold saturates; view output read through a cursor). It
+non-void per-author records. LWW cells are unchanged. The round-two judges
+required `W`, a saturating fold, and view output read through a cursor. It
 is not on the critical path: an application can get the same semantics today
 with one LWW sub-cell per device.
 
