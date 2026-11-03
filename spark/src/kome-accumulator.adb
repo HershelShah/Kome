@@ -3,7 +3,7 @@ package body Kome.Accumulator with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  Limb arithmetic uses a range type that is wide enough for a + b + 1
-   --  and a + 2^64 - b - 1. Thus the carry is an ordinary integer fact, not
+   --  and a + 2^64 - b - 1, so the carry is an ordinary integer fact, not
    --  a bit-vector wraparound that the prover must reconstruct.
    ----------------------------------------------------------------------
 
@@ -63,7 +63,7 @@ package body Kome.Accumulator with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  Completions of the public model functions. They are in the body, so
-   --  the provers of clients cannot see them.
+   --  a client's prover cannot see them.
    ----------------------------------------------------------------------
 
    function Value (A : Acc) return Big_Integer is (Suffix (A, 0));
@@ -134,8 +134,7 @@ package body Kome.Accumulator with SPARK_Mode is
 
    procedure Lemma_Add_Chain (A, B, R : Acc; Cs : Carry_Array) is
       --  Proved, but not executed again under -gnata (only the Post
-      --  executes). Thus Add and Sub stay cheap at run time (refer to the
-      --  spec).
+      --  executes), so Add and Sub stay cheap at run time (see the spec).
       pragma Assertion_Policy (Assert => Ignore, Loop_Invariant => Ignore);
    begin
       for K in reverse Limb_Index loop
@@ -168,8 +167,7 @@ package body Kome.Accumulator with SPARK_Mode is
 
    procedure Lemma_Sub_Chain (A, B, R : Acc; Cs : Carry_Array) is
       --  Proved, but not executed again under -gnata (only the Post
-      --  executes). Thus Add and Sub stay cheap at run time (refer to the
-      --  spec).
+      --  executes), so Add and Sub stay cheap at run time (see the spec).
       pragma Assertion_Policy (Assert => Ignore, Loop_Invariant => Ignore);
    begin
       for K in reverse Limb_Index loop
@@ -383,10 +381,9 @@ package body Kome.Accumulator with SPARK_Mode is
 
    procedure Lemma_Limb_Bytes (V : U64) is
       --  The limb is split into its eight byte lanes, then each lane is its
-      --  byte times 256^K. Each step has a literal mask and shift. The
-      --  bit-vector-to-integer reasoning (bv2nat) of the SMT solvers can
-      --  process this form. It cannot process "mod 256" and "/ 256" on a
-      --  64-bit limb.
+      --  byte times 256^K. Each step has a literal mask and shift. The SMT
+      --  solvers' bit-vector-to-integer reasoning (bv2nat) can process this
+      --  form. It cannot process "mod 256" and "/ 256" on a 64-bit limb.
       B0 : constant Wide := Wide (Byte_Of_U64 (V, 0)) with Ghost;
       B1 : constant Wide := Wide (Byte_Of_U64 (V, 1)) with Ghost;
       B2 : constant Wide := Wide (Byte_Of_U64 (V, 2)) with Ghost;

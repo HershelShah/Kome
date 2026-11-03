@@ -6,7 +6,7 @@
 --  (c) roster domination as the product order (D3);
 --  (d) each refusal leaves the state unchanged (D11, T13);
 --  (e) capacity rows: a data flood or a full slice takes no room from a
---      different row, and the REVOKE of the founding key is held (E1, E2);
+--      different row, and the founding key's REVOKE is held (E1, E2);
 --  (f) expiry (D10): Expire and Apply_Expired;
 --  (g) convergence: the same set in several orders, with duplicates and
 --      records offered again, gives the same held set and registers (T4).
@@ -164,7 +164,7 @@ procedure Test_Frontier with SPARK_Mode => Off is
    type Header_List is array (Positive range <>) of Header;
 
    --  A complete reconciliation: the holder of a refused record offers it
-   --  again (DESIGN.md §4). Thus apply the list in passes until a pass
+   --  again (DESIGN.md §4), so Run applies the list in passes until a pass
    --  holds no new record. Admission is monotone, so this stops (T4).
    function Run (L : Header_List) return State is
       S        : State := New_State;
@@ -188,7 +188,7 @@ procedure Test_Frontier with SPARK_Mode => Off is
    end Run;
 
    --  A State has a Register_File of Writers_Max keys (256 KiB). Under
-   --  -gnata, each Post evaluation copies states and registers. Thus the
+   --  -gnata, each Post evaluation copies states and registers, so the
    --  checks run in a task with a large stack.
    procedure Run_All;
 
@@ -317,7 +317,7 @@ begin
       Lemmas (S);
    end;
 
-   --  (d)+(e) Data flood, then the REVOKE of the founding key.
+   --  (d)+(e) Data flood, then the founding key's REVOKE.
    declare
       S : State := New_State (Cap => 8, Slice => 4);
       Before : State := New_State (Cap => 8, Slice => 4);
@@ -345,7 +345,7 @@ begin
       Lemmas (S);
    end;
 
-   --  (e) Slices: the slice of one signer is full. Records of other
+   --  (e) Slices: one signer's slice is full. Records of other
    --  signers are still held.
    declare
       S      : State := New_State (Cap => 8, Slice => 4);

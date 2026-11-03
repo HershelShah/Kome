@@ -12,9 +12,9 @@
 --  Then the test checks named answers, round trips, tamper rejection, the
 --  wipes, the default-initial conditions and the refusals of the
 --  contracts. Only a failed Pre of Kome.Crypto counts as a refusal. The
---  test is compiled with -gnata. Thus each Pre, Post and DIC of the
---  binding, and the ghost functions Is_Valid and Seed_Of, run against the
---  real output of monocypher.
+--  test is compiled with -gnata, so each Pre, Post and DIC of the
+--  binding, and the ghost functions Is_Valid and Seed_Of, run against
+--  monocypher's real output.
 pragma Ada_2022;
 with Ada.Command_Line;   use Ada.Command_Line;
 with Ada.Text_IO;        use Ada.Text_IO;
@@ -168,8 +168,8 @@ procedure Test_Crypto with SPARK_Mode => Off is
    RFC_Sig : constant Byte_Array := From_Hex
      ("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
       & "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
-   --  REGRESSION: the same seed and message under crypto_eddsa of
-   --  monocypher (BLAKE2b-512 in place of SHA-512). This was the binding
+   --  REGRESSION: the same seed and message under monocypher's crypto_eddsa
+   --  (BLAKE2b-512 in place of SHA-512). This was the binding
    --  before D4. The values come from the independent reference behind
    --  vectors/crypto.txt. Verify must now reject them.
    B2_Pub : constant Byte_Array := From_Hex
@@ -963,7 +963,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
          Wipe (AC);
       end;
 
-      --  AEAD round trips at many lengths (the block size of ChaCha20 is 64,
+      --  AEAD round trips at many lengths (ChaCha20's block size is 64,
       --  and Poly1305 pads to 16), with and without AD. Also the DESIGN.md §2
       --  Box shape (a sealed 32-byte key: 32 + 16 = Box_Len bytes).
       Ok := True;
@@ -1013,7 +1013,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
       end;
 
       --  Lemma_Blake2b_Congruent is an axiom for the prover. Under -gnata
-      --  its Pre and Post run. Thus this test checks it on inputs with equal
+      --  its Pre and Post run, so this test checks it on inputs with equal
       --  bytes and different bounds (a slid copy, and two interior slices).
       declare
          Src     : constant Byte_Array := Pattern (300, 7, 1);

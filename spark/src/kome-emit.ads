@@ -14,62 +14,62 @@
 --                    (only when t_emit = maxceil) else OK
 --
 --  The write path has three steps (D8, DESIGN.md §5). h hashes content that
---  contains t and seq. Thus h cannot be an input to the step that chooses
+--  contains t and seq, so h cannot be an input to the step that chooses
 --  them:
 --
 --    1. Choose (this package): (t_emit, seq_emit, status, clone_suspected)
 --       from the frontier, the target, now_ms, the device key and
 --       seq_self(ns). No h.
 --    2. Build the PUT or DEL content with that (t, seq) and hash it:
---       Kome.Records.Make_Put or Make_Del (h is the hash of the record).
+--       Kome.Records.Make_Put or Make_Del (h is the record's hash).
 --    3. Sign and apply (Kome.Frontier.Apply). Persist seq_self(ns) (A5).
 --
 --  The outcome of step 1 does not depend on h
 --  (Lemma_Outcome_Independent_Of_H, from
 --  Kome.Versions.Lemma_Prefix_Decides):
---    * seq_emit is more than each seq of the held records of this device.
---      Thus the prefix (t_emit, self, seq_emit) is different from the
---      prefix of each held data version.
+--    * seq_emit is more than each seq of this device's held records, so
+--      the prefix (t_emit, self, seq_emit) is different from the prefix of
+--      each held data version.
 --    * Two versions with different prefixes compare by the prefix only.
---  Thus Choose gives its order facts with Kome.Versions.Prefix_Lt on the
+--  Choose gives its order facts with Kome.Versions.Prefix_Lt on the
 --  prefix Stamp (T, Self, Seq, Zero_Key). For each h, the record of step 2,
 --  To_Header (Tgt, Stamp (T, Self, Seq, h)), has these properties:
 --    * it is admitted;
 --    * it compares with each floor record exactly as the prefix does;
 --    * if Choose gave OK, no held record dominates it
 --      (Lemma_OK_Undominated).
---  Thus Apply holds an OK write, unless the store is full (No_Space,
+--  As a result, Apply holds an OK write, unless the store is full (No_Space,
 --  DESIGN.md §7).
 --
 --  seq_self is per collection (D8, DESIGN.md §5). Seq_Self is the counter
---  of (device key, Collection (S)). The caller keeps it next to the store
---  of that collection and persists it (A5). A thief can force a jump to
---  2^48 - 1 in one collection. This exhausts only the counter of that
---  collection for that key.
+--  of (device key, Collection (S)). The caller keeps it next to that
+--  collection's store and persists it (A5). A thief can force a jump to
+--  2^48 - 1 in one collection. This exhausts only that collection's
+--  counter for that key.
 --
 --  H8 (backup restore / clone): before the write, Choose scans the held
---  records for the data records of the device. Possibly one of them has
+--  records for the device's data records. Possibly one of them has
 --  seq >= seq_self + 1 (seq_self came from a backup, or the key is cloned).
---  If so, seq jumps past it and Clone_Suspected is True. Thus the emitted
+--  If so, seq jumps past it and Clone_Suspected is True. The emitted
 --  (author, seq) is strictly above each own record that this replica holds
 --  (T8, "v_emit.seq is larger than each seq that this device emitted", as
 --  far as the replica can see).
---  CLONE_SUSPECTED is a flag reported next to the status of the write. It
---  is not a status: the write occurred (DESIGN.md §5, and §10.6, the out
---  flag of the C ABI). Thus Clone_Suspected is an out Boolean next to
---  Result.
+--  CLONE_SUSPECTED is a flag reported next to the write's status. It is
+--  not a status: the write occurred (DESIGN.md §5, and §10.6, the out
+--  flag of the C ABI). For this reason, Clone_Suspected is an out Boolean
+--  next to Result.
 --  SEQ_EXHAUSTED is a clone alarm (DESIGN.md §5). The device moves to a
 --  fresh key in that collection (a new GRANT and roster), and the old key
 --  is revoked.
 --
---  Admission: if the key of a write is not in W, Choose refuses the write
---  with Inadmissible and changes nothing. Thus OK and Shadowed mean that
---  the emitted record is admitted (DESIGN.md §4). Tgt.NS must be the
---  collection of the state (Pre).
+--  Admission: if a write's key is not in W, Choose refuses the write with
+--  Inadmissible and changes nothing, so OK and Shadowed mean that the
+--  emitted record is admitted (DESIGN.md §4). Tgt.NS must be the state's
+--  collection (Pre).
 --
 --  t_emit is exactly the formula of DESIGN.md §5 (Lemma_T_Emit_Formula).
 --  There is no refusal at floor.t + 1 = 2^48. If floor.t >= maxceil, the
---  result is maxceil and floor.t + 1 is never formed. Thus
+--  result is maxceil and floor.t + 1 is never formed, so
 --  floor.t = 2^48 - 1 is an ordinary write at the ceiling (Shadowed, unless
 --  it wins the tie on author/seq). There is no wrap (T13). If a seq would
 --  go past 2^48 - 1 (seq_self at the bound, or a held own record at the
@@ -91,11 +91,11 @@
 --  In_Floor versions. On a frontier, its source record is admitted, so the
 --  floor is never above the ceiling (Lemma_Floor_Admitted).
 --
---  The loops that only carry proofs are in ghost lemmas. Thus they do not
+--  The loops that only carry proofs are in ghost lemmas, so they do not
 --  run outside -gnata.
 --
 --  This package declares no public constants (for example no No_Version
---  or Zero_Key; the all-zero version is the function Zero_Version). Thus a
+--  or Zero_Key; the all-zero version is the function Zero_Version), so a
 --  client can `use` it together with Kome.Views.
 pragma Ada_2022;
 with Kome.Versions; use Kome.Versions;
@@ -178,8 +178,8 @@ package Kome.Emit with SPARK_Mode is
         else Floor'Result.V = Zero_Version);
 
    --  X is a data record that this device (key Self) signed. Only PUT and
-   --  DEL have the seq of the device in V.Seq (a ROSTER has gen, a REVOKE
-   --  has rev_seq, a GRANT has 0). Thus only they count for H8. It has no
+   --  DEL have the device's seq in V.Seq (a ROSTER has gen, a REVOKE has
+   --  rev_seq, a GRANT has 0), so only they count for H8. It has no
    --  quantifier, so it is public.
    function Own (X : Header; Self : Key256) return Boolean is
      (Is_Data (X) and then X.V.Author = Self);
@@ -210,7 +210,7 @@ package Kome.Emit with SPARK_Mode is
 
    --  H8: the seq that the next write increments. This is seq_self, but a
    --  held own record can have seq >= seq_self + 1 (written without the
-   --  + 1). Then seq jumps to the seq of that record. No quantifier.
+   --  + 1). Then seq jumps to that record's seq. No quantifier.
    function Seq_Base (Seq_Self : U48; O : Own_Seq_View) return U48 is
      (if O.Present and then O.Seq > Seq_Self then O.Seq else Seq_Self);
 
@@ -264,7 +264,7 @@ package Kome.Emit with SPARK_Mode is
        --  T13: seq_self at the bound never emits.
        and then (if Seq_Self'Old = U48'Last
                  then Result in Seq_Exhausted | Inadmissible)
-       --  DESIGN.md §4: the record of a non-writer would be refused.
+       --  DESIGN.md §4: a non-writer's record would be refused.
        and then (Result = Inadmissible) = (not In_W (Regs (S), Self))
        --  T13: a seq past 2^48 - 1 (after the H8 jump) is refused.
        and then (Result = Seq_Exhausted) =
@@ -319,7 +319,7 @@ package Kome.Emit with SPARK_Mode is
                     then T = Ceil (Regs (S))
                          and then Floor (S, Tgt).V.T = Ceil (Regs (S)))
           --  T8 read-your-writes: on the prefix, an OK write is above each
-          --  record that can dominate it. Thus for each h it is admitted
+          --  record that can dominate it, so for each h it is admitted
           --  and undominated (Lemma_OK_Undominated). Kome.Frontier.Apply
           --  holds it, unless the store is full.
           and then
@@ -360,7 +360,7 @@ package Kome.Emit with SPARK_Mode is
 
    --  The corollary: if Choose gave OK, then for each H the record built
    --  from (T, Self, Seq) is admitted, and no held record dominates it.
-   --  Thus Kome.Frontier.Apply holds it, unless the store is full
+   --  Kome.Frontier.Apply then holds it, unless the store is full
    --  (No_Space). The Post of Choose gives exactly this Pre for OK.
    procedure Lemma_OK_Undominated
      (S : State; Tgt : Target; T : U48; Self : Key256; Seq : U48; H : Key256)
@@ -447,10 +447,10 @@ package Kome.Emit with SPARK_Mode is
      Post => T_Emit (Now, Has_Floor, Floor_T, Ceil) >= Now;
 
    ---------------------------------------------------------------------------
-   --  State-level T9: the floor against the invariant of Kome.Frontier.
+   --  State-level T9: the floor against Kome.Frontier's invariant.
    ---------------------------------------------------------------------------
 
-   --  T9: on a frontier each held record is admitted. Thus the floor is
+   --  T9: on a frontier each held record is admitted, so the floor is
    --  never above the ceiling. The Post of Choose says that Shadowed means
    --  floor.t >= maxceil. Thus a Shadowed write on a frontier has exactly
    --  floor.t = t_emit = maxceil.
@@ -465,7 +465,7 @@ package Kome.Emit with SPARK_Mode is
    --  after a change that raised the ceiling and added no new data record
    --  (Kome.Frontier.Apply of a ROSTER: each record held after it was held
    --  before it, or is the roster). Then each floor of S2 is strictly below
-   --  the ceiling of S2. Thus Choose on S2 chases it and gives OK (or
+   --  the ceiling of S2, so Choose on S2 chases it and gives OK (or
    --  Inadmissible / Seq_Exhausted, which emit nothing).
    procedure Lemma_Roster_Unpins (S1, S2 : State; Tgt : Target) with
      Ghost, Global => null,

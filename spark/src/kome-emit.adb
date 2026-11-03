@@ -2,12 +2,12 @@ pragma Ada_2022;
 package body Kome.Emit with SPARK_Mode is
 
    ---------------------------------------------------------------------------
-   --  Proof-only helpers. They are ghost. Thus they and their loops do not
+   --  Proof-only helpers. They are ghost, so they and their loops do not
    --  run outside -gnata.
    ---------------------------------------------------------------------------
 
    --  On the prefix, a version at or below B is below each version with a
-   --  prefix above the prefix of B.
+   --  prefix above B's prefix.
    procedure Lemma_Le_Prefix_Lt (A, B, C : Version) with
      Ghost, Global => null,
      Pre  => (A = B or else Lt (A, B)) and then Prefix_Lt (B, C),
@@ -55,7 +55,7 @@ package body Kome.Emit with SPARK_Mode is
    end Lemma_Raise_Max;
 
    --  The OK case of Choose: each floor record is at or below the floor FV.
-   --  The prefix of FV is below P. Thus the prefix of each floor record is
+   --  The prefix of FV is below P, so the prefix of each floor record is
    --  below P.
    procedure Lemma_Below_Prefix
      (S : State; Tgt : Target; FV, P : Version)
@@ -244,7 +244,7 @@ package body Kome.Emit with SPARK_Mode is
       for I in 1 .. Count (S) loop
          if In_Floor (Held (S, I), Tgt) then
             --  A floor record is data: by a different author, or Own with a
-            --  smaller seq. Thus its prefix is not the prefix of X.
+            --  smaller seq, so its prefix is not X's prefix.
             pragma Assert (Is_Data (Held (S, I)));
             pragma Assert (not Same_Prefix (Held (S, I).V, X));
             Lemma_Prefix_Decides (Held (S, I).V, X);
@@ -316,7 +316,7 @@ package body Kome.Emit with SPARK_Mode is
       F : constant Floor_View := Floor (S, Tgt);
    begin
       if F.Present then
-         --  Each In_Floor held record is an admitted data record. Thus it
+         --  Each In_Floor held record is an admitted data record, so it
          --  is at or below the ceiling. The floor is one of these records.
          for I in 1 .. Count (S) loop
             Lemma_Frontier_Held (S, I);

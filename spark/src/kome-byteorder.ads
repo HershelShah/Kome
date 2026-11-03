@@ -3,11 +3,11 @@
 --  §8, D7).
 --
 --  All bit-level code uses the Shift_Left/Shift_Right intrinsics and
---  "and"/"or". Thus gnatprove maps the contracts to bit-vector operations
+--  "and"/"or", so gnatprove maps the contracts to bit-vector operations
 --  (bvlshr/bvshl/bvand/bvor). A `V / 2 ** (8 * I)` view would give an
 --  axiomatized power function with a non-literal exponent instead.
 --
---  Nothing here touches a file, a clock or global state. Thus each
+--  Nothing here touches a file, a clock or global state, so each
 --  subprogram has Global => null (implied by Pure).
 pragma Ada_2022;
 package Kome.Byteorder with SPARK_Mode, Pure is
@@ -49,7 +49,7 @@ package Kome.Byteorder with SPARK_Mode, Pure is
                     Byte_Of_U64 (Read_U64LE'Result, I) = Buf (Pos + I));
 
    --  The two round-trip laws. The bodies assert the per-byte equalities
-   --  that lead to each law. Thus gnatprove works from bit-vector facts one
+   --  that lead to each law, so gnatprove works from bit-vector facts one
    --  byte at a time, and -gnata evaluates the assertions on the values that
    --  the tests supply.
 

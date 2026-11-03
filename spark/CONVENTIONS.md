@@ -16,7 +16,7 @@ functions. gnatprove discharges the contracts.
 The division of work is strict. Lean proves set-level theorems (convergence
 in any order, the frontier homomorphism). SPARK proves that the code is the
 function that the theorem is about, and it proves every run-time check.
-Neither tool does the work of the other tool.
+Neither tool does the other's work.
 
 If a SPARK contract mirrors a Lean theorem, name the theorem in the comment
 (`T2'`, `Frontier.lean dominates_trans`). If the implementation is
@@ -35,7 +35,7 @@ holds inadmissible records, and the implementation refuses them.
   - If a check failed, the main must end with `Set_Exit_Status (Failure)`.
   - Do not use a test framework.
 
-  The tests compile with `-gnata`. Thus every `Pre`, `Post`,
+  The tests compile with `-gnata`, so every `Pre`, `Post`,
   `Loop_Invariant`, `Assert` and ghost lemma also *executes* on the test
   data. If the proof of a lemma is still open, the tests at least check the
   lemma on examples.
@@ -70,14 +70,14 @@ holds inadmissible records, and the implementation refuses them.
   value saturate silently.
 - Give every public subprogram a `Pre` and a `Post`. The contracts are the
   most important part of the code. Write each algebraic law as a ghost
-  lemma procedure named `Lemma_<Law>`, with the law as its `Post`. The body
-  of a lemma must be a proof (calls to other lemmas, loops with invariants,
+  lemma procedure named `Lemma_<Law>`, with the law as its `Post`. A lemma's
+  body must be a proof (calls to other lemmas, loops with invariants,
   asserts), not code.
-- Keep the view of the prover small, and keep equality logical. Without
+- Keep the prover's view small, and keep equality logical. Without
   these two rules, the frontier proof fails:
   1. In the lattice, make identifiers and keys records of fixed words
      (`Id128`, `Key256`), never byte arrays. For the prover, Ada equality
-     on a record that contains an array is not logical equality. Thus the
+     on a record that contains an array is not logical equality. So the
      prover cannot substitute it inside `Dominates`. On a record of
      scalars, Ada equality is logical equality. The byte-lexicographic
      order becomes a chain of word comparisons with no loop, and T1 proves
@@ -120,8 +120,8 @@ holds inadmissible records, and the implementation refuses them.
 - Decide every refusal before the state changes. State each outcome as an
   iff in the `Post`, with `Unchanged (S'Old, S)` or `S = S'Old` on refusal.
   Do not restore the state after a failed step.
-- Bound the quantifiers of a ghost lemma by the counts of the object, never
-  by a full index type. Every ghost lemma runs under `-gnata`.
+- Bound a ghost lemma's quantifiers by the object's counts, never by a
+  full index type. Every ghost lemma runs under `-gnata`.
 - To make a relation true, call a lemma (`Lemma_Unchanged_Refl`), not real
   code.
 - Use `Assertion_Policy (... => Ignore)` only for proved steps that would
@@ -132,7 +132,7 @@ holds inadmissible records, and the implementation refuses them.
   each layer above it its own congruence lemma. gnatprove has no
   extensionality for the array argument of a function.
 - Do not put a conjunct about only the pre-state in a `Post`. Move it to the
-  `Pre` of the caller or into a ghost lemma (`Lemma_Ends_Below`). Such a
+  caller's `Pre` or into a ghost lemma (`Lemma_Ends_Below`). Such a
   conjunct triggers `-gnatw.t`.
 - If a function calls a procedure, give the procedure `Always_Terminates`.
 - If a value comes from a secret and only contracts use it, make it a ghost
@@ -143,8 +143,8 @@ holds inadmissible records, and the implementation refuses them.
   goal takes more than approximately 10 s, split the goal. For example,
   restate the invariant at the end of the operation, or use two witness
   invariants in place of one.
-- Run only one gnatprove at a time. `check.sh` takes a lock, because the
-  `/dev/shm` semaphore of gnatprove 14 ignores `TMPDIR`.
+- Run only one gnatprove at a time. `check.sh` takes a lock, because
+  gnatprove 14's `/dev/shm` semaphore ignores `TMPDIR`.
 
 ## Cryptography
 

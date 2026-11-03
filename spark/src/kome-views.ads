@@ -1,9 +1,9 @@
---  Kome.Views: the pure views over the frontier of one collection
+--  Kome.Views: the pure views over one collection's frontier
 --  (DESIGN.md §3 "Views", §6 C9, root revocation D2 and D1′). A State is
 --  one collection (Kome.Frontier.Collection (S)) with one founding key
 --  (Kome.Frontier.Founding (S)). Each view is a function of only the held
 --  records and the founding key. It reads them through the public
---  functions of Kome.Frontier (Count, Held, Founding). Thus it is a
+--  functions of Kome.Frontier (Count, Held, Founding), so it is a
 --  function of F and of nothing else (T5). The lemmas below give this as
 --  SPARK facts:
 --
@@ -31,11 +31,11 @@
 --  Kome.Headers.Canonical; Kome.Frontier.Lemma_Frontier_Held). This is all
 --  of the hypothesis that `cell_unique` in Lean calls `hinj` for PUT and
 --  DEL. Each field that a canonical PUT or DEL uses is in its cell key or
---  its V. Thus two held PUTs on one cell are one record (Lemma_Cell_Unique,
---  Lemma_Del_Unique, unconditional). For ROSTER_eff, the order is the full
---  roster tuple of Lean (gen, h, signer, ceiling_t, del_ttl) (Roster_Lt).
+--  its V, so two held PUTs on one cell are one record (Lemma_Cell_Unique,
+--  Lemma_Del_Unique, unconditional). For ROSTER_eff, the order is Lean's
+--  full roster tuple (gen, h, signer, ceiling_t, del_ttl) (Roster_Lt).
 --  On a canonical roster of the collection, that tuple determines the
---  header. Thus ROSTER_eff does not depend on the order on a frontier,
+--  header, so ROSTER_eff does not depend on the order on a frontier,
 --  without A2 (Lemma_Roster_Unique, Lemma_Roster_Eff_Unique). This is
 --  exactly what Frontier.lean `rosterEff_congr` gives for the model. A2
 --  (Unique_Versions) stays only as an alternative hypothesis for states
@@ -71,7 +71,7 @@ package Kome.Views with SPARK_Mode is
 
    --  The payload of an absent Header_View. It is NOT canonical, on
    --  purpose (a PUT with a non-zero issuer; Lemma_No_Header_Not_Canonical).
-   --  Thus it is never the same as a held record: each held record is
+   --  It is never the same as a held record, because each held record is
    --  canonical (Kome.Frontier.Lemma_Frontier_Held).
    All_Ones   : constant Key256  := (others => 16#FFFF_FFFF#);
    No_Header  : constant Header  :=
@@ -81,7 +81,7 @@ package Kome.Views with SPARK_Mode is
    No_Version : constant Version := (others => <>);
 
    --  Option-like results. If Present is False, the payload is the default
-   --  value. Thus two absent results are equal.
+   --  value, so two absent results are equal.
    type Header_View is record
       Present : Boolean := False;
       Hdr     : Header  := No_Header;
@@ -121,9 +121,9 @@ package Kome.Views with SPARK_Mode is
    function Root_Revokes (X : Header; Fnd, K : Key256) return Boolean is
      (X.K = K_Revoke and then X.Issuer = Fnd and then X.V.Author = K);
 
-   --  X is a REVOKE that voids P: the author of P is the subject and
-   --  P.t >= from_t (DESIGN.md §3 `void`). root_void decides if the issuer
-   --  of X counts (Revoke_Void below).
+   --  X is a REVOKE that voids P: P's author is the subject and
+   --  P.t >= from_t (DESIGN.md §3 `void`). root_void decides if X's issuer
+   --  counts (Revoke_Void below).
    function Voids (X, P : Header) return Boolean is
      (Revokes (X, P.V.Author) and then P.V.T >= X.V.T);
 
@@ -140,7 +140,7 @@ package Kome.Views with SPARK_Mode is
    --      under A2);
    --    * it makes the order strict and total on that tuple
    --      (Lemma_Roster_Lt_Total).
-   --  Thus the maximum does not depend on the order of the held array.
+   --  As a result, the maximum does not depend on the held array's order.
    function Roster_Lt (A, B : Header) return Boolean is
      (Gen_Lt (A, B)
       or else (A.V.Seq = B.V.Seq and then A.V.H = B.V.H
@@ -160,7 +160,7 @@ package Kome.Views with SPARK_Mode is
 
    --  A2 on the held set (DESIGN.md §9 assumption A2; Frontier.lean `hinj`):
    --  two held records with the same version are the same record. h is the
-   --  BLAKE2b content hash of the record. Thus this is true for each state
+   --  BLAKE2b content hash of the record, so this is true for each state
    --  built from verified records, except with negligible probability. No
    --  lemma below needs it on a frontier. It is an alternative hypothesis
    --  for the payload halves of the locality lemmas on arbitrary states.
@@ -208,14 +208,13 @@ package Kome.Views with SPARK_Mode is
    --    * The founding key is never root_void. Decode refuses a REVOKE of
    --      root_pk. If F held one, it would still not root-void the key.
    --    * A REVOKE issued by a certified root never root-voids a key. If it
-   --      names a different root, it only voids the data records of that
-   --      key.
+   --      names a different root, it only voids that key's data records.
    --    * All records that a root-voided root issued, before or after, stop
    --      to count in each view. Its rosters leave ROSTER_eff and
    --      del_ttl_eff, its REVOKEs stop voiding (Revoke_Void), and its
    --      GRANTs leave W_eff.
-   --  Admission never reads root_void (T4'). In the two-level API of the
-   --  core, the REVOKEs that it reads are exactly the REVOKEs of slot 1
+   --  Admission never reads root_void (T4'). In the core's two-level API,
+   --  the REVOKEs that it reads are exactly the REVOKEs of slot 1
    --  (Lemma_Root_Void_Slot).
    function Root_Void (S : State; K : Key256) return Boolean with
      Global => null,
@@ -229,15 +228,15 @@ package Kome.Views with SPARK_Mode is
    function W_Eff (S : State; K : Key256) return Boolean with
      Global => null;
 
-   --  The REVOKE clause of void(p): a held REVOKE of the author of p, with
+   --  The REVOKE clause of void(p): a held REVOKE of p's author, with
    --  from_t <= p.t and with an issuer that is not root_void.
    function Revoke_Void (S : State; P : Header) return Boolean with
      Global => null;
 
    --  void(p) := Revoke_Void (S, p) or else p.author ∉ W_eff (DESIGN.md §3).
    --
-   --  What from_t can do (E4, DESIGN.md §6): with from_t > 0, the earlier
-   --  records of a key do not get the flag. This protects only a key that
+   --  What from_t can do (E4, DESIGN.md §6): with from_t > 0, a key's
+   --  earlier records do not get the flag. This protects only a key that
    --  was LOST and that no person used. It cannot protect against a STOLEN
    --  key. A thief chooses t and can backdate below from_t, and these
    --  records look the same as honest records.
@@ -251,7 +250,7 @@ package Kome.Views with SPARK_Mode is
    --
    --  Monotonicity (T12): for a fixed root_void set, the REVOKE clause grows
    --  with F (Lemma_Void_Monotone). The W_eff clause is ANTI-monotone (a
-   --  GRANT can un-void). Thus void as a whole is not monotone in F.
+   --  GRANT can un-void), so void as a whole is not monotone in F.
    function Is_Void (S : State; P : Header) return Boolean with
      Global => null;
 
@@ -262,14 +261,14 @@ package Kome.Views with SPARK_Mode is
      (X.K = K_Roster and then not Root_Void (S, X.Issuer));
 
    --  ROSTER_eff (DESIGN.md §3, §6 C9): the Roster_Lt-maximal eligible
-   --  held roster. Thus it is also maximal in (gen, h) (Gen_Lt).
+   --  held roster, so it is also maximal in (gen, h) (Gen_Lt).
    --    * It is None if no held roster is eligible.
    --    * It is present if F holds a roster issued by the founding key
    --      (Lemma_Roster_Eff_Present).
    --    * On a frontier, it is the unique eligible roster that no eligible
    --      roster beats (Lemma_Roster_Eff_Unique).
    --  The tie-break on the full tuple, as `rkLt` in Lean, makes it
-   --  independent of the order of the held array. This is true in the
+   --  independent of the held array's order. This is true in the
    --  model (`rosterEff_congr`) and here, without A2. The product order can
    --  keep a stale roster of one signer (lower gen, higher ceiling_t) next
    --  to a newer one. That stale roster never becomes ROSTER_eff.
@@ -280,11 +279,11 @@ package Kome.Views with SPARK_Mode is
 
    --  del_ttl_eff (D10, DESIGN.md §3, §7): the largest del_ttl of the
    --  eligible held rosters, or Del_TTL_Default if there is none. It is a
-   --  maximum. Thus a root can make tombstone life longer, but it can never
-   --  make it shorter than the value of a different root. When a root is
+   --  maximum, so a root can make tombstone life longer, but it can never
+   --  make it shorter than a different root's value. When a root is
    --  root-voided, the longer life that it set stops. Kome.Store computes
    --  the expiry horizon from it. On a frontier, each held roster is
-   --  canonical. Thus its del_ttl is in range, and this value is too.
+   --  canonical, so its del_ttl is in range, and this value is too.
    function Del_TTL_Eff (S : State) return U48 with
      Global => null,
      Pre    => Is_Frontier (S),
@@ -388,9 +387,8 @@ package Kome.Views with SPARK_Mode is
                        then Held (S, I).Del_TTL <= Del_TTL_Eff (S)))
         else Del_TTL_Eff (S) = Del_TTL_Default);
 
-   --  root_void in the two-level API of the core: slot 1 is the row of the
-   --  founding key. Thus the REVOKEs that root_void reads are the REVOKEs
-   --  of slot 1.
+   --  root_void in the core's two-level API: slot 1 is the founding key's
+   --  row, so the REVOKEs that root_void reads are the REVOKEs of slot 1.
    procedure Lemma_Root_Void_Slot (S : State; K : Key256) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S),
@@ -474,7 +472,7 @@ package Kome.Views with SPARK_Mode is
      Post => Roster_Eff (S) = (Present => True, Hdr => Held (S, I));
 
    --  DESIGN.md §3: ROSTER_eff is present if F holds a roster issued by the
-   --  founding key (the first roster of the collection is one). The reason
+   --  founding key (the collection's first roster is one). The reason
    --  is that the founding key is never root_void.
    procedure Lemma_Roster_Eff_Present (S : State) with
      Ghost, Global => null,
@@ -510,7 +508,7 @@ package Kome.Views with SPARK_Mode is
    --    * its presence and version, always;
    --    * its full header, if S1 is a frontier, or the PUTs of S1 are
    --      canonical, or S1 satisfies A2.
-   --  (Same_Data carries each PUT of S2 into S1. Thus a hypothesis on S1
+   --  (Same_Data carries each PUT of S2 into S1, so a hypothesis on S1
    --  only is sufficient.)
    procedure Lemma_Cell_Local (S1, S2 : State; NS, Ent : Id128; FH : Key256) with
      Ghost, Global => null,
@@ -592,7 +590,7 @@ package Kome.Views with SPARK_Mode is
      Post => Same_Data (Before, After);
 
    --  The converse: to apply a PUT or a DEL never adds or removes a ROSTER,
-   --  REVOKE or GRANT. Thus it does not change root_void, W_eff, void,
+   --  REVOKE or GRANT, so it does not change root_void, W_eff, void,
    --  ROSTER_eff or del_ttl_eff. The hypotheses are the same, plus
    --  "Founding (S) = Founding (S'Old)" from Apply.
    procedure Lemma_Apply_Data_Local (Before, After : State; R : Header) with
@@ -614,10 +612,9 @@ package Kome.Views with SPARK_Mode is
                          (if Held (S1, I).K = K_Revoke then Holds (S2, Held (S1, I)))),
      Post => (if Root_Void (S1, K) then Root_Void (S2, K));
 
-   --  T12: for a fixed root_void set, W_eff is monotone in F (thus a GRANT
+   --  T12: for a fixed root_void set, W_eff is monotone in F (so a GRANT
    --  can only un-void). The hypothesis on root_void is necessary: a new
-   --  founding REVOKE of an issuer removes the grants of that issuer from
-   --  W_eff.
+   --  founding REVOKE of an issuer removes that issuer's grants from W_eff.
    procedure Lemma_W_Eff_Monotone (S1, S2 : State; K : Key256) with
      Ghost, Global => null,
      Pre  => (for all I in 1 .. Count (S1) =>
@@ -629,7 +626,7 @@ package Kome.Views with SPARK_Mode is
 
    --  T12: for a fixed root_void set, the REVOKE clause of void is monotone
    --  in F (a REVOKE can only void). The W_eff clause is anti-monotone (a
-   --  GRANT can un-void, DESIGN.md T12). Thus this lemma is only for the
+   --  GRANT can un-void, DESIGN.md T12), so this lemma is only for the
    --  REVOKE clause, Revoke_Void.
    procedure Lemma_Void_Monotone (S1, S2 : State; P : Header) with
      Ghost, Global => null,
@@ -641,7 +638,7 @@ package Kome.Views with SPARK_Mode is
      Post => (if Revoke_Void (S1, P) then Revoke_Void (S2, P));
 
    --  T12 (part), Frontier.lean `revoke_never_dominated`: Apply never loses
-   --  a REVOKE. Thus, with Lemma_Root_Void_Monotone, root_void only grows.
+   --  a REVOKE, so with Lemma_Root_Void_Monotone, root_void only grows.
    --  The hypothesis is the "nothing lost except by domination" clause of
    --  Apply.
    procedure Lemma_Apply_Keeps_Revokes (Before, After : State; R : Header) with
@@ -655,8 +652,8 @@ private
 
    --  The three ghost predicates. The views are completed in the body, but
    --  these are completed here. gnatprove 14 shows private-part expression
-   --  functions to clients (CONVENTIONS.md, "Proof hygiene"). Thus the
-   --  prover of a client can unfold them.
+   --  functions to clients (CONVENTIONS.md, "Proof hygiene"), so a
+   --  client's prover can unfold them.
 
    function Unique_Versions (S : State) return Boolean is
      (for all I in 1 .. Count (S) =>

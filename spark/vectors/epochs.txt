@@ -23,7 +23,7 @@
 #   link_key = BLAKE2b-256("kome/link" || k_s || ns || u16(s))
 #   nonce    = BLAKE2b-256("kome/nonce" || link_key || k_{s-1})[0:24]
 #   link box = XChaCha20-Poly1305(link_key, nonce, AD = ns || u16(s), k_{s-1})
-# The first three box lines are the k5/k6 case of the reviewer: the same
+# The first three box lines are the reviewer's k5/k6 case: the same
 # member at epochs 5 and 6 under one reused eph_sk, then epoch 6 under a
 # fresh eph_sk.
 # Format:

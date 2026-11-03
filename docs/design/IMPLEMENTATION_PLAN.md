@@ -43,9 +43,9 @@ No package has an unproved check. In this section, a gap is one of these:
 
 ### Tested, not proved
 
-- **Store: the frame of each entry decodes to its header.** `Frame_OK`
+- **Store: each entry's frame decodes to its header.** `Frame_OK`
   (`kome-store.ads`) checks the op byte, the length word and the tag. It
-  does not check `Header_Of (frame) = E.H`. Thus `Valid` does not carry
+  does not check `Header_Of (frame) = E.H`. So `Valid` does not carry
   that fact, which is true only at the precondition of `Put_Frame`. To
   prove it, `Kome.Records` needs a `To_Header` congruence lemma for each
   record kind. (The BLAKE2b lemma, `Kome.Crypto.Lemma_Blake2b_Congruent`,
@@ -74,7 +74,7 @@ No package has an unproved check. In this section, a gap is one of these:
   - Split balance.
   - The honest-session derivations behind `Msg_Budget`, `Range_Budget` and
     `Ship_Budget`.
-- **Crypto: assumed Posts.** The bodies are `SPARK_Mode Off`. Thus their
+- **Crypto: assumed Posts.** The bodies are `SPARK_Mode Off`, so their
   Posts and the `Lemma_Blake2b_Congruent` axiom are assumptions. Known
   answers check them: RFC 8032 §7.1 and a Wycheproof subset
   (`vectors/crypto.txt`).
@@ -89,7 +89,7 @@ No package has an unproved check. In this section, a gap is one of these:
 ### Duties of layers not yet built
 
 The message formats and their checks exist. But the steps that enforce
-them belong to callers that are not built yet. Thus D13 and E3 are closed
+them belong to callers that are not built yet. So D13 and E3 are closed
 only as far as their formats and checks go.
 
 - **Transport (phase 9)** (the caller duties listed in `kome-reconcile.ads`):
@@ -103,7 +103,7 @@ only as far as their formats and checks go.
   - Let only the founding key open a segment. Choose and deliver the
     segment tops (E3).
   - Enforce the honest-issuer gen rule (DESIGN.md §10.3).
-  - Wipe the ephemeral `eph_sk` of the caller (D5).
+  - Wipe the caller's ephemeral `eph_sk` (D5).
   - Give a "largest certified cap" view. Today only the per-record
     `cert_cap` check exists (`Cert_OK` in `kome-records.ads`).
 - **Reconcile does not use D15 yet.** `Range_Fp` computes `Digest_Of`
@@ -122,7 +122,7 @@ only as far as their formats and checks go.
 
 - **Emit:** There is no Shadowed DEL case (a DEL target at the ceiling over
   a PUT or a DEL by a higher key). There is also no test of H8 detection
-  from a DEL of the device itself. The mutant `Own => X.K = K_Put and ...`
+  from the device's own DEL. The mutant `Own => X.K = K_Put and ...`
   passes the tests, and only the proof catches it.
 - **Records:** No test decodes a PUT frame as DEL. (A test for the opposite
   direction exists.)

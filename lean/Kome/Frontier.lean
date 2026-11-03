@@ -45,13 +45,13 @@ effective-writer view `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
 `ROSTER_eff` is the maximum under the whole roster tuple, so it does not
 depend on list order. None of these views feeds admission.
 
-Scope. The model assumes well-formed records. The certificate of an
-authorization record controls who may sign it: the founding key, or a root
-that the founding key certified. A check on the bytes of the record applies
-this rule (DESIGN §2). The model does not include this check: it takes every
+Scope. The model assumes well-formed records. An authorization record's
+certificate controls who may sign it: the founding key, or a root that the
+founding key certified. A check on the record's bytes applies this rule
+(DESIGN §2). The model does not include this check: it takes every
 record to be well-formed. These items are also outside the model:
 - Capacity (data capacity, the per-signer slices, `NO_SPACE`, `AUTH_FULL`).
-- The clock clamp of the horizon, `min(now_local, maxceil) − del_ttl_eff`.
+- The horizon's clock clamp, `min(now_local, maxceil) − del_ttl_eff`.
   Here the horizon is a parameter that is calculated outside the model.
 - Assumption A7 (revocation arrives first).
 
@@ -60,7 +60,7 @@ depend on order or duplication, so every statement has the form
 `x ∈ A ↔ x ∈ B`. Identifiers, authors, values and hashes are `Nat`. Every
 theorem uses only decidable equality and, for versions, a total order.
 
-Theorem numbers refer to DESIGN.md §9.
+Theorem numbers are from DESIGN.md §9.
 -/
 namespace Kome
 
@@ -80,7 +80,7 @@ namespace Kome.Frontier
 /-! ### Versions (T1) -/
 
 /-- `v = (t, author, seq, h)`. The comparison is lexicographic. `h` is the
-content hash of the record, so two different records never tie. -/
+record's content hash, so two different records never tie. -/
 structure Version where
   t : Nat
   author : Nat
@@ -139,7 +139,7 @@ open Record
 
 /-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, the witness of `dom`).
 The product order (D3) compares rosters: the same signer, a ceiling that is
-not lower, and a greater `(gen, h)`. The key of a grant is
+not lower, and a greater `(gen, h)`. A grant's key is
 `(issuer, subject)`. No other record dominates. A `revoke` is never
 dominated and never dominates. No clause compares authorization records of
 different kinds. -/
@@ -425,7 +425,7 @@ def ceilOf : Record → Nat
 theorem ceilOf_of_not_auth {r : Record} (h : isAuth r = false) : ceilOf r = 0 := by
   cases r <;> simp [isAuth, ceilOf] at h ⊢
 
-/-- The ceiling of a dominator is at least the ceiling of the dominated
+/-- A dominator's ceiling is at least the ceiling of the dominated
 record. For rosters, this follows from the product order. Every other kind
 has ceiling 0. -/
 theorem dominates_ceil {q y : Record} (h : dominates q y = true) : ceilOf y ≤ ceilOf q := by
@@ -812,8 +812,8 @@ state `T` with these properties:
 - `T` holds only records of `U`.
 - `T` covers every authorization record of `U`.
 - `T` covers every record of the part `P` that is already processed.
-Then the application of the rest `l` of `U` gives the frontier of the
-admitted records of `U`. -/
+Then, if the replica applies the rest `l` of `U`, the result is the
+frontier of the admitted records of `U`. -/
 theorem finish {T U P l : List Record} (x : Record) (hF : Frontier T) (hA : Admitted T)
     (hsub : ∀ y ∈ T, y ∈ U) (hcov : ∀ y ∈ U, isAuth y = true → Cov y T)
     (hP : ∀ y ∈ P, Cov y T) (hU : ∀ y, y ∈ U ↔ y ∈ P ∨ y ∈ l) :
@@ -840,10 +840,9 @@ theorem finish {T U P l : List Record} (x : Record) (hF : Frontier T) (hA : Admi
     · exact hlU y h
 
 /-- T4 (a), T18: one pass starts from a frontier of admitted records. It
-applies the authorization records of a set before the data records of the
-set. The result is the frontier of the admitted records of the union. This
-is the shape of a batch that is applied in element-key order (§4), and of
-the replay of a compacted log (§7). -/
+applies a set's authorization records before its data records. The result
+is the frontier of the union's admitted records. This is the shape of a
+batch in element-key order (§4), and of a compacted log's replay (§7). -/
 theorem auth_first {S la ld : List Record} (x : Record) (hF : Frontier S) (hA : Admitted S)
     (hla : ∀ y ∈ la, isAuth y = true) (hld : ∀ y ∈ ld, isAuth y = false) :
     x ∈ applyAllD S (la ++ ld) ↔ x ∈ F (admitted (S ++ la ++ ld)) := by
@@ -866,7 +865,7 @@ theorem auth_first {S la ld : List Record} (x : Record) (hF : Frontier S) (hA : 
 
 /-- T4 (b): two passes apply the same records, in any order and with any
 duplication. The second pass offers again the records that the first pass
-refused. The result is the frontier of the admitted records of the union. -/
+refused. The result is the frontier of the union's admitted records. -/
 theorem convergence_two_pass {S l : List Record} (x : Record) (hF : Frontier S)
     (hA : Admitted S) :
     x ∈ applyAllD (applyAllD S l) l ↔ x ∈ F (admitted (S ++ l)) := by
@@ -1020,11 +1019,11 @@ theorem expire_reapply {S l : List Record} {d : Record} {h : Nat} (x : Record)
     exact h1
   rw [applyD_pos hadmB, mem_expire, mem_expire, ← hrel x]
 
-/-! ### Views (§3, §6; T5, T12). `founding` is the founding key of the
-collection. -/
+/-! ### Views (§3, §6; T5, T12). `founding` is the collection's founding
+key. -/
 
 /-- `root_void(k)`: the founding key revoked `k`. This view ignores the
-`from_t` of the revocation. The founding key is never root-voided. -/
+revocation's `from_t`. The founding key is never root-voided. -/
 def rootVoid (founding : Nat) (H : List Record) (k : Nat) : Prop :=
   k ≠ founding ∧ ∃ f r hh, revoke founding k f r hh ∈ H
 
@@ -1520,10 +1519,10 @@ theorem cell_unique {H : List Record} {e f : Nat} {vx vy : Version} {ax ay : Nat
 /-! ### T8: the chase, and D8 -/
 
 /-- The emitted `t`: the larger of the wall clock and the value just above the
-floor of the cell, capped at the ceiling. -/
+cell's floor, capped at the ceiling. -/
 def emitT (now floorT c : Nat) : Nat := min (max now (floorT + 1)) c
 
-/-- T8: below the ceiling, a local write beats the floor of the cell on `t`
+/-- T8: below the ceiling, a local write beats the cell's floor on `t`
 alone, for all authors (read-your-writes). -/
 theorem chase {now floorT c : Nat} (h : floorT < c) : floorT < emitT now floorT c := by
   unfold emitT; omega

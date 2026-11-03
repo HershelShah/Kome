@@ -115,7 +115,7 @@
 --  arrives before the last reply of the authorization phase). Then the
 --  caller times out and starts again from OPEN. DESIGN.md §8 states this,
 --  so it is not a deviation. Round 0 (C8, the invertible Bloom lookup
---  table) runs one time in each phase, at the start of Auth and at
+--  table) runs once in each phase, at the start of Auth and at
 --  Next_Phase, when it is built. This package does not build it.
 --
 --  Obligations and replies. A RANGE or an ELEMENTS obliges its receiver to
@@ -165,11 +165,11 @@
 --
 --  Well-founded split (the measure of T7). Each RANGE that a responder
 --  emits is a sub-range of the range that it answers, with strictly fewer
---  of the elements of the responder (the Post of Respond, Shrinks, measured
+--  of the responder's elements (the Post of Respond, Shrinks, measured
 --  by My_Count). An ELEMENTS reply covers the same range with the same
 --  counts. The only answers to it are a HAVE (which gets no answer) or a
---  split whose children have strictly fewer of the elements of the
---  answerer. So the measure of T7 is lexicographic: (μ (r), k) with
+--  split whose children have strictly fewer of the answerer's elements.
+--  So the measure of T7 is lexicographic: (μ (r), k) with
 --  μ ([lo, hi)) = |F_A ∩ [lo, hi)| + |F_B ∩ [lo, hi)|, and k = 1 for a
 --  RANGE, 0 for an ELEMENTS. Every reply decreases it. The implementation
 --  makes balanced splits (child counts ⌊n/16⌋ or ⌈n/16⌉; tested, not
@@ -636,7 +636,7 @@ package Kome.Reconcile with SPARK_Mode is
       Items : Index_List := [others => 1];
    end record;
 
-   --  The wire size of one item and of the item parts of a plan.
+   --  The wire size of one item, and of a plan's item parts.
    function Item_Size (S : Snapshot; I : Elem_Index) return Positive is
      (Item_Overhead + Frame_Len (S, I))
    with Pre => I <= Count (S);
@@ -719,8 +719,8 @@ package Kome.Reconcile with SPARK_Mode is
      Post => Plan_OK (S, O.P (T));
 
    --  The plans of O tile [Lo, Hi): the first starts at Lo, the last ends
-   --  at Hi, and each ends where the next starts. With the cover of each
-   --  plan, each of our elements in [Lo, Hi) is in exactly one reply.
+   --  at Hi, and each ends where the next starts. With each plan's cover,
+   --  each of our elements in [Lo, Hi) is in exactly one reply.
    function Tiles (O : Outbox; Lo, Hi : Elem_Key) return Boolean with
      Global => null;
 
@@ -1210,7 +1210,7 @@ package Kome.Reconcile with SPARK_Mode is
    function Have_Exact (S : Snapshot; M : Message; O : Outbox) return Boolean with
      Global => null;
 
-   --  Every RANGE in O is a sub-range of the range of M, with strictly
+   --  Every RANGE in O is a sub-range of M's range, with strictly
    --  fewer of our elements (the measure of T7). This function is ghost
    --  and has a quantifier, so its completion is in the private part.
    function Shrinks (S : Snapshot; M : Message; O : Outbox) return Boolean with
@@ -1607,7 +1607,7 @@ package Kome.Reconcile with SPARK_Mode is
                    and then Sess = (Sess'Old with delta P => Gate,
                                                         Msgs => Sess'Old.Msgs + 1)
                    and then Out_Box.N = 0 and then Got = No_Delivery)
-       --  The HELLO, one time, in the gate.
+       --  The HELLO, once, in the gate.
        and then (if Result = S_OK and then Sess'Old.P = Gate then
                    M.Kind = M_Hello and then not Sess'Old.Peer_Hello_Seen
                    and then Hello_Wire_OK (Input) and then Hello_Decoded (Input, Peer)

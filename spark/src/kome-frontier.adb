@@ -2,8 +2,8 @@ pragma Ada_2022;
 package body Kome.Frontier with SPARK_Mode is
 
    --  Proof style (CONVENTIONS.md):
-   --    * each quantified definition is in this body, out of the view of
-   --      the clients;
+   --    * each quantified definition is in this body, out of the clients'
+   --      view;
    --    * after each state change, "bridge" assertions relate the new state
    --      to the old state;
    --    * each "some record" in an invariant is a named index in a ghost
@@ -334,7 +334,7 @@ package body Kome.Frontier with SPARK_Mode is
       Lemma_Off_Mono (S);
       Lemma_All_Flat (S);
       --  Flat to row: a held record that is equal to R, dominates R or is
-      --  dominated by R is in the row of R.
+      --  dominated by R is in R's row.
       for I in 1 .. Count (S) loop
          Lemma_Item (S, Row_Of (S, I), Pos_Of (S, I));
          if Held (S, I) = R then
@@ -397,7 +397,7 @@ package body Kome.Frontier with SPARK_Mode is
    --  One step on one row K0:
    --    * no other row changes;
    --    * row K0 keeps some of its old records (Src) and possibly adds R;
-   --    * Dst gives the new position of each old record of row K0
+   --    * Dst gives the new position of each old record in row K0
    --      (0: dropped).
    ---------------------------------------------------------------------
 
@@ -831,7 +831,7 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Data_OK_Regs;
 
    --  Auth_OK across an authorization step: R is a canonical record of the
-   --  issuer of the slot, undominated in its row and not already in it. The
+   --  slot's issuer, undominated in its row and not already in it. The
    --  kept records are distinct old records that R does not dominate.
    procedure Lemma_Auth_OK_Step
      (Old, Upd : Auth_Rows; Old_NS, NS : Id128; K0 : Slot_Index; R : Header;
@@ -1313,7 +1313,7 @@ package body Kome.Frontier with SPARK_Mode is
       --  The offsets of the slots after K0 move.
       Compute_Offs (S.A.NA, S.A.Slice, S.A.Offs, S.A.NAuth);
 
-      --  The registers: they are derived from the held set. Thus they go
+      --  The registers: they are derived from the held set, so they go
       --  up only now, after R is held.
       pragma Assert (S.RG = Old_S.RG);
       Lemma_Eq (S.RG, Old_S.RG);
@@ -1386,7 +1386,7 @@ package body Kome.Frontier with SPARK_Mode is
            Holds (S, Held (Old_S, I)) or else Dominates (R, Held (Old_S, I)));
    end Commit_Auth;
 
-   --  Apply to the slot of the signer (R is an authorization record).
+   --  Apply to the signer's slot (R is an authorization record).
    procedure Apply_Auth (S : in out State; R : Header; Result : out Status) with
      Global => null,
      Pre  => Is_Frontier (S) and then Canonical (R) and then R.NS = S.NS

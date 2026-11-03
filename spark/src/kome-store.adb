@@ -885,7 +885,7 @@ package body Kome.Store with SPARK_Mode is
    --  index.
    ---------------------------------------------------------------------------
 
-   --  Kept entries were held and were not dropped. Thus they are held
+   --  Kept entries were held and were not dropped, so they are held
    --  after a step that keeps each record that it does not drop.
    procedure Lemma_Live_Kept
      (Old_F, New_F : Frontier.State; D : Drop_Rule;
@@ -1637,7 +1637,7 @@ package body Kome.Store with SPARK_Mode is
            (if not Drops (D, Old_Idx (I)) then Has_Entry (S.Idx, S.NI, Old_Idx (I).H)));
 
       --  The index has room: the kept entries are distinct held records
-      --  other than H. Thus there are fewer than Count (F) <= S.Cap of them.
+      --  other than H, so there are fewer than Count (F) <= S.Cap of them.
       Lemma_Index_Room (S.Idx, S.NI, F, H);
       Lemma_Frontier_Shape (F);
       pragma Assert (S.NI < S.Cap);
@@ -1843,8 +1843,8 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Out_Refl;
 
    --  The log of S is the log of Old_S with EXPIRE (Hn) appended. This is
-   --  a bridge lemma: it reads the facts of the Post of Log_Entry_Expire
-   --  through the accessors of the store, in a small context.
+   --  a bridge lemma: it reads the facts in the Post of Log_Entry_Expire
+   --  through the store's accessors, in a small context.
    procedure Lemma_Expire_Appended (Old_S, S : Store; Hn : Horizon_Value) with
      Ghost, Global => null,
      Pre  => Old_S.LL <= Old_S.Log_Cap and then S.LL <= S.Log_Cap
@@ -2548,7 +2548,7 @@ package body Kome.Store with SPARK_Mode is
                 and then PB <= B'Last and then Len - 1 <= B'Last - PB))
       and then (for all M in 0 .. Len - 1 => A (PA + M) = B (PB + M)));
 
-   --  The first K entries of New_Idx are copies of entries of Idx:
+   --  The first K entries of New_Idx are copies of Idx entries:
    --    * their records, lengths and APPLY bytes are copied, with no gaps,
    --      from Header_Len to W;
    --    * the authorization records are first (the first CA entries), and

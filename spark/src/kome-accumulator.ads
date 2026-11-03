@@ -24,7 +24,7 @@
 --  Σ LE(B_i) · 2^(256·i) of §8. fp hashes ACC(R) in this same order
 --  (ACC_le). This is not only a comment: Lemma_Value_From_Bytes and
 --  Lemma_Value_To_Bytes below prove Value (From_Bytes (B)) =
---  Σ B (I) · 256^I. Thus Kome.Digest can state acc(e) as an integer and
+--  Σ B (I) · 256^I, so Kome.Digest can state acc(e) as an integer and
 --  get the order from a proved fact.
 --
 --  Representation: 64 limbs of 64 bits, with limb 0 the least significant.
@@ -36,11 +36,11 @@
 --  Bytes_Value are opaque to clients. They are declared here and completed
 --  in the package body, together with all the items that they are built
 --  from (the limb and byte Horner forms, and the wide integer type for the
---  carries). A private-part completion is not sufficient (refer to
+--  carries). A private-part completion is not sufficient (see
 --  "Visibility to clients" below).
 --
---  Their definitions are recursive over 64 limbs or 512 bytes. The prover
---  of a client must work from the Posts and lemmas below, and must not
+--  Their definitions are recursive over 64 limbs or 512 bytes. A client's
+--  prover must work from the Posts and lemmas below, and must not
 --  unfold the definitions (CONVENTIONS.md, rule 2). The model functions
 --  are recursive, bounded by a Subprogram_Variant. The executable code has
 --  no recursion.
@@ -53,7 +53,7 @@
 --  five ways:
 --    * an expression function in the PRIVATE PART that completes a
 --      function declared in the visible part: PROVED in the client (the
---      prover of the client can see the private part);
+--      client's prover can see the private part);
 --    * the same, with pragma Annotate (GNATprove, Hide_Info,
 --      "Expression_Function_Body", F) after it in the private part:
 --      still PROVED (the annotation does not hide it);
@@ -64,7 +64,7 @@
 --      client (hidden; also hidden in the body of the package itself);
 --    * completion in the package BODY (the choice of this package): NOT
 --      proved in the client.
---  Thus clients can see private-part expression functions. Only a
+--  The result: clients can see private-part expression functions. Only a
 --  visible-part Hide_Info or a body completion hides a definition. This
 --  package uses body completions and no annotations.
 --
@@ -197,7 +197,7 @@ package Kome.Accumulator with SPARK_Mode is
 
    --  Both directions at once: Ada "=" on Acc is equality of Values. A
    --  client uses this bridge to chain the laws below. Ada "=" on an array
-   --  is element-wise, not the logical equality of the prover. Thus the
+   --  is element-wise, not the prover's logical equality, so the
    --  prover does not substitute equal accumulators inside Add, Sub or
    --  Value by itself. From X1 = X2 it does not get Add (X1, Y) =
    --  Add (X2, Y). Also, Lemma_Add_Comm plus Lemma_Add_Assoc alone do not
@@ -216,7 +216,7 @@ package Kome.Accumulator with SPARK_Mode is
           Post => (A = B) = (Value (A) = Value (B));
 
    --  The byte order, as an integer fact: the 512 bytes, read as a
-   --  little-endian number, are the value of the accumulator (DESIGN.md §8,
+   --  little-endian number, are the accumulator's value (DESIGN.md §8,
    --  "concatenated, as an integer").
    procedure Lemma_Value_From_Bytes (B : Acc_Byte_Array)
      with Ghost, Global => null,
@@ -235,7 +235,7 @@ package Kome.Accumulator with SPARK_Mode is
    --  (Kome.Digest), not here.
    --
    --  How to chain the laws. The Post of each law is an Ada "=" on Acc, and
-   --  the prover does not substitute it inside Add or Sub (refer to
+   --  the prover does not substitute it inside Add or Sub (see
    --  Lemma_Eq_Iff_Value). For example, to get Add (Add (A, B), C) =
    --  Add (Add (B, A), C) from Lemma_Add_Comm (A, B), call
    --  Lemma_Add_Congruent (Add (A, B), Add (B, A), C, C). To get X = Z from

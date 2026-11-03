@@ -354,7 +354,7 @@ procedure Test_Store with SPARK_Mode => Off is
    end Reopen;
 
    --  A State contains a Register_File of Writers_Max keys (256 KiB). Under
-   --  -gnata, each evaluation of a Post copies states and stores. Thus the
+   --  -gnata, each evaluation of a Post copies states and stores, so the
    --  checks run in a task with a large stack.
    procedure Run_All;
 
@@ -557,7 +557,7 @@ procedure Test_Store with SPARK_Mode => Off is
       end;
 
       --  An authorization record of a foreign founding key. Its ns is the
-      --  collection of that key. Thus the precondition of Put_Frame
+      --  collection of that key, so the precondition of Put_Frame
       --  (H.NS = Collection) already excludes it, unless a 128-bit collision
       --  occurs. But step 0 of the store still names it, and a log that
       --  contains it is Malformed.
@@ -1124,7 +1124,7 @@ procedure Test_Store with SPARK_Mode => Off is
 
    --  T18 with raised capacities: a log of data_cap 4 opens again with
    --  data_cap 8 and then gets more than 4 data records. Its HEADER records
-   --  8. Thus an open at 4 refuses it (No_Space, not a silent loss), and it
+   --  8, so an open at 4 refuses it (No_Space, not a silent loss), and it
    --  replays at 8, before and after Compact.
    declare
       S4  : Store_T (4 + Signers_Max * Slice, LCap);

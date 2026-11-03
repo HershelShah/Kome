@@ -2,7 +2,7 @@
 
 `Kome/Frontier.lean` is the model of the frontier store
 (`docs/design/DESIGN.md` §2–§4, §6, §7). It also contains the proofs of the
-theorems of the model. It uses only core Lean (no Mathlib), so it builds
+model's theorems. It uses only core Lean (no Mathlib), so it builds
 offline:
 
 ```bash
@@ -24,9 +24,9 @@ If `lake` is not installed, `build.sh` gets Lean from nixpkgs.
 - Tombstone expiry.
 - The views `root_void`, `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
 
-Out of scope: the model assumes that records are well-formed. Thus it does
-not model certificates, capacity (`NO_SPACE`, `AUTH_FULL`), the clock clamp
-of the horizon or assumption A7.
+Out of scope: the model assumes that records are well-formed. So it does
+not model certificates, capacity (`NO_SPACE`, `AUTH_FULL`), the horizon's
+clock clamp or assumption A7.
 
 ## Theorems (numbering from DESIGN.md §9)
 

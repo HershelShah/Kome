@@ -16,7 +16,7 @@ are the requirements:
   relays. A relay must learn nothing more than ciphertext and routing.
 - Only authorized parties can read a collection. The set of authorized
   parties can change (for example, a person is removed).
-- It runs where the data of the person is: phones, laptops, browsers (WASM)
+- It runs where the person's data is: phones, laptops, browsers (WASM)
   and small devices. It has a C-callable API and one vendored crypto
   dependency.
 
@@ -37,7 +37,7 @@ H3. **End-to-end encryption** of all record content. Relays and strangers
 H4. **Incremental sync**: the transfer is proportional to the difference,
     and the number of rounds is logarithmic in the state size. Sync works
     over any byte transport (UDP, TCP, WS, BLE). The two sides must not need
-    a shared history or version vectors of the past sessions of each other.
+    a shared history or version vectors of each other's past sessions.
 H5. **Bounded everything**: every value, key, message and metadata item has
     an explicit bound. It must be possible to express the state model in a
     bounded, pointer-free language (SPARK), and its properties in Lean.
@@ -51,8 +51,8 @@ H8. **Authorized writers can misbehave**: a device with write access can be
     buggy, have a wrong clock, be restored from a backup, be cloned (same
     key on two devices), or be malicious. The design must state what damage
     each of these can do. That damage must be bounded and recoverable. A
-    single record must not permanently brick a collection or the future
-    writes of a different writer.
+    single record must not permanently brick a collection or a different
+    writer's future writes.
 
 ## 3. Failure classes the design must make impossible
 

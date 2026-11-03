@@ -20,8 +20,8 @@
 #                   file SHA-256 ea80ffebac085e21cb9d3e903e7fa2b448d96702da5b31f061d0b83b430b74b3,
 #                   schema eddsa_verify_schema_v1.json, 210 tests, source of
 #                   the groups google-wycheproof 0.9rc5). The fields are
-#                   verbatim copies: tcId, result, the public key of the
-#                   group, msg, sig.
+#                   verbatim copies: tcId, result, the group's public key,
+#                   msg, sig.
 #                   Selected tcIds:
 #                     valid: 1 2 3 7 80 81 82 84 86 114 119 181
 #                     S >= L (s + L, 2L, 4L, 8L, 2^253, 2^254, 2^255, p;
@@ -37,7 +37,7 @@
 #                   All 210 tests also ran through the same strict check in
 #                   C (a scratch harness, not committed): the check accepted
 #                   each "valid" test and rejected each "invalid" test.
-#                   Plain crypto_ed25519_check accepts tcId 151 (refer to
+#                   Plain crypto_ed25519_check accepts tcId 151 (see
 #                   kome-crypto.ads, STRICT VERIFICATION).
 #   ed25519_strict  Non-canonical encodings that plain crypto_ed25519_check
 #                   accepts and Verify must reject. Each is paired with its
@@ -56,7 +56,7 @@
 #                   answers that the binding used before D4, for the RFC 8032
 #                   TEST 1-3 seeds and messages. They come from an
 #                   independent Python RFC 8032 reference with the hash
-#                   swapped, and crypto_eddsa_check of monocypher confirmed
+#                   swapped, and monocypher's crypto_eddsa_check confirmed
 #                   them. Key_Pair must not derive that public key now.
 #                   Verify must reject the old signature under both the old
 #                   and the new public key.
@@ -67,12 +67,12 @@
 #   x25519          RFC 7748 section 5.2 (cross-checked with pyca/cryptography).
 #   x25519dh        RFC 7748 section 6.1 Alice/Bob exchange.
 #   x25519_low      Low-order u-coordinates: 0, 1, the order-8 points
-#                   e0eb7a7c... and 5f9c95bc... (the low-order blocklist of
-#                   libsodium; RFC 7748 §6.1 says to check for all zeros),
+#                   e0eb7a7c... and 5f9c95bc... (libsodium's low-order
+#                   blocklist; RFC 7748 §6.1 says to check for all zeros),
 #                   p - 1, and the non-canonical encodings p and p + 1. Each
 #                   scalar gives an all-zero shared secret (pyca/cryptography
 #                   refuses each one with "Error computing shared key").
-#                   Thus X25519 must report Contributory = False.
+#                   X25519 must report Contributory = False.
 #   dh_key          Known answers for Is_Reduced_U and Is_Low_Order_U (and
 #                   thus for Is_Good_DH_Key = reduced and not low order), by
 #                   definition (DESIGN.md §2 rule 3, E5). The five reduced
@@ -149,7 +149,7 @@ wycheproof 33 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369e
 wycheproof 38 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 546573743137 93de3ca252426c95f735cb9edd92e83321ac62372d5aa5b379786bae111ab6b17251330e8f9a7c30d6993137c596007d7b001409287535ac4804e662bc58a3
 # Wycheproof: mixed-order public key regression, rejected (tcIds 210)
 wycheproof 210 invalid d1e06adf4e05e248e1e52beca14b6be4da0af01b41645d2849b407ec22f41d47 af82 6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a
-# Non-canonical encodings (refer to the header): first the control, then the
+# Non-canonical encodings (see the header): first the control, then the
 # encoding that plain crypto_ed25519_check accepts.
 # R = (sqrt(-1), 0), order 4, canonical
 ed25519_strict valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 0000000000000000000000000000000000000000000000000000000000000000ed0109af2225e449ccf54304f75cafce5fc7ac4f4f82aae07d8689253da0ce04

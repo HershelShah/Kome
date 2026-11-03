@@ -5,7 +5,7 @@
 --    v = (t : u48, author : [32]u8, seq : u48, h : [32]u8)
 --
 --  The order is lexicographic, with `author` and `h` as unsigned 256-bit
---  integers. `h` is the content hash of the record itself. Thus two
+--  integers. `h` is the content hash of the record itself, so two
 --  different well-formed records never compare equal (A2), and the order is
 --  total by construction. Keys are Key256 words, so the full order is a
 --  quantifier-free formula. gnatprove proves each lemma below by unfolding.
