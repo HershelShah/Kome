@@ -12,7 +12,7 @@
 --                     optional monocypher-ed25519.c. DESIGN.md §2 `sig`,
 --                     `cert_sig`. Assumption A1.
 --    X25519           crypto_x25519_public_key, crypto_x25519. DESIGN.md §6
---                     (the epoch key wrapped to the `dh_pk` of each member).
+--                     (the epoch key wrapped to each member's `dh_pk`).
 --    XChaCha20-       crypto_aead_lock / _unlock: 32-byte key, 24-byte nonce,
 --    Poly1305         16-byte tag. DESIGN.md §2 `nonce[24] box[48]`, §8
 --                     sealed bundles. T14 (paper) depends on it.
@@ -28,7 +28,7 @@
 --  stays the hash for h, ns, certificates, the accumulator and each key
 --  derivation.
 --
---  This package does not bind the core crypto_eddsa_* of monocypher (EdDSA
+--  This package does not bind monocypher's core crypto_eddsa_* (EdDSA
 --  with BLAKE2b-512, the scheme of Nano). Its signatures do not verify
 --  here, and the test main checks this (regression vectors).
 --
@@ -45,14 +45,14 @@
 --  R"). Wycheproof ed25519_test.json tcId 151 is such a signature, and
 --  crypto_ed25519_check accepts it.
 --
---  Thus the binding checks (b) and (c) itself (Is_Canonical_Point). The
+--  The binding checks (b) and (c) itself (Is_Canonical_Point). The
 --  strictness is the decoding rule of RFC 8032 §5.1.3. The group equation
---  is the cofactored equation of monocypher ([8][S]B = [8]R + [8][k]A,
---  which RFC 8032 §5.1.7 permits).
+--  is monocypher's cofactored equation ([8][S]B = [8]R + [8][k]A, which
+--  RFC 8032 §5.1.7 permits).
 --
 --  SPARK boundary (CONVENTIONS.md, the one allowed exception): this spec is
 --  SPARK_Mode On with full contracts. The body is SPARK_Mode Off, and it
---  calls C through Interfaces.C. Thus gnatprove ASSUMES the Posts of the
+--  calls C through Interfaces.C, so gnatprove ASSUMES the Posts of the
 --  subprograms that the body completes, and does not prove them. Only
 --  execution (-gnata) checks them, against the known-answer vectors and
 --  the properties of tests/test_crypto.adb. This is inherent to a binding
@@ -76,14 +76,14 @@
 --  (S_Below_L, Is_Canonical_Point, Is_Reduced_U, Is_Low_Order_U, ...) are
 --  SPARK, and gnatprove proves them like any other code.
 --
---  Each function here is a mathematical function of its arguments: Ed25519
---  signatures are deterministic, and no code reads a clock or an RNG. Thus
---  the functions are SPARK functions with Global => null.
+--  Each function here is a mathematical function of its arguments, so it is
+--  a SPARK function with Global => null. Ed25519 signatures are
+--  deterministic, and no code reads a clock or an RNG.
 --
 --  PREELABORATE, NOT PURE. RM 10.2.1(18) lets an implementation omit a
 --  call to a library-level subprogram of a declared-pure unit, when the
 --  results of the call are not necessary after it. A Wipe just before a
---  secret goes out of scope is exactly such a call. Thus the package is
+--  secret goes out of scope is exactly such a call. The package is
 --  Preelaborate, so that this permission never applies and each Wipe is an
 --  ordinary call to C that must execute. A unit that withs Kome.Crypto can
 --  be Preelaborate but not Pure.
@@ -93,7 +93,7 @@
 --  6.2(4) and 6.2(7), such a record is a by-reference type. By RM 6.2(9), a
 --  private type with such a full type is also a by-reference type. RM
 --  6.2(10) then requires the compiler to pass each parameter of these types
---  by reference. Thus a Wipe or a Final erases the object of the caller
+--  by reference. As a result, a Wipe or a Final erases the caller's object
 --  itself, not a copy of it. Because these types are limited, assignment
 --  cannot copy them either.
 --
@@ -101,7 +101,7 @@
 --  register allocation, from leaving copies in other locations; crypto_wipe
 --  in monocypher is for this. Byte_Array (an array of an elementary type)
 --  is not a by-reference type, and RM 6.2(11) leaves its parameter
---  mechanism unspecified. Refer to Wipe (B) for the property that the code
+--  mechanism unspecified. See Wipe (B) for the property that the code
 --  depends on there.
 pragma Ada_2022;
 package Kome.Crypto with SPARK_Mode, Preelaborate is
@@ -169,8 +169,8 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
      with Global => null,
           Pre    => Data'Length <= Max_Data_Len;
 
-   --  Congruence: BLAKE2b-256 reads only the bytes of its input, in order.
-   --  Thus two inputs with the same bytes have the same digest, whatever
+   --  Congruence: BLAKE2b-256 reads only the bytes of its input, in order,
+   --  so two inputs with the same bytes have the same digest, whatever
    --  their bounds. This is true of each function of a byte string, but the
    --  prover cannot see it. The prover has no array extensionality, and two
    --  arrays with equal elements but different bounds or different
@@ -189,7 +189,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
                               A (A'First + K) = B (B'First + K)),
           Post => Blake2b_256 (A) = Blake2b_256 (B);
 
-   --  The same hash, written directly into the buffer of the caller. Use
+   --  The same hash, written directly into the caller's buffer. Use
    --  this form when the digest is itself a secret, so that no
    --  function-result temporary holds a copy. An example is the epoch key
    --  chain k_e = BLAKE2b-256 (k_{e+1} ‖ "prev") of DESIGN.md §6. The caller
@@ -209,7 +209,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  integers are range types).
    --
    --  The same bytes, given in any chunks, give Blake2b_256 of their
-   --  concatenation. That is the guarantee of monocypher. The test main runs
+   --  concatenation. monocypher guarantees this. The test main runs
    --  it at each split point across the 128-byte block boundary. It is not a
    --  proof obligation, because it would need a ghost copy of an unbounded
    --  stream.
@@ -278,7 +278,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  and 4). The y-coordinate (bits 0 .. 254, little-endian) is below
    --  p = 2**255 - 19, and the sign bit (bit 255) is clear when x = 0. The
    --  only points with x = 0 are y = 1 (the identity) and y = p - 1 (the
-   --  point of order 2). Thus the second condition is also a byte
+   --  point of order 2), so the second condition is also a byte
    --  comparison.
    --
    --  The check that y is on the curve (step 3) needs a square root.
@@ -337,12 +337,12 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
      with Global => null,
           Post   => Is_Canonical_Point (Derive_Public'Result);
 
-   --  A signing key: the 64-byte secret key of monocypher (seed ‖ public
-   --  key) plus a validity flag. The type is private and limited, so only
+   --  A signing key: monocypher's 64-byte secret key (seed ‖ public key)
+   --  plus a validity flag. The type is private and limited, so only
    --  Key_Pair can make a valid key. Key_Pair derives the public half from
    --  the seed. crypto_ed25519_sign hashes the public half into the
    --  challenge and does not check it, but its nonce depends only on the
-   --  seed. Thus, if the halves of a key disagree, two signatures of one
+   --  seed. If the halves of a key disagree, two signatures of one
    --  message leak the private scalar (the "double public key" oracle).
    --
    --  The type prevents this, and Is_Valid states it. A default-initialized
@@ -351,7 +351,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    type Secret_Key is limited private
      with Default_Initial_Condition => not Is_Valid (Secret_Key);
 
-   --  The seed half (the first 32 bytes of the secret key of monocypher).
+   --  The seed half (the first 32 bytes of monocypher's secret key).
    --  Ghost: it exists for the contracts. No executable code can read the
    --  secret seed back from a key, so no function result or temporary ever
    --  holds a copy. If a device stores its signing key persistently, it
@@ -360,7 +360,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    function Seed_Of (SK : Secret_Key) return Seed
      with Ghost, Global => null;
 
-   --  The public half (the last 32 bytes of the secret key of monocypher).
+   --  The public half (the last 32 bytes of monocypher's secret key).
    function Public_Of (SK : Secret_Key) return Pubkey
      with Global => null;
 
@@ -368,7 +368,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  that. Ghost: only contracts use it (the Pre of Sign, the Sign Pres of
    --  Kome.Records). Its completion is an expression function in the
    --  private part (the flag, and the public half derived from the seed
-   --  half). Thus gnatprove proves its Post and the DIC above. At run time
+   --  half), so gnatprove proves its Post and the DIC above. At run time
    --  (-gnata), each evaluation of it derives the public key once.
    function Is_Valid (SK : Secret_Key) return Boolean
      with Ghost, Global => null,
@@ -376,7 +376,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
                      then Public_Of (SK) = Derive_Public (Seed_Of (SK)));
 
    --  crypto_ed25519_key_pair (sk, pk, seed). The C call wipes its seed
-   --  argument. Thus the binding gives it a copy, and S does not change (it
+   --  argument, so the binding gives it a copy, and S does not change (it
    --  is an `in` parameter). Post: the key is valid and holds S, and PK is
    --  its public half and the key derived from S.
    procedure Key_Pair (S : Seed; SK : out Secret_Key; PK : out Pubkey)
@@ -398,11 +398,11 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  S < L for the scalar half of a signature. L = 2**252 +
    --  27742317777372353535851937790883648493 is the group order, and S is
    --  little-endian in bytes 32 .. 63. crypto_ed25519_check refuses S >= L
-   --  ("prevents malleability"). Thus, for a given public key, message and
+   --  ("prevents malleability"), so for a given public key, message and
    --  R, at most one signature encoding verifies. The function has no
    --  quantifier: it is a chain of byte comparisons from the most
-   --  significant byte down, as Kome.Lt is for words. Thus the provers of
-   --  callers can unfold it.
+   --  significant byte down, as Kome.Lt is for words, so a caller's prover
+   --  can unfold it.
    function S_Below_L (S : Sig) return Boolean is
      (S (63) < 16#10# or else
       (S (63) = 16#10#
@@ -441,12 +441,12 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
           Post   => S_Below_L (Sign'Result)
                     and then Is_Canonical_Point (Sign'Result (0 .. 31));
 
-   --  Strict RFC 8032 verification (refer to the header): S < L, canonical
+   --  Strict RFC 8032 verification (see the header): S < L, canonical
    --  R and PK, then crypto_ed25519_check (sig, pk, msg, len) = 0. DESIGN.md
    --  §2: a record is well-formed iff its bounds hold and its signature
    --  verifies. This is a function of its bytes alone, so Verify is a
    --  function with Global => null. A1 is the assumption that True means
-   --  that the holder of the secret key of PK signed Msg. The part that a
+   --  that the holder of PK's secret key signed Msg. The part that a
    --  test can check is the encoding: True implies a canonical scalar
    --  (non-malleability) and canonical point encodings.
    function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean
@@ -462,13 +462,13 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    ---------------------------------------------------------------------------
 
    --  An X25519 output is a u-coordinate reduced mod 2**255 - 19 and
-   --  encoded little-endian (RFC 7748 §5, encodeUCoordinate). Thus its top
-   --  bit is clear. fe_tobytes of monocypher emits the canonical encoding.
+   --  encoded little-endian (RFC 7748 §5, encodeUCoordinate), so its top
+   --  bit is clear. monocypher's fe_tobytes emits the canonical encoding.
    function Is_Canonical_U (U : Pubkey) return Boolean is (U (31) < 16#80#)
      with Global => null;
 
    --  All 32 bytes are zero. The function has no quantifier (CONVENTIONS.md
-   --  rule 2), so it costs the provers of callers nothing.
+   --  rule 2), so it costs a caller's prover nothing.
    function Is_Zero (K : Shared_Secret) return Boolean is
      (K (0) = 0 and then K (1) = 0 and then K (2) = 0 and then K (3) = 0
       and then K (4) = 0 and then K (5) = 0 and then K (6) = 0
@@ -512,7 +512,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --    order 8      e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800
    --    order 8      5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157
    --    u = p - 1    ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
-   --  (This is the blocklist of libsodium without its non-reduced entries,
+   --  (This is libsodium's blocklist without its non-reduced entries,
    --  which Is_Reduced_U already refuses.) For each of these points, each
    --  secret gives an all-zero shared secret (X25519 reports Contributory =
    --  False). The function has no quantifier, so it is public.
@@ -558,23 +558,23 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  The X25519 keys that Kome accepts at decode (DESIGN.md §2 rule 3, E5).
    --  The box_pk of a ROSTER and each member dh_pk are reduced and not low
-   --  order. Thus each listed member can open its box. Kome.Records checks
+   --  order, so each listed member can open its box. Kome.Records checks
    --  this at decode. Kome.Epochs checks the two conjuncts (Is_Reduced_U,
    --  then Is_Low_Order_U) before each box and unbox operation.
    function Is_Good_DH_Key (U : Pubkey) return Boolean is
      (Is_Reduced_U (U) and then not Is_Low_Order_U (U))
      with Global => null;
 
-   --  crypto_x25519_public_key (pk, sk): the `dh_pk` of the member
+   --  crypto_x25519_public_key (pk, sk): the member's `dh_pk`
    --  (DESIGN.md §2 ROSTER members[] { sign_pk dh_pk ... }).
    function X25519_Public (Secret : DH_Secret) return Pubkey
      with Global => null,
           Post   => Is_Canonical_U (X25519_Public'Result);
 
    --  crypto_x25519 (shared, your_sk, their_pk): the raw shared secret,
-   --  written into the buffer of the caller. It is a secret, so the caller
-   --  wipes it. The note of monocypher applies: the secret is not uniformly
-   --  random, so hash it before you use it as a key. If Their_Public has
+   --  written into the caller's buffer. It is a secret, so the caller wipes
+   --  it. monocypher's note applies: the secret is not uniformly random, so
+   --  hash it before you use it as a key. If Their_Public has
    --  low order (u = 0, u = 1, the order-8 points, or their non-canonical
    --  encodings), each secret gives all zeros.
    --
@@ -594,7 +594,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
                     and then Shared = X25519_Shared (Secret, Their_Public);
 
    --  The same shared secret as a function, for contracts only (Ghost).
-   --  Thus the Post of a client can name a key derived from the exchange
+   --  It lets a client's Post name a key derived from the exchange
    --  (Kome.Epochs: the wrap key and the synthetic nonce of a member box,
    --  DESIGN.md §6 D6). Because it is Ghost, executable code never holds the
    --  secret in a function-result temporary. Under -gnata it runs the same
@@ -608,12 +608,12 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  crypto_aead_lock (cipher, mac, key, nonce, ad, ad_len, plain, len).
    --  Cipher has exactly the length of Plain (a stream cipher), and Mac
-   --  authenticates AD and Cipher. The anti-aliasing rule of SPARK forbids
+   --  authenticates AD and Cipher. SPARK's anti-aliasing rule forbids
    --  one buffer as both Plain and Cipher, so the binding never uses the C
    --  in-place mode. There is no Post: the only output facts are the
    --  lengths, and the Pre fixes them (the bounds of an out parameter cannot
-   --  change). Thus a Post would be vacuous. That Unlock inverts Lock is the
-   --  guarantee of monocypher, and the test main runs it.
+   --  change), so a Post would be vacuous. monocypher guarantees that Unlock
+   --  inverts Lock, and the test main runs it.
    procedure Lock
      (Key    : AEAD_Key;
       N      : Nonce;
@@ -628,7 +628,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  crypto_aead_unlock (...) = 0. If the message is forged or corrupted
    --  (Authentic = False), monocypher writes nothing, and the binding then
-   --  sets Plain to zeros. Thus a refused message never leaves plaintext or
+   --  sets Plain to zeros, so a refused message never leaves plaintext or
    --  stale bytes behind (the Post). On success, Plain is the decryption of
    --  Cipher.
    procedure Unlock
@@ -653,18 +653,18 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  crypto_wipe (buf, len): set a secret (a seed, a shared secret, an
    --  epoch key, a plaintext) to zero in a way that the C compiler does not
    --  elide. The Ada compiler cannot elide the call either, because the
-   --  package is not Pure (refer to the header).
+   --  package is not Pure (see the header).
    --
    --  The object that the call erases: Byte_Array is not a by-reference
    --  type, and RM 6.2(11) leaves the mechanism of B unspecified. GNAT
    --  passes an unconstrained array formal such as B by reference (a
-   --  pointer to the data of the actual, plus its bounds). Thus B'Address is
-   --  the buffer of the caller. The check wipe_zeroes in test_crypto
-   --  examines the object of the caller after the call. If you port the
+   --  pointer to the actual's data, plus its bounds), so B'Address is the
+   --  caller's buffer. The check wipe_zeroes in test_crypto examines the
+   --  caller's object after the call. If you port the
    --  code to another compiler, you must check this again (or give B an
    --  explicitly aliased mode).
    --
-   --  For callers: the flow analysis of gnatprove reports a Wipe of a local
+   --  For callers: gnatprove's flow analysis reports a Wipe of a local
    --  that is never read again as "statement has no effect" / "set by Wipe
    --  but not used after the call". That is the purpose of the call.
    --  Silence the warning locally with pragma Warnings (Off, "statement has
@@ -678,7 +678,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
 private
 
-   --  Storage for the crypto_blake2b_ctx of monocypher. The monocypher
+   --  Storage for monocypher's crypto_blake2b_ctx. The monocypher
    --  header says not to depend on its layout. On LP64 it is 8 + 2 + 16
    --  words of uint64_t plus two size_t, 28 words. 32 words of U64 hold it
    --  with room and give it uint64_t alignment. The body checks the size at
@@ -687,8 +687,8 @@ private
    Ctx_Words : constant := 32;
    type Ctx_Storage is array (0 .. Ctx_Words - 1) of U64;
 
-   --  Explicitly limited, thus by-reference (RM 6.2(4), 6.2(7)): refer to
-   --  the header.
+   --  Explicitly limited, thus by-reference (RM 6.2(4), 6.2(7)): see the
+   --  header.
    type Blake2b_Context is limited record
       Raw    : Ctx_Storage := [others => 0];
       Active : Boolean     := False;
@@ -698,7 +698,7 @@ private
    function Is_Active (Ctx : Blake2b_Context) return Boolean is (Ctx.Active);
    function Absorbed (Ctx : Blake2b_Context) return Stream_Len is (Ctx.Count);
 
-   --  The secret_key[64] of monocypher = seed ‖ public key. Explicitly
+   --  monocypher's secret_key[64] = seed ‖ public key. Explicitly
    --  limited, thus by-reference (RM 6.2(4), 6.2(7)).
    type Secret_Key is limited record
       Raw   : Byte_Array (0 .. Secret_Key_Len - 1) := [others => 0];

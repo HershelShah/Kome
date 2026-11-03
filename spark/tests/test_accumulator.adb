@@ -9,8 +9,8 @@
 --    (c) The laws on a grid of accumulators, both as plain equalities and
 --        through the ghost lemmas. The Posts of the lemmas (with the
 --        Big_Integer model) and their bodies run under -gnata. The
---        exception is the limb-by-limb steps that the "Run-time cost" note
---        of the spec exempts.
+--        exception is the limb-by-limb steps that the spec's "Run-time
+--        cost" note exempts.
 --    (d) The byte order as an integer: Value (From_Bytes (B)) =
 --        Σ B (I) · 256^I on the vectors and on hand cases (bytes 0, 8 and
 --        511).
@@ -256,7 +256,7 @@ begin
    ----------------------------------------------------------------------
    --  (d) Byte order as an integer (DESIGN.md §8 "as an integer";
    --  little-endian). Each pragma Assert runs under -gnata and raises an
-   --  exception on failure. Thus, if the test gets to the PASS line, all of
+   --  exception on failure, so if the test gets to the PASS line, all of
    --  them held.
    ----------------------------------------------------------------------
    declare
@@ -290,7 +290,7 @@ begin
    --  LE(B) := Σ_j B[j] · 256^j. The sixteen 32-byte blocks, concatenated
    --  in counter order and read by From_Bytes, denote exactly that sum.
    --  This test computes the sum block by block with Big_Integers,
-   --  independently of the byte-level model of the package.
+   --  independently of the package's byte-level model.
    ----------------------------------------------------------------------
    declare
       subtype Block is Byte_Array (0 .. 31);

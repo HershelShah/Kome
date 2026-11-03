@@ -36,7 +36,7 @@ package Kome with SPARK_Mode, Pure is
 
    --  In the lattice, identifiers and keys are records of fixed-width words,
    --  not byte arrays. The words are big-endian: W0 is the most significant.
-   --  Thus, for the prover, equality on these records is logical equality,
+   --  For the prover, equality on these records is logical equality,
    --  and the byte-lexicographic order is a chain of word comparisons.
    --  Kome.Keys converts the wire bytes to these records (To_Key256 /
    --  To_Id128), and Kome.Records calls Kome.Keys.
@@ -89,7 +89,7 @@ package Kome with SPARK_Mode, Pure is
    Signers_Max : constant := 16;
    Slice_Max   : constant := 512;
    --  W holds at most one subject for each held GRANT. The frontier holds at
-   --  most Signers_Max * Slice_Max authorization records. Thus W never
+   --  most Signers_Max * Slice_Max authorization records, so W never
    --  becomes full on its own (DESIGN.md §7 "Bounds").
    Writers_Max : constant := Signers_Max * Slice_Max;   --  8_192
 

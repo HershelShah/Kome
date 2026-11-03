@@ -1230,7 +1230,7 @@ package body Kome.Reconcile with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  OPEN and HELLO. Fixed layout: first the header, then the frames or
-   --  the credential. Each part is written one time.
+   --  the credential. Each part is written once.
    ----------------------------------------------------------------------
 
    procedure Encode_Open
@@ -1726,7 +1726,7 @@ package body Kome.Reconcile with SPARK_Mode is
       end if;
 
       if Input (Input'First) = Tag_Open then
-         --  The OPEN, one time, first.
+         --  The OPEN, once, first.
          M.Kind := M_Open;
          if Sess.P /= Await_Open then
             Result := S_Unexpected;
@@ -1761,7 +1761,7 @@ package body Kome.Reconcile with SPARK_Mode is
          pragma Assert (Session_OK (Sess));
 
       elsif Input (Input'First) = Tag_Hello then
-         --  The HELLO, one time, in the gate.
+         --  The HELLO, once, in the gate.
          M.Kind := M_Hello;
          if Sess.P /= Gate or else Sess.Peer_Hello_Seen then
             Result := S_Unexpected;

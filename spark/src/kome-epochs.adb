@@ -1,6 +1,6 @@
 --  Kome.Epochs body. The spec tells what is proved and what is a crypto
 --  oracle. Step, Box_Key, Unbox_Key, Seal_Link and Open_Link wipe each named
---  secret byte buffer before they return. The flow analysis of gnatprove
+--  secret byte buffer before they return. gnatprove's flow analysis
 --  reports that these final Wipes have no effect on the SPARK model. This
 --  is their purpose (Kome.Crypto.Wipe).
 pragma Ada_2022;
@@ -17,14 +17,14 @@ package body Kome.Epochs with SPARK_Mode is
    --  Chain
    ---------------------------------------------------------------------------
 
-   --  Erase secret buffers. The flow analysis of gnatprove reports that a
+   --  Erase secret buffers. gnatprove's flow analysis reports that a
    --  final Wipe has no effect. This is its purpose (Kome.Crypto.Wipe).
    pragma Warnings (GNATprove, Off, "statement has no effect",
                     Reason => "erasing secrets is not a SPARK effect");
    pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
                     Reason => "erasing secrets is not a SPARK effect");
 
-   --  The procedure form of BLAKE2b-256 writes into a buffer. Thus Step
+   --  The procedure form of BLAKE2b-256 writes into a buffer, so Step
    --  can wipe the input (which holds k_{e+1}) and the digest before it
    --  returns. A function can call the two procedures because they are
    --  Always_Terminates.
@@ -44,7 +44,7 @@ package body Kome.Epochs with SPARK_Mode is
    function Derive (K : Key256; From, To : Epoch) return Key256 is
       --  The invariant states the ghost model Iter again. To evaluate Iter
       --  costs I Steps. If the test ran it on each iteration, the test
-      --  would be quadratic (2**31 hashes for a full chain). Thus it is
+      --  would be quadratic (2**31 hashes for a full chain), so it is
       --  proved, not run. The test checks Derive against an independent
       --  reference instead.
       pragma Assertion_Policy (Loop_Invariant => Ignore);
@@ -251,7 +251,7 @@ package body Kome.Epochs with SPARK_Mode is
       Mac          : C.Tag;
    begin
       --  Refuse an encoding that is not reduced before an exchange. It would
-      --  seal a box that the reduced key of its member can never open (see
+      --  seal a box that its member's reduced key can never open (see
       --  the spec header).
       if not Is_Reduced_U (Member_DH_PK) then
          N := [others => 0];

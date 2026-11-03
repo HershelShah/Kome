@@ -37,7 +37,7 @@ package body Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  The accumulator as a record of 64 words. Its equality is logical
-   --  (CONVENTIONS.md, rule 1). Thus a hash of a function of the image is
+   --  (CONVENTIONS.md, rule 1), so a hash of a function of the image is
    --  the same term for element-wise equal accumulators.
    ----------------------------------------------------------------------
 
@@ -546,7 +546,7 @@ package body Kome.Digest with SPARK_Mode is
                 Elem_Acc (Kome.Frontier.Held (F, K).V.H)));
 
    function State_Of (F : Kome.Frontier.State) return Digest_State is
-      --  Proved; at run time only the Post is evaluated (refer to
+      --  Proved; at run time only the Post is evaluated (see
       --  Digest_Of).
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore);
@@ -775,9 +775,9 @@ package body Kome.Digest with SPARK_Mode is
       end Trans;
 
       --  The only way that this body adds: R := R + E, and C counts one
-      --  more Add call. Review invariant (not provable, refer to the spec
+      --  more Add call. Review invariant (not provable, see the spec
       --  header): no Add or Sub occurs in Range_Sum outside Add_Term and
-      --  Sub_Term. Adds and Subs are set only from their counters. Thus the
+      --  Sub_Term. Adds and Subs are set only from their counters, so the
       --  counts are the calls made.
       procedure Add_Term (R : in out Acc; E : Acc; C : in out Natural)
         with Global => null,

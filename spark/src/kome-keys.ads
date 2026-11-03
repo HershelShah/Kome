@@ -14,10 +14,10 @@
 --    * Lemma_Lt_Is_Lexicographic: Kome.Lt on Key256 is exactly the
 --      unsigned big-endian byte-lexicographic order on the 32 bytes.
 --      DESIGN.md §2 gives this order for `author` and `h` ("compared ... as
---      unsigned 256-bit integers"). Thus gnatprove can prove T1 (Version.lt
---      is a strict total order, Frontier.lean) on words, while the design
---      states it on bytes. Lemma_Lt_First_Difference states the same fact
---      as "the first differing byte decides".
+--      unsigned 256-bit integers"). The lemma lets gnatprove prove T1
+--      (Version.lt is a strict total order, Frontier.lean) on words, while
+--      the design states it on bytes. Lemma_Lt_First_Difference states the
+--      same fact as "the first differing byte decides".
 --    * Id_Lt is the same order on Id128. Lemma_Id_Eq_Is_Bytewise /
 --      Lemma_Id_Lt_Is_Lexicographic / Lemma_Id_Lt_First_Difference are the
 --      Id128 versions of the Key256 laws. Lemma_Key_Slide / Lemma_Id_Slide
@@ -25,11 +25,11 @@
 --      buffer.
 --
 --  All code is integer arithmetic on the range type Word (multiply and
---  divide by the constant 256), never shifts on modular words. Thus the
+--  divide by the constant 256), never shifts on modular words, so the
 --  proofs stay in linear integer arithmetic. Each view in a contract has
 --  no quantifier (CONVENTIONS.md, rule 2). Byte_At and Lex_Lt are
 --  expression functions. Word_Of and Byte_Of_Word are functions whose Post
---  is their definition (refer to the note at their declaration).
+--  is their definition (see the note at their declaration).
 --  There is no state: all subprograms are Global => null.
 pragma Ada_2022;
 package Kome.Keys with SPARK_Mode, Pure is
@@ -52,7 +52,7 @@ package Kome.Keys with SPARK_Mode, Pure is
    ----------------------------------------------------------------------
    --  One word. Word_Of packs four bytes big-endian. Byte_Of_Word extracts
    --  lane J. The divisions are written as repeated division by 256
-   --  (W / 256 / 256 is (W / 256) / 256). Thus each step is a division by
+   --  (W / 256 / 256 is (W / 256) / 256), so each step is a division by
    --  the same constant, and the round-trip proofs need no fact about
    --  nested quotients.
    --
@@ -60,7 +60,7 @@ package Kome.Keys with SPARK_Mode, Pure is
    --  definition, not expression functions. The prover inlines an
    --  expression function this small into each VC that mentions it. This
    --  put 32 byte <-> integer conversions (int2bv / bv2nat) of nested
-   --  quotients into the ground problem of the VC of each conversion. The
+   --  quotients into the ground problem of each conversion's VC. The
    --  provers then timed out on what is pure congruence. As functions with
    --  a Post, the definition is a quantified axiom. The prover uses it only
    --  where the arithmetic is necessary (the lane lemmas below).
@@ -146,9 +146,9 @@ package Kome.Keys with SPARK_Mode, Pure is
    ----------------------------------------------------------------------
    --  Conversions. B can have any 'First (a slice of a record buffer).
    --  B (B'First) is the most significant byte of W0.
-   --  The first conjunct of the Post of each decoder is its definition, so
+   --  The first conjunct of each decoder's Post is its definition, so
    --  a caller can compute with it. The second conjunct is the round trip
-   --  bytes -> words -> bytes. The Post of the encoder gives each byte and
+   --  bytes -> words -> bytes. The encoder's Post gives each byte and
    --  the round trip words -> bytes -> words.
    ----------------------------------------------------------------------
 
@@ -352,7 +352,7 @@ package Kome.Keys with SPARK_Mode, Pure is
    --  Identifiers: the same three laws. The decoder is injective, Id_Lt is
    --  the byte-lexicographic order on the 16 bytes (read from either side),
    --  and the first differing byte decides. Kome.Reconcile combines these
-   --  with the Key256 laws above. Thus it proves that its element-key order
+   --  with the Key256 laws above to prove that its element-key order
    --  is the bytewise order on the wire key (§8).
    procedure Lemma_Id_Eq_Is_Bytewise (A, B : Id_Bytes)
      with Ghost, Global => null,

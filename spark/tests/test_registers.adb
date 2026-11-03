@@ -57,7 +57,7 @@ begin
    Check ("extends is inclusion", Extends (Old, R) and then not Extends (R, Old));
 
    --  This test does not fill Writers_Max. Under -gnata, each Add_Writer
-   --  evaluates Extends and Distinct, which are quadratic in Count. Thus a
+   --  evaluates Extends and Distinct, which are quadratic in Count, so a
    --  fill to 8 192 would take hours. The bound is a proof obligation (the
    --  Pre of Add_Writer).
 

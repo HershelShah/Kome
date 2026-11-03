@@ -5,10 +5,10 @@
 --  buffers are passed by address. The only Ada logic is the encoding check
 --  of Verify. It calls the (SPARK, proved) expression functions of the
 --  spec. Callers prove against the contracts of the spec. The test main
---  executes these contracts on the output of monocypher under -gnata.
+--  executes these contracts on monocypher's output under -gnata.
 --
---  The body passes empty buffers as NULL with size 0. The manual of
---  monocypher documents this as valid for each pointer/size pair here.
+--  The body passes empty buffers as NULL with size 0. monocypher's manual
+--  documents this as valid for each pointer/size pair here.
 pragma Ada_2022;
 with System;
 with Interfaces.C;
@@ -99,9 +99,9 @@ package body Kome.Crypto with SPARK_Mode => Off is
      (C_Blake2b_Ctx'Size > Ctx_Storage'Size,
       "Ctx_Storage is smaller than crypto_blake2b_ctx");
    --  Alignment: each member of crypto_blake2b_ctx is a uint64_t or a
-   --  size_t. Thus its alignment is at most the alignment of uint64_t, and
+   --  size_t, so its alignment is at most the alignment of uint64_t, and
    --  Ctx_Storage (an array of U64, Size 64) has that alignment. GNAT cannot
-   --  fold 'Alignment of a C record at compile time. Thus this comment
+   --  fold 'Alignment of a C record at compile time, so this comment
    --  states this half, and no code checks it.
 
    ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ package body Kome.Crypto with SPARK_Mode => Off is
 
    --  Address of the first byte of a buffer, or NULL when the buffer is
    --  empty. For an `out` buffer, the caller writes the same expression on
-   --  the formal itself ('Address of the formal). Thus the compiler sees the
+   --  the formal itself ('Address of the formal), so the compiler sees the
    --  buffer as written.
    function Addr (B : Byte_Array) return System.Address is
      (if B'Length = 0 then System.Null_Address else B'Address);
@@ -135,9 +135,9 @@ package body Kome.Crypto with SPARK_Mode => Off is
       C_Blake2b (Digest'Address, Hash_Len, Addr (Data), Len (Data));
    end Blake2b_256;
 
-   --  An axiom (refer to the spec): there is nothing to execute. Under
+   --  An axiom (see the spec): there is nothing to execute. Under
    --  -gnata, the Pre and the Post are evaluated. This checks the axiom on
-   --  the data of the caller.
+   --  the caller's data.
    procedure Lemma_Blake2b_Congruent (A, B : Byte_Array) is null;
 
    procedure Init (Ctx : out Blake2b_Context) is
@@ -205,7 +205,7 @@ package body Kome.Crypto with SPARK_Mode => Off is
 
    --  Strict verification (spec header): first the encoding checks, then
    --  monocypher. S_Below_L repeats the check that crypto_ed25519_check
-   --  enforces. Thus the first conjunct of the Post does not depend on C
+   --  enforces, so the first conjunct of the Post does not depend on C
    --  alone.
    function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean is
      (S_Below_L (Signature)

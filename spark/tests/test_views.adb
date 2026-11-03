@@ -261,8 +261,8 @@ procedure Test_Views with SPARK_Mode => Off is
    end Apply_Data;
 
    --  A complete reconciliation of a list: a refused record is offered
-   --  again (DESIGN.md §4). Thus apply in passes until no new record is
-   --  held.
+   --  again (DESIGN.md §4), so Run applies it in passes until no new record
+   --  is held.
    function Run (L : Header_List) return State is
       S        : State := New_State;
       Progress : Boolean := True;
@@ -287,7 +287,7 @@ procedure Test_Views with SPARK_Mode => Off is
    procedure Run_All;
 
    --  A State has a Register_File of Writers_Max keys (256 KiB). Under
-   --  -gnata, each Post evaluation copies states. Thus the checks run in a
+   --  -gnata, each Post evaluation copies states, so the checks run in a
    --  task with a large stack.
    task Runner with Storage_Size => 512 * 1024 * 1024;
 
@@ -461,7 +461,7 @@ procedure Test_Views with SPARK_Mode => Off is
       Def_Lemmas (S, Void_Probes);
 
       --  D2: a certified root cannot root-void a key, and the founding key
-      --  is never root_void. Thus, if a founding roster is held, ROSTER_eff
+      --  is never root_void, so if a founding roster is held, ROSTER_eff
       --  is always present.
       declare
          T : State := S;

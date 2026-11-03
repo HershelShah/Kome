@@ -31,8 +31,8 @@
 --            [127 .. 127] of 127, 31 for [1 .. 96] of 127, 64 for
 --            [33 .. 96] of 150; one Sub);
 --          * the bound Range_Cost <= 64 on each range of each list.
---        The reported counts are out values. Thus these checks test the
---        counters of the body and the formula, not the Add calls actually
+--        The reported counts are out values, so these checks test the
+--        body's counters and the formula, not the Add calls actually
 --        made. A body that ignored P and set the counts from Range_Cost
 --        would pass them (the spec header records this limit).
 --    (h) Models: a running state carried through adds, removals and a
@@ -375,11 +375,10 @@ procedure Test_Digest with SPARK_Mode => Off is
                 and then Fingerprint (P1) /= Fingerprint (P2));
       end;
 
-      --  The documented contract (header): the state does not hold R. Thus
+      --  The documented contract (header): the state does not hold R, so
       --  the removal of a non-member, or a second add of a member, returns
       --  D_OK and applies the arithmetic. The result is not the state of
-      --  any set. Only the Models discipline of the caller guards against
-      --  this.
+      --  any set. Only the caller's Models discipline guards against this.
       declare
          P3 : Digest_State := Fold ([A]);
       begin
@@ -416,7 +415,7 @@ procedure Test_Digest with SPARK_Mode => Off is
          V => (T => T, Author => K (A), Seq => 1, H => H (Hh)),
          Issuer => Zero_Key, Del_TTL => 0);
 
-      --  The roster of the founding key (V = (ceiling_t, signer, gen, h))
+      --  The founding key's roster (V = (ceiling_t, signer, gen, h))
       --  and its GRANTs (V = (0, subject, 0, h)) to the two writers.
       Roster : constant Header :=
         (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
@@ -525,7 +524,7 @@ procedure Test_Digest with SPARK_Mode => Off is
      (if Hi < Lo then Zero else Sum (Digest_Of (L (Lo .. Hi))));
 
    --  The expected number of Add calls for an end X of an N-element list,
-   --  computed here independently of the formula of the spec. It is the
+   --  computed here independently of the spec's formula. It is the
    --  distance from X to the block boundary below it, or to the stored
    --  point above it (the next block boundary, or N where P_end is
    --  stored). The nearer of the two applies.
@@ -793,7 +792,7 @@ procedure Test_Digest with SPARK_Mode => Off is
    ---------------------------------------------------------------------------
 
    --  To get to |R| = Elem_Max (2^20) by adds would take more than an
-   --  hour under -gnata (about 5 ms for each Add_Record, measured). Thus
+   --  hour under -gnata (about 5 ms for each Add_Record, measured), so
    --  the test restores the full state from its count and sum.
    procedure Capacity is
       A    : constant Key256 := H (1);
@@ -847,7 +846,7 @@ procedure Test_Digest with SPARK_Mode => Off is
 
 begin
    --  A Kome.Frontier.State carries a register file of Writers_Max keys.
-   --  Under -gnata, each Post evaluation copies states. Thus the checks run
+   --  Under -gnata, each Post evaluation copies states, so the checks run
    --  in a task with a large stack (as in test_frontier). The block waits
    --  for the task.
    declare

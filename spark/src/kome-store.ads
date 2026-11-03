@@ -9,14 +9,14 @@
 --
 --  F is a parameter and not a component of Store, for these reasons:
 --    * Frontier.Unchanged is the only comparison of two States. When F is
---      beside the Store, the state of the Store stays small.
---    * Compact takes F in mode `in`. Thus flow analysis alone proves that
+--      beside the Store, the Store's state stays small.
+--    * Compact takes F in mode `in`, so flow analysis alone proves that
 --      Compact does not change the frontier.
 --    * gnatprove 14 crashed on a Frontier.State record component when
 --      Frontier.State had a Dynamic_Predicate. (CONVENTIONS.md forbids
 --      that predicate.)
 --  No operation has to restore a state. Put_Frame and Expire find each
---  refusal before they change F. Thus a refused call changes neither S
+--  refusal before they change F, so a refused call changes neither S
 --  nor F.
 --
 --  The log (D9, DESIGN.md §7) is a journal. All integers are big-endian:
@@ -30,7 +30,7 @@
 --
 --  The HEADER is the first entry, and the log has exactly one HEADER. Its
 --  ns is BLAKE2b-256 (root_pk ‖ salt)[0:16], which fixes the founding key.
---  Its capacities are the capacities of the last open of the store (see
+--  Its capacities are those of the store's last open (see
 --  Capacities below). A frame is tag ‖ content ‖ sig, exactly as
 --  Kome.Records encodes it. The horizon u48 2**48 - 1 encodes "no
 --  horizon" (a lowered horizon below 0). A real horizon is
@@ -47,13 +47,13 @@
 --      and renames it.
 --  The invariant states that the log is a chain of entries from offset 0
 --  to its length (Log_Entries, Entry_Start, Lemma_Scan). The first entry
---  is the HEADER. Thus a scan of the log can open a replica again. Each
+--  is the HEADER, so a scan of the log can open a replica again. Each
 --  index entry points to one of the APPLY entries of the log.
 --
 --  The index is F exactly (D9). A record is held iff it has an index
 --  entry. The entries are distinct, and the APPLY of each entry contains
 --  its frame. The index capacity covers F (S.Cap >= F.Cap + Signers_Max *
---  F.Slice, the precondition of Open). Thus the index itself never causes
+--  F.Slice, the precondition of Open), so the index itself never causes
 --  a refusal.
 --
 --  Order of operations (D11, E1, E2; DESIGN.md §7) for a decoded, verified
@@ -84,7 +84,7 @@
 --  from the index. A lower horizon only lowers the horizon of the store,
 --  so fewer arriving DELs expire on arrival.
 --  Expire logs EXPIRE iff the call removed a record or lowered the
---  horizon. Thus periodic calls do not make the log larger. If a raise
+--  horizon, so periodic calls do not make the log larger. If a raise
 --  removed nothing, the store keeps the new horizon only in memory.
 --  Compact makes it durable.
 --
@@ -122,10 +122,10 @@
 --  states Logged_Cap (S) = F.Cap and Logged_Slice (S) = F.Slice). A store
 --  that opens again with larger capacities can hold more than the old
 --  HEADER allows. Then a replay of its log at the logged capacities would
---  fail. Thus Open_From_Log writes the capacities of this open into the
---  HEADER (the six bytes data_cap ‖ slice) and keeps all other bytes. The
---  log is equal to the input byte for byte iff the capacities are the
---  logged capacities.
+--  fail. To prevent this, Open_From_Log writes the capacities of this
+--  open into the HEADER (the six bytes data_cap ‖ slice) and keeps all
+--  other bytes. The log is equal to the input byte for byte iff the
+--  capacities are the logged capacities.
 --  Caution: if a log opens again with larger capacities, a file binding
 --  must persist those six bytes before it appends to the log. Use an
 --  in-place write of bytes 74 .. 79, or write a new file and rename it.
@@ -133,7 +133,7 @@
 --
 --  Footprint (for a file binding): Open_From_Log replays against a copy
 --  of its input (the image with the new capacities). Compact copies the
---  full log buffer before it writes the log again. Thus each of the two
+--  full log buffer before it writes the log again, so each of the two
 --  needs stack or memory for one more log image (up to Log_Max bytes).
 --  For this reason, the test main runs in a task with a large stack.
 --
@@ -176,7 +176,7 @@
 --  each entry decodes to the header of the entry. The header contains h,
 --  a BLAKE2b hash of the content of the frame. gnatprove 14 has no
 --  extensionality for arrays. Kome.Crypto.Blake2b_256 is a function of the
---  full array value. Thus gnatprove does not know that two byte arrays
+--  full array value, so gnatprove does not know that two byte arrays
 --  with equal elements have equal headers. Examples of such arrays are the
 --  frame given to Put_Frame, its copy in the log and its copy after
 --  Compact. To keep this fact in the invariant, the proof needs
@@ -621,7 +621,7 @@ package Kome.Store with SPARK_Mode is
    --  A new store for the collection of (Root_PK, Salt), beside the empty
    --  lattice state F (Frontier.Empty (ns, To_Key256 (Root_PK), Cap,
    --  Slice)). It writes the HEADER with the capacities of F. The
-   --  precondition connects F to the founding key. Thus the decoder, the
+   --  precondition connects F to the founding key, so the decoder, the
    --  capacity rows and root_void agree on the founding key (DESIGN.md §7
    --  step 0, and E6 of §1).
    procedure Open (Root_PK : Pubkey; Salt : Kome.Salt; F : Frontier.State; S : out Store) with
@@ -850,9 +850,8 @@ package Kome.Store with SPARK_Mode is
    --  an entry, because Put_Frame logs APPLY_EXPIRED only when it drops a
    --  record.
    --  On OK, the pair is Valid and the horizon is the last logged horizon.
-   --  The log is the input with the capacities of F in the HEADER. Thus
-   --  the log is the input itself if the HEADER already had the capacities
-   --  of F.
+   --  The log is the input with the capacities of F in the HEADER. If the
+   --  HEADER already had the capacities of F, the log is the input itself.
    procedure Open_From_Log
      (Input  : in     Byte_Array;
       F      :    out Frontier.State;
@@ -1040,7 +1039,7 @@ private
    type Offset_Array is array (Positive range <>) of Log_Size;
 
    --  No Dynamic_Predicate: the bounds of the counters are part of Valid,
-   --  and the accessors clamp. Thus clients can assign a Store.
+   --  and the accessors clamp, so clients can assign a Store.
    type Store (Cap : Held_Count; Log_Cap : Log_Size) is record
       NS   : Id128;
       NSb  : NS_Id         := [others => 0];   --  ns as bytes, for the HEADER
@@ -1084,9 +1083,9 @@ private
         when K_Grant  => Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
 
    ---------------------------------------------------------------------------
-   --  The invariant, in parts over explicit components. Thus each step of
-   --  an operation can make one part true again at a time. Their Posts
-   --  define the quantified parts (not expression functions). Thus a goal
+   --  The invariant, in parts over explicit components, so that each step
+   --  of an operation can make one part true again at a time. Their Posts
+   --  define the quantified parts (not expression functions), so a goal
    --  that only carries one part along sees one atom.
    ---------------------------------------------------------------------------
 
@@ -1127,7 +1126,7 @@ private
       else 0);
 
    --  The APPLY of entry E is in Log (0 .. LL - 1), after the HEADER. Its
-   --  Post defines it. Thus a goal about one entry keeps the atom on which
+   --  Post defines it, so a goal about one entry keeps the atom on which
    --  the prover instantiates the quantifier of Framed.
    function Frame_OK (Log : Byte_Array; LL : Log_Size; E : Index_Entry) return Boolean
    with
@@ -1204,7 +1203,7 @@ private
                     and then Bnd (K) + Size_At (Log, Bnd (K)) =
                                (if K < NB then Bnd (K + 1) else LL)));
 
-   --  The APPLY of each entry is one of the entries of the chain.
+   --  Each entry's APPLY is one of the chain's entries.
    function At_Bounds (Idx : Entry_Array; N : Held_Count; Bnd : Offset_Array; NB : Natural)
      return Boolean
    with
@@ -1217,8 +1216,8 @@ private
    --  The HEADER of the collection NSb of (Root, Slt) with the logged
    --  capacities DCap and Slc is Log (0 .. Header_Len - 1). (The store
    --  keeps ns as bytes beside Root and Slt. BLAKE2b is opaque, so the
-   --  prover does not know that Collection_Id of a copy of Root is
-   --  Collection_Id of Root. But the prover knows that two byte arrays with
+   --  prover does not know that a copy of Root has the same Collection_Id
+   --  as Root. But the prover knows that two byte arrays with
    --  equal elements are equal.)
    function Head_OK
      (Log : Byte_Array; LL : Log_Size; NSb : NS_Id; Root : Pubkey; Slt : Salt;

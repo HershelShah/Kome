@@ -4,7 +4,7 @@ package body Kome.Views with SPARK_Mode is
    --  Each view scans the held array for a maximal witness (or for one
    --  witness). The scans return an index (0 for none), so that the lemmas
    --  below can name the witness. The public views are expression functions
-   --  over the index. Thus in this body the prover sees their definitions,
+   --  over the index, so in this body the prover sees their definitions,
    --  and outside it they are opaque (Lemma_<View>_Def).
 
    ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ package body Kome.Views with SPARK_Mode is
    --  Views
    ---------------------------------------------------------------------------
 
-   --  Each scan runs one time (a declare expression binds its index).
+   --  Each scan runs once (a declare expression binds its index).
    function Cell (S : State; NS, Ent : Id128; FH : Key256) return Header_View is
      (declare
         I : constant Held_Count := Find_Put (S, NS, Ent, FH);
@@ -555,7 +555,7 @@ package body Kome.Views with SPARK_Mode is
         (for all I in 1 .. Count (S2) =>
            (if Is_Data (Held (S2, I)) then Holds (S1, Held (S2, I))));
 
-      --  deleted_at: the other side holds each maximum. Thus no version is
+      --  deleted_at: the other side holds each maximum. Neither version is
       --  below the other, so they are equal.
       declare
          I1 : constant Held_Count := Find_Del (S1, NS, Ent);
@@ -810,9 +810,8 @@ package body Kome.Views with SPARK_Mode is
         (for all I in 1 .. Count (S2) =>
            (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
 
-      --  The result of each side is held and eligible on the other side.
-      --  Thus it makes the other side present, and no roster beats it
-      --  there.
+      --  The result of each side is held and eligible on the other side, so
+      --  it makes the other side present, and no roster beats it there.
       if I1 /= 0 then
          declare
             X : constant Header := Held (S1, I1);
@@ -896,7 +895,7 @@ package body Kome.Views with SPARK_Mode is
 
    procedure Lemma_Apply_Auth_Local (Before, After : State; R : Header) is
    begin
-      --  After ⊆ Before ∪ {R}, and R is not data. Thus Before holds each
+      --  After ⊆ Before ∪ {R}, and R is not data, so Before holds each
       --  data record of After.
       pragma Assert
         (for all I in 1 .. Count (After) =>

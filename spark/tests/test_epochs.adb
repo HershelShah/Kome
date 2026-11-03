@@ -89,7 +89,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
 
    ---------------------------------------------------------------------------
    --  Independent computations from Kome.Crypto primitives and literal
-   --  labels (not the constants of the package). The tests use them to
+   --  labels (not the package's constants). The tests use them to
    --  check the intermediate values of the vectors and to forge boxes for
    --  the refusal tests.
    ---------------------------------------------------------------------------
@@ -429,8 +429,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
                 N = Nonce_Ref (WK, K_E)
                 and then N = Synthetic_Nonce (Kome.Keys.To_Key256 (WK), K_E));
          --  The Posts of Box_Key and Unbox_Key name a ghost model
-         --  (Wrap_Key_Of over X25519_Shared). It is equal to the wrap key of
-         --  the independent reference, from each side of the exchange. It
+         --  (Wrap_Key_Of over X25519_Shared). It is equal to the independent
+         --  reference's wrap key, from each side of the exchange. It
          --  is ghost, so the test uses an assertion.
          pragma Assert
            (Kome.Keys.To_Key256 (WK)
@@ -452,7 +452,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
                                NS1, E));
 
          --  This box passes the AEAD under the correct wrap key, but its
-         --  nonce is not the synthetic nonce. The nonce check of the member
+         --  nonce is not the synthetic nonce. The member's nonce check
          --  refuses it (D6). Without the check, the box opens.
          declare
             Forged_N : constant Nonce := Pattern (Nonce_Len, 5, 1);
@@ -537,7 +537,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Check ("unbox_tamper_every_byte_fails", Ok);
       end;
 
-      --  Low-order peers, all with reduced encodings (thus the refusal is
+      --  Low-order peers, all with reduced encodings (so the refusal is
       --  for the low order, not for the encoding): u = 0, u = 1, the two
       --  points of order 8 and u = p - 1 (order 2).
       declare
@@ -572,7 +572,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
 
       --  Non-reduced encodings. Member_PK with bit 255 set is the same
       --  point (X25519 ignores the bit) and gives the same shared secret.
-      --  But the wrap key hashes the bytes. Thus a box sealed to it never
+      --  But the wrap key hashes the bytes, so a box sealed to it never
       --  opens for the member. It is refused. Each u >= p is also refused.
       declare
          Hi_Member : Pubkey := Member_PK;
@@ -614,8 +614,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Unbox_Key (Member_SK, Member_Sig, P2_Enc, NS1, E, N, Sealed, Got, St);
          Check ("unbox_box_pk_u_ge_p_refused",
                 St = Non_Canonical_Peer and then Got = Zero_Key);
-         --  Box_Key accepts what Unbox_Key hashes: the public key of the
-         --  member and box_pk are reduced encodings.
+         --  Box_Key accepts what Unbox_Key hashes: the member's public key
+         --  and box_pk are reduced encodings.
          Check ("x25519_public_is_reduced",
                 Kome.Epochs.Is_Reduced_U (X25519_Public (Member_SK))
                 and then Kome.Epochs.Is_Reduced_U (X25519_Public (Other_SK))

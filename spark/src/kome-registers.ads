@@ -5,9 +5,9 @@
 --  This is a cache, not a second source of truth. maxceil(F) and W(F) are
 --  views of the frontier: the largest ceiling_t of the held rosters, and
 --  the subjects of the held GRANTs. Kome.Frontier keeps a Register_File
---  equal to those views in each state. Its invariant `Coherent` and the
---  lemmas Lemma_Ceil_Bound, Lemma_Ceil_Witness, Lemma_W_Sound and
---  Lemma_W_Complete state this. Thus admission reads them in constant time.
+--  equal to those views in each state, so admission reads them in constant
+--  time. Its invariant `Coherent` and the lemmas Lemma_Ceil_Bound,
+--  Lemma_Ceil_Witness, Lemma_W_Sound and Lemma_W_Complete state this.
 --
 --  Count is the number of DISTINCT writers, and Empty has none. Add_Writer
 --  appends a key only if the key is not already in W, and its Post states

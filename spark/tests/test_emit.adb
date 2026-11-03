@@ -11,7 +11,7 @@
 --  (g) An OK write, applied back to the state, is held (read-your-writes,
 --      T8).
 --  (h) H8 restore/clone detection: seq jumps past a held own record and
---      Clone_Suspected is True. Thus v_emit is never equal to a held
+--      Clone_Suspected is True, so v_emit is never equal to a held
 --      version.
 --  (i) A non-member key is Inadmissible.
 --  (j) In_Floor excludes neighbours.
@@ -93,7 +93,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    Writers : constant Byte_List := [1, 2, 3, 5, 6];
 
    Self : constant Key256 := Key (3);
-   HC   : constant Key256 := Hsh (77);   --  the content hash of the caller
+   HC   : constant Key256 := Hsh (77);   --  the caller's content hash
    --  Two extreme content hashes for the D8 checks.
    H_Lo : constant Key256 := (others => 0);
    H_Hi : constant Key256 := (others => Word'Last);
@@ -189,7 +189,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    end Same_Under_Two_Hashes;
 
    --  A State has a Register_File of Writers_Max keys. Under -gnata, each
-   --  Post evaluation copies states. Thus the checks run in a task with a
+   --  Post evaluation copies states, so the checks run in a task with a
    --  large stack (as in test_frontier).
    procedure Run_All;
 

@@ -4,7 +4,7 @@
 --  A header is a record without its payload. Kome.Store keeps the payload
 --  out of line: the value of a PUT, the member boxes and links of a ROSTER,
 --  the signer block and the field name itself. `dom` never reads them.
---  Each function below is a pure function of header fields. Thus the
+--  Each function below is a pure function of header fields, so the
 --  frontier is a function of the held set and of nothing else (T5).
 --
 --  The header is small and flat by design: one kind tag, the collection,
@@ -20,8 +20,8 @@
 --
 --  If a kind does not use a field, that field is zero. This is the
 --  canonical header (D3). Decode makes it (Kome.Records), and the lattice
---  requires it (the precondition of Kome.Frontier.Apply). Thus record
---  equality is content equality.
+--  requires it (the precondition of Kome.Frontier.Apply). This makes
+--  record equality content equality.
 pragma Ada_2022;
 with Kome.Versions; use Kome.Versions;
 package Kome.Headers with SPARK_Mode, Pure is
@@ -47,7 +47,7 @@ package Kome.Headers with SPARK_Mode, Pure is
 
    function Is_Data (R : Header) return Boolean is (R.K in K_Put | K_Del);
 
-   --  ROSTER, REVOKE and GRANT: the records that the slice of a signer holds
+   --  ROSTER, REVOKE and GRANT: the records that a signer's slice holds
    --  (§7).
    function Is_Auth (R : Header) return Boolean is (not Is_Data (R));
 
@@ -68,7 +68,7 @@ package Kome.Headers with SPARK_Mode, Pure is
    --            (D1′; keyed by (ns, issuer, subject))
    --    REVOKE  no record (so a REVOKE can never be lost)
    --  Collections never mix: a record only dominates in its own ns. Each
-   --  clause implies that the version of the dominator is greater. The
+   --  clause implies that the dominator's version is greater. The
    --  expression has no quantifier, so it can be public at no proof cost to
    --  other units.
    function Dominates (Q, P : Header) return Boolean is

@@ -19,9 +19,9 @@
 --  (T4', Kome.Headers.Lemma_Dominator_Keeps_Registers).
 --
 --  Discard model (DESIGN.md §4, §10 item 1): Apply refuses inadmissible
---  records (Status = Inadmissible) and does not hold them. Thus the held
+--  records (Status = Inadmissible) and does not hold them, so the held
 --  set is bounded. The peer that holds them offers them again, and
---  admission is monotone (T4'). Thus replicas converge (T4).
+--  admission is monotone (T4'), so replicas converge (T4).
 --
 --  Capacity rows (E1, E9; DESIGN.md §7).
 --    * Data records share one row of Cap records.
@@ -29,13 +29,13 @@
 --      records, in one of Signers_Max slots.
 --    * Slot 1 belongs to the founding key from Empty on.
 --    * A certified root gets a slot when its first record is held. The
---      slot is never freed (a record of a signer leaves F only under a
+--      slot is never freed (a signer's record leaves F only under a
 --      different record of the same signer).
---  Each dominator is in the row of the record that it dominates
---  (Kome.Headers.Lemma_Same_Row). Thus one Apply changes exactly one row,
+--  Each dominator is in the same row as the record that it dominates
+--  (Kome.Headers.Lemma_Same_Row), so one Apply changes exactly one row,
 --  and drops records only in that row. A data flood or a stolen root
---  cannot take room from a different row, and the REVOKE of the founding
---  key is always held. A full row refuses with No_Space (data) or
+--  cannot take room from a different row, and the founding key's REVOKE
+--  is always held. A full row refuses with No_Space (data) or
 --  Auth_Full (a slice, or the slot table, or W; E2), and nothing changes.
 --
 --  Order of Apply (D11, DESIGN.md §7): admission, duplicate, domination,
@@ -62,9 +62,9 @@
 --  Dynamic_Predicate, because gnatprove 14 crashes when it sees an
 --  assignment of a State with a predicate. Clients must not assign a State
 --  in proved code. They compare states with the ghost `Unchanged`, not
---  with "=". Thus `Is_Frontier` carries the invariants. Each operation
---  requires and preserves it. The accessors clamp to the discriminants, so
---  they are total on each State.
+--  with "=". `Is_Frontier` carries the invariants in place of a predicate.
+--  Each operation requires and preserves it. The accessors clamp to the
+--  discriminants, so they are total on each State.
 pragma Ada_2022;
 with Kome.Headers;   use Kome.Headers;
 with Kome.Registers; use Kome.Registers;
@@ -118,7 +118,7 @@ package Kome.Frontier with SPARK_Mode is
      Global => null,
      Pre    => K <= Slots_Used (S) and then J <= Slot_Count (S, K);
 
-   --  The slot of a signer: 0 if no used slot has that key.
+   --  A signer's slot: 0 if no used slot has that key.
    function Slot_Of (S : State; Key : Key256) return Slot_Number with
      Global => null,
      Post   => (if Slot_Of'Result = 0
@@ -216,7 +216,7 @@ package Kome.Frontier with SPARK_Mode is
 
    --  Apply one record (DESIGN.md §7 steps 1-6).
    --    * OK means that R is held, now or before. A duplicate is a no-op
-   --      and also gives OK. Thus to apply a set with repetitions is to
+   --      and also gives OK, so to apply a set with repetitions is to
    --      apply the set.
    --    * Dominated means that a held record beats R.
    --    * Inadmissible, No_Space and Auth_Full are refusals.
@@ -248,7 +248,7 @@ package Kome.Frontier with SPARK_Mode is
                 = (Is_Auth (R) and then not Holds (S'Old, R)
                    and then not Dom (S'Old, R)
                    and then
-                     --  (a) the slice of the signer is full, R frees no room
+                     --  (a) the signer's slice is full, R frees no room
                      ((Slot_Of (S'Old, R.Issuer) /= 0
                        and then Slot_Count (S'Old, Slot_Of (S'Old, R.Issuer)) = S.Slice
                        and then not Drops_Any (S'Old, R))
@@ -375,7 +375,7 @@ package Kome.Frontier with SPARK_Mode is
                             = Auth_Held (S, Slot_At (S, I),
                                          I - Data_Count (S) - Off (S, Slot_At (S, I))));
 
-   --  The shape of the rows and slots of a frontier.
+   --  The shape of a frontier's rows and slots.
    procedure Lemma_Frontier_Shape (S : State) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S),
@@ -510,7 +510,7 @@ private
    --    * the signer of each slot (Keys);
    --    * the number of used slots;
    --    * the offsets of the flat view, and the total.
-   --  They are a separate record. Thus an operation on the data row keeps
+   --  They are a separate record, so an operation on the data row keeps
    --  this component equal as a whole (then the prover needs no frame
    --  lemma).
    type Auth_Rows (Slice : Slice_Count) is record
@@ -527,8 +527,8 @@ private
      (if A.NA (K) <= A.Slice then A.NA (K) else A.Slice);
 
    --  Each discriminant is alone in a component constraint (RM 3.8(12)).
-   --  For this reason, the authorization records are a matrix of
-   --  Signers_Max rows of Slice, not part of one array with the data.
+   --  For this reason, the authorization records are a matrix with
+   --  Signers_Max rows of Slice records, not part of one array with the data.
    type State (Cap : Data_Size; Slice : Slice_Count) is record
       NS     : Id128;
       Fnd    : Key256;

@@ -2,8 +2,8 @@
 
 Kome is a private replication engine for records, for example contacts,
 notes, inventories, settings and small shared lists. It works offline first
-and needs no server. The devices of a person sync directly with each other
-and with contacts that the person trusts explicitly. There is no central
+and needs no server. A person's devices sync directly with each other and
+with contacts that the person trusts explicitly. There is no central
 server, all content has end-to-end encryption, and the membership can change.
 
 The work starts with the design and the proofs. The code comes after them:
@@ -17,13 +17,13 @@ The work starts with the design and the proofs. The code comes after them:
 
 ## The design in one paragraph
 
-Every change is a small signed record. The state of a replica is a set of
+Every change is a small signed record. A replica's state is a set of
 records. To merge two replicas, take the set union, then drop every record
 that a newer record *dominates* under a single strict total order. The set
 that remains is the *frontier*, and it is the full state. There is no
 history, no vector clock and no per-peer bookkeeping.
 
-A deletion is a record that dominates every field of its entity. Thus a
+A deletion is a record that dominates every field of its entity. So a
 deletion frees bytes on every replica, with no membership knowledge and no
 clock. Some rules look like policy: who can write, how far into the future a
 clock can claim to be, and who is revoked. Each of these rules is a
@@ -47,7 +47,7 @@ nixpkgs.pin           the pinned nixpkgs revision both toolchains come from
 ## Build and check
 
 If a toolchain is not on the path, the scripts get it from the pinned
-nixpkgs revision (`nixpkgs.pin`). Thus a machine with Nix needs nothing else.
+nixpkgs revision (`nixpkgs.pin`). So a machine with Nix needs nothing else.
 
 ```bash
 ./lean/build.sh            # machine-check every theorem (Lean 4.35.0 with lake)
@@ -95,7 +95,7 @@ No package uses `pragma Assume`, `pragma Annotate` or justified checks.
 | `Kome.Epochs` | T14 (paper) | `Derive` and the chain lemmas. Fixed-length boxes whose wrap key covers ns and the epoch, with the synthetic nonce in the Post. Segment links. Non-canonical and low-order peers are refused | 69 PASS | 220 | 0 |
 
 Lean proves the theorems about the functions. SPARK proves the same facts
-about the code. Neither tool does the work of the other tool. The remaining
+about the code. Neither tool does the other's work. The remaining
 parts of the design (`Kome.Roster`, the transports, the C ABI, extension F)
 will use the same pattern, with one package for each part. They will come in
 the order that `docs/design/DESIGN.md` §10 gives.

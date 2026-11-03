@@ -541,7 +541,7 @@ package body Kome.Records with SPARK_Mode is
 
    --  E agrees with Frame (shifted to 'First = 0) on Lo .. Hi. The caller
    --  gives E as an argument, so a run-time check under -gnata encodes only
-   --  one time.
+   --  once.
    function Same_At (Frame, E : Byte_Array; Lo, Hi : Natural) return Boolean is
      (for all J in Lo .. Hi => E (J) = Frame (Frame'First + J))
    with Ghost,
