@@ -60,9 +60,11 @@ PROVE=0 ./spark/check.sh all   # tests only
 provers. It fails if a module has an unproved check, except for the modules
 in the `PROOF_WIP` list. By default that list is empty. Today no module needs
 it, because every module proves with 0 unproved checks. `PROOF_WIP=""` also
-gives an empty list. On every push, CI (`.github/workflows/ci.yml`) builds
-the Lean model. It also runs `spark/check.sh <module>` for every module, as
-parallel jobs.
+gives an empty list. CI (`.github/workflows/ci.yml`) runs every night and
+on demand, because the full proof takes about an hour. It builds the Lean
+model and runs `spark/check.sh <module>` for every module, as parallel jobs.
+Before you push, run `PROVE=0 ./spark/check.sh all` and the proof of each
+module that you changed.
 
 ## How the SPARK code relates to the Lean proofs
 

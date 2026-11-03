@@ -1,9 +1,12 @@
 name: ci
 
+# The full proof takes about an hour, so CI runs nightly and on demand
+# (Actions > ci > Run workflow), not on every push. GitHub runs scheduled
+# workflows on the default branch only.
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
