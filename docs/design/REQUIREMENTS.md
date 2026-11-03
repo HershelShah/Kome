@@ -1,8 +1,7 @@
 # Kome redesign: the problem, the constraints, the scoring
 
-This is the specification a ground-up redesign must satisfy. It is deliberately
-about the problem, not the current code. The current engine is one candidate
-solution and is allowed to lose.
+This is the specification the design must satisfy. It is about the problem,
+not about any implementation.
 
 ## 1. The problem
 
@@ -39,7 +38,7 @@ H5. **Bounded everything**: every value, key, message, and metadata item has an
     explicit bound; the state model must be expressible in a bounded,
     pointer-free language (SPARK) and its properties in Lean.
 H6. **No reserved values and no derived invariants**: illegal states must be
-    unrepresentable in the data model (no `{0,0}` sentinels, no "asserted iff
+    unrepresentable in the data model (no sentinel values, no "asserted iff
     nonzero", no counter whose wrap means something).
 H7. **Deletion that does not grow forever**: deleting records must eventually
     free space on every replica, without a membership oracle, while still
@@ -50,17 +49,22 @@ H8. **Authorized writers can misbehave**: a device with write access may be
     of these can do, and it must be bounded and recoverable; no single record
     may permanently brick a collection or another writer's future writes.
 
-## 3. Lessons from the current engine (what the redesign must make impossible)
+## 3. Failure classes the design must make impossible
 
-| Incident | Root cause class |
-|---|---|
-| Causal-length counter saturation: one record pins an entity forever | unbounded counter with semantics at its max |
-| Same-author same-clock existence equivocation diverges (T-EQUIV) | merge order not total over the element |
-| `{0,0}` existence record accepted; exists/digest/snapshot/load disagreed | sentinel-encoded invariant, four derivations of one fact |
-| uint32 logical wrap mints the sentinel; truncating restore; sign-converted clock | fixed-width arithmetic at a boundary with reserved meaning |
-| Far-future HLC pins a cell against all honest writers (documented, unfixed) | LWW trusts a writer-chosen timestamp |
-| Digest depended on map keys, not on the replicated element set | digest defined separately from the sync fingerprint |
-| Revocation seen on one side only makes record sets differ | authorization as an accept/reject gate is non-monotone |
+- An unbounded counter with meaning at its maximum (one record pins an
+  entity forever).
+- A merge order that is not total over the element (replicas diverge on
+  ties).
+- One fact derived in several places (existence, digest, snapshot and load
+  disagree).
+- Fixed-width arithmetic at a boundary with reserved meaning (a wrap mints a
+  sentinel; truncation on restore).
+- Last-writer-wins on a writer-chosen timestamp (a far-future clock pins a
+  cell against every honest writer).
+- A digest defined separately from the sync fingerprint (equal element sets
+  with different digests).
+- Authorization as a non-monotone accept/reject gate (a revocation seen on
+  one side only makes the record sets differ).
 
 ## 4. Scoring criteria (each 0–5, with a one-line justification)
 

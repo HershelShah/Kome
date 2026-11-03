@@ -16,7 +16,7 @@ that are tested rather than proved are listed under Known gaps.
 
 | Phase | Packages | DESIGN.md | Lean | State |
 |---|---|---|---|---|
-| 0 | `Kome` (bounds, status), `Kome.Byteorder` | §2 bounds | — | done. Byteorder: @BYTEORDER@ |
+| 0 | `Kome` (bounds, status), `Kome.Byteorder` (little-endian u64, D7) | §2 bounds, §8 | — | done. Byteorder: @BYTEORDER@ |
 | 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` (per-signer authorization slices, `Expire`) | §2, §3, §4, §7 | T1, T2', T4', T11 | done. Versions: @VERSIONS@. Headers: @HEADERS@. Registers: @REGISTERS@. Frontier: @FRONTIER@ |
 | 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding, RFC 8032 Ed25519), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness) | §2 | T13 | done. Keys: @KEYS@. Crypto: @CRYPTO@ (spec only; the bodies are `SPARK_Mode Off`). Records: @RECORDS@ |
 | 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first, expiry at `Horizon_At`) | §7 | T11, T18 | done. @STORE@ |

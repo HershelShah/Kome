@@ -848,12 +848,12 @@ computed with two accumulators, `Plus = P(A(b)) + fwd(b) + bwd(a)` and
 `Minus = P(A(a)) + bwd(b) + fwd(a)`, and one subtraction `Plus − Minus`: at
 most 64 big-integer additions and exactly one subtraction, for every range
 including those that end in the tail. That is 8
-bytes amortized per element, and the snapshot cache the current engine's
-performance work depends on survives. The implementer judge preferred this to
+bytes amortized per element, and a snapshot cache of the prefix sums
+stays valid between sessions. The implementer judge preferred this to
 the per-session keyed sum of C and D, which forces O(n) hashing per session;
 the attacker judge accepted its security: a k-sum attack on a 4096-bit modulus
-costs about 2^128 and needs 2^64 inserted records. The current 256-bit sum is
-breakable in about 2^32 by a member, which is why the size changes.
+costs about 2^128 and needs 2^64 inserted records. A 256-bit sum would be
+breakable in about 2^32 by a member, which is why the sum is 4096 bits.
 
 **Messages.** All integers big-endian; `g` is the size of the reply group a
 message belongs to (0 only for a root `RANGE`).
@@ -1147,12 +1147,11 @@ convergence.**
    honest room but strengthens no guarantee, and the right bound depends on
    the application. A per-author byte quota in the roster, enforced by the
    application, would not touch the lattice.
-6. **The C ABI.** The implementer judge estimates about 70% of the current
-   `sync_engine.h` keeps its shape (`set/get/delete/exists/scan/session_*`);
-   `grant/revoke/capability_*` become `GRANT`, `REVOKE` and roster
-   operations; `sync_engine_digest` keeps its contract and gains the "digest
-   equals fingerprint" guarantee; `CLONE_SUSPECTED` is an out flag beside the
-   status, and `AUTH_FULL` is a new status.
+6. **The C ABI.** Not designed yet. Its shape follows from the packages:
+   `set/get/delete/exists/scan` over records, `GRANT`, `REVOKE` and roster
+   operations, `session_*` over Kome.Reconcile, and a digest whose value
+   equals the sync fingerprint. Statuses are Kome's `Status`, including
+   `AUTH_FULL`; `CLONE_SUSPECTED` is an out flag beside the status.
 7. **Phase 2: typed fields.** Candidate F is specified and composes; build
    it after the round-three model and T7 are proved, when an application
    asks for engine-side counters or sets. Estimated at about 7.5
