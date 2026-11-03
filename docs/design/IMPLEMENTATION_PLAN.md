@@ -12,7 +12,7 @@ when these conditions are true:
 
 ## Phases
 
-The counts come from CI. On every push, CI runs `spark/check.sh <module>`
+The counts come from CI. Every night, CI runs `spark/check.sh <module>`
 for every module from a clean checkout (gnatprove 14, `--level=3`, cvc5 and
 z3). No package uses `pragma Assume`, `pragma Annotate` or justified checks,
 and `PROOF_WIP` is empty. "Proved" means 0 unproved checks. Known gaps lists
