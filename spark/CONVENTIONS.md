@@ -25,7 +25,7 @@ them).
 
 - One DESIGN.md concept = one child package `Kome.<Name>` in
   `kome-<name>.ads` / `kome-<name>.adb`. Helper children are allowed
-  (`Kome.Store.Frames`, file `kome-store-frames.ads`).
+  (`Kome.<Name>.<Part>`, file `kome-<name>-<part>.ads`).
 - One test main per package that has behaviour: `tests/test_<name>.adb`,
   procedure `Test_<Name>`. It prints `PASS <check>` / `FAIL <check>` per
   check and ends with `Set_Exit_Status (Failure)` if anything failed. No test
@@ -34,8 +34,9 @@ them).
   data; a lemma whose proof is still open is at least checked on examples.
 - Known-answer vectors go in `vectors/<name>.txt`, one per line, hex fields
   separated by spaces, `#` comments allowed. For standard algorithms
-  (SHA-256, BLAKE2b, Ed25519) the vectors come from the published test suites
-  and say so in the header comment.
+  (BLAKE2b, Ed25519, X25519) the vectors come from published test suites
+  or from an implementation independent of monocypher, and the header
+  comment says which.
 - Build, run and prove with `spark/check.sh <name>`; `check.sh all` does every
   module. It fetches GNAT 14, gprbuild, gnatprove and the provers from
   nixpkgs when they are not on the path.
@@ -55,7 +56,8 @@ them).
 - Semantic integers are *range* types (`U48`, `Epoch`, counts), never
   modular, so every overflow is a proof obligation and no value is reserved
   (H6). Modular types exist only for wire encoding and hashing
-  (`Kome.Byteorder`, `Kome.SHA256`), where wrap is the intended semantics.
+  (`Kome.Byteorder`, `Kome.Accumulator`, `Kome.Digest`), where wrap is the
+  intended semantics.
 - An operation that could exceed a bound refuses with a `Status` and leaves
   the state unchanged, and its `Post` says so (T13). Nothing saturates
   silently.
@@ -63,9 +65,8 @@ them).
   Algebraic laws are ghost lemma procedures named `Lemma_<Law>` with the law
   as `Post`; their bodies are proofs (calls to other lemmas, loops with
   invariants, asserts), not code.
-- Keep the prover's view small, and keep equality logical. Two things
-  made the frontier proof intractable until they were removed, and both
-  are now rules:
+- Keep the prover's view small, and keep equality logical. Without these
+  two rules the frontier proof does not go through:
   1. In the lattice, identifiers and keys are records of fixed words
      (`Id128`, `Key256`), never byte arrays. Ada equality on a record that
      contains an array is not logical equality for the prover, so it
@@ -92,7 +93,7 @@ them).
 - `Global`/`Depends` on anything that touches a file or a clock, so flow
   analysis can prove "open never writes".
 
-## Proof hygiene learned in round three
+## Proof hygiene
 
 - "Private" in rule 2 means completed in the body. In gnatprove 14 an
   expression function completed in the private part is visible to clients,
@@ -110,7 +111,8 @@ them).
   object's counts, never by a whole index type. To make a relation hold,
   call a lemma (`Lemma_Unchanged_Refl`), not real code.
   `Assertion_Policy (... => Ignore)` is only for proved steps that would
-  make a test quadratic. List each such region in `IMPLEMENTATION_PLAN.md`.
+  make a test quadratic. List each such region in
+  `docs/design/IMPLEMENTATION_PLAN.md`.
 - gnatprove has no extensionality for the array argument of a function.
   For element-wise equal inputs to have equal results, an imported function
   needs a congruence axiom (`Kome.Crypto.Lemma_Blake2b_Congruent`), and each
@@ -130,6 +132,4 @@ them).
 ## Cryptography
 
 `Kome.Crypto` binds monocypher (Ed25519, X25519, BLAKE2b,
-ChaCha20-Poly1305). Do not reimplement them. SHA-256 is implemented in SPARK
-(`Kome.SHA256`) because the design's fixed primitive set includes it and the
-previous engine shipped a tested implementation.
+XChaCha20-Poly1305). Do not reimplement them.

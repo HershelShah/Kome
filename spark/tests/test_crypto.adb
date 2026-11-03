@@ -142,7 +142,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
    end Not_A_Sig;
 
    ---------------------------------------------------------------------------
-   --  Named answers from the brief
+   --  Named answers
    ---------------------------------------------------------------------------
 
    --  python3 -c "import hashlib; print(hashlib.blake2b(b'', digest_size=32).hexdigest())"
@@ -219,9 +219,9 @@ procedure Test_Crypto with SPARK_Mode => Off is
              and then Is_Canonical_Point (RFC_Sig (0 .. 31))
              and then Is_Canonical_Point (RFC_Pub));
 
-      --  REGRESSION (the open major "BLAKE2b-EdDSA vs Ed25519"): the old
-      --  BLAKE2b-EdDSA public key is no longer derived from the TEST 1
-      --  seed, and its signature is rejected under the old and the new key.
+      --  REGRESSION (D4: Ed25519, not BLAKE2b-EdDSA): the BLAKE2b-EdDSA
+      --  public key is not derived from the TEST 1 seed, and its signature
+      --  is rejected under both the BLAKE2b-EdDSA and the Ed25519 key.
       Check ("b2eddsa_rfc8032_t1_public_no_longer_derived", PK /= B2_Pub);
       Check ("b2eddsa_rfc8032_t1_old_sig_rejected",
              not Verify (B2_Sig, B2_Pub, Empty)

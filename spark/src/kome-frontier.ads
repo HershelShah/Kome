@@ -69,9 +69,9 @@ package Kome.Frontier with SPARK_Mode is
 
    type Header_Array is array (Held_Index range <>) of Header;
 
-   --  (The work order's subtype names Data_Count and Slot_Count are taken by
-   --  the functions of the same names; Ada does not overload a subtype with
-   --  a function, so the subtypes are Data_Size and Slot_Number.)
+   --  (Not named Data_Count and Slot_Count: those are the accessor
+   --  functions below, and Ada does not overload a subtype with a
+   --  function.)
    subtype Data_Size   is Natural range 0 .. Held_Max;
    subtype Slice_Count is Natural range 0 .. Slice_Max;
    subtype Slot_Index  is Positive range 1 .. Signers_Max;

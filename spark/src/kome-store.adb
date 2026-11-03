@@ -2174,7 +2174,7 @@ package body Kome.Store with SPARK_Mode is
          Lemma_Valid_Unchanged (S, Saved_F, F);
          Result := St;
       elsif not Drops_Any (F, H) then
-         Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+         Lemma_Unchanged_Refl (F);   --  drops nothing: OK, F is untouched
          Result := OK;
       elsif Short then
          Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched

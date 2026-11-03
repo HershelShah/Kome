@@ -212,7 +212,6 @@ package Kome.Reconcile with SPARK_Mode is
    --  ROSTER 0, REVOKE 1, GRANT 2, DEL 3, PUT 4); range bounds may use any
    --  byte, so Max_Key (kind 255) is above every element.
    type Kind_Code is range 0 .. 255 with Size => 8;
-   subtype Elem_Kind is Kind_Code range 0 .. 4;
 
    type Elem_Key is record
       K   : Kind_Code := 0;
@@ -223,8 +222,6 @@ package Kome.Reconcile with SPARK_Mode is
 
    Key_Wire_Len : constant := 1 + 16 + 32 + 32;   --  81
 
-   --  Unsigned big-endian order on an Id128 (Kome.Keys owns it).
-   function Id_Lt (A, B : Id128) return Boolean renames Kome.Keys.Id_Lt;
 
    --  kind ‖ ent ‖ fh ‖ h compared bytewise.
    function Key_Lt (A, B : Elem_Key) return Boolean is
@@ -635,7 +632,8 @@ package Kome.Reconcile with SPARK_Mode is
                and then (N < 4 or else Items (4) <= Count (S));
 
    --  A plan refers to real elements, has a proper range, and ELEMENTS
-   --  lists at most Ship_Threshold. Quantified (HAVE), so opaque.
+   --  lists at most Ship_Threshold. Quantified (HAVE), so completed in the
+   --  private part.
    function Plan_Shape (S : Snapshot; P : Plan) return Boolean with
      Global => null,
      Post   => (if Plan_Shape'Result then
@@ -680,7 +678,7 @@ package Kome.Reconcile with SPARK_Mode is
    function Group (O : Outbox) return Group_Size is
      (if O.Reply then O.N else 0);
 
-   --  Every plan is Plan_OK. Opaque (quantified).
+   --  Every plan is Plan_OK. Quantified, so completed in the private part.
    function Outbox_OK (S : Snapshot; O : Outbox) return Boolean with
      Global => null;
 
@@ -696,7 +694,7 @@ package Kome.Reconcile with SPARK_Mode is
      Global => null;
 
    --  Every plan of O is of kind K (so a reply of one kind never mixes in
-   --  a HAVE). Opaque (quantified).
+   --  a HAVE). Quantified, so completed in the private part.
    function All_Kind (O : Outbox; K : Out_Kind) return Boolean with
      Global => null;
 
@@ -708,7 +706,8 @@ package Kome.Reconcile with SPARK_Mode is
    --  Every RANGE and ELEMENTS plan of O is exact: its run First .. Last is
    --  our window of its range, so a RANGE carries our true count and
    --  fingerprint and an ELEMENTS carries all of our elements in its
-   --  range. Opaque (quantified); its meaning is Lemma_Exact_Plan.
+   --  range. Quantified, so completed in the private part; its meaning is
+   --  Lemma_Exact_Plan.
    function Exact_Plans (S : Snapshot; O : Outbox) return Boolean with
      Global => null,
      Pre    => Valid (S);
@@ -826,7 +825,8 @@ package Kome.Reconcile with SPARK_Mode is
       Items  : In_Items;
    end record;
 
-   --  What a decoded RANGE / ELEMENTS / HAVE satisfies. Opaque.
+   --  What a decoded RANGE / ELEMENTS / HAVE satisfies. Quantified (the
+   --  items), so completed in the private part.
    function Msg_OK (M : Message) return Boolean with
      Global => null,
      Post   => (if Msg_OK'Result then
@@ -834,7 +834,8 @@ package Kome.Reconcile with SPARK_Mode is
                   and then Key_Lt (M.Lo, M.Hi)
                   and then (if M.Kind = M_Range then M.N = 0));
 
-   --  Every frame of M lies inside Input. Opaque.
+   --  Every frame of M lies inside Input. Quantified, so completed in the
+   --  private part.
    function Msg_In (M : Message; Input : Byte_Array) return Boolean with
      Global => null;
 
@@ -968,7 +969,7 @@ package Kome.Reconcile with SPARK_Mode is
    with Pre => Open_Wire_OK (B) and then I <= Natural (B (B'First + Open_O_NRV));
 
    --  The frames of O are B's, and the unused ones are zero. Quantified,
-   --  so opaque (rule 2): completed in the private part, its meaning is
+   --  so completed in the private part (rule 2); its meaning is
    --  Lemma_Open_Frames.
    function Open_Frames (B : Byte_Array; O : Open_Msg) return Boolean with
      Global => null,
@@ -1043,8 +1044,8 @@ package Kome.Reconcile with SPARK_Mode is
                and then Wire_U16 (Buf, Hello_O_CLen) = Cred'Length
                and then Buf (Hello_Fixed .. Len - 1) = Cred;
 
-   --  The cred bytes of H past Cred_Len are zero. Quantified, so opaque
-   --  (rule 2): completed in the private part, its meaning is
+   --  The cred bytes of H past Cred_Len are zero. Quantified, so
+   --  completed in the private part (rule 2); its meaning is
    --  Lemma_Cred_Zero.
    function Cred_Canonical (H : Hello) return Boolean with
      Global => null;
@@ -1146,11 +1147,12 @@ package Kome.Reconcile with SPARK_Mode is
    type Delivery is array (Item_Index) of Boolean;
    No_Delivery : constant Delivery := [others => False];
 
-   --  K is one of our elements. Opaque.
+   --  K is one of our elements. Quantified, so completed in the private part.
    function Held (S : Snapshot; K : Elem_Key) return Boolean with
      Global => null;
 
-   --  D delivers exactly the items of M we do not hold. Opaque.
+   --  D delivers exactly the items of M we do not hold. Quantified, so
+   --  completed in the private part.
    function Delivers (S : Snapshot; M : Message; D : Delivery) return Boolean with
      Global => null;
 
@@ -1163,18 +1165,19 @@ package Kome.Reconcile with SPARK_Mode is
 
    --  O is the exact HAVE answer to M: HAVEs over [M.Lo, M.Hi) offering
    --  only our elements M does not list, and every such element of ours in
-   --  the range. Opaque.
+   --  the range. Quantified, so completed in the private part.
    function Have_Exact (S : Snapshot; M : Message; O : Outbox) return Boolean with
      Global => null;
 
    --  Every RANGE in O is a sub-range of M's with strictly fewer of our
-   --  elements (T7's measure). Ghost, opaque.
+   --  elements (T7's measure). Ghost; quantified, so completed in the
+   --  private part.
    function Shrinks (S : Snapshot; M : Message; O : Outbox) return Boolean with
      Ghost, Global => null,
      Pre => Valid (S) and then Key_Lt (M.Lo, M.Hi);
 
    --  The reply contract (DESIGN.md §8 "Replies"), quantifier-free over
-   --  the opaque views above:
+   --  the quantified functions above:
    --    RANGE, equal count and fingerprint: the confirm.
    --    RANGE otherwise: a reply group that tiles the range, every plan
    --      exact, all ELEMENTS if we hold at most Ship_Threshold in the

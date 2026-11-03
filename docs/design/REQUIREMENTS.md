@@ -76,11 +76,11 @@ C9. Representation hygiene: H5 and H6 by construction.
 
 A design must also list its **assumptions** (what must hold for the theorems),
 its **known weaknesses** (what it gives up), and its **proof obligations**
-(the theorems to prove, in the style of docs/legacy/MATH_MODEL.md §2 and §4).
+(the theorems to prove).
 
 ## 5. Fixed points (not up for debate)
 
 - Crypto primitives: X25519, Ed25519, BLAKE2b, ChaCha20-Poly1305 (monocypher).
   A design may use them differently (group keys, hash chains) but not add
-  primitives outside that set, except SHA-256 which is already implemented.
+  primitives outside that set.
 - Implementation target: SPARK core behind a C ABI; design theorems in Lean.

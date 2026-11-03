@@ -1,4 +1,5 @@
 obj/
 bin/
 gnatprove/
-vectors/gen/scratch_*
+*.ali
+*.o

@@ -18,11 +18,11 @@
 --      total order, Frontier.lean) be proved on words while the design
 --      states it on bytes. Lemma_Lt_First_Difference states the same thing
 --      as "the first differing byte decides".
---    * Id_Lt is the same order on Id128 (moved here from Kome.Reconcile),
---      and Lemma_Id_Eq_Is_Bytewise / Lemma_Id_Lt_Is_Lexicographic /
---      Lemma_Id_Lt_First_Difference are the Id128 versions of the Key256
---      laws. Lemma_Key_Slide / Lemma_Id_Slide let a caller apply the laws
---      to a field that is a slice of a larger buffer.
+--    * Id_Lt is the same order on Id128, and Lemma_Id_Eq_Is_Bytewise /
+--      Lemma_Id_Lt_Is_Lexicographic / Lemma_Id_Lt_First_Difference are the
+--      Id128 versions of the Key256 laws. Lemma_Key_Slide / Lemma_Id_Slide
+--      let a caller apply the laws to a field that is a slice of a larger
+--      buffer.
 --
 --  Everything is integer arithmetic on the range type Word (multiply and
 --  divide by the constant 256), never shifts on modular words, so the

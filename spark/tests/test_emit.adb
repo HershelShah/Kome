@@ -9,12 +9,12 @@
 --  (h) H8 restore/clone detection: seq jumps past a held own record and
 --  Clone_Suspected is raised, so v_emit never equals a held version; (i) a
 --  non-member key is Inadmissible; (j) In_Floor excludes neighbours; (k)
---  the state-level T9 lemmas; (l) D8: the outcome is the same under two
---  different content hashes (both records built and applied, each with the
+--  the state-level T9 lemmas; (l) D8: the outcome is the same under three
+--  different content hashes (each record built and applied, each with the
 --  predicted outcome), and the two H lemmas hold on every emitted write;
 --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1.
---  States are built with the round-three core: write access by GRANT,
---  rosters V = (ceiling_t, signer, gen, h).
+--  In the states, write access is by GRANT and a roster's V is
+--  (ceiling_t, signer, gen, h).
 --  Contracts and lemmas are executed (-gnata).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -141,9 +141,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       Apply (S, X, St);
    end Apply_Data;
 
-   --  D8: choose once, build the record under two different content hashes,
-   --  apply each to a copy of X, and check that each gets the outcome Choose
-   --  predicted: OK -> held; Shadowed (on a PUT) -> Dominated.
+   --  D8: choose once, build the record under three content hashes (H_Lo,
+   --  H_Hi, HC), apply each to a copy of X, and check that each gets the
+   --  outcome Choose predicted: OK -> held; Shadowed (on a PUT) -> Dominated.
    function Same_Under_Two_Hashes (X : State; Tgt : Target; Now : U48;
                                    Self : Key256; Seq_Self : U48;
                                    Expect : Status) return Boolean

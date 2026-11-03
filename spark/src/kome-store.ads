@@ -6,17 +6,14 @@
 --  exactly the records of F"). Every operation takes the pair (S, F) and
 --  Valid (S, F) relates them.
 --
---  Why F is a parameter and not a component of Store: gnatprove 14 crashed
---  on a record component of type Frontier.State and on assignments to a
---  State while Frontier.State carried a Dynamic_Predicate (GNAT BUG
---  DETECTED in "generation of Global contracts", einfo-entities.ads:1973).
---  The predicate is gone and assignment no longer crashes (Open_From_Log
---  assigns Frontier.Empty to its out parameter), but a State is still
---  compared only through Frontier.Unchanged, and keeping F beside the
---  Store keeps the store's own state small: Compact takes F in mode `in`,
---  so flow analysis alone proves it leaves the frontier unchanged. Nothing
---  ever needs restoring: Put_Frame and Expire decide every refusal before
---  they change F, so a refused call changes neither S nor F.
+--  Why F is a parameter and not a component of Store: a State is compared
+--  only through Frontier.Unchanged, and keeping F beside the Store keeps
+--  the store's own state small: Compact takes F in mode `in`, so flow
+--  analysis alone proves it leaves the frontier unchanged. (gnatprove 14
+--  crashed on a Frontier.State record component while Frontier.State
+--  carried a Dynamic_Predicate; CONVENTIONS.md forbids that predicate.)
+--  Nothing ever needs restoring: Put_Frame and Expire decide every refusal
+--  before they change F, so a refused call changes neither S nor F.
 --
 --  The log (D9, DESIGN.md §7) is a journal, all integers big-endian:
 --
@@ -29,9 +26,10 @@
 --
 --  The HEADER is the first entry, exactly once; its ns is BLAKE2b-256
 --  (root_pk ‖ salt)[0:16], which fixes the founding key, and its capacities
---  are those the store was last opened with (see Capacities below). A frame is tag ‖ content ‖ sig
---  exactly as Kome.Records encodes it. The horizon u48 2**48 - 1 encodes
---  "no horizon" (a lowered horizon below 0): a real horizon is
+--  are those the store was last opened with (see Capacities below). A
+--  frame is tag ‖ content ‖ sig exactly as Kome.Records encodes it. The
+--  horizon u48 2**48 - 1 encodes "no horizon" (a lowered horizon below
+--  0): a real horizon is
 --  min (now, maxceil) - del_ttl_eff <= 2**48 - 1 - Del_TTL_Min, so the code
 --  is never a horizon (DESIGN.md §7 leaves this encoding open).
 --  The log is modelled as a bounded byte buffer written only at its end,
@@ -74,7 +72,8 @@
 --  index entry, every authorization record first and then every data
 --  record, each part in index order, and one EXPIRE (horizon) if the store
 --  has a horizon (and, on a log with no 7 bytes left after the frames, no
---  EXPIRE: the reopened horizon is then lower, which T18 allows).
+--  EXPIRE: the reopened horizon is then lower, which T18 allows; DESIGN.md
+--  §10 item 10 (b)).
 --
 --  Replay (T18): Open_From_Log checks the HEADER, refuses capacities below
 --  the logged ones (No_Space), starts from Frontier.Empty with the logged
@@ -90,8 +89,8 @@
 --  and del_ttl_eff >= Del_TTL_Min), but DESIGN.md §7 does not ask for it
 --  and it is not made: the log is sealed at rest (a later layer).
 --
---  Capacities (a decision taken here, for T18; DESIGN.md §7 does not say
---  it): the HEADER's capacities are always those of F (Valid states
+--  Capacities (for T18; DESIGN.md §10 item 10 (a) records this decision):
+--  the HEADER's capacities are always those of F (Valid states
 --  Logged_Cap (S) = F.Cap and Logged_Slice (S) = F.Slice). A store reopened
 --  with larger capacities can hold more than the old HEADER allows, and its
 --  log would then not replay at the logged capacities; so Open_From_Log
@@ -142,10 +141,11 @@
 --  the frame's content, and gnatprove 14 has no extensionality for arrays:
 --  two element-wise equal byte arrays (the frame passed to Put_Frame, its
 --  copy in the log, its copy after Compact) are not known to have equal
---  hashes, because Kome.Crypto.Blake2b_256 is a function of the whole array
---  value. Carrying it needs a congruence lemma for Blake2b_256 in
---  Kome.Crypto (now present: Lemma_Blake2b_Congruent) and one for
---  To_Header (Parse_*) in Kome.Records (not yet written). The test main checks it on every entry.
+--  headers, because Kome.Crypto.Blake2b_256 is a function of the whole
+--  array value. Carrying it needs Kome.Crypto.Lemma_Blake2b_Congruent and
+--  a congruence lemma for To_Header (Parse_*) in Kome.Records, which does
+--  not exist. The test main checks it on every index entry
+--  (Every_Frame_Matches), after Put_Frame and after Compact.
 pragma Ada_2022;
 with Kome.Headers;   use Kome.Headers;
 with Kome.Registers; use Kome.Registers;
@@ -577,7 +577,7 @@ package Kome.Store with SPARK_Mode is
    --  lattice state F (Frontier.Empty (ns, To_Key256 (Root_PK), Cap,
    --  Slice)). It writes the HEADER with F's capacities. The precondition
    --  ties F to the founding key, so the decoder, the capacity rows and
-   --  root_void agree on it (DESIGN.md §7 step 0, round-three minor).
+   --  root_void agree on it (DESIGN.md §7 step 0, and the minors of §1.2).
    procedure Open (Root_PK : Pubkey; Salt : Kome.Salt; F : Frontier.State; S : out Store) with
      Global => null,
      Pre  => Is_Frontier (F)

@@ -900,8 +900,8 @@ package body Kome.Records with SPARK_Mode is
       end;
    end Lemma_Decode_Encode;
 
-   --  Lemma_Encode_Decode_Roster is split into three parts of the fixed
-   --  head, the link block, the member block and the signature.
+   --  Lemma_Encode_Decode_Roster is split into five parts: the fixed head
+   --  in two halves, the link block, the member block and the signature.
 
    procedure Lemma_Roster_ED_Head1 (Frame : Byte_Array) with
      Ghost, Global => null,

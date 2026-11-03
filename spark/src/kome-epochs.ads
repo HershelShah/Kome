@@ -76,10 +76,10 @@
 --  Within a segment the chain step k_e = BLAKE2b-256 (k_{e+1} ‖ "prev") is
 --  unchanged. Opening segments (founding key only), choosing segment tops
 --  and delivering them belong to Kome.Roster (phase 8), not here.
---  Why this closes the reviewed nonce reuse: ns, the epoch and both member
---  keys are in the wrap key, so two boxes for one member at epochs 5 and 6
---  never share a key even under a reused eph_sk, and a removed member
---  holding k5 learns nothing about k6 from XORing them (regression test).
+--  Why ns, the epoch and both member keys are in the wrap key: two boxes
+--  for one member at epochs 5 and 6 then never share a key, even under a
+--  reused eph_sk, and a removed member holding k5 learns nothing about k6
+--  from XORing them (regression test in the test main).
 --
 --  CANONICAL PEER KEYS. X25519 reads a u-coordinate modulo p = 2**255 - 19
 --  and ignores bit 255, so one point has several 32-byte encodings with the
@@ -334,8 +334,8 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
       and then N (20) = 0 and then N (21) = 0 and then N (22) = 0 and then N (23) = 0)
      with Global => null;
 
-   --  The reduced-encoding test now lives in Kome.Crypto (DESIGN.md §2
-   --  rule 3, E5: decode and box share one definition).
+   --  The reduced-encoding test is Kome.Crypto's (DESIGN.md §2 rule 3, E5:
+   --  decode and box share one definition).
    function Is_Reduced_U (U : Pubkey) return Boolean
      renames Kome.Crypto.Is_Reduced_U;
 

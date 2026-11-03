@@ -5,9 +5,9 @@ signed records under one strict total order, with every policy question
 (authorization, far-future clocks, revocation) moved out of the merge and into
 either a monotone admission rule or a pure view. This is candidate A's core
 with candidate D's hygiene, corrected for every counterexample the three
-judges produced. The judges' reports are in `judges/`; the candidates in
-`candidates/`. The reasoning is in §1, the design in §2–§8, the theorems in
-§9, and what is still open in §10.
+judges produced. The judges' reports are in `history/judges/`; the
+candidates in `history/candidates/`. The reasoning is in §1, the design in
+§2–§8, the theorems in §9, and what is still open in §10.
 
 A second round (§1.1) searched four further designs and two modules against
 this one. The core survived unchanged; the round contributed three repairs
@@ -60,7 +60,7 @@ had.
 ### 1.1 Round two: the search for a better design
 
 Four more candidates were written against this design as the baseline (S)
-and judged by the same three reviewers (`judges/round2-*.md`):
+and judged by the same three reviewers (`history/judges/round2-*.md`):
 
 | Candidate | Idea | Math | Attacker | Implementer | Verdict |
 |---|---|---|---|---|---|
@@ -404,9 +404,9 @@ the cell key, the author's full state for that field as its value, and the
 author)`. The frontier then holds at most one record per `(cell, author)`,
 bounded by `|W|`, and the cell's value is a join over the surviving,
 non-void per-author records. LWW cells are unchanged. The specification is
-`candidates/F-typed-fields.md`, as repaired by the round-two judges (`W`
-required; the fold saturates; view output read through a cursor). It is
-not on the critical path: an application can get the same semantics today
+`history/candidates/F-typed-fields.md`, as repaired by the round-two judges
+(`W` required; the fold saturates; view output read through a cursor). It
+is not on the critical path: an application can get the same semantics today
 with one LWW sub-cell per device.
 
 ## 5. Clocks and writing
@@ -1109,23 +1109,17 @@ convergence.**
 
 ## 10. What is open
 
-1. **Lean model of this design.** `lean/Kome/Frontier.lean` states and
-   proves T1, T2, T2', T3, T4 (with GC and admission), T4', T5, T8, T9, T12
-   and part of T13 over finite lists, machine-checked under Lean 4.35.0
-   (`lean/build.sh`), no `sorry`, standard axioms only; T3 is derived from a
-   general "sandwich" lemma. Round three changes the model in these places,
-   all in the existing style (`omega` for orders, the sandwich lemma for
-   homomorphisms): the five record kinds with the roster
-   `(signer, ceiling, gen, ttl, h)`, the `GRANT` with its issuer and the
-   `REVOKE` issuer; per-signer product-order roster domination and
-   per-`(issuer, subject)` grant domination; `maxceil` and `W` as functions
-   of the held list with `maxCeil_F` and `isWriter_F`; the discard model
-   (inadmissible records are refused, not held) with T4 as `auth_first` and
-   `convergence_two_pass`; expiry (`expire`, T11 (a) and (b)); `rootVoid`,
-   `wEff`, `voided`, `rosterEff` (with `rosterEff_congr` and `rosterEff_F`)
-   and `delTtlEff` as views; and `lt_iff_prefix` for D8. Certificates,
-   capacity and the horizon's clock clamp are outside the model, which
-   assumes well-formed records. T7 remains.
+1. **Lean model of this design.** `lean/Kome/Frontier.lean` proves T1,
+   T2, T2', T3, T4 (`auth_first`, `convergence_two_pass`, `convergence`),
+   T4', T5, T8, T9, T11, T12, T13 and T18 over finite lists, machine-checked
+   (`lean/build.sh`), with no `sorry` and only Lean's standard axioms; T3 is
+   derived from a general "sandwich" lemma. The model has the five record
+   kinds, per-signer product-order roster domination and per-`(issuer,
+   subject)` grant domination, `maxceil` and `W` as functions of the held
+   list, the discard model, expiry, and the views `rootVoid`, `wEff`,
+   `voided`, `rosterEff` and `delTtlEff`. Certificates, capacity and the
+   horizon's clock clamp are outside the model, which assumes well-formed
+   records. T7 remains open; T14 is argued on paper.
 2. **Toolchain.** Lean comes from nixpkgs (`nix shell nixpkgs#lean4`), since
    `elan` could not be downloaded in the authoring environment; `lean-toolchain`
    names 4.35.0 for anyone using `elan`.

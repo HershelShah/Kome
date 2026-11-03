@@ -1,6 +1,8 @@
---  Kome.Byteorder: mirror of src/byteorder.h, the fixed-width little-endian
---  (de)serialization primitives every codec in the engine pins its encoding
---  on.
+--  Kome.Byteorder: fixed-width little-endian (de)serialization primitives.
+--  The API mirrors src/byteorder.h of the C++ engine this repository
+--  replaced (it is in git history), and vectors/byteorder.txt was generated
+--  from that header, so the C++ names and expressions below are the
+--  reference the tests compare against.
 --
 --  The C++ offers four shapes per width (u32, u64):
 --    store_uNNle(out[N], v)         fixed buffer, caller owns the size

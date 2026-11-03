@@ -62,11 +62,6 @@ package body Kome.Registers with SPARK_Mode is
 
    procedure Lemma_Added_Refl (R : Register_File; A : Key256) is null;
 
-   procedure Lemma_Added_Extends (Old, Upd : Register_File; A : Key256) is
-   begin
-      pragma Assert (for all I in 1 .. Old.NW => In_W (Upd, Old.W (I)));
-   end Lemma_Added_Extends;
-
    procedure Lemma_Distinct (R : Register_File; I, J : Writer_Index) is null;
 
    procedure Lemma_Eq (A, B : Register_File) is
@@ -77,14 +72,6 @@ package body Kome.Registers with SPARK_Mode is
    end Lemma_Eq;
 
    procedure Lemma_Extends_Refl (A : Register_File) is null;
-
-   procedure Lemma_Extends_Trans (A, B, C : Register_File) is
-   begin
-      for I in 1 .. A.NW loop
-         Lemma_Extends_In_W (B, C, A.W (I));
-         pragma Loop_Invariant (for all J in 1 .. I => In_W (C, A.W (J)));
-      end loop;
-   end Lemma_Extends_Trans;
 
    procedure Lemma_Extends_In_W (A, B : Register_File; X : Key256) is null;
 

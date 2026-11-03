@@ -5,12 +5,13 @@
 --  independently of the SPARK model: random-looking, sparse, carry-chain
 --  and wraparound cases, through the wire form. (c) The laws on a grid of
 --  accumulators, both as plain equalities and through the ghost lemmas,
---  whose bodies (and every Post, Loop_Invariant and Assert, including the
---  Big_Integer model) run under -gnata. (d) The byte order as an integer:
---  Value (From_Bytes (B)) = Σ B (I) · 256^I on the vectors and on hand
---  cases (bytes 0, 8 and 511). (e) The acc(e) construction of DESIGN.md
---  §8 (D7): sixteen 32-byte blocks, B_0 least significant. (f) Chaining
---  the laws through Lemma_Eq_Iff_Value and the congruence lemmas.
+--  whose Posts (with the Big_Integer model) and bodies run under -gnata,
+--  except the limb-by-limb steps the spec's "Run-time cost" note exempts.
+--  (d) The byte order as an integer: Value (From_Bytes (B)) =
+--  Σ B (I) · 256^I on the vectors and on hand cases (bytes 0, 8 and 511).
+--  (e) The acc(e) construction of DESIGN.md §8 (D7): sixteen 32-byte
+--  blocks, B_0 least significant. (f) Chaining the laws through
+--  Lemma_Eq_Iff_Value and the congruence lemmas.
 pragma Ada_2022;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line;  use Ada.Command_Line;
@@ -329,7 +330,7 @@ begin
 
    ----------------------------------------------------------------------
    --  (f) Chaining the laws: Lemma_Eq_Iff_Value, Lemma_Add_Congruent and
-   --  Lemma_Sub_Congruent (moved here from Kome.Digest). Each lemma's Post
+   --  Lemma_Sub_Congruent. Each lemma's Post
    --  runs under -gnata on pairs that are equal but computed differently,
    --  and on pairs that are not equal.
    ----------------------------------------------------------------------

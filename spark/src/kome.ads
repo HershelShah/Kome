@@ -10,8 +10,9 @@ package Kome with SPARK_Mode, Pure is
    type Byte_Array is array (Natural range <>) of Byte;
 
    --  Modular types for wire encoding and hashing only (Kome.Byteorder,
-   --  Kome.SHA256). Semantic quantities use the range types below, so that
-   --  every overflow is a proof obligation and no value is reserved (H6).
+   --  Kome.Accumulator, Kome.Digest). Semantic quantities use the range
+   --  types below, so that every overflow is a proof obligation and no value
+   --  is reserved (H6).
    type U16 is mod 2**16 with Size => 16;
    type U32 is mod 2**32 with Size => 32;
    type U64 is mod 2**64 with Size => 64;
@@ -27,7 +28,7 @@ package Kome with SPARK_Mode, Pure is
    Ent_Len    : constant := 16;
    Salt_Len   : constant := 16;
    Pubkey_Len : constant := 32;   --  Ed25519 / X25519
-   Hash_Len   : constant := 32;   --  BLAKE2b-256, SHA-256
+   Hash_Len   : constant := 32;   --  BLAKE2b-256
    Sig_Len    : constant := 64;   --  Ed25519
    Nonce_Len  : constant := 24;   --  XChaCha20-Poly1305
    Box_Len    : constant := 48;   --  32-byte epoch key + 16-byte tag
@@ -107,8 +108,10 @@ package Kome with SPARK_Mode, Pure is
    Ship_Threshold  : constant := 4;
    Max_Message_Len : constant := 48 * 1024;
 
-   --  Result codes returned across the C ABI. Every operation that can fail
-   --  returns one of these and leaves the store unchanged on failure.
+   --  Result codes of decode and of the store operations (Kome.Records,
+   --  Kome.Frontier, Kome.Store, Kome.Emit), and of the C ABI once it exists
+   --  (DESIGN.md §10.6). Every operation that can fail returns one of these
+   --  and leaves the store unchanged on failure.
    type Status is
      (OK,
       Dominated,        --  record applied: already beaten by a held record

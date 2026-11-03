@@ -9,5 +9,5 @@
 .DS_Store
 Thumbs.db
 
-# Build outputs (lean/.lake and spark/obj, spark/bin are ignored locally too)
+# Build outputs (lean/.gitignore and spark/.gitignore cover their own)
 build/
