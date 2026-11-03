@@ -10,7 +10,6 @@ The work is design-first and proof-first:
 | Layer | Where | State |
 |---|---|---|
 | The problem and the constraints | `docs/design/REQUIREMENTS.md` | fixed |
-| The design search: eight candidates, two rounds, three adversarial judges | `docs/design/history/` | done |
 | The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
 | Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T5, T8, T9, T11, T12, T13, T18 proved (136 theorems in `Frontier.lean`, no `sorry`); T7 open |
 | The implementation, in SPARK, proved against the Lean model | `spark/` | 15 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`); every test passes and every package proves with 0 unproved checks (@TOTALS@); the remaining gaps are listed in the plan's Known gaps |
@@ -34,7 +33,6 @@ record anywhere, at any time, never changes a future state.
 
 ```
 docs/design/          REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md
-docs/design/history/  the design search: candidates and the judges' reports
 lean/                 Lean 4 model: lean/Kome/Frontier.lean and its theorems
 spark/                SPARK implementation: src/, tests/, vectors/, check.sh
 third_party/          monocypher, the only cryptographic dependency
