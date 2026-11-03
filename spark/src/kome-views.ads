@@ -1,5 +1,5 @@
 --  Kome.Views: the pure views over one collection's frontier (DESIGN.md §3
---  "Views", §6 module J, root revocation D2 and R1). A State is one
+--  "Views", §6 C9, root revocation D2 and D1′). A State is one
 --  collection (Kome.Frontier.Collection (S)) with one founding key
 --  (Kome.Frontier.Founding (S)). Each view is a function of the held records
 --  and the founding key only, read through Kome.Frontier's public functions
@@ -189,7 +189,7 @@ package Kome.Views with SPARK_Mode is
      Global => null;
 
    ---------------------------------------------------------------------------
-   --  The authorization views (DESIGN.md §3, §6 D2, R1).
+   --  The authorization views (DESIGN.md §3, §6 D2, D1′).
    ---------------------------------------------------------------------------
 
    --  root_void(k) (D2, as decided): only the founding key root-voids.
@@ -209,7 +209,7 @@ package Kome.Views with SPARK_Mode is
      Global => null,
      Post   => (if Root_Void'Result then K /= Founding (S));
 
-   --  k ∈ W_eff(F) (R1): some held GRANT of k whose issuer is not
+   --  k ∈ W_eff(F) (D1′): some held GRANT of k whose issuer is not
    --  root_void. W (Kome.Registers, admission) counts every held GRANT; the
    --  two differ only by the grants of root-voided issuers, which admission
    --  must keep (monotone, §4) and the views ignore.
@@ -247,7 +247,7 @@ package Kome.Views with SPARK_Mode is
    function Eligible (S : State; X : Header) return Boolean is
      (X.K = K_Roster and then not Root_Void (S, X.Issuer));
 
-   --  ROSTER_eff (DESIGN.md §3, §6 module J): the Roster_Lt-maximal eligible
+   --  ROSTER_eff (DESIGN.md §3, §6 C9): the Roster_Lt-maximal eligible
    --  held roster, which is in particular maximal in (gen, h) (Gen_Lt).
    --  None when no held roster is eligible; present whenever F holds a
    --  roster issued by the founding key (Lemma_Roster_Eff_Present). On a

@@ -1,7 +1,7 @@
 --  Kome.Digest: the fingerprint of a set of records, which is also the
 --  collection digest (DESIGN.md §8 "Fingerprint = digest (D7)", T6).
 --
---  Definitions, exactly as DESIGN.md §8 (decision D7 of §1.2) records them:
+--  Definitions, exactly as DESIGN.md §8 (decision D7 of §1) records them:
 --
 --    B_i(e)     := BLAKE2b-256 ("kome/acc" ‖ h(e) ‖ u8(i))     i = 0 .. 15
 --    acc(e)     := Σ_i LE(B_i(e)) · 2^(256·i)  mod 2^4096,

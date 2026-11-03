@@ -1222,7 +1222,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    ---------------------------------------------------------------------------
    --  GRANT   ns[16] root_pk[32] salt[16] SIGNER subject[32]
    --  Write access (D1′): the subject may author PUTs and DELs. Keyed by
-   --  (ns, issuer, subject) (R1).
+   --  (ns, issuer, subject) (D1′).
    ---------------------------------------------------------------------------
 
    type Grant_Content is record
@@ -1431,7 +1431,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Member_DH_PK (Parse_Roster (Frame).C, I) = DH);
 
    --  A REVOKE issued by the founding key (signer = root_pk): a root
-   --  revocation candidate, the records OPEN carries (DESIGN.md §8, R2).
+   --  revocation candidate, the records OPEN carries (DESIGN.md §8, D13).
    function Is_Founding_Revoke (Frame : Byte_Array) return Boolean is
      (Is_Revoke_Frame (Frame)
       and then Parse_Revoke (Frame).C.Signer = Parse_Revoke (Frame).C.Root_PK);

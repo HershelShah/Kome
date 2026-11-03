@@ -2,11 +2,11 @@
 --  theorems and DESIGN.md §3, §4, §7 state it. Contracts and ghost lemmas
 --  are evaluated at run time (-gnata) on every call. Covered:
 --  (a) admission by GRANT (D1′) and refusal without one;
---  (b) GRANT domination keyed by (issuer, subject) (R1);
---  (c) roster domination as the product order (R4);
+--  (b) GRANT domination keyed by (issuer, subject) (D1′);
+--  (c) roster domination as the product order (D3);
 --  (d) every refusal leaves the state unchanged (D11, T13);
 --  (e) capacity rows: a data flood or a full slice takes no one else's
---      room, and the founding key's REVOKE lands (E1, E2, R5);
+--      room, and the founding key's REVOKE lands (E1, E2);
 --  (f) expiry (D10): Expire and Apply_Expired;
 --  (g) convergence: the same set in several orders, with duplicates and
 --      re-offers, gives the same held set and registers (T4).

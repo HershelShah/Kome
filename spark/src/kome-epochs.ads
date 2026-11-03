@@ -54,7 +54,7 @@
 --      oracle): the test main runs it and checks known answers from an
 --      independent Python reference (vectors/epochs.txt).
 --
---  BOX CONSTRUCTION (DESIGN.md §6, decisions D5 and D6 of §1.2). There is
+--  BOX CONSTRUCTION (DESIGN.md §6, decisions D5 and D6 of §1). There is
 --  no root X25519 key. Each ROSTER carries box_pk = X25519_Public (eph_sk)
 --  of a fresh ephemeral secret that the signer draws for that one roster
 --  (the caller's randomness: no RNG here), seals that roster's boxes with

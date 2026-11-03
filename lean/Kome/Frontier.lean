@@ -1,5 +1,5 @@
 /-
-The frontier store: the model of docs/design/DESIGN.md (round three).
+The frontier store: the model of docs/design/DESIGN.md.
 
 A replica of one collection holds a finite set of signed records. Its state
 is the FRONTIER of that set: the records not dominated by another record of
@@ -117,7 +117,7 @@ deriving DecidableEq, Repr
 open Record
 
 /-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, `dom`'s witness). Rosters
-are compared by the product order (R4): same signer, ceiling not lower, and
+are compared by the product order (D3): same signer, ceiling not lower, and
 greater in `(gen, h)`. Grants are keyed by `(issuer, subject)`. Nothing else
 dominates: `revoke` is never dominated and never dominates, and there is no
 cross-kind clause for authorization records. -/

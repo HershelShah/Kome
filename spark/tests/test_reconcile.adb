@@ -1,4 +1,4 @@
---  Test main for Kome.Reconcile (DESIGN.md §8, round three D12-D14, R2).
+--  Test main for Kome.Reconcile (DESIGN.md §8, D12-D14).
 --  (a) The key order: its lemmas, Data_Lo, and that Key_Lt is bytewise
 --  order on the 81-byte wire key (against Ada's lexicographic "<" on byte
 --  arrays, with Lemma_Key_Lt_First_Difference / Lemma_Key_Eq_Is_Bytewise

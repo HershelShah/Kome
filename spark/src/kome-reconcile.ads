@@ -1,5 +1,5 @@
 --  Kome.Reconcile: the reconciliation session of one collection's frontier
---  (DESIGN.md §8, round three D12, D13, D14 and R2): the pre-gate OPEN,
+--  (DESIGN.md §8, D12, D13, D14 and D13): the pre-gate OPEN,
 --  the post-gate HELLO, and two range reconciliations, the authorization
 --  range first and the data range second.
 --
@@ -38,7 +38,7 @@
 --
 --  Content checks belong to the caller (the transport, phase 9), with
 --  Kome.Records, never to this package, which sees frames as opaque bytes:
---    * OPEN (pre-gate, R2): each frame must satisfy
+--    * OPEN (pre-gate, D13): each frame must satisfy
 --      Kome.Records.Is_Founding_Revoke for this collection. The caller
 --      verifies and applies only those whose subject is a signer it holds
 --      and is not yet root-voided, skipping the rest unverified (which
@@ -56,7 +56,7 @@
 --  only decides whether the session ends early, and the frames are signed
 --  records. Pre-gate work is rate-limited by the transport.
 --
---  Session (D14, R2). Phases Await_Open, Gate, Auth, Data, Done.
+--  Session (D14, D13). Phases Await_Open, Gate, Auth, Data, Done.
 --    * Start emits our OPEN (ns and our root revocations); P = Await_Open.
 --    * Receive of the peer's OPEN: a foreign ns aborts the session
 --      (S_Aborted, P = Done, Aborted); otherwise P = Gate and the decoded
@@ -104,7 +104,7 @@
 --  (a data root that overtakes the last authorization-phase reply is
 --  refused), Complete is never reached and the caller times out and
 --  restarts from OPEN; DESIGN.md §8 states this, so it is not a deviation.
---  Round 0 (module I, the invertible Bloom lookup table) runs once per
+--  Round 0 (C8, the invertible Bloom lookup table) runs once per
 --  phase, at the start of Auth and at Next_Phase, when it is built; it is
 --  not built here.
 --
@@ -302,7 +302,7 @@ package Kome.Reconcile with SPARK_Mode is
      (Kome.Records.Frame_Max > Frame_Ship_Max,
       "DESIGN.md §8 (D12): Kome.Records.Frame_Max must not exceed Frame_Ship_Max");
 
-   --  OPEN (pre-gate, R2): 5 ‖ proto ‖ ns[16] ‖ n_rv ‖ n_rv × frame[275].
+   --  OPEN (pre-gate, D13): 5 ‖ proto ‖ ns[16] ‖ n_rv ‖ n_rv × frame[275].
    Proto_Version : constant Byte := 1;
    Rv_Frame_Len  : constant := Kome.Records.Revoke_Frame_Len;        --  275
    Rv_Max        : constant := Signers_Max - 1;                     --  15
@@ -914,7 +914,7 @@ package Kome.Reconcile with SPARK_Mode is
                and then Decode_Facts (Input, M, OK);
 
    ----------------------------------------------------------------------
-   --  OPEN (pre-gate, R2). Canonical: frames past N_RV are zero.
+   --  OPEN (pre-gate, D13). Canonical: frames past N_RV are zero.
    ----------------------------------------------------------------------
 
    subtype Rv_Count is Natural range 0 .. Rv_Max;
