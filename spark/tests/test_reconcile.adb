@@ -1,31 +1,32 @@
---  Test main for Kome.Reconcile (DESIGN.md §8, §4). (a) The key order and
---  its lemmas on examples. (b) Snapshots: appends in order, every refusal
---  leaves the snapshot unchanged. (c) Windows and the cover on examples.
---  (d) Encode / Decode round trips for RANGE, ELEMENTS, HAVE, the confirm
---  and HELLO (with roots_ever), every message within Max_Message_Len,
---  malformed inputs refused. (e) The responder: an explicit confirm on
---  equal fingerprints, ship at most Ship_Threshold, a 16-way split with
---  strictly smaller children that partition the range, exactly the
---  missing elements delivered and exactly the peer's missing ones sent
---  back, and large frames split further so every message fits. (f) The
---  HELLO join is max / union, reports a full W, and is bounded above.
---  (g) The session state machine refuses out-of-phase, malformed,
---  unsolicited and over-budget messages and changes nothing; an untrusted
---  HELLO leaves the registers alone; Complete marks the end. (h) Two
---  in-memory replicas with differing frontiers, real Kome.Records PUT
---  frames, converge to the union in a bounded number of rounds, including
---  a record above B's ceiling and one by a writer B has never listed: both
---  inadmissible at B until A's HELLO joins the registers; both sessions
---  end Complete; a second session confirms at the root range.
+--  Test main for Kome.Reconcile (DESIGN.md §8, round three D12-D14, R2).
+--  (a) The key order: its lemmas, Data_Lo, and that Key_Lt is bytewise
+--  order on the 81-byte wire key (against Ada's lexicographic "<" on byte
+--  arrays, with Lemma_Key_Lt_First_Difference / Lemma_Key_Eq_Is_Bytewise
+--  executed). (b) Snapshots: appends in order, kinds 0 .. 4, every refusal
+--  leaves the snapshot unchanged, a 41 136-byte frame is accepted.
+--  (c) Windows and the cover on examples. (d) Encode / Decode round trips
+--  for RANGE, ELEMENTS, HAVE and the confirm; OPEN with 0 and 15 frames and
+--  HELLO with cred_len 0 and 10 099, against the known answers in
+--  vectors/reconcile.txt; malformed inputs refused. (e) The responder: the
+--  reply contract (Answers) on examples, and the empty-HAVE mutant
+--  violates it. (f) The session: a foreign ns aborts; a HELLO before the
+--  gate, a RANGE before Auth, a g = 0 HAVE, a partial root, the data root
+--  first, a repeated root, a data root while something is open and any g =
+--  0 at the initiator are refused and change nothing; equal digests end
+--  the session after the HELLOs; Admit-then-receive and receive-then-Admit
+--  both work; Next_Phase; the review's mutants (Receive's M, Open, Peer
+--  and status are the wire's and Status_Of; Admit keeps the budgets;
+--  Same_Snapshot). (g) Two snapshots with differing authorization
+--  and data records, one frame of 41 136 bytes, converge to the union in a
+--  two-phase session; a second session ends at the HELLOs.
 --  Under -gnata every Pre, Post and lemma runs on these data.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
+with Ada.Directories;
 with Ada.Containers.Indefinite_Vectors;
 with Kome;             use Kome;
 with Kome.Keys;
-with Kome.Headers;     use Kome.Headers;
-with Kome.Registers;   use Kome.Registers;
 with Kome.Records;
 with Kome.Reconcile;   use Kome.Reconcile;
 
@@ -59,7 +60,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
    function Msg (K : Msg_Kind; Lo, Hi : Elem_Key; Count : Natural := 0;
                  Fp : Hash256 := [others => 0]) return Message is
      (Kind => K, G => 1, Lo => Lo, Hi => Hi, Count => Count, Fp => Fp,
-      N => 0, Items => <>, W_Full => False);
+      N => 0, Items => <>);
 
    package Msg_Vectors is new Ada.Containers.Indefinite_Vectors
      (Positive, Byte_Array);
@@ -67,11 +68,13 @@ procedure Test_Reconcile with SPARK_Mode => Off is
    function Slice (B : Msg_Buffer; L : Msg_Length) return Byte_Array is
      (B (0 .. L - 1));
 
-   No_Roots : constant Writer_List (1 .. 0) := [];
+   --  The wire bytes of a key (kind ‖ ent ‖ fh ‖ h).
+   function To_Wire (K : Elem_Key) return Key_Wire is
+     ([Byte (K.K)] & Kome.Keys.To_Bytes (K.Ent) & Kome.Keys.To_Bytes (K.FH)
+      & Kome.Keys.To_Bytes (K.H));
 
-
-   --  A small snapshot of synthetic elements I = 1 .. N, key (3, I, I, I),
-   --  frame of Len bytes.
+   --  A small snapshot of synthetic elements I = 1 .. N, key (Kind, I, I,
+   --  I), frame of Len bytes.
    procedure Fill (S : in out Snapshot; N : Natural; Len : Positive;
                    Kind : Kind_Code := 3) is
       St : Snap_Status;
@@ -106,16 +109,117 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       return True;
    end Plans_Fit;
 
+   --  The number of our elements in [Lo, Hi): My_Count, which is ghost.
+   function Cnt (S : Snapshot; Lo, Hi : Elem_Key) return Natural is
+     (Window (S, Lo, Hi).Last + 1 - Window (S, Lo, Hi).First);
+
+   --  The reply contract Answers (ghost in the spec), with Cnt for
+   --  My_Count, so a test can evaluate it on any outbox.
+   function Answers_T (S : Snapshot; M : Message; O : Outbox) return Boolean is
+     ((if M.Kind = M_Have then O.N = 0 else O.N >= 1 and then O.Reply)
+      and then (if M.Kind = M_Range then
+                  (if Confirms (S, M) then Is_Confirm (O, M.Lo, M.Hi)
+                   else Tiles (O, M.Lo, M.Hi) and then Exact_Plans (S, O)
+                        and then (if Cnt (S, M.Lo, M.Hi) <= Ship_Threshold
+                                  then All_Kind (O, P_Elements)
+                                  else All_Kind (O, P_Range))))
+      and then (if M.Kind = M_Elements then
+                  (if Cnt (S, M.Lo, M.Hi) <= Ship_Threshold
+                   then Have_Exact (S, M, O)
+                   else Tiles (O, M.Lo, M.Hi) and then Exact_Plans (S, O)
+                        and then All_Kind (O, P_Range))));
+
+   function From_Hex (S : String) return Byte_Array is
+      function Nib (C : Character) return Byte is
+        (case C is
+           when '0' .. '9' => Character'Pos (C) - Character'Pos ('0'),
+           when 'a' .. 'f' => Character'Pos (C) - Character'Pos ('a') + 10,
+           when 'A' .. 'F' => Character'Pos (C) - Character'Pos ('A') + 10,
+           when others     => raise Constraint_Error);
+   begin
+      if S = "-" then
+         return [];
+      end if;
+      return R : Byte_Array (0 .. S'Length / 2 - 1) do
+         for I in R'Range loop
+            R (I) := Nib (S (S'First + 2 * I)) * 16 + Nib (S (S'First + 2 * I + 1));
+         end loop;
+      end return;
+   end From_Hex;
+
+   --  vectors/ from the current directory or one of its parents.
+   function Find (Rel : String) return String is
+   begin
+      if Ada.Directories.Exists (Rel) then
+         return Rel;
+      elsif Ada.Directories.Exists ("../" & Rel) then
+         return "../" & Rel;
+      elsif Ada.Directories.Exists ("spark/" & Rel) then
+         return "spark/" & Rel;
+      else
+         return Rel;
+      end if;
+   end Find;
+
+   NS_X     : constant Id128 := (W0 => 16#4B4F_4D45#, W1 => 1, W2 => 2, W3 => 3);
+   NS_Y     : constant Id128 := (W0 => 16#4B4F_4D45#, W1 => 1, W2 => 2, W3 => 4);
+   No_Voids : constant Rv_Array := [others => Zero_Rv];
+   Cred_T   : constant Byte_Array (1 .. 300) := [others => 16#77#];
+   No_Bytes : constant Byte_Array (1 .. 0) := [];
+
+   --  Receive, keeping only what a test looks at.
+   procedure Recv
+     (Sess : in out Session; S : Snapshot; Input : Byte_Array;
+      O : out Outbox; Res : out Session_Status)
+   is
+      M  : Message;
+      Op : Open_Msg;
+      P  : Hello;
+      G  : Delivery;
+   begin
+      Receive (Sess, S, Input, M, Op, P, O, G, Res);
+   end Recv;
+
+   --  A HELLO with the given digest.
+   function Hello_Bytes (Digest : Hash256) return Byte_Array is
+      Buf : Msg_Buffer;
+      L   : Msg_Length;
+   begin
+      Encode_Hello (3, 4, Digest, Cred_T, Buf, L);
+      return Slice (Buf, L);
+   end Hello_Bytes;
+
+   function Open_Bytes (NS : Id128) return Byte_Array is
+      Buf : Msg_Buffer;
+      L   : Msg_Length;
+   begin
+      Encode_Open ((Proto => Proto_Version, NS => NS, N_RV => 0, RV => No_Voids),
+                   Buf, L);
+      return Slice (Buf, L);
+   end Open_Bytes;
+
+   function Plan_Bytes (S : Snapshot; P : Plan; G : Group_Size) return Byte_Array is
+      Buf : Msg_Buffer;
+      L   : Msg_Length;
+   begin
+      Encode (S, P, G, Buf, L);
+      return Slice (Buf, L);
+   end Plan_Bytes;
+
+   function Range_Plan (S : Snapshot; Lo, Hi : Elem_Key) return Plan is
+     (Kind => P_Range, Lo => Lo, Hi => Hi, First => Window (S, Lo, Hi).First,
+      Last => Window (S, Lo, Hi).Last, N => 0, Items => [others => 1]);
+
+   function Confirm_Plan (Lo, Hi : Elem_Key) return Plan is
+     (Kind => P_Have, Lo => Lo, Hi => Hi, First => 1, Last => 0, N => 0,
+      Items => [others => 1]);
+
    ----------------------------------------------------------------------
-   --  Replicas for the convergence test: a list of (key, header, frame)
-   --  plus the registers and a sorted mirror of W (Kome.Registers cannot
-   --  enumerate W, so the HELLO list is kept beside it; Encode_Hello's
-   --  Pre checks the mirror against the registers).
+   --  Replicas for the convergence test: a list of (key, frame).
    ----------------------------------------------------------------------
 
    type Elem (Len : Natural) is record
       Key : Elem_Key;
-      Hdr : Header;
       F   : Byte_Array (1 .. Len);
    end record;
 
@@ -126,10 +230,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
    package Elem_Sort is new Elem_Vectors.Generic_Sorting (Before);
 
    type Replica is record
-      Els  : Elem_Vectors.Vector;
-      Regs : Register_File := Kome.Registers.Empty;
-      WL   : Writer_List (1 .. 16) := [others => (others => 0)];
-      NW   : Natural := 0;
+      Els : Elem_Vectors.Vector;
    end record;
 
    function Holds (R : Replica; K : Elem_Key) return Boolean is
@@ -142,84 +243,39 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       return False;
    end Holds;
 
-   function Admissible (Regs : Register_File; H : Header) return Boolean is
-     (if Is_Data (H)
-      then Data_T (H) <= Ceil (Regs) and then In_W (Regs, Data_Author (H))
-      else True);
-
-   --  Insert K into the sorted mirror (not the registers).
-   procedure Mirror (R : in out Replica; K : Key256) is
-      Pos : Natural := R.NW + 1;
+   function Frame_Of_Key (R : Replica; K : Elem_Key) return Byte_Array is
    begin
-      for I in 1 .. R.NW loop
-         if R.WL (I) = K then
-            return;
+      for E of R.Els loop
+         if E.Key = K then
+            return E.F;
          end if;
       end loop;
-      for I in 1 .. R.NW loop
-         if Lt (K, R.WL (I)) then
-            Pos := I;
-            exit;
-         end if;
-      end loop;
-      R.WL (Pos + 1 .. R.NW + 1) := R.WL (Pos .. R.NW);
-      R.WL (Pos) := K;
-      R.NW := R.NW + 1;
-   end Mirror;
+      return No_Bytes;
+   end Frame_Of_Key;
 
-   procedure Add_W (R : in out Replica; K : Key256) is
+   procedure Add (R : in out Replica; K : Elem_Key; F : Byte_Array) is
    begin
-      Mirror (R, K);
-      Add_Writer (R.Regs, K);
-   end Add_W;
+      R.Els.Append (Elem'(Len => F'Length, Key => K, F => F));
+   end Add;
 
-   NS_B : constant NS_Id := [others => 16#5A#];
-
-   function Pk (B : Byte) return Pubkey is ([others => B]);
-
-   --  A PUT on entity E, field F, by author A at time T, with a value of
-   --  VLen bytes.
-   function Make (E : Byte; F : Byte; A : Byte; T : U48; VLen : Natural)
-     return Elem
-   is
-      R  : constant Kome.Records.Put_Record :=
-        Kome.Records.Make_Put
-          (NS_B, [others => E], [F], T, 1, Pk (A),
-           [for I in 1 .. VLen => Byte (I mod 251)]);
-      Fr : constant Byte_Array := Kome.Records.Encode (R);
-      H  : constant Header := Kome.Records.To_Header (R);
+   function Same_Set (A, B : Replica) return Boolean is
    begin
-      return (Len => Fr'Length, Key => Key_Of (H), Hdr => H, F => Fr);
-   end Make;
-
-   --  Apply one received frame: decode it, check that it is the element it
-   --  was shipped as, check admission under the current registers, hold
-   --  it if new.
-   Refused_Mismatch : Natural := 0;
-
-   procedure Apply (R : in out Replica; K : Elem_Key; Fr : Byte_Array) is
-      PR : Kome.Records.Put_Record;
-      St : Status;
-   begin
-      Kome.Records.Decode (Fr, PR, St);
-      if St /= OK then
-         Refused_Mismatch := Refused_Mismatch + 1;
-         return;
+      if Natural (A.Els.Length) /= Natural (B.Els.Length) then
+         return False;
       end if;
-      declare
-         H : constant Header := Kome.Records.To_Header (PR);
-      begin
-         if Key_Of (H) /= K then
-            Refused_Mismatch := Refused_Mismatch + 1;
-         elsif Admissible (R.Regs, H) and then not Holds (R, K) then
-            R.Els.Append (Elem'(Len => Fr'Length, Key => K, Hdr => H, F => Fr));
+      for E of A.Els loop
+         if not Holds (B, E.Key) or else Frame_Of_Key (B, E.Key) /= E.F then
+            return False;
          end if;
-      end;
-   end Apply;
+      end loop;
+      return True;
+   end Same_Set;
 
    --  One session, A initiating. Messages flow one direction at a time:
-   --  each side only answers what it received. Rounds counts one-way
-   --  deliveries; Delivered counts frames handed to a replica.
+   --  each side only answers what it received. Each side's gate admits
+   --  the peer as soon as its OPEN arrives (the caller's content checks
+   --  are out of scope here). Rounds counts one-way batches; Delivered
+   --  counts frames handed to a replica.
    procedure Run_Session
      (A, B : in out Replica; Rounds : out Natural; Delivered : out Natural;
       All_OK : out Boolean; Both_Complete : out Boolean)
@@ -228,7 +284,8 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       SB : Snapshot (Cap => 256, Pool_Cap => 400_000);
       Sess_A, Sess_B : Session;
       To_B, To_A : Msg_Vectors.Vector;
-      O  : Outbox;
+      Buf : Msg_Buffer;
+      L   : Msg_Length;
 
       procedure Snap (R : in out Replica; S : in out Snapshot) is
          St : Snap_Status;
@@ -243,16 +300,8 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          end loop;
       end Snap;
 
-      procedure Emit (R : Replica; S : Snapshot; O : Outbox;
-                      Q : in out Msg_Vectors.Vector) is
-         Buf : Msg_Buffer;
-         L   : Msg_Length;
+      procedure Emit (S : Snapshot; O : Outbox; Q : in out Msg_Vectors.Vector) is
       begin
-         if O.Hello then
-            Encode_Hello (R.Regs, Kome.Reconcile.Count (S), R.WL (1 .. R.NW),
-                          No_Roots, Buf, L);
-            Q.Append (Slice (Buf, L));
-         end if;
          for T in 1 .. O.N loop
             Encode (S, O.P (T), Group (O), Buf, L);
             Q.Append (Slice (Buf, L));
@@ -266,35 +315,44 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          In_Q : in out Msg_Vectors.Vector; Out_Q : in out Msg_Vectors.Vector)
       is
          M    : Message;
+         Op   : Open_Msg;
          Peer : Hello;
          Got  : Delivery;
          St   : Session_Status;
          O2   : Outbox;
+         O3   : Outbox;
       begin
          for Raw of In_Q loop
-            Receive (Sess, S, R.Regs, True, Raw, M, Peer, O2, Got, St);
+            Receive (Sess, S, Raw, M, Op, Peer, O2, Got, St);
             if St /= S_OK then
                All_OK := False;
             end if;
-            --  Keep the W mirror in step with the join (test bookkeeping).
-            if St = S_OK and then M.Kind = M_Hello then
-               for I in 1 .. Natural (Peer.N) loop
-                  Mirror (R, Peer.W (I));
-               end loop;
+            if St = S_OK and then M.Kind = M_Open then
+               --  The gate admits the peer: our HELLO.
+               Admit (Sess, S, Cred_T, Buf, L, O3);
+               Out_Q.Append (Slice (Buf, L));
+               Emit (S, O3, Out_Q);
             end if;
             for T in Got'Range loop
                if Got (T) then
                   declare
                      It : constant In_Item := M.Items (T);
                   begin
-                     Apply (R, It.Key, Raw (It.Off .. It.Off + It.Len - 1));
+                     if not Holds (R, It.Key) then
+                        Add (R, It.Key, Raw (It.Off .. It.Off + It.Len - 1));
+                     end if;
                      Delivered := Delivered + 1;
                   end;
                end if;
             end loop;
-            Emit (R, S, O2, Out_Q);
+            Emit (S, O2, Out_Q);
          end loop;
          In_Q.Clear;
+         --  The initiator, nothing open in Auth: on to the data range.
+         if Sess.R = Initiator and then Sess.P = Auth and then Sess.Pending = 0 then
+            Next_Phase (Sess, S, O2);
+            Emit (S, O2, Out_Q);
+         end if;
       end Deliver_All;
 
    begin
@@ -303,10 +361,10 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       Delivered := 0;
       Snap (A, SA);
       Snap (B, SB);
-      Start (Sess_A, Initiator, O);
-      Emit (A, SA, O, To_B);
-      Start (Sess_B, Responder, O);
-      Emit (B, SB, O, To_A);
+      Start (Sess_A, Initiator, NS_X, No_Voids, 0, Buf, L);
+      To_B.Append (Slice (Buf, L));
+      Start (Sess_B, Responder, NS_X, No_Voids, 0, Buf, L);
+      To_A.Append (Slice (Buf, L));
       while not To_B.Is_Empty or else not To_A.Is_Empty loop
          if not To_B.Is_Empty then
             Rounds := Rounds + 1;
@@ -321,25 +379,6 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       Both_Complete := Complete (Sess_A) and then Complete (Sess_B);
    end Run_Session;
 
-   function Same_Set (A, B : Replica) return Boolean is
-   begin
-      if Natural (A.Els.Length) /= Natural (B.Els.Length) then
-         return False;
-      end if;
-      for E of A.Els loop
-         if not Holds (B, E.Key) then
-            return False;
-         end if;
-      end loop;
-      return True;
-   end Same_Set;
-
-   --  The number of our elements in [Lo, Hi): My_Count, which is ghost.
-   function Cnt (S : Snapshot; Lo, Hi : Elem_Key) return Natural is
-     (Window (S, Lo, Hi).Last + 1 - Window (S, Lo, Hi).First);
-
-   No_Bytes : constant Byte_Array (1 .. 0) := [];
-
    Small : Snapshot (Cap => 64, Pool_Cap => 300_000);
    St    : Snap_Status;
 
@@ -352,6 +391,7 @@ begin
       B : constant Elem_Key := EK (3, 1, 1, 1);
       C : constant Elem_Key := EK (3, 1, 1, 2);
       D : constant Elem_Key := EK (3, 1, 2, 0);
+      P : constant Elem_Key := EK (4, 0, 0, 0);
    begin
       Lemma_Key_Lt_Irrefl (A);
       Lemma_Key_Lt_Trans (A, B, C);
@@ -362,7 +402,51 @@ begin
       Check ("h decides last", Key_Lt (B, C) and then not Key_Lt (C, B));
       Check ("field before h", Key_Lt (C, D));
       Check ("Min_Key <= every key < Max_Key",
-             Key_Le (Min_Key, A) and then Key_Lt (D, Max_Key));
+             Key_Le (Min_Key, A) and then Key_Lt (D, Max_Key) and then Key_Lt (P, Max_Key));
+      Check ("Data_Lo splits: authorization kinds below, DEL and PUT at or above",
+             Key_Lt (EK (2, 255, 255, 255), Data_Lo) and then Key_Le (Data_Lo, B)
+             and then Key_Le (Data_Lo, P) and then Key_Lt (Min_Key, Data_Lo));
+      Check ("Data_Lo is 03 followed by 80 zero bytes",
+             To_Wire (Data_Lo) = [3] & [1 .. 80 => 0]);
+   end;
+   --  Key_Lt is bytewise order on the 81-byte wire key.
+   declare
+      Keys : constant array (1 .. 12) of Elem_Key :=
+        [EK (0, 0, 0, 0), EK (0, 0, 0, 1), EK (0, 1, 0, 0), EK (1, 0, 9, 9),
+         EK (2, 7, 7, 7), EK (3, 7, 7, 7), EK (3, 7, 8, 0), EK (4, 0, 0, 0),
+         (K => 3, Ent => (W0 => 1, others => 0), FH => (others => 0), H => (others => 0)),
+         (K => 3, Ent => (others => 0), FH => (W7 => 5, others => 0), H => (others => 0)),
+         (K => 3, Ent => (others => 0), FH => (others => 0), H => (W0 => 16#FF00_0000#, others => 0)),
+         Max_Key];
+      Ok_Lt : Boolean := True;
+      Ok_Eq : Boolean := True;
+   begin
+      for X of Keys loop
+         for Y of Keys loop
+            declare
+               WX : constant Key_Wire := To_Wire (X);
+               WY : constant Key_Wire := To_Wire (Y);
+            begin
+               Lemma_Key_Eq_Is_Bytewise (WX, WY);
+               if Wire_Key (WX, 0) /= X or else Wire_Key (WY, 0) /= Y then
+                  Ok_Eq := False;
+               end if;
+               if Key_Lt (X, Y) /= (WX < WY) or else (X = Y) /= (WX = WY) then
+                  Ok_Lt := False;
+               end if;
+               if WX /= WY then
+                  for I in Key_Wire'Range loop
+                     if WX (I) /= WY (I) then
+                        Lemma_Key_Lt_First_Difference (WX, WY, I);
+                        exit;
+                     end if;
+                  end loop;
+               end if;
+            end;
+         end loop;
+      end loop;
+      Check ("Wire_Key reads back the encoded key", Ok_Eq);
+      Check ("Key_Lt is bytewise order on the wire key (144 pairs)", Ok_Lt);
    end;
 
    ----------------------------------------------------------------------
@@ -377,14 +461,22 @@ begin
           St = Snap_Unsorted and then Kome.Reconcile.Count (Small) = 1);
    Append (Small, EK (3, 2, 2, 2), Frame_Of (10, 1), St);
    Check ("append duplicate refused", St = Snap_Unsorted);
-   Append (Small, EK (4, 9, 9, 9), Frame_Of (10, 1), St);
-   Check ("append kind 4 refused", St = Snap_Bad_Kind);
-   Append (Small, EK (3, 3, 3, 3), Frame_Of (Frame_Ship_Max + 1, 1), St);
+   Append (Small, EK (5, 9, 9, 9), Frame_Of (10, 1), St);
+   Check ("append kind 5 refused", St = Snap_Bad_Kind);
+   Append (Small, EK (4, 1, 1, 1), Frame_Of (10, 1), St);
+   Check ("append a PUT (kind 4)", St = Snap_OK and then Kome.Reconcile.Count (Small) = 2);
+   Append (Small, EK (4, 3, 3, 3), Frame_Of (Frame_Ship_Max + 1, 1), St);
    Check ("append frame over Frame_Ship_Max refused", St = Snap_Too_Large);
-   Append (Small, EK (3, 3, 3, 3), Frame_Of (Frame_Ship_Max, 7), St);
+   Append (Small, EK (4, 3, 3, 3), No_Bytes, St);
+   Check ("append empty frame refused", St = Snap_Too_Large);
+   Lemma_Frame_Ships (Kome.Records.Frame_Max);
+   Append (Small, EK (4, 3, 3, 3), Frame_Of (Kome.Records.Frame_Max, 9), St);
+   Check ("append a frame of Kome.Records.Frame_Max = 41 136 bytes",
+          St = Snap_OK and then Frame (Small, 3) = Frame_Of (41_136, 9));
+   Append (Small, EK (4, 4, 4, 4), Frame_Of (Frame_Ship_Max, 7), St);
    Check ("append frame of exactly Frame_Ship_Max",
-          St = Snap_OK and then Kome.Reconcile.Count (Small) = 2
-          and then Frame (Small, 2) = Frame_Of (Frame_Ship_Max, 7));
+          St = Snap_OK and then Kome.Reconcile.Count (Small) = 4
+          and then Frame (Small, 4) = Frame_Of (Frame_Ship_Max, 7));
    declare
       Tiny : Snapshot (Cap => 1, Pool_Cap => 5);
    begin
@@ -405,11 +497,13 @@ begin
       W2 : constant Span := Window (Small, Key (Small, 3), Key (Small, 7));
       W3 : constant Span := Window (Small, EK (3, 3, 3, 4), EK (3, 3, 3, 5));
       W4 : constant Span := Window (Small, EK (3, 3, 3, 4), EK (3, 6, 0, 0));
+      W5 : constant Span := Window (Small, Min_Key, Data_Lo);
    begin
       Check ("window of the whole range", W1.First = 1 and then W1.Last = 10);
       Check ("window [k3, k7) is 3 .. 6", W2.First = 3 and then W2.Last = 6);
       Check ("empty window between two keys", W3.Last + 1 = W3.First);
       Check ("window between keys is 4 .. 5", W4.First = 4 and then W4.Last = 5);
+      Check ("no DEL in the authorization range", W5.Last + 1 = W5.First);
       Check ("count of [k3, k7) is 4", Cnt (Small, Key (Small, 3), Key (Small, 7)) = 4);
       Lemma_Child (Small, Min_Key, Max_Key, 1, 10, 4, 6);
       Lemma_My_Count (Small, Key (Small, 3), Key (Small, 7), 3, 6);
@@ -482,6 +576,10 @@ begin
          Decode (Slice (B2, L), M, OK);
          Check ("unknown tag refused", not OK);
          B2 := Buf;
+         B2 (0) := Tag_Open;
+         Decode (Slice (B2, L), M, OK);
+         Check ("Decode refuses the OPEN tag", not OK);
+         B2 := Buf;
          B2 (Elems_O_N) := 5;
          Decode (Slice (B2, L), M, OK);
          Check ("more than Ship_Threshold items refused", not OK);
@@ -495,17 +593,14 @@ begin
          B2 : Msg_Buffer := Buf;
          Item : constant Natural := 85 + 20;
       begin
-         --  Swap the two items in place.
          B2 (Elems_Fixed .. Elems_Fixed + Item - 1) := Buf (Elems_Fixed + Item .. Elems_Fixed + 2 * Item - 1);
          B2 (Elems_Fixed + Item .. Elems_Fixed + 2 * Item - 1) := Buf (Elems_Fixed .. Elems_Fixed + Item - 1);
          Decode (Slice (B2, L), M, OK);
          Check ("descending items refused", not OK);
-         --  An item kind of 4.
          B2 := Buf;
-         B2 (Elems_Fixed) := 4;
+         B2 (Elems_Fixed) := 5;
          Decode (Slice (B2, L), M, OK);
-         Check ("item of kind 4 refused", not OK);
-         --  A zero frame length.
+         Check ("item of kind 5 refused", not OK);
          B2 := Buf;
          B2 (Elems_Fixed + 81 .. Elems_Fixed + 84) := [0, 0, 0, 0];
          Decode (Slice (B2, L), M, OK);
@@ -535,82 +630,234 @@ begin
          Decode (Buf (0 .. Elems_Fixed + 85 + 20 - 1), M, OK);
          Check ("item outside [lo, hi) refused", not OK);
       end;
+   end;
 
-      --  HELLO.
+   --  OPEN and HELLO round trips at both ends of their ranges.
+   declare
+      Buf : Msg_Buffer;
+      L   : Msg_Length;
+      O   : Open_Msg;
+      H   : Hello;
+      OK  : Boolean;
+      RVs : Rv_Array;
+      Dg  : constant Hash256 := [for I in 0 .. 31 => Byte (I * 7 mod 256)];
+   begin
+      Encode_Open ((Proto => Proto_Version, NS => NS_X, N_RV => 0, RV => No_Voids), Buf, L);
+      Decode_Open (Slice (Buf, L), O, OK);
+      Check ("OPEN with 0 frames: 19 bytes, round trip",
+             OK and then L = 19 and then Open_Wire_OK (Slice (Buf, L))
+             and then O.NS = NS_X and then O.N_RV = 0 and then O.Proto = 1
+             and then O.RV = No_Voids);
+      for I in Rv_Index loop
+         RVs (I) := [for J in 0 .. Rv_Frame_Len - 1 => Byte ((I * 31 + J) mod 256)];
+      end loop;
+      Encode_Open ((Proto => Proto_Version, NS => NS_Y, N_RV => Rv_Max, RV => RVs), Buf, L);
+      Decode_Open (Slice (Buf, L), O, OK);
+      Check ("OPEN with 15 frames: Open_Max_Len = 4 144 bytes, round trip",
+             OK and then L = Open_Max_Len and then L = 4_144
+             and then O.NS = NS_Y and then O.N_RV = 15 and then O.RV = RVs);
+      Encode_Open ((Proto => Proto_Version, NS => NS_Y, N_RV => 2, RV => RVs), Buf, L);
+      Decode_Open (Slice (Buf, L), O, OK);
+      Check ("OPEN with 2 frames is canonical: unused frames zero",
+             OK and then L = 19 + 2 * 275 and then O.RV (2) = RVs (2)
+             and then O.RV (3) = Zero_Rv and then O.RV (15) = Zero_Rv);
       declare
-         R  : Register_File := Kome.Registers.Empty;
-         WL : constant Writer_List := [K256 (1), K256 (2), K256 (3)];
-         RL : constant Writer_List := [K256 (9)];
-         H  : Hello;
+         B2 : Msg_Buffer := Buf;
       begin
-         Raise_Ceiling (R, 16#1234_5678_9ABC#);
-         for K of WL loop
-            Add_Writer (R, K);
-         end loop;
-         Encode_Hello (R, 42, WL, RL, Buf, L);
-         Decode_Hello (Slice (Buf, L), H, OK);
-         Check ("HELLO round trip",
-                OK and then L = Hello_Len (3, 1) and then H.Ceil = 16#1234_5678_9ABC#
-                and then H.F_Cnt = 42 and then H.N = 3 and then H.W (2) = K256 (2)
-                and then H.R = 1 and then H.Roots (1) = K256 (9));
-         declare
-            B2 : Msg_Buffer := Buf;
-         begin
-            B2 (15 .. 46) := Buf (47 .. 78);
-            B2 (47 .. 78) := Buf (15 .. 46);
-            Decode_Hello (Slice (B2, L), H, OK);
-            Check ("HELLO with a descending writer list refused", not OK);
-            Decode_Hello (Buf (0 .. L - 2), H, OK);
-            Check ("truncated HELLO refused", not OK);
-            B2 := Buf;
-            B2 (Hello_O_N + 1) := 4;
-            Decode_Hello (Slice (B2, L), H, OK);
-            Check ("HELLO whose counts disagree with its length refused", not OK);
-         end;
+         B2 (Open_O_Proto) := 2;
+         Decode_Open (Slice (B2, L), O, OK);
+         Check ("OPEN with a wrong proto refused", not OK);
+         B2 := Buf;
+         B2 (Open_O_NRV) := 16;
+         Decode_Open (B2 (0 .. 19 + 16 * 275 - 1), O, OK);
+         Check ("OPEN with n_rv = 16 refused", not OK);
+         Decode_Open (Buf (0 .. L - 2), O, OK);
+         Check ("truncated OPEN refused", not OK);
+         Decode_Open (Buf (0 .. L), O, OK);
+         Check ("OPEN with a trailing byte refused", not OK);
+         B2 := Buf;
+         B2 (0) := Tag_Hello;
+         Decode_Open (Slice (B2, L), O, OK);
+         Check ("OPEN with the HELLO tag refused", not OK);
       end;
+
+      Encode_Hello (7, 16#FFFF_FFFF#, Dg, No_Bytes, Buf, L);
+      Decode_Hello (Slice (Buf, L), H, OK);
+      Check ("HELLO with cred_len 0: 43 bytes, round trip",
+             OK and then L = Hello_Fixed and then L = 43
+             and then Hello_Wire_OK (Slice (Buf, L))
+             and then H.N_Auth = 7 and then H.N_Data = 16#FFFF_FFFF#
+             and then H.Digest = Dg and then H.Cred_Len = 0
+             and then H.Cred = [0 .. Cred_Max - 1 => 0]);
+      Check ("claimed counts enter as min (claimed, Elem_Max)",
+             Claim (H.N_Data) = Elem_Max and then Claim (H.N_Auth) = 7);
       declare
-         R    : Register_File := Kome.Registers.Empty;
-         Many : constant Writer_List (1 .. Writers_Max) :=
-           [for I in 1 .. Writers_Max => (W0 => Word (I), others => 0)];
-         Rts  : constant Writer_List (1 .. Roots_Ever_Max) :=
-           [for I in 1 .. Roots_Ever_Max => (W0 => Word (I), others => 1)];
-         H    : Hello;
+         Big : constant Byte_Array (5 .. Cred_Max + 4) :=
+           [for I in 5 .. Cred_Max + 4 => Byte (I mod 253)];
       begin
-         for K of Many loop
-            Add_Writer (R, K);
-         end loop;
-         Encode_Hello (R, 0, Many, Rts, Buf, L);
+         Encode_Hello (1, 2, Dg, Big, Buf, L);
          Decode_Hello (Slice (Buf, L), H, OK);
-         Check ("HELLO with Writers_Max writers and Roots_Ever_Max roots fits",
-                OK and then L = Hello_Max_Len and then H.N = Writers_Max
-                and then H.R = Roots_Ever_Max);
+         Check ("HELLO with cred_len 10 099: Hello_Max_Len = 10 142 bytes, round trip",
+                OK and then L = Hello_Max_Len and then L = 10_142
+                and then H.Cred_Len = 10_099 and then H.Cred = Big
+                and then H.N_Auth = 1 and then H.N_Data = 2);
+      end;
+      Encode_Hello (1, 2, Dg, Cred_T, Buf, L);
+      declare
+         B2 : Msg_Buffer := Buf;
+      begin
+         Decode_Hello (Buf (0 .. L - 2), H, OK);
+         Check ("truncated HELLO refused", not OK);
+         Decode_Hello (Buf (0 .. L), H, OK);
+         Check ("HELLO with a trailing byte refused", not OK);
+         B2 (Hello_O_CLen) := 16#27#;
+         B2 (Hello_O_CLen + 1) := 16#74#;    --  10 100 > Cred_Max
+         Decode_Hello (B2 (0 .. Hello_Fixed + 10_100 - 1), H, OK);
+         Check ("HELLO with cred_len > Cred_Max refused", not OK);
+         B2 := Buf;
+         B2 (0) := Tag_Open;
+         Decode_Hello (Slice (B2, L), H, OK);
+         Check ("HELLO with the OPEN tag refused", not OK);
       end;
    end;
 
+   --  Known answers (vectors/reconcile.txt).
+   declare
+      Path  : constant String := Find ("vectors/reconcile.txt");
+      F     : File_Type;
+      Line  : String (1 .. 20_000);
+      Last  : Natural;
+      N_Vec : Natural := 0;
+      Ok    : Boolean := True;
+      Buf   : Msg_Buffer;
+      L     : Msg_Length;
+      type Bounds is record
+         First, Last : Natural;
+      end record;
+      Fields   : array (1 .. 8) of Bounds;
+      N_Fields : Natural;
+
+      procedure Tokenize (S : String) is
+         I : Natural := S'First;
+      begin
+         N_Fields := 0;
+         while I <= S'Last and then N_Fields < Fields'Last loop
+            while I <= S'Last and then S (I) = ' ' loop
+               I := I + 1;
+            end loop;
+            exit when I > S'Last;
+            N_Fields := N_Fields + 1;
+            Fields (N_Fields).First := I;
+            while I <= S'Last and then S (I) /= ' ' loop
+               I := I + 1;
+            end loop;
+            Fields (N_Fields).Last := I - 1;
+         end loop;
+      end Tokenize;
+
+      function Field (K : Positive) return String is
+        (Line (Fields (K).First .. Fields (K).Last));
+   begin
+      if not Ada.Directories.Exists (Path) then
+         Check ("vectors present (" & Path & ")", False);
+      else
+         Open (F, In_File, Path);
+         while not End_Of_File (F) loop
+            Get_Line (F, Line, Last);
+            if Last > 0 and then Line (1) /= '#' then
+               Tokenize (Line (1 .. Last));
+               if Field (1) = "open" and then N_Fields = 4 then
+                  declare
+                     NSB  : constant Byte_Array := From_Hex (Field (2));
+                     Fr   : constant Byte_Array := From_Hex (Field (3));
+                     Want : constant Byte_Array := From_Hex (Field (4));
+                     RVs  : Rv_Array := No_Voids;
+                     N    : constant Natural := Fr'Length / Rv_Frame_Len;
+                     O    : Open_Msg;
+                     OK   : Boolean;
+                  begin
+                     N_Vec := N_Vec + 1;
+                     for I in 1 .. N loop
+                        RVs (I) := Fr (Fr'First + Rv_Frame_Len * (I - 1)
+                                       .. Fr'First + Rv_Frame_Len * I - 1);
+                     end loop;
+                     Encode_Open ((Proto => Proto_Version,
+                                   NS    => Kome.Keys.To_Id128 (NSB),
+                                   N_RV  => N, RV => RVs), Buf, L);
+                     Decode_Open (Want, O, OK);
+                     if Slice (Buf, L) /= Want or else not OK or else O.N_RV /= N
+                       or else O.NS /= Kome.Keys.To_Id128 (NSB)
+                     then
+                        Ok := False;
+                        Put_Line ("  mismatch: open " & Field (2));
+                     end if;
+                  end;
+               elsif Field (1) = "hello" and then N_Fields = 6 then
+                  declare
+                     NA   : constant Word := Word'Value (Field (2));
+                     ND   : constant Word := Word'Value (Field (3));
+                     Dg   : constant Byte_Array := From_Hex (Field (4));
+                     Cr   : constant Byte_Array := From_Hex (Field (5));
+                     Want : constant Byte_Array := From_Hex (Field (6));
+                     H    : Hello;
+                     OK   : Boolean;
+                  begin
+                     N_Vec := N_Vec + 1;
+                     Encode_Hello (NA, ND, Dg, Cr, Buf, L);
+                     Decode_Hello (Want, H, OK);
+                     if Slice (Buf, L) /= Want or else not OK or else H.N_Auth /= NA
+                       or else H.N_Data /= ND or else H.Cred_Len /= Cr'Length
+                     then
+                        Ok := False;
+                        Put_Line ("  mismatch: hello " & Field (2));
+                     end if;
+                  end;
+               end if;
+            end if;
+         end loop;
+         Close (F);
+         Check ("OPEN and HELLO match the known answers (" & N_Vec'Image & " vectors)",
+                Ok and then N_Vec >= 4);
+      end if;
+   end;
+
    ----------------------------------------------------------------------
-   --  (e) The responder.
+   --  (e) The responder and the reply contract.
    ----------------------------------------------------------------------
    Fill (Small, 40, 20);
    declare
       M   : Message;
       O   : Outbox;
       Got : Delivery;
+      Mut : Outbox;
    begin
       M := Msg (M_Range, Min_Key, Max_Key, 40, Range_Fp (Small, 1, 40));
       Respond (Small, M, O, Got);
       Check ("equal fingerprint: an explicit confirm, nothing delivered",
              Is_Confirm (O, Min_Key, Max_Key) and then O.Reply
-             and then Got = No_Delivery and then Plans_Fit (Small, O));
+             and then Got = No_Delivery and then Plans_Fit (Small, O)
+             and then Answers_T (Small, M, O));
 
       M.Count := 39;
       Respond (Small, M, O, Got);
       Check ("40 elements, mismatch: 16-way split",
-             O.N = 16 and then Tiles (O, Min_Key, Max_Key) and then Plans_Fit (Small, O));
+             O.N = 16 and then Tiles (O, Min_Key, Max_Key) and then Plans_Fit (Small, O)
+             and then All_Kind (O, P_Range) and then Exact_Plans (Small, O)
+             and then Answers_T (Small, M, O));
+      --  The mutant the old contract allowed: an empty HAVE for every
+      --  mismatched RANGE. It violates the reply contract.
+      Mut := O;
+      Mut.N := 1;
+      Mut.P (1) := Confirm_Plan (Min_Key, Max_Key);
+      Check ("empty-HAVE mutant to a mismatched RANGE violates the contract",
+             not Confirms (Small, M) and then not Answers_T (Small, M, Mut)
+             and then not All_Kind (Mut, P_Range) and then not All_Kind (Mut, P_Elements));
       declare
          Ok : Boolean := O.P (1).Lo = Min_Key and then O.P (16).Hi = Max_Key;
          Sum : Natural := 0;
       begin
          for T in 1 .. O.N loop
+            Lemma_Exact_Plan (Small, O, T);
             Ok := Ok and then O.P (T).Kind = P_Range
                   and then Cnt (Small, O.P (T).Lo, O.P (T).Hi) < 40
                   and then Cnt (Small, O.P (T).Lo, O.P (T).Hi) >= 1;
@@ -624,13 +871,22 @@ begin
                 and then Obligations (O) = 16 and then Item_Bytes (Small, O) = 0);
       end;
 
+      --  A mutant whose child RANGE carries a run that is not its window.
+      Mut := O;
+      Mut.P (2).Last := Mut.P (2).Last - 1;
+      Check ("a child with a short run is not exact", not Exact_Plans (Small, Mut));
+
       M := Msg (M_Range, Key (Small, 5), Key (Small, 9));
       Respond (Small, M, O, Got);
       Check ("4 elements, mismatch: one ELEMENTS",
              O.N = 1 and then O.P (1).Kind = P_Elements
              and then O.P (1).First = 5 and then O.P (1).Last = 8
              and then Item_Bytes (Small, O) = 4 * (85 + 20)
-             and then Plans_Fit (Small, O));
+             and then Plans_Fit (Small, O) and then Answers_T (Small, M, O));
+      Mut := O;
+      Mut.P (1) := Confirm_Plan (Key (Small, 5), Key (Small, 9));
+      Check ("empty-HAVE mutant to a small mismatched RANGE violates the contract",
+             not Answers_T (Small, M, Mut));
 
       M := Msg (M_Range, Key (Small, 5), Key (Small, 11));
       Respond (Small, M, O, Got);
@@ -638,7 +894,15 @@ begin
              O.N = 6 and then Tiles (O, Key (Small, 5), Key (Small, 11))
              and then (for all T in 1 .. 6 => O.P (T).Kind = P_Range
                                  and then O.P (T).First = O.P (T).Last)
-             and then Plans_Fit (Small, O));
+             and then Plans_Fit (Small, O) and then Answers_T (Small, M, O));
+
+      --  A mismatched RANGE over an empty window: an empty ELEMENTS.
+      M := Msg (M_Range, EK (3, 5, 5, 6), EK (3, 6, 0, 0), 1);
+      Respond (Small, M, O, Got);
+      Check ("mismatch over an empty window: one empty ELEMENTS, exact",
+             O.N = 1 and then O.P (1).Kind = P_Elements
+             and then O.P (1).Last + 1 = O.P (1).First
+             and then Answers_T (Small, M, O));
 
       --  ELEMENTS from the peer listing k5 and a key we lack; we hold
       --  k5 .. k8 in the range, so HAVE answers k6, k7, k8 and the
@@ -655,12 +919,17 @@ begin
              O.N = 1 and then O.P (1).Kind = P_Have and then O.P (1).N = 3
              and then O.P (1).Items (1) = 6 and then O.P (1).Items (3) = 8
              and then Have_Exact (Small, M, O)
-             and then Plans_Fit (Small, O));
+             and then Plans_Fit (Small, O) and then Answers_T (Small, M, O));
+      Mut := O;
+      Mut.P (1) := Confirm_Plan (Key (Small, 5), Key (Small, 9));
+      Check ("empty-HAVE mutant to ELEMENTS (peer lacks 3) violates the contract",
+             not Answers_T (Small, M, Mut));
 
       M.Kind := M_Have;
       Respond (Small, M, O, Got);
       Check ("HAVE: delivered, never answered",
-             O.N = 0 and then Got = [False, True, False, False]);
+             O.N = 0 and then Got = [False, True, False, False]
+             and then Answers_T (Small, M, O));
 
       --  ELEMENTS listing everything we hold in the range: an empty HAVE.
       M := Msg (M_Elements, Key (Small, 5), Key (Small, 7));
@@ -672,6 +941,13 @@ begin
       Check ("ELEMENTS with nothing missing either way: confirm, nothing delivered",
              Is_Confirm (O, Key (Small, 5), Key (Small, 7))
              and then Got = No_Delivery and then Plans_Fit (Small, O));
+
+      --  ELEMENTS over a range where we hold more than Ship_Threshold:
+      --  the split, never a HAVE.
+      M := Msg (M_Elements, Min_Key, Max_Key);
+      Respond (Small, M, O, Got);
+      Check ("ELEMENTS where we hold 40: a split, all RANGE, exact",
+             O.N = 16 and then All_Kind (O, P_Range) and then Answers_T (Small, M, O));
    end;
 
    --  Large frames: three of 20 000 bytes do not fit one message.
@@ -688,7 +964,7 @@ begin
                                  and then O.P (T).First = T and then O.P (T).Last = T)
              and then O.P (1).Lo = Min_Key and then O.P (3).Hi = Max_Key
              and then O.P (1).Hi = O.P (2).Lo and then O.P (2).Hi = O.P (3).Lo
-             and then Plans_Fit (Small, O));
+             and then Plans_Fit (Small, O) and then Answers_T (Small, M, O));
       M.Kind := M_Elements;
       Respond (Small, M, O, Got);
       Check ("HAVE too large for one message: one per element",
@@ -697,251 +973,445 @@ begin
              and then Have_Exact (Small, M, O)
              and then Plans_Fit (Small, O));
    end;
-   --  Two frames of Frame_Ship_Max: each alone is exactly Max_Message_Len.
+   --  Two frames of Frame_Ship_Max: each alone is exactly Max_Message_Len;
+   --  and the largest well-formed frame ships.
    Clear (Small);
    Append (Small, EK (3, 1, 1, 1), Frame_Of (Frame_Ship_Max, 1), St);
-   Append (Small, EK (3, 2, 2, 2), Frame_Of (Frame_Ship_Max, 2), St);
+   Append (Small, EK (4, 2, 2, 2), Frame_Of (Frame_Ship_Max, 2), St);
+   Append (Small, EK (4, 3, 3, 3), Frame_Of (Kome.Records.Frame_Max, 3), St);
    declare
       M   : Message;
       O   : Outbox;
       Got : Delivery;
       Buf : Msg_Buffer;
       L   : Msg_Length;
+      OK  : Boolean;
    begin
       M := Msg (M_Range, Min_Key, Max_Key);
       Respond (Small, M, O, Got);
       Encode (Small, O.P (1), Group (O), Buf, L);
       Check ("largest frame ships in a message of exactly Max_Message_Len",
-             O.N = 2 and then L = Max_Message_Len and then Plans_Fit (Small, O));
+             O.N = 3 and then L = Max_Message_Len and then Plans_Fit (Small, O));
+      Encode (Small, O.P (3), Group (O), Buf, L);
+      Decode (Slice (Buf, L), M, OK);
+      Check ("a 41 136-byte frame ships in one ELEMENTS",
+             OK and then M.N = 1 and then M.Items (1).Len = 41_136
+             and then Buf (M.Items (1).Off .. M.Items (1).Off + 41_135)
+                      = Frame_Of (41_136, 3));
    end;
 
    ----------------------------------------------------------------------
-   --  (f) The HELLO join.
+   --  (f) The session state machine.
    ----------------------------------------------------------------------
+   --  Small: 3 authorization records (kinds 0, 1, 2) and 6 data records.
+   Clear (Small);
+   Append (Small, EK (0, 1, 1, 1), Frame_Of (30, 1), St);
+   Append (Small, EK (1, 2, 2, 2), Frame_Of (30, 2), St);
+   Append (Small, EK (2, 3, 3, 3), Frame_Of (30, 3), St);
+   for I in Byte range 4 .. 9 loop
+      Append (Small, EK ((if I <= 6 then 3 else 4), I, I, I), Frame_Of (30, I), St);
+   end loop;
+   Check ("session snapshot: 3 authorization and 6 data records",
+          Kome.Reconcile.Count (Small) = 9 and then Cnt (Small, Min_Key, Data_Lo) = 3);
    declare
-      R  : Register_File := Kome.Registers.Empty;
-      H  : Hello;
-      JR : Join_Status;
+      Other : constant Hash256 := [others => 16#EE#];
+      Ours  : constant Hash256 := Range_Fp (Small, 1, Kome.Reconcile.Count (Small));
+      Sess  : Session;
+      Saved : Session;
+      O     : Outbox;
+      Res   : Session_Status;
+      Buf   : Msg_Buffer;
+      L     : Msg_Length;
+      M     : Message;
+      Op    : Open_Msg;
+      Peer  : Hello;
+      Got   : Delivery;
+      OK    : Boolean;
+      Auth_Root : constant Byte_Array :=
+        Plan_Bytes (Small, Range_Plan (Small, Min_Key, Data_Lo), 0);
+      Data_Root : constant Byte_Array :=
+        Plan_Bytes (Small, Range_Plan (Small, Data_Lo, Max_Key), 0);
    begin
-      Raise_Ceiling (R, 100);
-      Add_Writer (R, K256 (1));
-      H.Ceil := 50;
-      H.N := 2;
-      H.W (1) := K256 (2);
-      H.W (2) := K256 (3);
-      Join (R, H, JR);
-      Check ("join keeps the larger ceiling", JR = J_OK and then Ceil (R) = 100);
-      Check ("join is the union of the writer sets, and nothing else",
-             In_W (R, K256 (1)) and then In_W (R, K256 (2)) and then In_W (R, K256 (3))
-             and then Kome.Registers.Count (R) = 3 and then Has_All (R, H));
-      H.Ceil := 500;
-      Join (R, H, JR);
-      Check ("join raises to the peer's ceiling, idempotent on W",
-             JR = J_OK and then Ceil (R) = 500 and then Kome.Registers.Count (R) = 3);
-   end;
-   declare
-      R  : Register_File := Kome.Registers.Empty;
-      H  : Hello;
-      JR : Join_Status;
-   begin
-      for I in 1 .. Writers_Max loop
-         Add_Writer (R, (W0 => Word (I), others => 0));
-      end loop;
-      H.N := 2;
-      H.W (1) := (W0 => 1, others => 0);             --  already held
-      H.W (2) := (W0 => 0, others => 7);             --  new: no room
-      Join (R, H, JR);
-      Check ("join at Writers_Max reports the dropped key",
-             JR = J_W_Full and then Kome.Registers.Count (R) = Writers_Max
-             and then not In_W (R, H.W (2)) and then In_W (R, H.W (1)));
-   end;
+      --  Start: our OPEN.
+      Start (Sess, Responder, NS_X, No_Voids, 0, Buf, L);
+      Decode_Open (Slice (Buf, L), Op, OK);
+      Check ("Start emits our OPEN (ns, no revocations)",
+             OK and then Op.NS = NS_X and then Op.N_RV = 0 and then Sess.P = Await_Open);
 
-   ----------------------------------------------------------------------
-   --  (g) The session state machine.
-   ----------------------------------------------------------------------
-   Fill (Small, 10, 20);
-   declare
-      Sess : Session;
-      R    : Register_File := Kome.Registers.Empty;
-      O    : Outbox;
-      M    : Message;
-      Peer : Hello;
-      Got  : Delivery;
-      Res  : Session_Status;
-      Buf  : Msg_Buffer;
-      L    : Msg_Length;
-      RBuf : Msg_Buffer;
-      RL   : Msg_Length;
-      CBuf : Msg_Buffer;
-      CL   : Msg_Length;
-      HR   : Register_File := Kome.Registers.Empty;
-      Root : constant Plan :=
-        (Kind => P_Range, Lo => Min_Key, Hi => Max_Key, First => 1,
-         Last => 10, N => 0, Items => [others => 1]);
-      Conf : constant Plan :=
-        (Kind => P_Have, Lo => Min_Key, Hi => Max_Key, First => 1,
-         Last => 0, N => 0, Items => [others => 1]);
-   begin
-      Encode (Small, Root, 0, RBuf, RL);              --  the root RANGE (g = 0)
-      Encode (Small, Conf, 1, CBuf, CL);              --  a confirm (g = 1)
-      Raise_Ceiling (HR, 777);
-      Add_Writer (HR, K256 (4));
-      Encode_Hello (HR, 3, [K256 (4)], No_Roots, Buf, L);
-
-      Start (Sess, Responder, O);
-      Check ("responder starts silent, awaiting HELLO",
-             O.N = 0 and then not O.Hello and then Sess.P = Await_Hello);
-      Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-      Check ("RANGE before HELLO refused, nothing changes",
-             Res = S_Unexpected and then Sess.P = Await_Hello and then Sess.Msgs = 0
-             and then Ceil (R) = 0 and then O.N = 0);
-      Receive (Sess, Small, R, True, Buf (0 .. L - 2), M, Peer, O, Got, Res);
-      Check ("malformed HELLO refused, registers unchanged",
-             Res = S_Malformed and then Ceil (R) = 0 and then Sess.Msgs = 0);
-      Receive (Sess, Small, R, True, No_Bytes, M, Peer, O, Got, Res);
-      Check ("empty input refused", Res = S_Malformed);
+      --  A HELLO or a RANGE before the OPEN is refused.
+      Saved := Sess;
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("a HELLO before the gate refused, nothing changes",
+             Res = S_Unexpected and then Sess = Saved and then O.N = 0);
+      Recv (Sess, Small, Auth_Root, O, Res);
+      Check ("a RANGE before the OPEN refused, nothing changes",
+             Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, No_Bytes, O, Res);
+      Check ("empty input refused", Res = S_Malformed and then Sess = Saved);
       declare
-         S2 : Session;
-         R2 : Register_File := Kome.Registers.Empty;
+         B : Byte_Array := Open_Bytes (NS_X);
       begin
-         Start (S2, Responder, O);
-         Receive (S2, Small, R2, False, Slice (Buf, L), M, Peer, O, Got, Res);
-         Check ("untrusted HELLO: session proceeds, registers unchanged",
-                Res = S_OK and then S2.P = Ready and then Ceil (R2) = 0
-                and then Kome.Registers.Count (R2) = 0 and then Peer.Ceil = 777);
+         B (B'First + Open_O_Proto) := 9;
+         Recv (Sess, Small, B, O, Res);
+         Check ("an OPEN with a wrong proto refused, nothing changes",
+                Res = S_Malformed and then Sess = Saved);
       end;
-      Receive (Sess, Small, R, True, Slice (Buf, L), M, Peer, O, Got, Res);
-      Check ("HELLO joins and is answered with HELLO",
-             Res = S_OK and then Sess.P = Ready and then Ceil (R) = 777
-             and then In_W (R, K256 (4)) and then O.Hello and then O.N = 0
-             and then not Complete (Sess));
-      Receive (Sess, Small, R, True, Slice (Buf, L), M, Peer, O, Got, Res);
-      Check ("second HELLO refused", Res = S_Unexpected and then Sess.Msgs = 1);
-      Receive (Sess, Small, R, True, Slice (CBuf, CL), M, Peer, O, Got, Res);
-      Check ("a reply nobody asked for refused",
-             Res = S_Unexpected and then Sess.Msgs = 1 and then Sess.Pending = 0);
-      declare
-         Saved : constant Session := Sess;
-      begin
-         Sess.Shipped := Ship_Budget (Small);
-         Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-         Check ("root RANGE over our own set: no item bytes needed, accepted",
-                Res = S_OK);
-         Sess := Saved;
-      end;
-      Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-      Check ("root RANGE over our own set: confirmed explicitly, complete",
-             Res = S_OK and then Is_Confirm (O, Min_Key, Max_Key) and then O.Reply
-             and then Sess.Msgs = 2 and then Sess.Pending = 0 and then Complete (Sess));
-      Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-      Check ("a second root RANGE refused", Res = S_Unexpected and then Sess.Msgs = 2);
-      Sess.Msgs := Sess.Budget;
-      Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-      Check ("over the message budget refused",
-             Res = S_Limit and then Sess.Msgs = Sess.Budget);
 
-      --  The initiator: HELLO, then the root RANGE, then the confirm.
-      Start (Sess, Initiator, O);
-      Check ("initiator starts with HELLO",
-             O.Hello and then O.N = 0 and then Sess.P = Hello_Sent);
-      Receive (Sess, Small, R, True, Slice (Buf, L), M, Peer, O, Got, Res);
-      Check ("initiator answers the HELLO with the root RANGE",
-             Res = S_OK and then O.N = 1 and then O.P (1).Kind = P_Range
-             and then Group (O) = 0
-             and then O.P (1).Lo = Min_Key and then O.P (1).Hi = Max_Key
-             and then O.P (1).Last = 10 and then Sess.Pending = Unit
-             and then not Complete (Sess));
-      Receive (Sess, Small, R, True, Slice (RBuf, RL), M, Peer, O, Got, Res);
-      Check ("initiator refuses a root RANGE", Res = S_Unexpected);
+      --  A foreign ns aborts.
+      Receive (Sess, Small, Open_Bytes (NS_Y), M, Op, Peer, O, Got, Res);
+      Check ("an OPEN with a foreign ns aborts the session",
+             Res = S_Aborted and then Sess.P = Done and then Sess.Aborted
+             and then not Complete (Sess) and then Op.NS = NS_Y and then O.N = 0);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Check ("after the abort every message is refused", Res = S_Unexpected);
+
+      --  The OPEN: on to the gate.
+      Start (Sess, Responder, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Check ("our ns: the OPEN opens the gate",
+             Res = S_OK and then Sess.P = Gate and then Sess.Msgs = 1 and then O.N = 0);
+      Saved := Sess;
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Check ("a second OPEN refused", Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Auth_Root, O, Res);
+      Check ("a RANGE in the gate refused (before Auth)",
+             Res = S_Unexpected and then Sess = Saved);
+
+      --  Responder, receive-then-Admit, different digests.
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("responder: the peer's HELLO is stored, still in the gate",
+             Res = S_OK and then Sess.P = Gate and then Sess.Peer_Hello_Seen
+             and then Sess.Peer_Auth = 3 and then Sess.Peer_Data = 4 and then O.N = 0);
+      Saved := Sess;
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("a second HELLO refused", Res = S_Unexpected and then Sess = Saved);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Decode_Hello (Slice (Buf, L), Peer, OK);
+      Check ("responder receive-then-Admit: our HELLO, then Auth, nothing to send",
+             OK and then Sess.P = Auth and then Sess.Hello_Sent and then O.N = 0
+             and then Peer.N_Auth = 3 and then Peer.N_Data = 6
+             and then Peer.Digest = Ours and then Peer.Cred_Len = 300
+             and then Peer.Cred (0 .. 299) = Cred_T
+             and then Sess.Budget = Msg_Budget (9, 7));
+
+      --  The responder in Auth: every wrong g = 0 is refused.
+      Saved := Sess;
+      Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Min_Key, Data_Lo), 0), O, Res);
+      Check ("responder: a g = 0 HAVE refused, nothing changes",
+             Res = S_Unexpected and then Sess = Saved and then O.N = 0);
+      Recv (Sess, Small,
+            Plan_Bytes (Small, (Kind => P_Elements, Lo => Min_Key, Hi => Data_Lo,
+                                First => 1, Last => 3, N => 0, Items => [others => 1]), 0),
+            O, Res);
+      Check ("responder: a g = 0 ELEMENTS refused", Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Plan_Bytes (Small, Range_Plan (Small, Min_Key, Key (Small, 3)), 0), O, Res);
+      Check ("responder: a partial root over [Min_Key, k3) refused",
+             Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Plan_Bytes (Small, Range_Plan (Small, Min_Key, Max_Key), 0), O, Res);
+      Check ("responder: the old whole-space root refused",
+             Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Data_Root, O, Res);
+      Check ("responder: the data root before the authorization root refused",
+             Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Min_Key, Data_Lo), 1), O, Res);
+      Check ("responder: a reply nobody asked for refused",
+             Res = S_Unexpected and then Sess = Saved);
+
+      --  The authorization root with a wrong count: we ship our 3.
       declare
-         Saved : constant Session := Sess;
-         SBuf  : Msg_Buffer;
-         SL    : Msg_Length;
+         R : Byte_Array := Auth_Root;
+      begin
+         R (R'First + Range_O_Count + 3) := 2;
+         Recv (Sess, Small, R, O, Res);
+         Check ("responder: the authorization root accepted, answered with ELEMENTS",
+                Res = S_OK and then Sess.P = Auth and then Sess.Auth_Root_Seen
+                and then O.N = 1 and then O.P (1).Kind = P_Elements
+                and then O.P (1).Last + 1 - O.P (1).First = 3
+                and then Sess.Pending = Unit and then not Complete (Sess));
+         Saved := Sess;
+         Recv (Sess, Small, R, O, Res);
+         Check ("responder: a repeated authorization root refused",
+                Res = S_Unexpected and then Sess = Saved);
+         Recv (Sess, Small, Data_Root, O, Res);
+         Check ("responder: the data root while something is open refused",
+                Res = S_Unexpected and then Sess = Saved);
+      end;
+      --  The peer answers our ELEMENTS (it lacked nothing): an empty HAVE.
+      Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Min_Key, Data_Lo), 1), O, Res);
+      Check ("responder: the answer closes the authorization phase",
+             Res = S_OK and then Sess.P = Auth and then Sess.Pending = 0 and then O.N = 0);
+      Recv (Sess, Small, Data_Root, O, Res);
+      Check ("responder: the data root, equal: confirmed, Done",
+             Res = S_OK and then Is_Confirm (O, Data_Lo, Max_Key) and then Group (O) = 1
+             and then Sess.P = Done and then Complete (Sess));
+      Saved := Sess;
+      Recv (Sess, Small, Data_Root, O, Res);
+      Check ("a message after Done refused", Res = S_Unexpected and then Sess = Saved);
+
+      --  Initiator, Admit-then-receive.
+      Start (Sess, Initiator, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Check ("initiator Admit before the peer's HELLO: HELLO only, still in the gate",
+             Sess.P = Gate and then Sess.Hello_Sent and then O.N = 0
+             and then L = Hello_Fixed + 300);
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("initiator Admit-then-receive: the authorization root goes out",
+             Res = S_OK and then Sess.P = Auth and then O.N = 1 and then Group (O) = 0
+             and then O.P (1).Kind = P_Range and then O.P (1).Lo = Min_Key
+             and then O.P (1).Hi = Data_Lo and then O.P (1).Last + 1 - O.P (1).First = 3
+             and then Sess.Pending = Unit and then Sess.Auth_Root_Seen);
+      Saved := Sess;
+      Recv (Sess, Small, Auth_Root, O, Res);
+      Check ("initiator: a g = 0 RANGE refused", Res = S_Unexpected and then Sess = Saved);
+      Recv (Sess, Small, Data_Root, O, Res);
+      Check ("initiator: the data root refused", Res = S_Unexpected and then Sess = Saved);
+      declare
+         Saved2 : constant Session := Sess;
+         SBuf   : Msg_Buffer;
+         SL     : Msg_Length;
       begin
          --  A RANGE reply (count 1 over [Min_Key, k3), where we hold 2)
          --  that would need ELEMENTS beyond the ship budget.
-         Encode (Small, (Kind => P_Range, Lo => Min_Key, Hi => Key (Small, 3),
-                         First => 1, Last => 2, N => 0, Items => [others => 1]),
-                 16, SBuf, SL);
+         Encode (Small, Range_Plan (Small, Min_Key, Key (Small, 3)), 1, SBuf, SL);
          SBuf (Range_O_Count + 3) := 1;
          Sess.Shipped := Ship_Budget (Small);
-         Receive (Sess, Small, R, True, Slice (SBuf, SL), M, Peer, O, Got, Res);
+         Recv (Sess, Small, Slice (SBuf, SL), O, Res);
          Check ("a reply beyond the ship budget refused, nothing changes",
                 Res = S_Limit and then Sess.Shipped = Ship_Budget (Small)
                 and then Sess.Pending = Unit and then O.N = 0);
-         Sess := Saved;
+         Sess := Saved2;
+         Sess.Msgs := Sess.Budget;
+         Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Min_Key, Data_Lo), 1), O, Res);
+         Check ("over the message budget refused", Res = S_Limit and then Sess.Msgs = Sess.Budget);
+         Sess := Saved2;
       end;
-      Receive (Sess, Small, R, True, Slice (CBuf, CL), M, Peer, O, Got, Res);
-      Check ("initiator: the confirm closes the root, complete",
-             Res = S_OK and then O.N = 0 and then Sess.Pending = 0
-             and then Complete (Sess));
+      Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Min_Key, Data_Lo), 1), O, Res);
+      Check ("initiator: the confirm closes the authorization root",
+             Res = S_OK and then O.N = 0 and then Sess.Pending = 0 and then Sess.P = Auth);
+      Next_Phase (Sess, Small, O);
+      Check ("initiator Next_Phase: the data root, g = 0, Data",
+             Sess.P = Data and then Sess.Pending = Unit and then O.N = 1
+             and then Group (O) = 0 and then O.P (1).Lo = Data_Lo
+             and then O.P (1).Hi = Max_Key and then O.P (1).Last + 1 - O.P (1).First = 6);
+      Recv (Sess, Small, Plan_Bytes (Small, Confirm_Plan (Data_Lo, Max_Key), 1), O, Res);
+      Check ("initiator: the data confirm ends the session",
+             Res = S_OK and then Sess.P = Done and then Complete (Sess));
+
+      --  Initiator, receive-then-Admit.
+      Start (Sess, Initiator, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("initiator: the peer's HELLO first, still in the gate",
+             Res = S_OK and then Sess.P = Gate and then O.N = 0);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Check ("initiator receive-then-Admit: HELLO and the authorization root",
+             Sess.P = Auth and then Hello_Wire_OK (Slice (Buf, L)) and then O.N = 1
+             and then Group (O) = 0 and then O.P (1).Lo = Min_Key
+             and then O.P (1).Hi = Data_Lo and then Sess.Pending = Unit);
+
+      --  Responder, Admit-then-receive.
+      Start (Sess, Responder, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Recv (Sess, Small, Hello_Bytes (Other), O, Res);
+      Check ("responder Admit-then-receive: Auth, nothing to send",
+             Res = S_OK and then Sess.P = Auth and then O.N = 0 and then Sess.Pending = 0);
+
+      --  Equal digests: Done right after the HELLO exchange, both orders.
+      Start (Sess, Initiator, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Recv (Sess, Small, Hello_Bytes (Ours), O, Res);
+      Check ("equal digests: initiator Done after the HELLOs, no root",
+             Res = S_OK and then Sess.P = Done and then Complete (Sess) and then O.N = 0);
+      Start (Sess, Responder, NS_X, No_Voids, 0, Buf, L);
+      Recv (Sess, Small, Open_Bytes (NS_X), O, Res);
+      Recv (Sess, Small, Hello_Bytes (Ours), O, Res);
+      Admit (Sess, Small, Cred_T, Buf, L, O);
+      Check ("equal digests: responder Done at Admit",
+             Sess.P = Done and then Complete (Sess) and then O.N = 0);
+      Recv (Sess, Small, Auth_Root, O, Res);
+      Check ("equal digests: a root after Done refused", Res = S_Unexpected);
+
+      --  The review's mutants (round 2), reproduced: Receive's out
+      --  parameters are the wire's, and its status is exactly Status_Of.
+      declare
+         V2   : Rv_Array := [others => Zero_Rv];
+         Tiny : Snapshot (Cap => 4, Pool_Cap => 100);
+      begin
+         Clear (Tiny);
+         V2 (1) := [others => 16#11#];
+         V2 (2) := [others => 16#22#];
+         Start (Sess, Responder, NS_X, No_Voids, 0, Buf, L);
+         Saved := Sess;
+         Check ("Status_Of: a foreign ns is S_Aborted, not S_Malformed (mutant c)",
+                Status_Of (Saved, Small, Open_Bytes (NS_Y)) = S_Aborted);
+         Encode_Open ((Proto => Proto_Version, NS => NS_X, N_RV => 2, RV => V2), Buf, L);
+         declare
+            Raw : constant Byte_Array := Slice (Buf, L);
+         begin
+            Check ("Status_Of: our OPEN is S_OK", Status_Of (Sess, Small, Raw) = S_OK);
+            Receive (Sess, Small, Raw, M, Op, Peer, O, Got, Res);
+            Check ("an OPEN's revocations reach the caller intact (mutant b)",
+                   Res = S_OK and then Op.N_RV = 2 and then Op.RV (1) = V2 (1)
+                   and then Op.RV (2) = V2 (2) and then Op.RV (3) = Zero_Rv
+                   and then Open_Decoded (Raw, Op));
+         end;
+         Receive (Sess, Small, Hello_Bytes (Other), M, Op, Peer, O, Got, Res);
+         Check ("a HELLO's digest and cred reach the session and the caller intact (mutant a)",
+                Res = S_OK and then Peer.Digest = Other
+                and then Sess.Peer_Digest = Kome.Keys.To_Key256 (Other)
+                and then Peer.Cred_Len = 300 and then Peer.Cred (0 .. 299) = Cred_T
+                and then Hello_Decoded (Hello_Bytes (Other), Peer));
+         Sess.Ranges := 5;
+         Sess.Shipped := 77;
+         Admit (Sess, Small, Cred_T, Buf, L, O);
+         Check ("Admit leaves Ranges and Shipped (mutant f)",
+                Sess.Ranges = 5 and then Sess.Shipped = 77 and then Sess.P = Auth);
+         Check ("Same_Snapshot: the snapshot of Admit, not another",
+                Same_Snapshot (Sess, Small) and then not Same_Snapshot (Sess, Tiny));
+         Sess.Ranges := 0;
+         Sess.Shipped := 0;
+         declare
+            R : Byte_Array := Auth_Root;
+         begin
+            R (R'First + Range_O_Count + 3) := 2;
+            Check ("Status_Of: the expected root within budget is S_OK (mutant d)",
+                   Status_Of (Sess, Small, R) = S_OK);
+            Receive (Sess, Small, R, M, Op, Peer, O, Got, Res);
+            Check ("Receive's M is the wire's: count 2, not a confirm, our 3 shipped (mutant e)",
+                   Res = S_OK and then M = Decode_Of (R).M and then M.Count = 2
+                   and then not Confirms (Small, M)
+                   and then not Is_Confirm (O, Min_Key, Data_Lo)
+                   and then O.N = 1 and then O.P (1).Kind = P_Elements
+                   and then O = Reply_Of (Small, M).Box);
+            Check ("an ELEMENTS reply counts 1 obligation, no RANGE, its run's item bytes",
+                   Num_Ranges (O) = 0 and then Obligations (O) = 1
+                   and then Item_Bytes (Small, O) = Byte_Total (Run_Size (Small, 1, 3))
+                   and then Item_Bytes (Small, O) = Byte_Total (Plan_Items (Small, O.P (1)))
+                   and then Item_Bytes (Small, O) = 3 * (Item_Overhead + 30));
+         end;
+         --  The data root (forced: nothing open), count 0 against our 6:
+         --  a 6-way split. With 35 replies' RANGEs already sent, 6 more pass
+         --  Range_Budget (40): S_Limit, exactly as Status_Of says; with 34
+         --  they fit exactly and the same root is accepted.
+         declare
+            Big : Byte_Array := Data_Root;
+         begin
+            Big (Big'First + Range_O_Count + 3) := 0;
+            Sess.Pending := 0;
+            Sess.Ranges := Range_Budget (Small) - 5;
+            Saved := Sess;
+            Check ("Status_Of: the data root whose split passes Range_Budget is S_Limit",
+                   Range_Budget (Small) = 40
+                   and then Num_Ranges (Reply_Of (Small, Decode_Of (Big).M).Box) = 6
+                   and then Status_Of (Sess, Small, Big) = S_Limit);
+            Recv (Sess, Small, Big, O, Res);
+            Check ("the data root over Range_Budget refused, nothing changes",
+                   Res = S_Limit and then Sess = Saved and then O.N = 0);
+            Sess.Ranges := Range_Budget (Small) - 6;
+            Saved := Sess;
+            Recv (Sess, Small, Big, O, Res);
+            Check ("exactly within Range_Budget the same data root is accepted (Status_Of S_OK)",
+                   Res = S_OK and then Status_Of (Saved, Small, Big) = S_OK
+                   and then Sess.P = Data and then O.N = 6
+                   and then Sess.Ranges = Range_Budget (Small));
+            --  Round-2 review blocker: the accounting functions are the
+            --  reply's true counts, so the 6-way split raises Pending by six
+            --  obligations and the responder is not Done.
+            pragma Assert (Ranges_Upto (O, O.N) = 6
+                           and then Obligations_Upto (O, O.N) = 6
+                           and then Items_Upto (Small, O, O.N) = 0);
+            Check ("the accepted 6-way split counts 6 RANGEs, 6 obligations, no item bytes",
+                   Num_Ranges (O) = 6 and then Obligations (O) = 6
+                   and then Item_Bytes (Small, O) = 0);
+            Check ("the accepted 6-way split leaves 6 obligations open: Data, not Done",
+                   Saved.Pending = 0 and then Sess.Pending = 6 * Unit
+                   and then Sess.P = Data and then not Complete (Sess));
+         end;
+      end;
+
+      --  A HAVE reply (to an empty ELEMENTS over the authorization range):
+      --  no obligation, no RANGE, the item bytes of the offered elements.
+      declare
+         HO : Outbox;
+         HG : Delivery;
+      begin
+         Respond (Small, Msg (M_Elements, Min_Key, Data_Lo), HO, HG);
+         pragma Assert (Obligations_Upto (HO, HO.N) = 0
+                        and then Item_Bytes (Small, HO) = Items_Upto (Small, HO, HO.N));
+         Check ("a HAVE reply counts no obligation and no RANGE, its items' bytes",
+                HO.N = 1 and then HO.P (1).Kind = P_Have and then HO.P (1).N = 3
+                and then Num_Ranges (HO) = 0 and then Obligations (HO) = 0
+                and then Item_Bytes (Small, HO) = 3 * (Item_Overhead + 30));
+      end;
+
+      --  Decode_Of an ELEMENTS with items: keys and lengths are the wire's.
+      declare
+         E : constant Byte_Array :=
+           Plan_Bytes (Small, (Kind => P_Elements, Lo => Min_Key, Hi => Data_Lo,
+                               First => 1, Last => 3, N => 0, Items => [others => 1]), 1);
+         D : constant Decoding := Decode_Of (E);
+      begin
+         Check ("Decode_Of an ELEMENTS: item keys, places and lengths are the wire's",
+                D.OK and then D.M.N = 3 and then Decode_Facts (E, D.M, True)
+                and then D.M.Items (2).Key = Key (Small, 2)
+                and then D.M.Items (1).Off = E'First + Elems_Fixed + Item_Overhead
+                and then D.M.Items (1).Len = 30);
+      end;
    end;
 
    ----------------------------------------------------------------------
-   --  (h) Two replicas converge to the union.
+   --  (g) Two snapshots converge in a two-phase session.
    ----------------------------------------------------------------------
    declare
       A, B   : Replica;
-      Far    : constant Elem := Make (41, 16#6E#, 1, 9_000, 10);   --  above B's ceiling
-      By3    : constant Elem := Make (42, 16#6E#, 3, 50, 10);      --  author 3 not in B's W
       Rounds, Delivered : Natural;
       All_OK, Done : Boolean;
       Union  : Natural;
+      Huge   : constant Elem_Key := EK (4, 44, 44, 44);
    begin
-      --  A: ceiling 10 000, W = {1, 2, 3} (as from a roster since
-      --  dominated everywhere). B: ceiling 5 000, W = {1, 2}.
-      Raise_Ceiling (A.Regs, 10_000);
-      Add_W (A, Kome.Keys.To_Key256 (Pk (1)));
-      Add_W (A, Kome.Keys.To_Key256 (Pk (2)));
-      Add_W (A, Kome.Keys.To_Key256 (Pk (3)));
-      Raise_Ceiling (B.Regs, 5_000);
-      Add_W (B, Kome.Keys.To_Key256 (Pk (1)));
-      Add_W (B, Kome.Keys.To_Key256 (Pk (2)));
-
-      for E in Byte range 1 .. 20 loop                --  shared
-         A.Els.Append (Make (E, 16#78#, 1, 100 + U48 (E), 8));
-         B.Els.Append (Make (E, 16#78#, 1, 100 + U48 (E), 8));
+      for E in Byte range 1 .. 6 loop                 --  shared authorization
+         Add (A, EK (Kind_Code (E mod 3), E, 0, E), Frame_Of (40, E));
+         Add (B, EK (Kind_Code (E mod 3), E, 0, E), Frame_Of (40, E));
       end loop;
-      for E in Byte range 21 .. 40 loop               --  A only
-         A.Els.Append (Make (E, 16#78#, 2, 200 + U48 (E), 8));
+      for E in Byte range 7 .. 9 loop                 --  A-only authorization
+         Add (A, EK (Kind_Code (E mod 3), E, 0, E), Frame_Of (300, E));
       end loop;
-      A.Els.Append (Far);
-      A.Els.Append (By3);
-      for F in Byte range 16#61# .. 16#63# loop       --  A only, large
-         A.Els.Append (Make (43, F, 1, 300, 20_000));
+      Add (B, EK (2, 10, 0, 10), Frame_Of (300, 10));  --  B-only authorization
+      for E in Byte range 1 .. 20 loop                --  shared data
+         Add (A, EK (3 + Kind_Code (E mod 2), E, 16#78#, E), Frame_Of (8, E));
+         Add (B, EK (3 + Kind_Code (E mod 2), E, 16#78#, E), Frame_Of (8, E));
       end loop;
-      for E in Byte range 50 .. 59 loop               --  B only
-         B.Els.Append (Make (E, 16#78#, 1, 400 + U48 (E), 8));
+      for E in Byte range 21 .. 40 loop               --  A-only data
+         Add (A, EK (4, E, 16#78#, E), Frame_Of (12, E));
       end loop;
-      Union := 20 + 20 + 2 + 3 + 10;
-
-      Check ("before: the far record is inadmissible at B",
-             not Admissible (B.Regs, Far.Hdr) and then Admissible (A.Regs, Far.Hdr));
-      Check ("before: the record by writer 3 is inadmissible at B",
-             not Admissible (B.Regs, By3.Hdr));
+      for F in Byte range 16#61# .. 16#63# loop       --  A-only, large
+         Add (A, EK (4, 43, F, 1), Frame_Of (20_000, F));
+      end loop;
+      Add (A, Huge, Frame_Of (Kome.Records.Frame_Max, 16#AB#));   --  41 136 bytes
+      for E in Byte range 50 .. 59 loop               --  B-only data
+         Add (B, EK (3, E, 16#78#, E), Frame_Of (8, E));
+      end loop;
+      Union := 6 + 3 + 1 + 20 + 20 + 3 + 1 + 10;
 
       Run_Session (A, B, Rounds, Delivered, All_OK, Done);
-      Check ("every message accepted and within the bound", All_OK);
-      Check ("both sessions end Complete", Done);
-      Check ("no frame mismatched its key", Refused_Mismatch = 0);
-      Check ("replicas converge to the union",
+      Check ("two-phase session: every message accepted", All_OK);
+      Check ("two-phase session: both sides end Complete", Done);
+      Check ("two-phase session: the replicas converge to the union",
              Same_Set (A, B) and then Natural (A.Els.Length) = Union);
-      Check ("B now holds the far record and writer 3's record",
-             Holds (B, Far.Key) and then Holds (B, By3.Key));
-      Check ("registers joined: max ceiling, union of W",
-             Ceil (A.Regs) = 10_000 and then Ceil (B.Regs) = 10_000
-             and then In_W (B.Regs, Kome.Keys.To_Key256 (Pk (3)))
-             and then Kome.Registers.Count (A.Regs) = 3
-             and then Kome.Registers.Count (B.Regs) = 3);
-      --  Rounds: 2 for the HELLOs, then at most 2s + 3 one-way messages
-      --  along any chain, s = ⌈log₁₆ 45⌉ + ⌈log₁₆ 30⌉ = 4 splits.
+      Check ("the 41 136-byte frame reached B intact",
+             Frame_Of_Key (B, Huge) = Frame_Of (41_136, 16#AB#));
+      --  Rounds: OPEN, HELLO, then per phase at most 2s + 3 one-way
+      --  batches, s = ⌈log₁₆ 48⌉ + ⌈log₁₆ 40⌉ = 4 splits.
       Check ("bounded number of rounds (" & Rounds'Image (2 .. Rounds'Image'Last)
              & " one-way rounds," & Delivered'Image & " frames delivered)",
-             Rounds <= 2 + 2 * 4 + 3 and then Delivered >= 35);
+             Rounds <= 3 + 2 * (2 * 4 + 3) and then Delivered >= 38);
 
       Run_Session (A, B, Rounds, Delivered, All_OK, Done);
-      Check ("second session confirms at the root: HELLO, HELLO, RANGE, confirm",
-             All_OK and then Done and then Rounds = 4 and then Delivered = 0
+      Check ("second session ends at the HELLOs: equal digests",
+             All_OK and then Done and then Rounds <= 3 and then Delivered = 0
              and then Same_Set (A, B));
    end;
 

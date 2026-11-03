@@ -348,6 +348,16 @@ package body Kome.Accumulator with SPARK_Mode is
       end loop;
    end Lemma_Value_Congruent;
 
+   procedure Lemma_Eq_Iff_Value (A, B : Acc) is
+   begin
+      if A = B then
+         Lemma_Value_Congruent (A, B);
+      elsif Value (A) = Value (B) then
+         Lemma_Value_Injective (A, B);
+         pragma Assert (False);
+      end if;
+   end Lemma_Eq_Iff_Value;
+
    ----------------------------------------------------------------------
    --  Byte order as an integer fact
    ----------------------------------------------------------------------
@@ -482,6 +492,20 @@ package body Kome.Accumulator with SPARK_Mode is
    ----------------------------------------------------------------------
    --  Laws
    ----------------------------------------------------------------------
+
+   procedure Lemma_Add_Congruent (X1, X2, Y1, Y2 : Acc) is
+   begin
+      Lemma_Value_Congruent (X1, X2);
+      Lemma_Value_Congruent (Y1, Y2);
+      Lemma_Value_Injective (Add (X1, Y1), Add (X2, Y2));
+   end Lemma_Add_Congruent;
+
+   procedure Lemma_Sub_Congruent (X1, X2, Y1, Y2 : Acc) is
+   begin
+      Lemma_Value_Congruent (X1, X2);
+      Lemma_Value_Congruent (Y1, Y2);
+      Lemma_Value_Injective (Sub (X1, Y1), Sub (X2, Y2));
+   end Lemma_Sub_Congruent;
 
    procedure Lemma_Add_Comm (A, B : Acc) is
    begin

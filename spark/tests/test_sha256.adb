@@ -1,12 +1,15 @@
 --  Test main for Kome.SHA256. Contract corner cases, the ghost laws run at
---  run time (-gnata evaluates their postconditions), and the vectors in
---  vectors/sha256.txt (NIST examples plus lines cross-checked against an
---  independent SHA-256; see the file header).
+--  run time (-gnata evaluates their postconditions), including at their
+--  documented run bound (Lemmas_At_Run_Bound), and the vectors in
+--  vectors/sha256.txt: NIST examples, the NIST CAVP SHA-256 byte-oriented
+--  ShortMsg, LongMsg and Monte Carlo vectors, and lines cross-checked
+--  against an independent SHA-256 (see the file header).
 pragma Ada_2022;
 with Ada.Assertions;
 with Ada.Command_Line;   use Ada.Command_Line;
 with Ada.Text_IO;        use Ada.Text_IO;
 with Ada.Directories;
+with Ada.Real_Time;
 with Ada.Strings.Fixed;
 with Kome;               use Kome;
 with Kome.SHA256;        use Kome.SHA256;
@@ -348,6 +351,63 @@ procedure Test_SHA256 with SPARK_Mode => Off is
    --  Ghost laws, evaluated at run time through their postconditions
    ---------------------------------------------------------------------------
 
+   --  Known gap (IMPLEMENTATION_PLAN.md, Kome.SHA256): executed under
+   --  -gnata, Lemma_Updated_Eq overflowed the stack at 4 MiB, and
+   --  Lemma_Update_Concat at 1 MiB, and ran over 300 s at 64 KiB (its
+   --  proof built A & B and ran two inductive lemmas at every level, so it
+   --  was cubic). The proof is now one induction with constant work per
+   --  level, and the spec documents the run bound: these lemmas are
+   --  executed on inputs of at most Lemma_Run_Bound bytes (64 KiB) and are
+   --  proved for every length. Reproduce the reported shapes at that bound:
+   --  each call must return (no Storage_Error, no Assertion_Error) and the
+   --  set must finish well inside Run_Budget.
+   Lemma_Run_Bound : constant := 2**16;
+   Run_Budget      : constant Duration := 120.0;
+
+   procedure Lemmas_At_Run_Bound is
+      use type Ada.Real_Time.Time;
+      type Bytes_Access is access Byte_Array;
+      M     : constant Bytes_Access := new Byte_Array (0 .. Lemma_Run_Bound - 1);
+      C0    : constant Context := Initial;
+      C17   : Context := Initial;
+      C63   : Context := Initial;
+      Start : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      Ok    : Boolean := True;
+      Took  : Duration;
+   begin
+      for I in M'Range loop
+         M (I) := Byte ((I * 167 + I / 256 + 3) mod 256);
+      end loop;
+      Update (C17, M (0 .. 16));
+      Update (C63, M (0 .. 62));
+      begin
+         --  Lemma_Update_Concat: halves, a long first piece at a partial
+         --  fill, a long second piece after a near-full buffer, and an
+         --  empty first piece (Lemma_Absorbed_Cong over the whole bound).
+         Lemma_Update_Concat (C0, M (0 .. 2**15 - 1), M (2**15 .. M'Last));
+         Lemma_Update_Concat (C17, M (0 .. 60_000), M (60_001 .. M'Last - 17));
+         Lemma_Update_Concat (C63, M (0 .. 0), M (1 .. M'Last - 63));
+         Lemma_Update_Concat (C0, M (1 .. 0), M (0 .. M'Last));
+         --  Lemma_Updated_Eq at the bound, and the client chain it is for.
+         declare
+            C1 : constant Context := Updated (C17, M (17 .. 999));
+            C2 : constant Context := C1;
+         begin
+            Lemma_Updated_Eq (C1, C2, M (1000 .. M'Last - 17));
+            Lemma_Updated_Eq (C0, Initial, M (0 .. M'Last));
+            Lemma_Digest_Of_Eq (Updated (C1, M (1000 .. M'Last - 17)),
+                                Updated (C2, M (1000 .. M'Last - 17)));
+         end;
+      exception
+         when others => Ok := False;
+      end;
+      Took := Ada.Real_Time.To_Duration (Ada.Real_Time.Clock - Start);
+      Put_Line ("  lemmas at the run bound (" & Lemma_Run_Bound'Image
+                & " bytes) took" & Duration'Image (Took) & " s");
+      Check ("lemmas_run_at_64kib_no_stack_overflow", Ok);
+      Check ("lemmas_run_at_64kib_in_budget", Ok and then Took < Run_Budget);
+   end Lemmas_At_Run_Bound;
+
    procedure Laws is
       Ok : Boolean := True;
    begin
@@ -593,6 +653,8 @@ procedure Test_SHA256 with SPARK_Mode => Off is
       end;
       Check ("lemma_update_concat_first_over_bound_refused", Ok);
 
+      Lemmas_At_Run_Bound;
+
       Ok := True;
       begin
          for N in U64 range 0 .. 300 loop
@@ -676,7 +738,13 @@ procedure Test_SHA256 with SPARK_Mode => Off is
       N_Kat    : Natural := 0;
       N_Repeat : Natural := 0;
       N_Split  : Natural := 0;
+      N_Cavp   : Natural := 0;
+      N_Monte  : Natural := 0;
       Bad      : Natural := 0;
+      Bad_Cavp : Natural := 0;
+      --  The Monte Carlo lines form one chain from NIST's seed: line j's
+      --  seed is line j - 1's digest.
+      Prev_MD  : Hash256 := [others => 0];
 
       --  Split a line into its space-separated fields.
       type Field_Bounds is record
@@ -725,6 +793,87 @@ procedure Test_SHA256 with SPARK_Mode => Off is
             Put_Line ("  kat (incremental) mismatch");
          end if;
       end Do_Kat;
+
+      --  NIST CAVP ShortMsg / LongMsg: as Do_Kat, counted apart, and the
+      --  message also fed in two pieces split at every 97th byte offset so
+      --  the long messages cross the buffer at many fill levels.
+      procedure Do_Cavp is
+         Msg  : constant Byte_Array := From_Hex (Field (2));
+         Want : constant Byte_Array := From_Hex (Field (3));
+         Got  : Hash256;
+         Ctx  : Context;
+         Cut  : Natural;
+      begin
+         N_Cavp := N_Cavp + 1;
+         if Want'Length /= Hash_Len or else Hash (Msg) /= Want then
+            Bad_Cavp := Bad_Cavp + 1;
+            Put_Line ("  cavp mismatch, length" & Msg'Length'Image);
+            return;
+         end if;
+         Update (Ctx, Msg);
+         Finish (Ctx, Got);
+         if Got /= Want then
+            Bad_Cavp := Bad_Cavp + 1;
+            Put_Line ("  cavp (incremental) mismatch, length" & Msg'Length'Image);
+         end if;
+         Cut := (97 * N_Cavp) mod (Msg'Length + 1);
+         Reset (Ctx);
+         Update (Ctx, Msg (Msg'First .. Msg'First + Cut - 1));
+         Update (Ctx, Msg (Msg'First + Cut .. Msg'Last));
+         Finish (Ctx, Got);
+         if Got /= Want then
+            Bad_Cavp := Bad_Cavp + 1;
+            Put_Line ("  cavp (split) mismatch, length" & Msg'Length'Image);
+         end if;
+      end Do_Cavp;
+
+      --  NIST CAVP Monte Carlo (SHAVS §6.4), one checkpoint per line:
+      --  MD0 = MD1 = MD2 = seed, MDi = SHA-256 (MD(i-3) || MD(i-2) ||
+      --  MD(i-1)) for i = 3 .. 1002, and the checkpoint is MD1002. The
+      --  last iteration of each checkpoint also goes through three Updates.
+      procedure Do_Monte is
+         J    : constant Byte_Array := From_Hex (Field (2));
+         Seed : constant Byte_Array := From_Hex (Field (3));
+         Want : constant Byte_Array := From_Hex (Field (4));
+         M0, M1, M2, M3 : Hash256;
+         Ctx  : Context;
+         Inc  : Hash256;
+      begin
+         if J'Length /= 1 or else Seed'Length /= Hash_Len
+           or else Want'Length /= Hash_Len
+           or else Natural (J (J'First)) /= N_Monte
+           or else (N_Monte > 0 and then Seed /= Prev_MD)
+         then
+            Bad_Cavp := Bad_Cavp + 1;
+            Put_Line ("  monte line" & N_Monte'Image & " out of chain");
+            return;
+         end if;
+         N_Monte := N_Monte + 1;
+         M0 := Seed;
+         M1 := Seed;
+         M2 := Seed;
+         for I in 3 .. 1002 loop
+            M3 := Hash (M0 & M1 & M2);
+            if I = 1002 then
+               Update (Ctx, M0);
+               Update (Ctx, M1);
+               Update (Ctx, M2);
+               Finish (Ctx, Inc);
+               if Inc /= M3 then
+                  Bad_Cavp := Bad_Cavp + 1;
+                  Put_Line ("  monte (incremental) mismatch");
+               end if;
+            end if;
+            M0 := M1;
+            M1 := M2;
+            M2 := M3;
+         end loop;
+         if M2 /= Want then
+            Bad_Cavp := Bad_Cavp + 1;
+            Put_Line ("  monte mismatch at checkpoint" & Natural'Image (N_Monte - 1));
+         end if;
+         Prev_MD := Want;
+      end Do_Monte;
 
       --  Feed the byte stream through rotating chunk sizes around the block
       --  size (and big ones for the 2**29-byte vector), so the buffer logic
@@ -833,6 +982,10 @@ procedure Test_SHA256 with SPARK_Mode => Off is
                Do_Repeat;
             elsif Field (1) = "split" and then N_Fields = 4 then
                Do_Split;
+            elsif Field (1) = "cavp" and then N_Fields = 3 then
+               Do_Cavp;
+            elsif Field (1) = "monte" and then N_Fields = 4 then
+               Do_Monte;
             else
                Put_Line ("  unknown vector line: " & Field (1));
                Bad := Bad + 1;
@@ -843,7 +996,13 @@ procedure Test_SHA256 with SPARK_Mode => Off is
       Check ("vectors_kat (" & N_Kat'Image & " )", N_Kat >= 200 and then Bad = 0);
       Check ("vectors_repeat (" & N_Repeat'Image & " )", N_Repeat >= 20 and then Bad = 0);
       Check ("vectors_split (" & N_Split'Image & " )", N_Split >= 600 and then Bad = 0);
-      Check ("vectors_all_match", Bad = 0);
+      --  NIST CAVP (provenance in the vectors header): all 65 ShortMsg and
+      --  64 LongMsg messages and all 100 Monte Carlo checkpoints present.
+      Check ("vectors_cavp_shortmsg_longmsg (" & N_Cavp'Image & " )",
+             N_Cavp = 129 and then Bad_Cavp = 0);
+      Check ("vectors_cavp_monte (" & N_Monte'Image & " )",
+             N_Monte = 100 and then Bad_Cavp = 0);
+      Check ("vectors_all_match", Bad = 0 and then Bad_Cavp = 0);
    end Vectors;
 
 begin

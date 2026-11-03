@@ -465,4 +465,150 @@ package body Kome.Keys with SPARK_Mode is
       pragma Assert (Lex_Lt (A, B) = (A (I) < B (I)));
    end Lemma_Lt_First_Difference;
 
+   -----------------------------
+   -- Lemma_Id_Eq_Is_Bytewise --
+   -----------------------------
+
+   procedure Lemma_Id_Eq_Is_Bytewise (A, B : Id_Bytes) is
+   begin
+      if To_Id128 (A) = To_Id128 (B) then
+         pragma Assert
+           (for all I in Id_Index =>
+              A (I) = Byte_At (To_Id128 (A), I)
+              and then B (I) = Byte_At (To_Id128 (B), I));
+         pragma Assert (for all I in Id_Index => A (I) = B (I));
+         pragma Assert (A = B);
+      end if;
+      if A = B then
+         pragma Assert (for all I in Id_Index => A (I) = B (I));
+         pragma Assert (To_Id128 (A).W0 = To_Id128 (B).W0);
+         pragma Assert (To_Id128 (A).W1 = To_Id128 (B).W1);
+         pragma Assert (To_Id128 (A).W2 = To_Id128 (B).W2);
+         pragma Assert (To_Id128 (A).W3 = To_Id128 (B).W3);
+      end if;
+   end Lemma_Id_Eq_Is_Bytewise;
+
+   ----------------------------------
+   -- Lemma_Id_Lt_Is_Lexicographic --
+   ----------------------------------
+
+   --  Id_Suffix_K (A, B): the tail of Id_Lex_Lt that starts at byte 4K,
+   --  as Suffix_K above for keys. Ghost and local to this body.
+   function Id_Suffix_3 (A, B : Id_Bytes) return Boolean is
+      (A (12) < B (12) or else (A (12) = B (12) and then
+       (A (13) < B (13) or else (A (13) = B (13) and then
+       (A (14) < B (14) or else (A (14) = B (14) and then
+       (A (15) < B (15))))))))
+     with Ghost;
+
+   function Id_Suffix_2 (A, B : Id_Bytes) return Boolean is
+      (A (8) < B (8) or else (A (8) = B (8) and then
+       (A (9) < B (9) or else (A (9) = B (9) and then
+       (A (10) < B (10) or else (A (10) = B (10) and then
+       (A (11) < B (11) or else (A (11) = B (11) and then
+       Id_Suffix_3 (A, B)))))))))
+     with Ghost;
+
+   function Id_Suffix_1 (A, B : Id_Bytes) return Boolean is
+      (A (4) < B (4) or else (A (4) = B (4) and then
+       (A (5) < B (5) or else (A (5) = B (5) and then
+       (A (6) < B (6) or else (A (6) = B (6) and then
+       (A (7) < B (7) or else (A (7) = B (7) and then
+       Id_Suffix_2 (A, B)))))))))
+     with Ghost;
+
+   function Id_Suffix_0 (A, B : Id_Bytes) return Boolean is
+      (A (0) < B (0) or else (A (0) = B (0) and then
+       (A (1) < B (1) or else (A (1) = B (1) and then
+       (A (2) < B (2) or else (A (2) = B (2) and then
+       (A (3) < B (3) or else (A (3) = B (3) and then
+       Id_Suffix_1 (A, B)))))))))
+     with Ghost;
+
+   procedure Lemma_Id_Lt_Is_Lexicographic (A, B : Id_Bytes) is
+      KA : constant Id128 := To_Id128 (A);
+      KB : constant Id128 := To_Id128 (B);
+   begin
+      Lemma_Word_Lt_Is_Lexicographic
+        (A (0), A (1), A (2), A (3),
+         B (0), B (1), B (2), B (3));
+      pragma Assert (KA.W0 = Word_Of (A (0), A (1), A (2), A (3)));
+      pragma Assert (KB.W0 = Word_Of (B (0), B (1), B (2), B (3)));
+      Lemma_Word_Lt_Is_Lexicographic
+        (A (4), A (5), A (6), A (7),
+         B (4), B (5), B (6), B (7));
+      pragma Assert (KA.W1 = Word_Of (A (4), A (5), A (6), A (7)));
+      pragma Assert (KB.W1 = Word_Of (B (4), B (5), B (6), B (7)));
+      Lemma_Word_Lt_Is_Lexicographic
+        (A (8), A (9), A (10), A (11),
+         B (8), B (9), B (10), B (11));
+      pragma Assert (KA.W2 = Word_Of (A (8), A (9), A (10), A (11)));
+      pragma Assert (KB.W2 = Word_Of (B (8), B (9), B (10), B (11)));
+      Lemma_Word_Lt_Is_Lexicographic
+        (A (12), A (13), A (14), A (15),
+         B (12), B (13), B (14), B (15));
+      pragma Assert (KA.W3 = Word_Of (A (12), A (13), A (14), A (15)));
+      pragma Assert (KB.W3 = Word_Of (B (12), B (13), B (14), B (15)));
+      pragma Assert (Id_Suffix_3 (A, B) = (KA.W3 < KB.W3));
+      pragma Assert (Id_Suffix_2 (A, B) =
+        (KA.W2 < KB.W2 or else (KA.W2 = KB.W2 and then Id_Suffix_3 (A, B))));
+      pragma Assert (Id_Suffix_1 (A, B) =
+        (KA.W1 < KB.W1 or else (KA.W1 = KB.W1 and then Id_Suffix_2 (A, B))));
+      pragma Assert (Id_Suffix_0 (A, B) =
+        (KA.W0 < KB.W0 or else (KA.W0 = KB.W0 and then Id_Suffix_1 (A, B))));
+      pragma Assert (Id_Lex_Lt (A, B) = Id_Suffix_0 (A, B));
+      pragma Assert (Id_Lt (KA, KB) = Id_Suffix_0 (A, B));
+   end Lemma_Id_Lt_Is_Lexicographic;
+
+   ------------------------------
+   -- Lemma_Id_Lex_Of_Encoding --
+   ------------------------------
+
+   procedure Lemma_Id_Lex_Of_Encoding (K1, K2 : Id128) is
+   begin
+      Lemma_Id_Lt_Is_Lexicographic (To_Bytes (K1), To_Bytes (K2));
+   end Lemma_Id_Lex_Of_Encoding;
+
+   ----------------------------------
+   -- Lemma_Id_Lt_First_Difference --
+   ----------------------------------
+
+   procedure Lemma_Id_Lt_First_Difference (A, B : Id_Bytes; I : Id_Index) is
+   begin
+      Lemma_Id_Lt_Is_Lexicographic (A, B);
+      pragma Assert (Id_Lex_Lt (A, B) = (A (I) < B (I)));
+   end Lemma_Id_Lt_First_Difference;
+
+   ---------------------
+   -- Lemma_Key_Slide --
+   ---------------------
+
+   procedure Lemma_Key_Slide (B : Byte_Array) is
+      S : constant Key_Bytes := Key_Bytes (B);
+   begin
+      pragma Assert (for all I in Key_Index => S (I) = B (B'First + I));
+      pragma Assert (To_Key256 (S).W0 = To_Key256 (B).W0);
+      pragma Assert (To_Key256 (S).W1 = To_Key256 (B).W1);
+      pragma Assert (To_Key256 (S).W2 = To_Key256 (B).W2);
+      pragma Assert (To_Key256 (S).W3 = To_Key256 (B).W3);
+      pragma Assert (To_Key256 (S).W4 = To_Key256 (B).W4);
+      pragma Assert (To_Key256 (S).W5 = To_Key256 (B).W5);
+      pragma Assert (To_Key256 (S).W6 = To_Key256 (B).W6);
+      pragma Assert (To_Key256 (S).W7 = To_Key256 (B).W7);
+   end Lemma_Key_Slide;
+
+   --------------------
+   -- Lemma_Id_Slide --
+   --------------------
+
+   procedure Lemma_Id_Slide (B : Byte_Array) is
+      S : constant Id_Bytes := Id_Bytes (B);
+   begin
+      pragma Assert (for all I in Id_Index => S (I) = B (B'First + I));
+      pragma Assert (To_Id128 (S).W0 = To_Id128 (B).W0);
+      pragma Assert (To_Id128 (S).W1 = To_Id128 (B).W1);
+      pragma Assert (To_Id128 (S).W2 = To_Id128 (B).W2);
+      pragma Assert (To_Id128 (S).W3 = To_Id128 (B).W3);
+   end Lemma_Id_Slide;
+
 end Kome.Keys;

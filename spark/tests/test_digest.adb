@@ -1,28 +1,43 @@
---  Test main for Kome.Digest (DESIGN.md §8, T6). (a) Known answers: acc(e)
---  and fp(R) against vectors/digest.txt, computed with Python's hashlib
---  independently of monocypher and of the SPARK code. (b) The empty set,
---  one record, two and three records. (c) Order independence: the same
---  records added in every order give the same state and fingerprint;
---  Lemma_Add_Commute and Lemma_Sum_Swap run on them. (d) Add then remove
---  restores the state; removing from the empty state is refused and
---  changes nothing. (e) Two states holding the same records, reached by
---  different paths (orders, interleaved removals), have the same
---  fingerprint, and Lemma_Fingerprint_Congruent runs on them. (f) The
---  digest of a Kome.Frontier state is fp of its held records, and two
---  replicas that applied the same records in different orders, and so
---  hold them in different array orders (checked), have the same digest;
---  Lemma_Frontier_Digest_Perm runs on them with a computed witness.
---  (g) Prefix sums: Range_Sum over many ranges of a 150-element list
---  (crossing, ending on and spanning 64-element blocks, and walking
---  forward and backward to the nearest block boundary) equals the
---  directly computed sum. (h) Models: a running state carried through
---  adds, removals and a permutation with the Models lemmas, and
---  Lemma_Sum_Perm on a reversed list. Under -gnata every Pre, Post and
---  lemma Post also runs on these data.
+--  Test main for Kome.Digest (DESIGN.md §8, D7, D15, T6). (a) Known
+--  answers: acc(e) and fp(R) against vectors/digest.txt, computed with
+--  Python's hashlib independently of monocypher and of the SPARK code.
+--  (b) The empty set, one record, two and three records. (c) Order
+--  independence: the same records added in every order give the same
+--  state and fingerprint; Lemma_Add_Commute and Lemma_Sum_Swap run on
+--  them. (d) Add then remove restores the state; removing from the empty
+--  state is refused and changes nothing. (e) Two states holding the same
+--  records, reached by different paths (orders, interleaved removals),
+--  have the same fingerprint, and Lemma_Fingerprint_Congruent runs on
+--  them; the documented contract: removing a non-member or adding twice
+--  returns D_OK and yields the state of no set. (f) The digest of a
+--  Kome.Frontier state is fp of its held records (data row and
+--  authorization rows), and two replicas that applied the same records in
+--  different orders, and so hold them in different array orders
+--  (checked), have the same digest; Lemma_Frontier_Digest_Perm runs on
+--  them with a computed witness. (g) Prefix sums (D15): for lists of 150,
+--  127, 64, 40, 1 and 0 elements, every stored block prefix and the total
+--  P_end, Range_Sum against the directly computed sum on ranges that
+--  cross, end on and span 64-element blocks and end in the tail (r > 32,
+--  a one-element range at 127, [1 .. 96] walking back from P_end), the
+--  Add and Sub calls Range_Sum reports making on each sampled range
+--  against an independently computed cost (1 for [127 .. 127] of 127,
+--  31 for [1 .. 96] of 127, 64 for [33 .. 96] of 150; one Sub), and the
+--  bound Range_Cost <= 64 on every range of each list. The reported
+--  counts are out values: these checks test the body's counters and the
+--  formula, not the Add calls actually made (a body that ignored P and
+--  set the counts from Range_Cost would pass them; see the spec header,
+--  which records that limit). (h)
+--  Models: a running state carried through adds, removals and a
+--  permutation with the Models lemmas, Is_Perm's intro and elim lemmas,
+--  and Lemma_Sum_Perm on a reversed list. (i) Capacity: D_No_Space at
+--  |R| = Elem_Max (= Kome.Frontier.Held_Max), with the state unchanged.
+--  Every Result is checked. Under -gnata every Pre, Post and lemma Post
+--  also runs on these data.
 pragma Ada_2022;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line;  use Ada.Command_Line;
 with Ada.Directories;
+with Ada.Exceptions;
 with Kome;              use Kome;
 with Kome.Keys;
 with Kome.Headers;      use Kome.Headers;
@@ -337,7 +352,9 @@ procedure Test_Digest with SPARK_Mode => Off is
          P2 : Digest_State := Fold ([C, H (99), A]);
       begin
          Remove_Record (P2, H (99), R);
+         Check ("path_remove_ok", R = D_OK and then Count (P2) = 2);
          Add_Record (P2, B, R);
+         Check ("path_add_ok", R = D_OK and then Count (P2) = 3);
          Check ("same_records_different_paths_same_fp",
                 Count (P1) = Count (P2)
                 and then Fingerprint (P1) = Fingerprint (P2));
@@ -345,7 +362,29 @@ procedure Test_Digest with SPARK_Mode => Off is
          Lemma_Fp_Congruent (Count (P1), Sum (P1), Sum (P2));
          Remove_Record (P1, A, R);
          Check ("different_records_different_fp",
-                Fingerprint (P1) /= Fingerprint (P2));
+                R = D_OK and then Count (P1) = 2
+                and then Fingerprint (P1) /= Fingerprint (P2));
+      end;
+
+      --  The documented contract (header): the state does not hold R, so
+      --  removing a non-member, or adding a member twice, returns D_OK and
+      --  applies the arithmetic; the result is the state of no set. Only
+      --  the caller's Models discipline guards against it.
+      declare
+         P3 : Digest_State := Fold ([A]);
+      begin
+         Remove_Record (P3, C, R);
+         Check ("contract_remove_non_member_is_ok",
+                R = D_OK and then Count (P3) = 0
+                and then Sum (P3) = Sub (Elem_Acc (A), Elem_Acc (C)));
+         Check ("contract_remove_non_member_is_no_set",
+                Sum (P3) /= Zero and then not Same (P3, E));
+         P3 := Fold ([A]);
+         Add_Record (P3, A, R);
+         Check ("contract_add_twice_is_ok",
+                R = D_OK and then Count (P3) = 2
+                and then Sum (P3) = Add (Elem_Acc (A), Elem_Acc (A))
+                and then not Same (P3, Fold ([A])));
       end;
    end State_Laws;
 
@@ -355,7 +394,8 @@ procedure Test_Digest with SPARK_Mode => Off is
 
    procedure Frontier_Part is
       use Kome.Frontier;
-      NS : constant Id128 := (others => 7);
+      NS  : constant Id128 := (others => 7);
+      Fnd : constant Natural := 9;           --  the founding key
 
       function K (B : Natural) return Key256 is (others => Word (B));
       function Ent (B : Natural) return Id128 is (others => Word (B));
@@ -364,53 +404,59 @@ procedure Test_Digest with SPARK_Mode => Off is
                     Hh : Natural) return Header is
         (K => K_Put, NS => NS, Ent => Ent (E), FH => K (F),
          V => (T => T, Author => K (A), Seq => 1, H => H (Hh)),
-         Ceiling => 0);
+         Issuer => Zero_Key, Del_TTL => 0);
 
+      --  The founding key's roster (V = (ceiling_t, signer, gen, h)) and
+      --  its GRANTs (V = (0, subject, 0, h)) to the two writers.
       Roster : constant Header :=
-        (K => K_Roster, NS => NS, Ent => Ent (0), FH => K (0),
-         V => (T => 0, Author => K (9), Seq => 1, H => H (500)),
-         Ceiling => 100);
-      Members : constant Member_Keys (1 .. 2) := [K (1), K (2)];
-      None    : constant Member_Keys (1 .. 0) := [];
+        (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+         V => (T => 100, Author => K (Fnd), Seq => 1, H => H (500)),
+         Issuer => K (Fnd), Del_TTL => Del_TTL_Default);
+      function Grant (Subject : Natural; Hh : Natural) return Header is
+        (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+         V => (T => 0, Author => K (Subject), Seq => 0, H => H (Hh)),
+         Issuer => K (Fnd), Del_TTL => 0);
+      Auth : constant array (1 .. 3) of Header :=
+        [Roster, Grant (1, 510), Grant (2, 511)];
 
       Recs : constant array (1 .. 4) of Header :=
         [Put (1, 1, 10, 1, 501), Put (1, 2, 11, 2, 502),
          Put (1, 1, 12, 2, 503),   --  beats the first on cell (1, 1)
          Put (2, 1, 13, 1, 504)];
 
-      X : State := Empty (NS, 16);
-      Y : State := Empty (NS, 16);
-      Z : constant State := Empty (NS, 16);
+      X : State := Empty (NS, K (Fnd), 16, 4);
+      Y : State := Empty (NS, K (Fnd), 16, 4);
+      Z : constant State := Empty (NS, K (Fnd), 16, 4);
       St : Status;
    begin
       Check ("frontier_empty_digest_is_empty_fp",
              Frontier_Digest (Z) = Fingerprint (Kome.Digest.Empty));
-      --  Both replicas take the roster first (so the records are
-      --  admissible), then the same four records: X in order, Y in
-      --  reverse. In Y, Recs (1) arrives after Recs (3), which beats it on
-      --  cell (1, 1), so it is Dominated; in X it is held and then dropped.
-      Apply (X, Roster, Members, St);
-      Check ("frontier_x_roster_ok", St = OK);
-      Apply (Y, Roster, Members, St);
-      Check ("frontier_y_roster_ok", St = OK);
-      declare
-         All_OK : Boolean := True;
-      begin
-         for I in Recs'Range loop
-            Apply (X, Recs (I), None, St);
-            All_OK := All_OK and then St = Kome.OK;
-         end loop;
-         Check ("frontier_x_forward_all_ok", All_OK);
-      end;
+      --  Both replicas take the roster and the grants first (so the
+      --  records are admissible), then the same four records: X in order,
+      --  Y in reverse. In Y, Recs (1) arrives after Recs (3), which beats
+      --  it on cell (1, 1), so it is Dominated; in X it is held and then
+      --  dropped.
+      for I in Auth'Range loop
+         Apply (X, Auth (I), St);
+         Check ("frontier_x_auth" & I'Image & "_ok", St = OK);
+         Apply (Y, Auth (I), St);
+         Check ("frontier_y_auth" & I'Image & "_ok", St = OK);
+      end loop;
+      for I in Recs'Range loop
+         Apply (X, Recs (I), St);
+         Check ("frontier_x_forward_rec" & I'Image & "_ok", St = OK);
+      end loop;
       for I in reverse Recs'Range loop
-         Apply (Y, Recs (I), None, St);
+         Apply (Y, Recs (I), St);
          Check ("frontier_y_reverse_rec" & I'Image & "_status",
                 (if I = 1 then St = Dominated else St = OK));
       end loop;
-      Check ("frontier_holds_4", Kome.Frontier.Count (X) = 4
-             and then Kome.Frontier.Count (Y) = 4);
+      Check ("frontier_holds_3_data_3_auth",
+             Kome.Frontier.Count (X) = 6 and then Kome.Frontier.Count (Y) = 6
+             and then Data_Count (X) = 3 and then Data_Count (Y) = 3);
       Check ("frontier_held_orders_differ",
-             Held (X, 2).V.H /= Held (Y, 2).V.H);
+             (for some I in 1 .. Kome.Frontier.Count (X) =>
+                Held (X, I).V.H /= Held (Y, I).V.H));
       declare
          L : Hash_Array (1 .. Kome.Frontier.Count (X));
       begin
@@ -459,48 +505,189 @@ procedure Test_Digest with SPARK_Mode => Off is
    --  (g) Prefix sums
    ---------------------------------------------------------------------------
 
-   procedure Prefix_Sums is
-      N : constant := 150;
-      L : Hash_Array (1 .. N);
-      P : Acc_Array (1 .. N / Block_Elems);
-      type Pair is record
-         Lo, Hi : Natural;
-      end record;
-      Ranges : constant array (Positive range <>) of Pair :=
-        [(1, 0), (1, 150), (5, 5), (60, 70), (64, 64), (65, 128), (1, 64),
-         (100, 150), (130, 150), (129, 128), (2, 127), (151, 150),
-         --  Ends with r > 32 below a stored block: walk back.
-         (40, 120), (97, 127), (34, 96), (33, 33), (35, 100), (98, 99)];
+   type Pair is record
+      Lo, Hi : Natural;
+   end record;
+   type Pair_Array is array (Positive range <>) of Pair;
+
+   --  The sum of L (Lo .. Hi), computed directly.
+   function Direct (L : Hash_Array; Lo, Hi : Natural) return Acc is
+     (if Hi < Lo then Zero else Sum (Digest_Of (L (Lo .. Hi))));
+
+   --  The Add calls an end X of an N-element list should cost, computed
+   --  here independently of the spec's formula: X's distance to the block
+   --  boundary below it, or to the stored point above it (the next block
+   --  boundary, or N where P_end is stored), whichever is nearer.
+   function End_Cost (X, N : Natural) return Natural is
+      R  : constant Natural := X mod 64;
+      Up : constant Natural :=
+        (if 64 * (X / 64 + 1) <= N then 64 - R else N - X);
+   begin
+      return Natural'Min (R, Up);
+   end End_Cost;
+
+   --  Run Range_Sum on L (Lo .. Hi) and return its result and counts.
+   procedure Run_Range
+     (L : Hash_Array; P : Acc_Array; Lo, Hi : Natural;
+      Got : out Acc; Adds : out Natural; Subs : out Natural)
+   is
+      A : Add_Count;
+   begin
+      Range_Sum (L, P, Lo, Hi, Got, A, Subs);
+      Adds := A;
+   end Run_Range;
+
+   --  Build the prefix array of an N-element list (the tail after the
+   --  last full block included), check every stored entry and the total,
+   --  and check Range_Sum against the direct sum on each range, and the
+   --  Add and Sub calls it reports making on each range against the
+   --  independently computed cost (End_Cost at both ends, one Sub); and
+   --  the formula Range_Cost on every range of the list.
+   procedure Prefix_List (N : Natural; Ranges : Pair_Array; Tag : String) is
+      L  : Hash_Array (1 .. N);
+      P  : Acc_Array (1 .. N / Block_Elems + 1);
       Ok : Boolean := True;
+      Cost_Ok  : Boolean := True;
+      Max_Cost : Natural := 0;
    begin
       for I in L'Range loop
          L (I) := H (1000 + I);
       end loop;
       Build_Prefix (L, P);
-      Check ("prefix_count", P'Length = 2);
-      Check ("prefix_1_is_first_block",
-             P (1) = Sum (Digest_Of (L (1 .. 64))));
-      Check ("prefix_2_is_first_two_blocks",
-             P (2) = Sum (Digest_Of (L (1 .. 128))));
+      Lemma_Prefix_Total (L, P);
+      Check (Tag & "_prefix_count", P'Length = N / 64 + 1);
+      for K in 1 .. P'Last - 1 loop
+         Ok := Ok and then P (K) = Direct (L, 1, 64 * K);
+      end loop;
+      Check (Tag & "_prefix_blocks", Ok);
+      Check (Tag & "_prefix_last_is_total", P (P'Last) = Direct (L, 1, N));
+      Ok := True;
       for Rg of Ranges loop
          declare
-            Got  : constant Acc := Range_Sum (L, P, Rg.Lo, Rg.Hi);
-            Want : constant Acc :=
-              (if Rg.Hi < Rg.Lo then Zero
-               else Sum (Digest_Of (L (Rg.Lo .. Rg.Hi))));
+            Got        : Acc;
+            Adds, Subs : Natural;
+            Want : constant Acc := Direct (L, Rg.Lo, Rg.Hi);
+            C    : constant Natural :=
+              End_Cost (Rg.Lo - 1, N) + End_Cost (Rg.Hi, N);
          begin
+            Run_Range (L, P, Rg.Lo, Rg.Hi, Got, Adds, Subs);
             if Got /= Want then
                Ok := False;
                Put_Line ("  mismatch: range" & Rg.Lo'Image & Rg.Hi'Image);
             end if;
+            if Adds /= C or else Adds /= Range_Cost (Rg.Lo - 1, Rg.Hi, N)
+              or else Adds > 64 or else Subs /= 1
+            then
+               Cost_Ok := False;
+               Put_Line ("  cost: range" & Rg.Lo'Image & Rg.Hi'Image
+                         & " adds" & Adds'Image & " want" & C'Image
+                         & " subs" & Subs'Image);
+            end if;
          end;
       end loop;
-      Check ("range_sum_matches_direct_sum (" & Ranges'Length'Image
+      Check (Tag & "_range_sum_matches_direct_sum (" & Ranges'Length'Image
              & " ranges)", Ok);
-      --  A range's fingerprint is fp of its records.
-      Check ("range_fp_is_fp_of_records",
-             Fp (40, Range_Sum (L, P, 61, 100))
-               = Fingerprint (Digest_Of (L (61 .. 100))));
+      Check (Tag & "_range_sum_counted_adds_and_one_sub (" &
+             Ranges'Length'Image & " ranges)", Cost_Ok);
+      --  The bound holds for every range, not only the sampled ones, and
+      --  each end walks at most 32 terms.
+      Ok := True;
+      for A in 0 .. N loop
+         Ok := Ok and then Walk_Len (A, N) <= 32
+                  and then Walk_Len (A, N) = End_Cost (A, N);
+         for B in A .. N loop
+            Max_Cost := Natural'Max (Max_Cost, Range_Cost (A, B, N));
+         end loop;
+      end loop;
+      Check (Tag & "_every_end_walks_at_most_32", Ok);
+      Check (Tag & "_every_range_costs_at_most_64 (max" & Max_Cost'Image
+             & ")", Max_Cost <= 64);
+   end Prefix_List;
+
+   procedure Prefix_Sums is
+      --  150 elements: two full blocks and a 22-element tail.
+      R150 : constant Pair_Array :=
+        [(1, 0), (1, 150), (5, 5), (60, 70), (64, 64), (65, 128), (1, 64),
+         (100, 150), (130, 150), (129, 128), (2, 127), (151, 150),
+         --  Ends with r > 32 below a stored block: walk back.
+         (40, 120), (97, 127), (34, 96), (33, 33), (35, 100), (98, 99),
+         --  Ends in the tail: back from P_end, forward from P (2).
+         (140, 150), (150, 150), (129, 140), (1, 141), (141, 149)];
+      --  127 elements: one full block and a 63-element tail, so every end
+      --  above 64 is in the tail.
+      R127 : constant Pair_Array :=
+        [(127, 127),   --  the reported case: one element at the end
+         (1, 96),      --  b = 96 walks back 31 terms from P_end
+         (1, 127), (1, 0), (128, 127), (65, 127), (100, 127), (98, 126),
+         (66, 96), (97, 97), (96, 98), (70, 110), (2, 63), (33, 64),
+         (64, 65), (1, 120), (120, 127), (126, 127)];
+      --  Exactly one block (no tail: P_end = P (1)), and short lists.
+      R64 : constant Pair_Array :=
+        [(1, 64), (64, 64), (1, 33), (34, 64), (32, 40), (65, 64)];
+      R40 : constant Pair_Array :=
+        [(1, 40), (40, 40), (1, 1), (21, 40), (20, 20), (41, 40)];
+      R1  : constant Pair_Array := [(1, 1), (1, 0), (2, 1)];
+      R0  : constant Pair_Array := [(1, 0)];
+   begin
+      Prefix_List (150, R150, "n150");
+      Prefix_List (127, R127, "n127");
+      Prefix_List (64, R64, "n64");
+      Prefix_List (40, R40, "n40");
+      Prefix_List (1, R1, "n1");
+      Prefix_List (0, R0, "n0");
+      --  The reported failure: a one-element range at the end of a
+      --  127-element list cost 125 additions; it now walks 1 term (a =
+      --  126, back from P_end) plus 0 (b = 127 is P_end).
+      Check ("n127_one_element_at_end_costs_1",
+             Range_Cost (126, 127, 127) = 1
+             and then Walks_Back (126, 127) and then Start_Pos (127, 127) = 127);
+      Check ("n127_1_96_walks_back_31_from_p_end",
+             Walks_Back (96, 127) and then Start_Pos (96, 127) = 127
+             and then Walk_Len (96, 127) = 31
+             and then Range_Cost (0, 96, 127) = 31);
+      Check ("n127_tail_end_r_above_32_walks_back",
+             Walks_Back (110, 127) and then Above (110, 127) = 127
+             and then Walk_Len (110, 127) = 17);
+      Check ("n150_worst_case_64",
+             Range_Cost (32, 96, 150) = 64);
+      --  The counts Range_Sum reports making (not only the formula): the
+      --  reported case costs 1 Add, [1 .. 96] of 127 walks back 31 from
+      --  P_end, [33 .. 96] of 150 is the worst case 64; one Sub each.
+      declare
+         L127 : Hash_Array (1 .. 127);
+         P127 : Acc_Array (1 .. 2);
+         L    : Hash_Array (1 .. 150);
+         P    : Acc_Array (1 .. 3);
+         Got  : Acc;
+         Adds, Subs : Natural;
+      begin
+         for I in L127'Range loop
+            L127 (I) := H (1000 + I);
+         end loop;
+         for I in L'Range loop
+            L (I) := H (1000 + I);
+         end loop;
+         Build_Prefix (L127, P127);
+         Build_Prefix (L, P);
+         Run_Range (L127, P127, 127, 127, Got, Adds, Subs);
+         Check ("n127_one_element_at_end_counted_1_add_1_sub",
+                Adds = 1 and then Subs = 1
+                and then Got = Direct (L127, 127, 127));
+         Run_Range (L127, P127, 1, 96, Got, Adds, Subs);
+         Check ("n127_1_96_counted_31_adds_1_sub",
+                Adds = 31 and then Subs = 1
+                and then Got = Direct (L127, 1, 96));
+         Run_Range (L, P, 33, 96, Got, Adds, Subs);
+         Check ("n150_33_96_counted_64_adds_1_sub",
+                Adds = 64 and then Subs = 1
+                and then Got = Direct (L, 33, 96));
+         --  A range's fingerprint is fp of its records.
+         Run_Range (L, P, 61, 100, Got, Adds, Subs);
+         Check ("range_fp_is_fp_of_records",
+                Fp (40, Got) = Fingerprint (Digest_Of (L (61 .. 100)))
+                and then Adds = End_Cost (60, 150) + End_Cost (100, 150)
+                and then Subs = 1);
+      end;
    end Prefix_Sums;
 
    ---------------------------------------------------------------------------
@@ -524,6 +711,7 @@ procedure Test_Digest with SPARK_Mode => Off is
          L (N + 1) := H (200 + I);
          Lemma_Models_Add (S, L0, L, N, H (200 + I));
          Add_Record (S, H (200 + I), R);
+         Check ("models_add" & I'Image & "_ok", R = D_OK);
          N := N + 1;
       end loop;
       Check ("models_after_adds", Count (S) = 5
@@ -549,9 +737,16 @@ procedure Test_Digest with SPARK_Mode => Off is
             P (5 - I) := L (I);
             M (I) := 5 - I;
          end loop;
+         Lemma_Is_Perm_Intro (L, P, M, 4);
+         Lemma_Is_Perm_Elim (L, P, M, 4);
+         --  Is_Perm is ghost: asserted (a failure is reported by Runner).
+         pragma Assert (Is_Perm (L, P, M, 4));
+         pragma Assert (not Is_Perm (L, P, [1, 1, 3, 4, 5, 6, 7, 8], 4));
+         Check ("is_perm_reverse_and_rejects_non_injective", True);
          Lemma_Models_Perm (S, L, P, M, 4);
          for I in 1 .. 4 loop
             Add_Record (S2, P (I), R);
+            Check ("models_perm_add" & I'Image & "_ok", R = D_OK);
          end loop;
          Lemma_Models_Fingerprint (S, S2, L, P, M, 4);
          Check ("models_permuted_same_fingerprint",
@@ -570,7 +765,8 @@ procedure Test_Digest with SPARK_Mode => Off is
       Check ("perm_reverse_same_digest",
              Same (Digest_Of (Fwd), Digest_Of (Rev)));
       Check ("delete_lemmas_run", True);
-      --  Wire form of the fp input, and the exported congruences.
+      --  Wire form of the fp input, and Kome.Accumulator's congruences
+      --  (which Kome.Digest now uses instead of its own copies).
       Lemma_Fp_Input_Acc (3, Sum (Digest_Of (Fwd)));
       Lemma_Add_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));
       Lemma_Sub_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));
@@ -579,12 +775,83 @@ procedure Test_Digest with SPARK_Mode => Off is
                = To_Bytes (Sum (S)));
    end Models_Part;
 
+   ---------------------------------------------------------------------------
+   --  (i) Capacity: D_No_Space at |R| = Elem_Max
+   ---------------------------------------------------------------------------
+
+   --  Reaching |R| = Elem_Max (2^20) by adds would take over an hour
+   --  under -gnata (about 5 ms per Add_Record, measured), so the full
+   --  state is restored from its count and sum.
+   procedure Capacity is
+      A    : constant Key256 := H (1);
+      B    : constant Key256 := H (2);
+      Full : constant Digest_State := Restore (Elem_Max, Sum (Fold ([A, B])));
+      S    : Digest_State := Full;
+      R    : Digest_Status;
+   begin
+      --  Static, so the compiler knows it; the check records it.
+      pragma Warnings (Off, "condition is always True");
+      Check ("elem_max_is_frontier_held_max",
+             Elem_Max = Kome.Frontier.Held_Max and then Elem_Max = 2**20);
+      pragma Warnings (On, "condition is always True");
+      Check ("restore_count_and_sum",
+             Count (Full) = Elem_Max and then Sum (Full) = Sum (Fold ([A, B]))
+             and then Fingerprint (Full) = Fp (Elem_Max, Sum (Full)));
+      Add_Record (S, H (3), R);
+      Check ("add_at_elem_max_is_no_space", R = D_No_Space);
+      Check ("no_space_leaves_state_unchanged", Same (S, Full));
+      Remove_Record (S, B, R);
+      Check ("remove_at_elem_max_ok",
+             R = D_OK and then Count (S) = Elem_Max - 1
+             and then Sum (S) = Elem_Acc (A));
+      Add_Record (S, B, R);
+      Check ("add_back_to_elem_max_ok", R = D_OK and then Same (S, Full));
+      Add_Record (S, B, R);
+      Check ("add_past_elem_max_again_no_space",
+             R = D_No_Space and then Same (S, Full));
+      --  Just below the bound one more fits.
+      S := Restore (Elem_Max - 1, Zero);
+      Add_Record (S, A, R);
+      Check ("add_at_elem_max_minus_1_ok",
+             R = D_OK and then Count (S) = Elem_Max
+             and then Sum (S) = Elem_Acc (A));
+      --  And D_Empty from a restored empty state.
+      S := Restore (0, Zero);
+      Remove_Record (S, A, R);
+      Check ("remove_from_restored_empty_refused",
+             R = D_Empty and then Same (S, Empty));
+   end Capacity;
+
+   procedure Run_All is
+   begin
+      Vectors;
+      State_Laws;
+      Frontier_Part;
+      Prefix_Sums;
+      Models_Part;
+      Capacity;
+   end Run_All;
+
 begin
-   Vectors;
-   State_Laws;
-   Frontier_Part;
-   Prefix_Sums;
-   Models_Part;
+   --  A Kome.Frontier.State carries a register file of Writers_Max keys,
+   --  and under -gnata every Post evaluation copies states, so the checks
+   --  run in a task with a large stack (as in test_frontier). The block
+   --  waits for the task.
+   declare
+      task Runner with Storage_Size => 512 * 1024 * 1024;
+
+      task body Runner is
+      begin
+         Run_All;
+      exception
+         when E : others =>
+            Put_Line ("FAIL unexpected exception: "
+                      & Ada.Exceptions.Exception_Information (E));
+            Failed := True;
+      end Runner;
+   begin
+      null;
+   end;
    if Failed then
       Set_Exit_Status (Failure);
    end if;

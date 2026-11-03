@@ -18,6 +18,11 @@
 --      total order, Frontier.lean) be proved on words while the design
 --      states it on bytes. Lemma_Lt_First_Difference states the same thing
 --      as "the first differing byte decides".
+--    * Id_Lt is the same order on Id128 (moved here from Kome.Reconcile),
+--      and Lemma_Id_Eq_Is_Bytewise / Lemma_Id_Lt_Is_Lexicographic /
+--      Lemma_Id_Lt_First_Difference are the Id128 versions of the Key256
+--      laws. Lemma_Key_Slide / Lemma_Id_Slide let a caller apply the laws
+--      to a field that is a slice of a larger buffer.
 --
 --  Everything is integer arithmetic on the range type Word (multiply and
 --  divide by the constant 256), never shifts on modular words, so the
@@ -227,6 +232,44 @@ package Kome.Keys with SPARK_Mode, Pure is
      with Global => null;
 
    ----------------------------------------------------------------------
+   --  The same two views for 16-byte identifiers (ns, ent).
+   --
+   --  Id_Lt is the unsigned big-endian order on Id128, the chain of word
+   --  comparisons (W0 most significant), exactly as Kome.Lt is on Key256.
+   --  DESIGN.md §8 orders element keys kind ‖ ent ‖ fh ‖ h bytewise;
+   --  Kome.Reconcile compares the ent part with this function.
+   --  Id_Lex_Lt is the byte-lexicographic order on the 16 bytes, spelt out
+   --  byte by byte (a different name from Lex_Lt because Id_Bytes and
+   --  Key_Bytes are subtypes of one type). Both are quantifier-free.
+   ----------------------------------------------------------------------
+
+   function Id_Lt (A, B : Id128) return Boolean is
+     (A.W0 < B.W0 or else (A.W0 = B.W0 and then
+      (A.W1 < B.W1 or else (A.W1 = B.W1 and then
+      (A.W2 < B.W2 or else (A.W2 = B.W2 and then
+       A.W3 < B.W3))))))
+     with Global => null;
+
+   function Id_Lex_Lt (A, B : Id_Bytes) return Boolean is
+     (A (0) < B (0) or else (A (0) = B (0) and then
+     (A (1) < B (1) or else (A (1) = B (1) and then
+     (A (2) < B (2) or else (A (2) = B (2) and then
+     (A (3) < B (3) or else (A (3) = B (3) and then
+     (A (4) < B (4) or else (A (4) = B (4) and then
+     (A (5) < B (5) or else (A (5) = B (5) and then
+     (A (6) < B (6) or else (A (6) = B (6) and then
+     (A (7) < B (7) or else (A (7) = B (7) and then
+     (A (8) < B (8) or else (A (8) = B (8) and then
+     (A (9) < B (9) or else (A (9) = B (9) and then
+     (A (10) < B (10) or else (A (10) = B (10) and then
+     (A (11) < B (11) or else (A (11) = B (11) and then
+     (A (12) < B (12) or else (A (12) = B (12) and then
+     (A (13) < B (13) or else (A (13) = B (13) and then
+     (A (14) < B (14) or else (A (14) = B (14) and then
+     (A (15) < B (15))))))))))))))))))))))))))))))))
+     with Global => null;
+
+   ----------------------------------------------------------------------
    --  Laws (ghost). Each states its law as Post.
    ----------------------------------------------------------------------
 
@@ -301,5 +344,45 @@ package Kome.Keys with SPARK_Mode, Pure is
           Pre  => (for all J in 0 .. I - 1 => A (J) = B (J))
                   and then A (I) /= B (I),
           Post => Lt (To_Key256 (A), To_Key256 (B)) = (A (I) < B (I));
+
+   --  Identifiers: the same three laws. Decoding is injective, Id_Lt is
+   --  byte-lexicographic order on the 16 bytes (read from either side),
+   --  and the first differing byte decides. Kome.Reconcile combines these
+   --  with the Key256 laws above to prove that its element-key order is
+   --  bytewise order on the wire key (§8).
+   procedure Lemma_Id_Eq_Is_Bytewise (A, B : Id_Bytes)
+     with Ghost, Global => null,
+          Post => (To_Id128 (A) = To_Id128 (B)) = (A = B);
+
+   procedure Lemma_Id_Lt_Is_Lexicographic (A, B : Id_Bytes)
+     with Ghost, Global => null,
+          Post => Id_Lt (To_Id128 (A), To_Id128 (B)) = Id_Lex_Lt (A, B);
+
+   procedure Lemma_Id_Lex_Of_Encoding (K1, K2 : Id128)
+     with Ghost, Global => null,
+          Post => Id_Lt (K1, K2) = Id_Lex_Lt (To_Bytes (K1), To_Bytes (K2));
+
+   procedure Lemma_Id_Lt_First_Difference (A, B : Id_Bytes; I : Id_Index)
+     with Ghost, Global => null,
+          Pre  => (for all J in 0 .. I - 1 => A (J) = B (J))
+                  and then A (I) /= B (I),
+          Post => Id_Lt (To_Id128 (A), To_Id128 (B)) = (A (I) < B (I));
+
+   --  Slice sliding. A field of a record buffer is a slice B with an
+   --  arbitrary 'First; converting it to Key_Bytes / Id_Bytes slides it to
+   --  'First = 0 without changing a byte, and decodes to the same key. With
+   --  this a caller can apply the laws above (stated on Key_Bytes /
+   --  Id_Bytes) to To_Key256 / To_Id128 of a slice.
+   procedure Lemma_Key_Slide (B : Byte_Array)
+     with Ghost, Global => null,
+          Pre  => B'Length = Key_Len,
+          Post => (for all I in Key_Index => Key_Bytes (B) (I) = B (B'First + I))
+                  and then To_Key256 (Key_Bytes (B)) = To_Key256 (B);
+
+   procedure Lemma_Id_Slide (B : Byte_Array)
+     with Ghost, Global => null,
+          Pre  => B'Length = Id_Len,
+          Post => (for all I in Id_Index => Id_Bytes (B) (I) = B (B'First + I))
+                  and then To_Id128 (Id_Bytes (B)) = To_Id128 (B);
 
 end Kome.Keys;

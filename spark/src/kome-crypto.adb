@@ -1,9 +1,11 @@
 --  Kome.Crypto body: the C binding. SPARK_Mode Off is the one exception
 --  CONVENTIONS.md allows; everything here is a direct call into monocypher
---  4 (third_party/monocypher/monocypher.h), with lengths converted to
---  size_t and buffers passed by address. The spec's contracts are what
---  callers prove against; the test main executes them on monocypher's
---  output under -gnata.
+--  4.0.2 (third_party/monocypher/monocypher.h and, for Ed25519,
+--  monocypher-ed25519.h), with lengths converted to size_t and buffers
+--  passed by address. The only Ada logic is Verify's encoding checks, which
+--  call the spec's own (SPARK, proved) expression functions. The spec's
+--  contracts are what callers prove against; the test main executes them
+--  on monocypher's output under -gnata.
 --
 --  Empty buffers are passed as NULL with size 0, which monocypher's manual
 --  documents as valid for every pointer/size pair used here.
@@ -36,19 +38,21 @@ package body Kome.Crypto with SPARK_Mode => Off is
    procedure C_Blake2b_Final (Ctx : System.Address; Hash : System.Address)
      with Import, Convention => C, External_Name => "crypto_blake2b_final";
 
-   procedure C_Eddsa_Key_Pair
+   --  monocypher-ed25519.h (RFC 8032 Ed25519, SHA-512 internal). The core
+   --  crypto_eddsa_* (BLAKE2b-512 EdDSA) is deliberately not imported.
+   procedure C_Ed25519_Key_Pair
      (SK : System.Address; PK : System.Address; Seed : System.Address)
-     with Import, Convention => C, External_Name => "crypto_eddsa_key_pair";
+     with Import, Convention => C, External_Name => "crypto_ed25519_key_pair";
 
-   procedure C_Eddsa_Sign
+   procedure C_Ed25519_Sign
      (Signature : System.Address; SK : System.Address;
       Msg       : System.Address; Msg_Size : size_t)
-     with Import, Convention => C, External_Name => "crypto_eddsa_sign";
+     with Import, Convention => C, External_Name => "crypto_ed25519_sign";
 
-   function C_Eddsa_Check
+   function C_Ed25519_Check
      (Signature : System.Address; PK : System.Address;
       Msg       : System.Address; Msg_Size : size_t) return int
-     with Import, Convention => C, External_Name => "crypto_eddsa_check";
+     with Import, Convention => C, External_Name => "crypto_ed25519_check";
 
    procedure C_X25519_Public_Key (PK : System.Address; SK : System.Address)
      with Import, Convention => C, External_Name => "crypto_x25519_public_key";
@@ -128,6 +132,10 @@ package body Kome.Crypto with SPARK_Mode => Off is
       C_Blake2b (Digest'Address, Hash_Len, Addr (Data), Len (Data));
    end Blake2b_256;
 
+   --  An axiom (see the spec): nothing to execute. Under -gnata the Pre and
+   --  Post are evaluated, which checks the axiom on the caller's data.
+   procedure Lemma_Blake2b_Congruent (A, B : Byte_Array) is null;
+
    procedure Init (Ctx : out Blake2b_Context) is
    begin
       Ctx.Raw    := [others => 0];
@@ -156,26 +164,24 @@ package body Kome.Crypto with SPARK_Mode => Off is
    end Wipe;
 
    ---------------------------------------------------------------------------
-   --  EdDSA
+   --  Ed25519
    ---------------------------------------------------------------------------
 
    function Derive_Public (S : Seed) return Pubkey is
-      Copy   : Seed := S;   --  crypto_eddsa_key_pair wipes its seed argument
+      Copy   : Seed := S;   --  crypto_ed25519_key_pair wipes its seed argument
       Full   : Byte_Array (0 .. Secret_Key_Len - 1) := [others => 0];
       Result : Pubkey := [others => 0];
    begin
-      C_Eddsa_Key_Pair (Full'Address, Result'Address, Copy'Address);
+      C_Ed25519_Key_Pair (Full'Address, Result'Address, Copy'Address);
       C_Wipe (Full'Address, Secret_Key_Len);
       C_Wipe (Copy'Address, Seed_Len);
       return Result;
    end Derive_Public;
 
-   function Is_Valid (SK : Secret_Key) return Boolean is (SK.Valid);
-
    procedure Key_Pair (S : Seed; SK : out Secret_Key; PK : out Pubkey) is
-      Copy : Seed := S;   --  crypto_eddsa_key_pair wipes its seed argument
+      Copy : Seed := S;   --  crypto_ed25519_key_pair wipes its seed argument
    begin
-      C_Eddsa_Key_Pair (SK.Raw'Address, PK'Address, Copy'Address);
+      C_Ed25519_Key_Pair (SK.Raw'Address, PK'Address, Copy'Address);
       C_Wipe (Copy'Address, Seed_Len);
       SK.Valid := True;
    end Key_Pair;
@@ -189,12 +195,19 @@ package body Kome.Crypto with SPARK_Mode => Off is
    function Sign (SK : Secret_Key; Msg : Byte_Array) return Sig is
       Result : Sig := [others => 0];
    begin
-      C_Eddsa_Sign (Result'Address, SK.Raw'Address, Addr (Msg), Len (Msg));
+      C_Ed25519_Sign (Result'Address, SK.Raw'Address, Addr (Msg), Len (Msg));
       return Result;
    end Sign;
 
+   --  Strict verification (spec header): the encoding checks first, then
+   --  monocypher. S_Below_L repeats what crypto_ed25519_check enforces, so
+   --  that the Post's first conjunct does not rest on C alone.
    function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean is
-     (C_Eddsa_Check (Signature'Address, PK'Address, Addr (Msg), Len (Msg)) = 0);
+     (S_Below_L (Signature)
+      and then Is_Canonical_Point (Signature (0 .. 31))
+      and then Is_Canonical_Point (PK)
+      and then C_Ed25519_Check
+                 (Signature'Address, PK'Address, Addr (Msg), Len (Msg)) = 0);
 
    ---------------------------------------------------------------------------
    --  X25519
@@ -206,6 +219,13 @@ package body Kome.Crypto with SPARK_Mode => Off is
       C_X25519_Public_Key (Result'Address, Secret'Address);
       return Result;
    end X25519_Public;
+
+   function X25519_Shared (Secret : DH_Secret; Their_Public : Pubkey) return Shared_Secret is
+      Result : Shared_Secret := [others => 0];
+   begin
+      C_X25519 (Result'Address, Secret'Address, Their_Public'Address);
+      return Result;
+   end X25519_Shared;
 
    procedure X25519
      (Secret       : DH_Secret;

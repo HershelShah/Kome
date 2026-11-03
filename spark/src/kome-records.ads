@@ -4,40 +4,44 @@
 --  here hold bytes, and To_Header turns them into the lattice's word
 --  records (Kome.Headers.Header, Id128 / Key256 via Kome.Keys).
 --
---  Layouts, all integers big-endian (DESIGN.md §2, with the module J
---  fields of §6 for ROSTER and REVOKE):
+--  The layout IS DESIGN.md §2 (the five layouts and the offset table).
+--  All integers are big-endian; labels are ASCII with no terminator:
 --
---    PUT     ns[16] ent[16] flen:u8 field[flen] t:u48 seq:u48 author[32]
---            vlen:u16 value[vlen]
---    DEL     ns[16] ent[16] t:u48 seq:u48 author[32]
---    ROSTER  ns[16] root_pk[32] salt[16] signer[32] prev_h[32] gen:u48
---            ceiling_t:u48 del_ttl:u48 epoch:u16 n_roots:u8 (<= 4)
---            roots[n_roots][32] n_members:u8 (<= 64)
---            members[n] { sign_pk[32] dh_pk[32] nonce[24] box[48] }
---    REVOKE  ns[16] root_pk[32] salt[16] signer[32] sign_pk[32] from_t:u48
---            rev_seq:u48
+--    tag 0  ROSTER  ns[16] root_pk[32] salt[16] SIGNER box_pk[32]
+--                   gen:u48 ceiling_t:u48 del_ttl:u48 epoch:u16
+--                   n_links:u8 (<= 15)   links[n_links]
+--                                        { from_epoch:u16 nonce[24] box[48] }
+--                   n_members:u8 (<= 64) members[n_members]
+--                                        { sign_pk[32] dh_pk[32] nonce[24] box[48] }
+--    tag 1  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32]
+--                   from_t:u48 rev_seq:u48
+--    tag 2  GRANT   ns[16] root_pk[32] salt[16] SIGNER subject[32]
+--    tag 3  DEL     ns[16] ent[16] t:u48 seq:u48 author[32]
+--    tag 4  PUT     ns[16] ent[16] flen:u8 field[flen] t:u48 seq:u48
+--                   author[32] vlen:u16 value[vlen]   (vlen <= 40 960)
+--
+--    SIGNER = signer[32] cert_cap:u48 cert_sig[64]
 --
 --  A frame is  tag:u8 ‖ content ‖ sig[64];  h = BLAKE2b-256 (tag ‖ content);
---  sig = Ed25519 over h by author (PUT, DEL) or by signer (ROSTER, REVOKE).
---  The tag is the Kind's reconciliation-order code (Kome.Headers.Kind:
---  ROSTER 0, REVOKE 1, DEL 2, PUT 3).
+--  sig = Ed25519 (RFC 8032, D4) over the 32 bytes of h, by author (PUT,
+--  DEL) or by signer (ROSTER, REVOKE, GRANT). The tag is the Kind's
+--  reconciliation-order code (Kome.Headers.Kind'Pos).
 --
---  Module J (DESIGN.md §6, "Several roots"). root_pk is the founding key:
---  ns = BLAKE2b-256 (root_pk ‖ salt)[0:16] keeps the collection
---  self-certifying. signer is the root that issued the record: "ROSTER,
---  REVOKE and the epoch key may be issued by any listed root". prev_h is
---  "the hash of the roster it extends" (zero for a first roster). What a
---  record's own bytes can decide is checked here (Well_Formed): a ROSTER's
---  signer is root_pk or one of its own roots, and the signature verifies
---  under signer. What needs other records is not: admission
---  `signer ∈ roots_ever` (Kome.Frontier) and "a root is added only by a
---  roster signed by the founding key", which compares a roster with the
---  one prev_h names (Kome.Roster, phase 8). A ROSTER header carries the
---  signer in V.Author, so roster domination is per signer (Kome.Headers);
---  a REVOKE header carries the subject there, and its signer is read with
---  Signer_Key. DESIGN.md §2's table predates module J and lists neither
---  signer nor prev_h; this layout is the reading of §6 chosen here, to be
---  recorded in DESIGN.md §10.
+--  Roots (D1, DESIGN.md §2 "The signer block and root certificates").
+--  root_pk is the collection's founding key: ns = BLAKE2b-256 (root_pk ‖
+--  salt)[0:16] keeps the collection self-certifying. An authorization
+--  record names its signer and proves, from its own bytes, that the signer
+--  is a root: either signer = root_pk with cert_cap = 0 and a zero
+--  cert_sig, or cert_sig is the founding key's signature over Cert_Hash =
+--  BLAKE2b-256 ("kome/root" ‖ ns ‖ signer ‖ u48 (cert_cap)), and then a
+--  ROSTER may not set ceiling_t above cert_cap. Only the founding key can
+--  certify, so only it adds roots, and admission of authorization records
+--  needs no history. Certificates cannot be narrowed: every certificate
+--  ever issued stays valid, so a root's effective cap is the largest
+--  cert_cap ever certified for it (§2); only root-voiding (§6, a view)
+--  ends what a certificate allows. Kome.Store additionally refuses an
+--  authorization record whose root_pk (Root_Key_Of) is not the store's
+--  founding key (DESIGN.md §7 step 0).
 --
 --  Each kind has a content record (what is hashed) and a record = content
 --  plus signature. Keeping the signature outside the content makes "signing
@@ -48,22 +52,27 @@
 --      frame is Frame_Byte, the layout read position by position; the
 --      frame minus its signature is Content_Bytes, which is what Hash hashes.
 --    * Decode accepts exactly the frames Is_<Kind>_Frame describes (exact
---      length, tag, flen in 1..32, n_roots <= 4, n_members <= 64), never
---      reads out of bounds, returns Parse_<Kind> on success and leaves the
---      record unchanged on failure.
+--      length, tag, flen in 1..32, vlen <= 40 960, n_links <= 15,
+--      n_members <= 64), never reads out of bounds, returns Parse_<Kind> on
+--      success and leaves the record unchanged on failure.
 --    * Lemma_Decode_Encode: Parse (Encode (R)) = R for every canonical R,
 --      so Decode (Encode (R)) returns OK and R.
 --    * Lemma_Encode_Decode_<Kind>: Encode (Parse (B)) = B for every accepted
 --      B: each record has exactly one encoding, so h is a function of the
 --      record (A2 then makes h injective on records).
---    * Lemma_Header_Canonical: To_Header has the shape Kome.Views.Canonical
---      asks of each kind. Lemma_Signer_Listed: Signer_Listed is "signer is
---      root_pk or some Root (C, I)".
+--    * Lemma_Header_Canonical: To_Header (R) is a canonical header
+--      (Kome.Headers.Canonical, D3); for a ROSTER given that del_ttl is in
+--      the clamp, which Well_Formed implies. So decode produces only
+--      canonical headers.
+--    * Decode_Verified accepts exactly the well-formed frames (DESIGN.md §2
+--      items 1-5): shape, ns, the signer block, the certified ceiling, the
+--      del_ttl clamp, the X25519 keys (E5), REVOKE never names root_pk,
+--      and the signature.
 --  Not proved: anything about BLAKE2b or Ed25519 themselves. Kome.Crypto's
 --  Blake2b_256, Sign and Verify are opaque functions; Well_Formed calls
 --  Verify, and no theorem here depends on what it returns.
 --
---  Canonical form: unused field, value, root and member bytes are zero. On
+--  Canonical form: unused field, value, link and member bytes are zero. On
 --  canonical records Ada equality is equality of content; a record with
 --  nonzero padding is Ada-unequal to its canonical twin yet has the same
 --  content. So Encode and Sign require Canonical, Well_Formed includes it,
@@ -79,18 +88,21 @@ with Kome.Crypto;
 package Kome.Records with SPARK_Mode, Preelaborate is
 
    ---------------------------------------------------------------------------
-   --  Tags (one byte, the Kind's representation, DESIGN.md §8 key order).
+   --  Tags (one byte, the Kind's representation, DESIGN.md §2 and §8 key
+   --  order).
    ---------------------------------------------------------------------------
 
    Tag_Roster : constant Byte := 0;
    Tag_Revoke : constant Byte := 1;
-   Tag_Del    : constant Byte := 2;
-   Tag_Put    : constant Byte := 3;
+   Tag_Grant  : constant Byte := 2;
+   Tag_Del    : constant Byte := 3;
+   Tag_Put    : constant Byte := 4;
 
    function Tag_Of (K : Kind) return Byte is
      (case K is
          when K_Roster => Tag_Roster,
          when K_Revoke => Tag_Revoke,
+         when K_Grant  => Tag_Grant,
          when K_Del    => Tag_Del,
          when K_Put    => Tag_Put);
 
@@ -101,6 +113,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Kind_Of (Frame : Byte_Array) return Kind is
      (if Frame (Frame'First) = Tag_Roster then K_Roster
       elsif Frame (Frame'First) = Tag_Revoke then K_Revoke
+      elsif Frame (Frame'First) = Tag_Grant then K_Grant
       elsif Frame (Frame'First) = Tag_Del then K_Del
       else K_Put)
      with Pre  => Has_Kind (Frame),
@@ -173,12 +186,58 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    ---------------------------------------------------------------------------
 
    --  ns = BLAKE2b-256 (root_pk ‖ salt)[0:16] (DESIGN.md §2 "Identifiers").
-   function Collection_Id (Root_PK : Pubkey; S : Salt) return NS_Id is
-     (Kome.Crypto.Blake2b_256 (Root_PK & S) (0 .. NS_Len - 1));
+   --  Kome.Store.Open checks its log HEADER with it (§7).
+   function Collection_Id (Root_PK : Pubkey; Salt : Kome.Salt) return NS_Id is
+     (Kome.Crypto.Blake2b_256 (Root_PK & Salt) (0 .. NS_Len - 1));
 
-   --  Every frame is at most this long (a PUT with a 32-byte field and a
-   --  65 535-byte value); every hashed content is at most this minus 64.
+   --  Every frame is at most this long: a PUT with a 32-byte field and a
+   --  40 960-byte value, 176 + Value_Max = 41 136 bytes (D12, §2 table);
+   --  every hashed content is at most this minus 64.
    Frame_Max : constant := 1 + 16 + 16 + 1 + 32 + 6 + 6 + 32 + 2 + Value_Max + Sig_Len;
+   pragma Compile_Time_Error
+     (Frame_Max /= 41_136, "DESIGN.md §2: the largest frame is 41 136 bytes");
+
+   Zero_Sig : constant Sig := [others => 0];
+
+   ---------------------------------------------------------------------------
+   --  The signer block and root certificates (D1, DESIGN.md §2).
+   --    SIGNER = signer[32] cert_cap:u48 cert_sig[64]
+   ---------------------------------------------------------------------------
+
+   Cert_Label_Len : constant := 9;   --  "kome/root"
+   Cert_Label     : constant Byte_Array (0 .. Cert_Label_Len - 1) :=
+     [16#6B#, 16#6F#, 16#6D#, 16#65#, 16#2F#, 16#72#, 16#6F#, 16#6F#, 16#74#];
+   Cert_Input_Len : constant := Cert_Label_Len + NS_Len + Pubkey_Len + 6;
+   pragma Compile_Time_Error
+     (Cert_Input_Len /= 63, "DESIGN.md §2: the certificate input is 63 bytes");
+   subtype Cert_Input_Bytes is Byte_Array (0 .. Cert_Input_Len - 1);
+
+   --  "kome/root" ‖ ns ‖ signer ‖ u48 (cap).
+   function Cert_Input (NS : NS_Id; Signer : Pubkey; Cap : U48) return Cert_Input_Bytes is
+     (Cert_Label & NS & Signer
+      & Byte_Array'(Byte_Of_U48 (Cap, 0), Byte_Of_U48 (Cap, 1), Byte_Of_U48 (Cap, 2),
+                    Byte_Of_U48 (Cap, 3), Byte_Of_U48 (Cap, 4), Byte_Of_U48 (Cap, 5)));
+
+   --  What the founding key signs to certify a root.
+   function Cert_Hash (NS : NS_Id; Signer : Pubkey; Cap : U48) return Hash256 is
+     (Kome.Crypto.Blake2b_256 (Cert_Input (NS, Signer, Cap)));
+
+   --  The signer block is valid: the founding key with a zero block, or a
+   --  root certified by the founding key for this ns and cap.
+   function Cert_OK
+     (Root_PK : Pubkey; NS : NS_Id; Signer : Pubkey; Cap : U48; Cert : Sig) return Boolean
+   is (if Signer = Root_PK then Cap = 0 and then Cert = Zero_Sig
+       else Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (NS, Signer, Cap)));
+
+   --  The certificate the founding key issues for a root (out of band, a
+   --  key ceremony; DESIGN.md §2). The founding key itself takes no
+   --  certificate (its block is zero).
+   function Make_Cert
+     (Founding : Kome.Crypto.Secret_Key; NS : NS_Id; Signer : Pubkey; Cap : U48) return Sig
+   with Global => null,
+        Pre  => Kome.Crypto.Is_Valid (Founding)
+                and then Signer /= Kome.Crypto.Public_Of (Founding),
+        Post => Make_Cert'Result = Kome.Crypto.Sign (Founding, Cert_Hash (NS, Signer, Cap));
 
    ---------------------------------------------------------------------------
    --  PUT   ns[16] ent[16] flen:u8 field[flen] t:u48 seq:u48 author[32]
@@ -270,7 +329,23 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Make_Put'Result.C.VLen = Value'Length
           and then (for all I in 0 .. Value'Length - 1 =>
                       Make_Put'Result.C.Value (I) = Value (Value'First + I))
-          and then (for all I in Sig'Range => Make_Put'Result.Signature (I) = 0);
+          and then (for all I in Sig'Range => Make_Put'Result.Signature (I) = 0)
+          --  The lattice header, from the arguments (DESIGN.md §5 step 2:
+          --  the write path builds the record from the (t, seq) it chose,
+          --  and h is the record's own hash). Kome.Emit's To_Header (Tgt,
+          --  Stamp (T, Author, Seq, h)) for Tgt = (K_Put, NS, Ent, FH).
+          and then To_Header (Make_Put'Result) =
+                     (K       => K_Put,
+                      NS      => To_Id128 (NS),
+                      Ent     => To_Id128 (Ent),
+                      FH      => To_Key256 (Kome.Crypto.Blake2b_256 (Field)),
+                      V       => (T      => T,
+                                  Author => To_Key256 (Author),
+                                  Seq    => Seq,
+                                  H      => To_Key256 (Hash (Make_Put'Result.C))),
+                      Issuer  => Zero_Key,
+                      Del_TTL => 0)
+          and then Kome.Headers.Canonical (To_Header (Make_Put'Result));
 
    --  tag ‖ content, the bytes h is computed over.
    function Content_Bytes (C : Put_Content) return Byte_Array
@@ -305,11 +380,14 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      (U16_At (Frame, Frame'First + Put_O_VLen (Put_FL (Frame))))
      with Pre => Frame'Length >= Put_Frame_Min and then Put_FL (Frame) in Field_Len;
 
+   --  vlen stays a u16 on the wire; a value above Value_Max (40 960, D12)
+   --  is refused (§2 item 1).
    function Is_Put_Frame (Frame : Byte_Array) return Boolean is
      (Frame'Length >= Put_Frame_Min
       and then Frame'Length <= Put_Frame_Max
       and then Frame (Frame'First) = Tag_Put
       and then Put_FL (Frame) in Field_Len
+      and then Put_VL (Frame) <= Value_Max
       and then Frame'Length = Put_Fixed + Sig_Len + Put_FL (Frame) + Put_VL (Frame));
 
    --  The record an accepted frame encodes, field by field.
@@ -378,7 +456,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Hash (R.C) = Hash (R'Old.C);
 
    --  The lattice header (Kome.Headers): V = (t, author, seq, h),
-   --  FH = BLAKE2b-256 (field name), Ceiling 0.
+   --  FH = BLAKE2b-256 (field name), no issuer, del_ttl 0.
    function To_Header (R : Put_Record) return Header is
      (K       => K_Put,
       NS      => To_Id128 (R.C.NS),
@@ -388,14 +466,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (R.C))),
-      Ceiling => 0);
+      Issuer  => Zero_Key,
+      Del_TTL => 0);
 
-   --  The header has the canonical shape Kome.Views.Canonical asks of a PUT
-   --  (stated by its conjuncts: Kome.Views is not preelaborable, so it
-   --  cannot be withed here; the test main checks the two agree).
+   --  D3: the header is canonical.
    procedure Lemma_Header_Canonical (R : Put_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Put and then To_Header (R).Ceiling = 0;
+     Post => To_Header (R).K = K_Put and then Kome.Headers.Canonical (To_Header (R));
 
    --  Round trip (T13): Parse (Encode (R)) = R, hence Decode (Encode (R))
    --  returns OK and R.
@@ -511,24 +588,52 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
           and then Hash (R.C) = Hash (R'Old.C);
 
-   --  V = (t, author, seq, h); a DEL has no field (FH 0) and no ceiling.
+   --  V = (t, author, seq, h); a DEL has no field (FH 0), no issuer and
+   --  del_ttl 0.
    function To_Header (R : Del_Record) return Header is
      (K       => K_Del,
       NS      => To_Id128 (R.C.NS),
       Ent     => To_Id128 (R.C.Ent),
-      FH      => (others => 0),
+      FH      => Zero_Key,
       V       => (T      => R.C.T,
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (R.C))),
-      Ceiling => 0);
+      Issuer  => Zero_Key,
+      Del_TTL => 0);
 
-   --  Kome.Views.Canonical for a DEL: FH and Ceiling zero.
    procedure Lemma_Header_Canonical (R : Del_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Del
-             and then To_Header (R).FH = Key256'(others => 0)
-             and then To_Header (R).Ceiling = 0;
+     Post => To_Header (R).K = K_Del and then Kome.Headers.Canonical (To_Header (R));
+
+   --  A DEL with a zero signature (sign it with Sign): the DEL counterpart
+   --  of Make_Put, for step 2 of the write path (DESIGN.md §5). Its lattice
+   --  header is Kome.Emit's To_Header (Tgt, Stamp (T, Author, Seq, h)) for
+   --  Tgt = (K_Del, NS, Ent, 0), with h the record's own hash.
+   function Make_Del
+     (NS     : NS_Id;
+      Ent    : Ent_Id;
+      T, Seq : U48;
+      Author : Pubkey) return Del_Record
+   with Global => null,
+        Post => Make_Del'Result.C.NS = NS
+          and then Make_Del'Result.C.Ent = Ent
+          and then Make_Del'Result.C.T = T
+          and then Make_Del'Result.C.Seq = Seq
+          and then Make_Del'Result.C.Author = Author
+          and then (for all I in Sig'Range => Make_Del'Result.Signature (I) = 0)
+          and then To_Header (Make_Del'Result) =
+                     (K       => K_Del,
+                      NS      => To_Id128 (NS),
+                      Ent     => To_Id128 (Ent),
+                      FH      => Zero_Key,
+                      V       => (T      => T,
+                                  Author => To_Key256 (Author),
+                                  Seq    => Seq,
+                                  H      => To_Key256 (Hash (Make_Del'Result.C))),
+                      Issuer  => Zero_Key,
+                      Del_TTL => 0)
+          and then Kome.Headers.Canonical (To_Header (Make_Del'Result));
 
    procedure Lemma_Decode_Encode (R : Del_Record) with
      Ghost, Global => null,
@@ -540,37 +645,40 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      Post => Encode (Parse_Del (Frame)) = Frame;
 
    ---------------------------------------------------------------------------
-   --  ROSTER  ns[16] root_pk[32] salt[16] signer[32] prev_h[32] gen:u48
-   --          ceiling_t:u48 del_ttl:u48 epoch:u16 n_roots:u8
-   --          roots[n_roots][32] n_members:u8
-   --          members[n] { sign_pk[32] dh_pk[32] nonce[24] box[48] }
-   --  Roots and members are stored flat, as on the wire, so the encoding
-   --  is a sequence of byte copies; the accessors below cut them up.
+   --  ROSTER  ns[16] root_pk[32] salt[16] SIGNER box_pk[32]
+   --          gen:u48 ceiling_t:u48 del_ttl:u48 epoch:u16
+   --          n_links:u8 links[n_links] { from_epoch:u16 nonce[24] box[48] }
+   --          n_members:u8 members[n] { sign_pk[32] dh_pk[32] nonce[24] box[48] }
+   --  Links and members are stored flat, as on the wire, so the encoding is
+   --  a sequence of byte copies; the accessors below cut them up.
    ---------------------------------------------------------------------------
 
-   Member_Len        : constant := Pubkey_Len + Pubkey_Len + Nonce_Len + Box_Len;
-   Roots_Bytes_Len   : constant := Roots_Max * Pubkey_Len;
+   Link_Len          : constant := 2 + Nonce_Len + Box_Len;                        --  74
+   Member_Len        : constant := Pubkey_Len + Pubkey_Len + Nonce_Len + Box_Len;  --  136
+   Links_Bytes_Len   : constant := Links_Max * Link_Len;
    Members_Bytes_Len : constant := Members_Max * Member_Len;
 
-   subtype Root_Count   is Natural range 0 .. Roots_Max;
-   subtype Member_Count is Natural range 0 .. Members_Max;
-   subtype Root_Index   is Positive range 1 .. Roots_Max;
-   subtype Member_Index is Positive range 1 .. Members_Max;
-   subtype Roots_Bytes   is Byte_Array (0 .. Roots_Bytes_Len - 1);
+   subtype Link_Count    is Natural range 0 .. Links_Max;
+   subtype Member_Count  is Natural range 0 .. Members_Max;
+   subtype Link_Index    is Positive range 1 .. Links_Max;
+   subtype Member_Index  is Positive range 1 .. Members_Max;
+   subtype Links_Bytes   is Byte_Array (0 .. Links_Bytes_Len - 1);
    subtype Members_Bytes is Byte_Array (0 .. Members_Bytes_Len - 1);
 
    type Roster_Content is record
       NS        : NS_Id         := [others => 0];
       Root_PK   : Pubkey        := [others => 0];   --  founding key (ns)
       Salt      : Kome.Salt     := [others => 0];
-      Signer    : Pubkey        := [others => 0];   --  issuing root (§6)
-      Prev_H    : Hash256       := [others => 0];   --  roster extended (§6)
+      Signer    : Pubkey        := [others => 0];   --  issuing root
+      Cert_Cap  : U48           := 0;
+      Cert_Sig  : Sig           := [others => 0];
+      Box_PK    : Pubkey        := [others => 0];   --  ephemeral X25519 (D5)
       Gen       : U48           := 0;
       Ceiling_T : U48           := 0;
       Del_TTL   : U48           := 0;
       Epoch     : Kome.Epoch    := 0;
-      N_Roots   : Root_Count    := 0;
-      Roots     : Roots_Bytes   := [others => 0];   --  Roots (0 .. 32 * N_Roots - 1)
+      N_Links   : Link_Count    := 0;
+      Links     : Links_Bytes   := [others => 0];   --  Links (0 .. 74 * N_Links - 1)
       N_Members : Member_Count  := 0;
       Members   : Members_Bytes := [others => 0];   --  Members (0 .. 136 * N_Members - 1)
    end record;
@@ -580,31 +688,38 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Signature : Sig := [others => 0];
    end record;
 
-   Roster_O_NS      : constant := 1;
-   Roster_O_Root_PK : constant := 17;
-   Roster_O_Salt    : constant := 49;
-   Roster_O_Signer  : constant := 65;
-   Roster_O_Prev_H  : constant := 97;
-   Roster_O_Gen     : constant := 129;
-   Roster_O_Ceiling : constant := 135;
-   Roster_O_TTL     : constant := 141;
-   Roster_O_Epoch   : constant := 147;
-   Roster_O_NR      : constant := 149;
-   Roster_O_Roots   : constant := 150;
-   Roster_Fixed     : constant := 151;          --  tag + every fixed-width part
-   Roster_Frame_Min : constant := Roster_Fixed + Sig_Len;
-   Roster_Frame_Max : constant :=
-     Roster_Fixed + Roots_Bytes_Len + Members_Bytes_Len + Sig_Len;
+   Roster_O_NS       : constant := 1;
+   Roster_O_Root_PK  : constant := 17;
+   Roster_O_Salt     : constant := 49;
+   Roster_O_Signer   : constant := 65;
+   Roster_O_Cert_Cap : constant := 97;
+   Roster_O_Cert_Sig : constant := 103;
+   Roster_O_Box_PK   : constant := 167;
+   Roster_O_Gen      : constant := 199;
+   Roster_O_Ceiling  : constant := 205;
+   Roster_O_TTL      : constant := 211;
+   Roster_O_Epoch    : constant := 217;
+   Roster_O_NL       : constant := 219;
+   Roster_O_Links    : constant := 220;
+   Roster_Fixed      : constant := 221;          --  tag + every fixed-width part
+   Roster_Frame_Min  : constant := Roster_Fixed + Sig_Len;
+   Roster_Frame_Max  : constant :=
+     Roster_Fixed + Links_Bytes_Len + Members_Bytes_Len + Sig_Len;
+   pragma Compile_Time_Error
+     (Roster_Frame_Min /= 285 or else Roster_Frame_Max /= 10_099,
+      "DESIGN.md §2: a ROSTER frame is 285 .. 10 099 bytes");
+   pragma Compile_Time_Error
+     (Roster_Frame_Max > Frame_Max, "every ROSTER frame must fit Frame_Max");
 
-   function Roster_O_NM (NR : Natural) return Natural is
-     (Roster_O_Roots + Pubkey_Len * NR)
-     with Pre => NR <= 255;
-   function Roster_O_Members (NR : Natural) return Natural is
-     (Roster_O_Roots + Pubkey_Len * NR + 1)
-     with Pre => NR <= 255;
+   function Roster_O_NM (NL : Natural) return Natural is
+     (Roster_O_Links + Link_Len * NL)
+     with Pre => NL <= 255;
+   function Roster_O_Members (NL : Natural) return Natural is
+     (Roster_O_Links + Link_Len * NL + 1)
+     with Pre => NL <= 255;
 
    function Content_Len (C : Roster_Content) return Positive is
-     (Roster_Fixed + Pubkey_Len * C.N_Roots + Member_Len * C.N_Members);
+     (Roster_Fixed + Link_Len * C.N_Links + Member_Len * C.N_Members);
 
    function Frame_Len (R : Roster_Record) return Positive is
      (Content_Len (R.C) + Sig_Len);
@@ -614,16 +729,18 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       elsif J < Roster_O_Root_PK then C.NS (J - Roster_O_NS)
       elsif J < Roster_O_Salt then C.Root_PK (J - Roster_O_Root_PK)
       elsif J < Roster_O_Signer then C.Salt (J - Roster_O_Salt)
-      elsif J < Roster_O_Prev_H then C.Signer (J - Roster_O_Signer)
-      elsif J < Roster_O_Gen then C.Prev_H (J - Roster_O_Prev_H)
+      elsif J < Roster_O_Cert_Cap then C.Signer (J - Roster_O_Signer)
+      elsif J < Roster_O_Cert_Sig then Byte_Of_U48 (C.Cert_Cap, J - Roster_O_Cert_Cap)
+      elsif J < Roster_O_Box_PK then C.Cert_Sig (J - Roster_O_Cert_Sig)
+      elsif J < Roster_O_Gen then C.Box_PK (J - Roster_O_Box_PK)
       elsif J < Roster_O_Ceiling then Byte_Of_U48 (C.Gen, J - Roster_O_Gen)
       elsif J < Roster_O_TTL then Byte_Of_U48 (C.Ceiling_T, J - Roster_O_Ceiling)
       elsif J < Roster_O_Epoch then Byte_Of_U48 (C.Del_TTL, J - Roster_O_TTL)
-      elsif J < Roster_O_NR then Byte_Of_U16 (Natural (C.Epoch), J - Roster_O_Epoch)
-      elsif J = Roster_O_NR then Byte (C.N_Roots)
-      elsif J < Roster_O_NM (C.N_Roots) then C.Roots (J - Roster_O_Roots)
-      elsif J = Roster_O_NM (C.N_Roots) then Byte (C.N_Members)
-      else C.Members (J - Roster_O_Members (C.N_Roots)))
+      elsif J < Roster_O_NL then Byte_Of_U16 (Natural (C.Epoch), J - Roster_O_Epoch)
+      elsif J = Roster_O_NL then Byte (C.N_Links)
+      elsif J < Roster_O_NM (C.N_Links) then C.Links (J - Roster_O_Links)
+      elsif J = Roster_O_NM (C.N_Links) then Byte (C.N_Members)
+      else C.Members (J - Roster_O_Members (C.N_Links)))
      with Pre => J < Content_Len (C);
 
    function Frame_Byte (R : Roster_Record; J : Natural) return Byte is
@@ -631,11 +748,19 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       else R.Signature (J - Content_Len (R.C)))
      with Pre => J < Frame_Len (R);
 
-   --  Root I and member I's parts. Opaque (each is a quantified aggregate,
-   --  CONVENTIONS.md rule 2); their bytes are Lemma_Root_Bytes and
-   --  Lemma_Member_Bytes.
-   function Root (C : Roster_Content; I : Root_Index) return Pubkey
-     with Global => null, Pre => I <= C.N_Roots;
+   --  Link I's parts (E3: link {from_epoch, nonce, box}) and member I's
+   --  parts. The nonce, box and key accessors are opaque (each is a
+   --  quantified aggregate, CONVENTIONS.md rule 2); their bytes are
+   --  Lemma_Link_Bytes and Lemma_Member_Bytes.
+   function Link_From_Epoch (C : Roster_Content; I : Link_Index) return Epoch is
+     (Epoch (U16_Of (C.Links (Link_Len * (I - 1)), C.Links (Link_Len * (I - 1) + 1))))
+     with Pre => I <= C.N_Links;
+
+   function Link_Nonce (C : Roster_Content; I : Link_Index) return Nonce
+     with Global => null, Pre => I <= C.N_Links;
+
+   function Link_Box (C : Roster_Content; I : Link_Index) return Box
+     with Global => null, Pre => I <= C.N_Links;
 
    function Member_Sign_PK (C : Roster_Content; I : Member_Index) return Pubkey
      with Global => null, Pre => I <= C.N_Members;
@@ -649,16 +774,20 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Member_Box (C : Roster_Content; I : Member_Index) return Box
      with Global => null, Pre => I <= C.N_Members;
 
-   --  The member's signing key as the lattice sees it (for W, Kome.Frontier).
+   --  The member's signing key as the lattice sees it.
    function Member_Key (C : Roster_Content; I : Member_Index) return Key256 is
      (To_Key256 (Member_Sign_PK (C, I)))
      with Pre => I <= C.N_Members;
 
-   procedure Lemma_Root_Bytes (C : Roster_Content; I : Root_Index) with
+   procedure Lemma_Link_Bytes (C : Roster_Content; I : Link_Index) with
      Ghost, Global => null,
-     Pre  => I <= C.N_Roots,
-     Post => (for all K in Pubkey'Range =>
-                Root (C, I) (K) = C.Roots (Pubkey_Len * (I - 1) + K));
+     Pre  => I <= C.N_Links,
+     Post => Natural (Link_From_Epoch (C, I)) =
+               U16_Of (C.Links (Link_Len * (I - 1)), C.Links (Link_Len * (I - 1) + 1))
+       and then (for all K in Nonce'Range =>
+                   Link_Nonce (C, I) (K) = C.Links (Link_Len * (I - 1) + 2 + K))
+       and then (for all K in Box'Range =>
+                   Link_Box (C, I) (K) = C.Links (Link_Len * (I - 1) + 2 + Nonce_Len + K));
 
    procedure Lemma_Member_Bytes (C : Roster_Content; I : Member_Index) with
      Ghost, Global => null,
@@ -675,42 +804,51 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                    Member_Box (C, I) (K) =
                      C.Members (Member_Len * (I - 1) + 2 * Pubkey_Len + Nonce_Len + K));
 
-   --  The signer is the founding key or one of the roster's own roots
-   --  (DESIGN.md §6: "ROSTER ... may be issued by any listed root").
-   --  Spelled out over the four root slots so it stays quantifier-free.
-   function Signer_Listed (C : Roster_Content) return Boolean is
-     (C.Signer = C.Root_PK
-      or else (C.N_Roots >= 1 and then C.Roots (0 .. 31) = C.Signer)
-      or else (C.N_Roots >= 2 and then C.Roots (32 .. 63) = C.Signer)
-      or else (C.N_Roots >= 3 and then C.Roots (64 .. 95) = C.Signer)
-      or else (C.N_Roots = 4 and then C.Roots (96 .. 127) = C.Signer));
+   --  E5 (DESIGN.md §2 item 3): box_pk and every member dh_pk is a reduced
+   --  X25519 encoding and not low order (Kome.Crypto.Is_Good_DH_Key), so
+   --  every listed member can open its box. Opaque (quantified); its
+   --  meaning is Lemma_DH_Keys_OK_Def, and Lemma_DH_Box_OK /
+   --  Lemma_DH_Keys_OK give it one key at a time.
+   function DH_Keys_OK (C : Roster_Content) return Boolean with Global => null;
 
-   --  The same, through the Root accessor.
-   procedure Lemma_Signer_Listed (C : Roster_Content) with
+   procedure Lemma_DH_Keys_OK_Def (C : Roster_Content) with
      Ghost, Global => null,
-     Post => Signer_Listed (C) =
-               (C.Signer = C.Root_PK
-                or else (for some I in 1 .. C.N_Roots => Root (C, I) = C.Signer));
+     Post => DH_Keys_OK (C) =
+               (Kome.Crypto.Is_Good_DH_Key (C.Box_PK)
+                and then (for all I in 1 .. C.N_Members =>
+                            Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I))));
 
-   --  Unused root and member bytes are zero. Opaque (quantified).
+   procedure Lemma_DH_Box_OK (C : Roster_Content) with
+     Ghost, Global => null,
+     Pre  => DH_Keys_OK (C),
+     Post => Kome.Crypto.Is_Good_DH_Key (C.Box_PK);
+
+   procedure Lemma_DH_Keys_OK (C : Roster_Content; I : Member_Index) with
+     Ghost, Global => null,
+     Pre  => DH_Keys_OK (C) and then I <= C.N_Members,
+     Post => Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I));
+
+   --  Unused link and member bytes are zero. Opaque (quantified).
    function Canonical (R : Roster_Record) return Boolean with Global => null;
 
    --  A canonical ROSTER with ns derived from (root_pk, salt) and a zero
-   --  signature. Roots and Members are the flat wire bytes.
+   --  signature. Links and Members are the flat wire bytes.
    function Make_Roster
      (Root_PK   : Pubkey;
       S         : Salt;
       Signer    : Pubkey;
-      Prev_H    : Hash256;
+      Cert_Cap  : U48;
+      Cert_Sig  : Sig;
+      Box_PK    : Pubkey;
       Gen       : U48;
       Ceiling_T : U48;
       Del_TTL   : U48;
       E         : Epoch;
-      Roots     : Byte_Array;
+      Links     : Byte_Array;
       Members   : Byte_Array) return Roster_Record
    with Global => null,
-        Pre  => Roots'Length <= Roots_Bytes_Len
-                and then Roots'Length mod Pubkey_Len = 0
+        Pre  => Links'Length <= Links_Bytes_Len
+                and then Links'Length mod Link_Len = 0
                 and then Members'Length <= Members_Bytes_Len
                 and then Members'Length mod Member_Len = 0,
         Post => Canonical (Make_Roster'Result)
@@ -718,14 +856,16 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Make_Roster'Result.C.Root_PK = Root_PK
           and then Make_Roster'Result.C.Salt = S
           and then Make_Roster'Result.C.Signer = Signer
-          and then Make_Roster'Result.C.Prev_H = Prev_H
+          and then Make_Roster'Result.C.Cert_Cap = Cert_Cap
+          and then Make_Roster'Result.C.Cert_Sig = Cert_Sig
+          and then Make_Roster'Result.C.Box_PK = Box_PK
           and then Make_Roster'Result.C.Gen = Gen
           and then Make_Roster'Result.C.Ceiling_T = Ceiling_T
           and then Make_Roster'Result.C.Del_TTL = Del_TTL
           and then Make_Roster'Result.C.Epoch = E
-          and then Make_Roster'Result.C.N_Roots * Pubkey_Len = Roots'Length
-          and then (for all I in 0 .. Roots'Length - 1 =>
-                      Make_Roster'Result.C.Roots (I) = Roots (Roots'First + I))
+          and then Make_Roster'Result.C.N_Links * Link_Len = Links'Length
+          and then (for all I in 0 .. Links'Length - 1 =>
+                      Make_Roster'Result.C.Links (I) = Links (Links'First + I))
           and then Make_Roster'Result.C.N_Members * Member_Len = Members'Length
           and then (for all I in 0 .. Members'Length - 1 =>
                       Make_Roster'Result.C.Members (I) = Members (Members'First + I))
@@ -751,39 +891,41 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Encode'Result (0 .. Content_Len (R.C) - 1) = Content_Bytes (R.C)
           and then Encode'Result (Content_Len (R.C) .. Frame_Len (R) - 1) = R.Signature;
 
-   function Roster_NR (Frame : Byte_Array) return Natural is
-     (Natural (Frame (Frame'First + Roster_O_NR)))
+   function Roster_NL (Frame : Byte_Array) return Natural is
+     (Natural (Frame (Frame'First + Roster_O_NL)))
      with Pre => Frame'Length >= Roster_Frame_Min;
 
-   --  n_members sits after the roots, so it is read only once the frame is
-   --  long enough to hold n_roots roots.
+   --  n_members sits after the links, so it is read only once the frame is
+   --  long enough to hold n_links links.
    function Roster_NM (Frame : Byte_Array) return Natural is
-     (Natural (Frame (Frame'First + Roster_O_NM (Roster_NR (Frame)))))
+     (Natural (Frame (Frame'First + Roster_O_NM (Roster_NL (Frame)))))
      with Pre => Frame'Length >= Roster_Frame_Min
                  and then Frame'Length <= Roster_Frame_Max
-                 and then Frame'Length >= Roster_Frame_Min + Pubkey_Len * Roster_NR (Frame);
+                 and then Frame'Length >= Roster_Frame_Min + Link_Len * Roster_NL (Frame);
 
    function Is_Roster_Frame (Frame : Byte_Array) return Boolean is
      (Frame'Length >= Roster_Frame_Min
       and then Frame'Length <= Roster_Frame_Max
       and then Frame (Frame'First) = Tag_Roster
-      and then Roster_NR (Frame) <= Roots_Max
-      and then Frame'Length >= Roster_Frame_Min + Pubkey_Len * Roster_NR (Frame)
+      and then Roster_NL (Frame) <= Links_Max
+      and then Frame'Length >= Roster_Frame_Min + Link_Len * Roster_NL (Frame)
       and then Roster_NM (Frame) <= Members_Max
-      and then Frame'Length = Roster_Frame_Min + Pubkey_Len * Roster_NR (Frame)
+      and then Frame'Length = Roster_Frame_Min + Link_Len * Roster_NL (Frame)
                               + Member_Len * Roster_NM (Frame));
 
    function Parse_Roster (Frame : Byte_Array) return Roster_Record
    with Global => null,
         Pre  => Is_Roster_Frame (Frame),
         Post => Canonical (Parse_Roster'Result)
+          and then Parse_Roster'Result.C.Cert_Cap =
+                     U48_At (Frame, Frame'First + Roster_O_Cert_Cap)
           and then Parse_Roster'Result.C.Gen = U48_At (Frame, Frame'First + Roster_O_Gen)
           and then Parse_Roster'Result.C.Ceiling_T =
                      U48_At (Frame, Frame'First + Roster_O_Ceiling)
           and then Parse_Roster'Result.C.Del_TTL = U48_At (Frame, Frame'First + Roster_O_TTL)
           and then Parse_Roster'Result.C.Epoch =
                      Epoch (U16_At (Frame, Frame'First + Roster_O_Epoch))
-          and then Parse_Roster'Result.C.N_Roots = Roster_NR (Frame)
+          and then Parse_Roster'Result.C.N_Links = Roster_NL (Frame)
           and then Parse_Roster'Result.C.N_Members = Roster_NM (Frame)
           and then (for all I in NS_Id'Range =>
                       Parse_Roster'Result.C.NS (I) = Frame (Frame'First + Roster_O_NS + I))
@@ -795,21 +937,24 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then (for all I in Pubkey'Range =>
                       Parse_Roster'Result.C.Signer (I) =
                         Frame (Frame'First + Roster_O_Signer + I))
-          and then (for all I in Hash256'Range =>
-                      Parse_Roster'Result.C.Prev_H (I) =
-                        Frame (Frame'First + Roster_O_Prev_H + I))
-          and then (for all I in Roots_Bytes'Range =>
-                      Parse_Roster'Result.C.Roots (I) =
-                        (if I < Pubkey_Len * Roster_NR (Frame)
-                         then Frame (Frame'First + Roster_O_Roots + I) else 0))
+          and then (for all I in Sig'Range =>
+                      Parse_Roster'Result.C.Cert_Sig (I) =
+                        Frame (Frame'First + Roster_O_Cert_Sig + I))
+          and then (for all I in Pubkey'Range =>
+                      Parse_Roster'Result.C.Box_PK (I) =
+                        Frame (Frame'First + Roster_O_Box_PK + I))
+          and then (for all I in Links_Bytes'Range =>
+                      Parse_Roster'Result.C.Links (I) =
+                        (if I < Link_Len * Roster_NL (Frame)
+                         then Frame (Frame'First + Roster_O_Links + I) else 0))
           and then (for all I in Members_Bytes'Range =>
                       Parse_Roster'Result.C.Members (I) =
                         (if I < Member_Len * Roster_NM (Frame)
-                         then Frame (Frame'First + Roster_O_Members (Roster_NR (Frame)) + I)
+                         then Frame (Frame'First + Roster_O_Members (Roster_NL (Frame)) + I)
                          else 0))
           and then (for all I in Sig'Range =>
                       Parse_Roster'Result.Signature (I) =
-                        Frame (Frame'First + Roster_O_Members (Roster_NR (Frame))
+                        Frame (Frame'First + Roster_O_Members (Roster_NL (Frame))
                                + Member_Len * Roster_NM (Frame) + I));
 
    procedure Decode (Frame : Byte_Array; R : in out Roster_Record; Result : out Status)
@@ -818,15 +963,18 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Roster (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  Well-formed (DESIGN.md §2, §6): canonical, ns matches (root_pk, salt),
-   --  the signer is root_pk or a listed root, and the signature over h
-   --  verifies under signer. Whether signer is in roots_ever, and whether a
-   --  non-founding signer added a root, need other records (see the
-   --  package comment).
+   --  Well-formed (DESIGN.md §2 items 1-3 and 5), all from the bytes:
+   --  canonical, ns matches (root_pk, salt), the signer block is valid, a
+   --  certified root's ceiling_t is within its cert_cap, del_ttl is in the
+   --  clamp, the X25519 keys are good (E5), and the signature over h
+   --  verifies under signer.
    function Well_Formed (R : Roster_Record) return Boolean is
      (Canonical (R)
       and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
-      and then Signer_Listed (R.C)
+      and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
+      and then (if R.C.Signer /= R.C.Root_PK then R.C.Ceiling_T <= R.C.Cert_Cap)
+      and then R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max
+      and then DH_Keys_OK (R.C)
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
 
    procedure Decode_Verified
@@ -846,31 +994,30 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
           and then Hash (R.C) = Hash (R'Old.C);
 
-   --  The issuing root as the lattice sees it (admission: signer ∈
-   --  roots_ever, DESIGN.md §6).
+   --  The issuing root as the lattice sees it (the header's Issuer).
    function Signer_Key (R : Roster_Record) return Key256 is
      (To_Key256 (R.C.Signer));
 
-   --  V = (0, signer, gen, h) (Kome.Headers: roster domination is per
-   --  signer); Ceiling = ceiling_t; no entity, no field.
+   --  DESIGN.md §3: V = (ceiling_t, signer, gen, h); Issuer = signer;
+   --  Del_TTL = del_ttl; no entity, no field.
    function To_Header (R : Roster_Record) return Header is
      (K       => K_Roster,
       NS      => To_Id128 (R.C.NS),
-      Ent     => (others => 0),
-      FH      => (others => 0),
-      V       => (T      => 0,
+      Ent     => Zero_Id,
+      FH      => Zero_Key,
+      V       => (T      => R.C.Ceiling_T,
                   Author => Signer_Key (R),
                   Seq    => R.C.Gen,
                   H      => To_Key256 (Hash (R.C))),
-      Ceiling => R.C.Ceiling_T);
+      Issuer  => Signer_Key (R),
+      Del_TTL => R.C.Del_TTL);
 
-   --  Kome.Views.Canonical for a ROSTER: Ent, FH and V.T zero.
+   --  D3: the header is canonical once del_ttl is in the clamp (which
+   --  Well_Formed requires).
    procedure Lemma_Header_Canonical (R : Roster_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Roster
-             and then To_Header (R).Ent = Id128'(others => 0)
-             and then To_Header (R).FH = Key256'(others => 0)
-             and then To_Header (R).V.T = 0;
+     Pre  => R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max,
+     Post => To_Header (R).K = K_Roster and then Kome.Headers.Canonical (To_Header (R));
 
    procedure Lemma_Decode_Encode (R : Roster_Record) with
      Ghost, Global => null,
@@ -883,19 +1030,21 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      Post => Encode (Parse_Roster (Frame)) = Frame;
 
    ---------------------------------------------------------------------------
-   --  REVOKE  ns[16] root_pk[32] salt[16] signer[32] sign_pk[32] from_t:u48
+   --  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32] from_t:u48
    --          rev_seq:u48
    --  sign_pk is the subject (the key revoked); signer is the issuing root.
    ---------------------------------------------------------------------------
 
    type Revoke_Content is record
-      NS      : NS_Id     := [others => 0];
-      Root_PK : Pubkey    := [others => 0];   --  founding key (ns)
-      Salt    : Kome.Salt := [others => 0];
-      Signer  : Pubkey    := [others => 0];   --  issuing root (§6)
-      Sign_PK : Pubkey    := [others => 0];   --  subject
-      From_T  : U48       := 0;
-      Rev_Seq : U48       := 0;
+      NS       : NS_Id     := [others => 0];
+      Root_PK  : Pubkey    := [others => 0];   --  founding key (ns)
+      Salt     : Kome.Salt := [others => 0];
+      Signer   : Pubkey    := [others => 0];   --  issuing root
+      Cert_Cap : U48       := 0;
+      Cert_Sig : Sig       := [others => 0];
+      Sign_PK  : Pubkey    := [others => 0];   --  subject
+      From_T   : U48       := 0;
+      Rev_Seq  : U48       := 0;
    end record;
 
    type Revoke_Record is record
@@ -903,22 +1052,28 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Signature : Sig := [others => 0];
    end record;
 
-   Revoke_O_NS      : constant := 1;
-   Revoke_O_Root_PK : constant := 17;
-   Revoke_O_Salt    : constant := 49;
-   Revoke_O_Signer  : constant := 65;
-   Revoke_O_Sign_PK : constant := 97;
-   Revoke_O_From_T  : constant := 129;
-   Revoke_O_Rev_Seq : constant := 135;
-   Revoke_Content_Len : constant := 141;
+   Revoke_O_NS       : constant := 1;
+   Revoke_O_Root_PK  : constant := 17;
+   Revoke_O_Salt     : constant := 49;
+   Revoke_O_Signer   : constant := 65;
+   Revoke_O_Cert_Cap : constant := 97;
+   Revoke_O_Cert_Sig : constant := 103;
+   Revoke_O_Sign_PK  : constant := 167;
+   Revoke_O_From_T   : constant := 199;
+   Revoke_O_Rev_Seq  : constant := 205;
+   Revoke_Content_Len : constant := 211;
    Revoke_Frame_Len   : constant := Revoke_Content_Len + Sig_Len;
+   pragma Compile_Time_Error
+     (Revoke_Frame_Len /= 275, "DESIGN.md §2: a REVOKE frame is 275 bytes");
 
    function Content_Byte (C : Revoke_Content; J : Natural) return Byte is
      (if J = 0 then Tag_Revoke
       elsif J < Revoke_O_Root_PK then C.NS (J - Revoke_O_NS)
       elsif J < Revoke_O_Salt then C.Root_PK (J - Revoke_O_Root_PK)
       elsif J < Revoke_O_Signer then C.Salt (J - Revoke_O_Salt)
-      elsif J < Revoke_O_Sign_PK then C.Signer (J - Revoke_O_Signer)
+      elsif J < Revoke_O_Cert_Cap then C.Signer (J - Revoke_O_Signer)
+      elsif J < Revoke_O_Cert_Sig then Byte_Of_U48 (C.Cert_Cap, J - Revoke_O_Cert_Cap)
+      elsif J < Revoke_O_Sign_PK then C.Cert_Sig (J - Revoke_O_Cert_Sig)
       elsif J < Revoke_O_From_T then C.Sign_PK (J - Revoke_O_Sign_PK)
       elsif J < Revoke_O_Rev_Seq then Byte_Of_U48 (C.From_T, J - Revoke_O_From_T)
       else Byte_Of_U48 (C.Rev_Seq, J - Revoke_O_Rev_Seq))
@@ -931,17 +1086,21 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    --  A REVOKE with ns derived from (root_pk, salt) and a zero signature.
    function Make_Revoke
-     (Root_PK : Pubkey;
-      S       : Salt;
-      Signer  : Pubkey;
-      Sign_PK : Pubkey;
-      From_T  : U48;
-      Rev_Seq : U48) return Revoke_Record
+     (Root_PK  : Pubkey;
+      S        : Salt;
+      Signer   : Pubkey;
+      Cert_Cap : U48;
+      Cert_Sig : Sig;
+      Sign_PK  : Pubkey;
+      From_T   : U48;
+      Rev_Seq  : U48) return Revoke_Record
    with Global => null,
         Post => Make_Revoke'Result.C.NS = Collection_Id (Root_PK, S)
           and then Make_Revoke'Result.C.Root_PK = Root_PK
           and then Make_Revoke'Result.C.Salt = S
           and then Make_Revoke'Result.C.Signer = Signer
+          and then Make_Revoke'Result.C.Cert_Cap = Cert_Cap
+          and then Make_Revoke'Result.C.Cert_Sig = Cert_Sig
           and then Make_Revoke'Result.C.Sign_PK = Sign_PK
           and then Make_Revoke'Result.C.From_T = From_T
           and then Make_Revoke'Result.C.Rev_Seq = Rev_Seq
@@ -972,7 +1131,10 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Parse_Revoke (Frame : Byte_Array) return Revoke_Record
    with Global => null,
         Pre  => Is_Revoke_Frame (Frame),
-        Post => Parse_Revoke'Result.C.From_T = U48_At (Frame, Frame'First + Revoke_O_From_T)
+        Post => Parse_Revoke'Result.C.Cert_Cap =
+                  U48_At (Frame, Frame'First + Revoke_O_Cert_Cap)
+          and then Parse_Revoke'Result.C.From_T =
+                     U48_At (Frame, Frame'First + Revoke_O_From_T)
           and then Parse_Revoke'Result.C.Rev_Seq =
                      U48_At (Frame, Frame'First + Revoke_O_Rev_Seq)
           and then (for all I in NS_Id'Range =>
@@ -985,6 +1147,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then (for all I in Pubkey'Range =>
                       Parse_Revoke'Result.C.Signer (I) =
                         Frame (Frame'First + Revoke_O_Signer + I))
+          and then (for all I in Sig'Range =>
+                      Parse_Revoke'Result.C.Cert_Sig (I) =
+                        Frame (Frame'First + Revoke_O_Cert_Sig + I))
           and then (for all I in Pubkey'Range =>
                       Parse_Revoke'Result.C.Sign_PK (I) =
                         Frame (Frame'First + Revoke_O_Sign_PK + I))
@@ -998,12 +1163,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Revoke (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  Well-formed (DESIGN.md §2, §6): ns matches (root_pk, salt) and the
-   --  signature over h verifies under signer. A REVOKE carries no root
-   --  list, so which roots may issue it is admission alone (signer ∈
-   --  roots_ever, Kome.Frontier), as DESIGN.md §6 says.
+   --  Well-formed (DESIGN.md §2 items 2, 4, 5): ns matches (root_pk, salt),
+   --  the signer block is valid, the founding key is never the subject
+   --  (D2), and the signature over h verifies under signer.
    function Well_Formed (R : Revoke_Record) return Boolean is
      (R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
+      and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
+      and then R.C.Sign_PK /= R.C.Root_PK
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
 
    procedure Decode_Verified
@@ -1021,30 +1187,26 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
           and then Hash (R.C) = Hash (R'Old.C);
 
-   --  The issuing root (admission: signer ∈ roots_ever). Not in the header,
-   --  whose V.Author is the subject.
+   --  The issuing root (the header's Issuer; V.Author is the subject).
    function Signer_Key (R : Revoke_Record) return Key256 is
      (To_Key256 (R.C.Signer));
 
-   --  V = (from_t, sign_pk, rev_seq, h); no entity, field or ceiling.
+   --  DESIGN.md §3: V = (from_t, sign_pk, rev_seq, h); Issuer = signer.
    function To_Header (R : Revoke_Record) return Header is
      (K       => K_Revoke,
       NS      => To_Id128 (R.C.NS),
-      Ent     => (others => 0),
-      FH      => (others => 0),
+      Ent     => Zero_Id,
+      FH      => Zero_Key,
       V       => (T      => R.C.From_T,
                   Author => To_Key256 (R.C.Sign_PK),
                   Seq    => R.C.Rev_Seq,
                   H      => To_Key256 (Hash (R.C))),
-      Ceiling => 0);
+      Issuer  => Signer_Key (R),
+      Del_TTL => 0);
 
-   --  Kome.Views.Canonical for a REVOKE: Ent, FH and Ceiling zero.
    procedure Lemma_Header_Canonical (R : Revoke_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Revoke
-             and then To_Header (R).Ent = Id128'(others => 0)
-             and then To_Header (R).FH = Key256'(others => 0)
-             and then To_Header (R).Ceiling = 0;
+     Post => To_Header (R).K = K_Revoke and then Kome.Headers.Canonical (To_Header (R));
 
    procedure Lemma_Decode_Encode (R : Revoke_Record) with
      Ghost, Global => null,
@@ -1055,6 +1217,223 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      Pre  => Is_Revoke_Frame (Frame),
      Post => Encode (Parse_Revoke (Frame)) = Frame;
 
+   ---------------------------------------------------------------------------
+   --  GRANT   ns[16] root_pk[32] salt[16] SIGNER subject[32]
+   --  Write access (D1′): the subject may author PUTs and DELs. Keyed by
+   --  (ns, issuer, subject) (R1).
+   ---------------------------------------------------------------------------
+
+   type Grant_Content is record
+      NS       : NS_Id     := [others => 0];
+      Root_PK  : Pubkey    := [others => 0];   --  founding key (ns)
+      Salt     : Kome.Salt := [others => 0];
+      Signer   : Pubkey    := [others => 0];   --  issuing root
+      Cert_Cap : U48       := 0;
+      Cert_Sig : Sig       := [others => 0];
+      Subject  : Pubkey    := [others => 0];   --  the key granted
+   end record;
+
+   type Grant_Record is record
+      C         : Grant_Content;
+      Signature : Sig := [others => 0];
+   end record;
+
+   Grant_O_NS       : constant := 1;
+   Grant_O_Root_PK  : constant := 17;
+   Grant_O_Salt     : constant := 49;
+   Grant_O_Signer   : constant := 65;
+   Grant_O_Cert_Cap : constant := 97;
+   Grant_O_Cert_Sig : constant := 103;
+   Grant_O_Subject  : constant := 167;
+   Grant_Content_Len : constant := 199;
+   Grant_Frame_Len   : constant := Grant_Content_Len + Sig_Len;
+   pragma Compile_Time_Error
+     (Grant_Frame_Len /= 263, "DESIGN.md §2: a GRANT frame is 263 bytes");
+
+   function Content_Byte (C : Grant_Content; J : Natural) return Byte is
+     (if J = 0 then Tag_Grant
+      elsif J < Grant_O_Root_PK then C.NS (J - Grant_O_NS)
+      elsif J < Grant_O_Salt then C.Root_PK (J - Grant_O_Root_PK)
+      elsif J < Grant_O_Signer then C.Salt (J - Grant_O_Salt)
+      elsif J < Grant_O_Cert_Cap then C.Signer (J - Grant_O_Signer)
+      elsif J < Grant_O_Cert_Sig then Byte_Of_U48 (C.Cert_Cap, J - Grant_O_Cert_Cap)
+      elsif J < Grant_O_Subject then C.Cert_Sig (J - Grant_O_Cert_Sig)
+      else C.Subject (J - Grant_O_Subject))
+     with Pre => J < Grant_Content_Len;
+
+   function Frame_Byte (R : Grant_Record; J : Natural) return Byte is
+     (if J < Grant_Content_Len then Content_Byte (R.C, J)
+      else R.Signature (J - Grant_Content_Len))
+     with Pre => J < Grant_Frame_Len;
+
+   --  A GRANT with ns derived from (root_pk, salt) and a zero signature.
+   function Make_Grant
+     (Root_PK  : Pubkey;
+      S        : Salt;
+      Signer   : Pubkey;
+      Cert_Cap : U48;
+      Cert_Sig : Sig;
+      Subject  : Pubkey) return Grant_Record
+   with Global => null,
+        Post => Make_Grant'Result.C.NS = Collection_Id (Root_PK, S)
+          and then Make_Grant'Result.C.Root_PK = Root_PK
+          and then Make_Grant'Result.C.Salt = S
+          and then Make_Grant'Result.C.Signer = Signer
+          and then Make_Grant'Result.C.Cert_Cap = Cert_Cap
+          and then Make_Grant'Result.C.Cert_Sig = Cert_Sig
+          and then Make_Grant'Result.C.Subject = Subject
+          and then (for all I in Sig'Range => Make_Grant'Result.Signature (I) = 0);
+
+   function Content_Bytes (C : Grant_Content) return Byte_Array
+   with Global => null,
+        Post => Content_Bytes'Result'First = 0
+          and then Content_Bytes'Result'Length = Grant_Content_Len
+          and then (for all J in 0 .. Grant_Content_Len - 1 =>
+                      Content_Bytes'Result (J) = Content_Byte (C, J));
+
+   function Hash (C : Grant_Content) return Hash256 is
+     (Kome.Crypto.Blake2b_256 (Content_Bytes (C)));
+
+   function Encode (R : Grant_Record) return Byte_Array
+   with Global => null,
+        Post => Encode'Result'First = 0
+          and then Encode'Result'Length = Grant_Frame_Len
+          and then (for all J in 0 .. Grant_Frame_Len - 1 =>
+                      Encode'Result (J) = Frame_Byte (R, J))
+          and then Encode'Result (0 .. Grant_Content_Len - 1) = Content_Bytes (R.C)
+          and then Encode'Result (Grant_Content_Len .. Grant_Frame_Len - 1) = R.Signature;
+
+   function Is_Grant_Frame (Frame : Byte_Array) return Boolean is
+     (Frame'Length = Grant_Frame_Len and then Frame (Frame'First) = Tag_Grant);
+
+   function Parse_Grant (Frame : Byte_Array) return Grant_Record
+   with Global => null,
+        Pre  => Is_Grant_Frame (Frame),
+        Post => Parse_Grant'Result.C.Cert_Cap =
+                  U48_At (Frame, Frame'First + Grant_O_Cert_Cap)
+          and then (for all I in NS_Id'Range =>
+                      Parse_Grant'Result.C.NS (I) = Frame (Frame'First + Grant_O_NS + I))
+          and then (for all I in Pubkey'Range =>
+                      Parse_Grant'Result.C.Root_PK (I) =
+                        Frame (Frame'First + Grant_O_Root_PK + I))
+          and then (for all I in Salt'Range =>
+                      Parse_Grant'Result.C.Salt (I) = Frame (Frame'First + Grant_O_Salt + I))
+          and then (for all I in Pubkey'Range =>
+                      Parse_Grant'Result.C.Signer (I) =
+                        Frame (Frame'First + Grant_O_Signer + I))
+          and then (for all I in Sig'Range =>
+                      Parse_Grant'Result.C.Cert_Sig (I) =
+                        Frame (Frame'First + Grant_O_Cert_Sig + I))
+          and then (for all I in Pubkey'Range =>
+                      Parse_Grant'Result.C.Subject (I) =
+                        Frame (Frame'First + Grant_O_Subject + I))
+          and then (for all I in Sig'Range =>
+                      Parse_Grant'Result.Signature (I) =
+                        Frame (Frame'First + Grant_Content_Len + I));
+
+   procedure Decode (Frame : Byte_Array; R : in out Grant_Record; Result : out Status)
+   with Global => null,
+        Post => (if Is_Grant_Frame (Frame)
+                 then Result = OK and then R = Parse_Grant (Frame)
+                 else Result = Malformed and then R = R'Old);
+
+   --  Well-formed (DESIGN.md §2 items 2, 5): ns matches (root_pk, salt),
+   --  the signer block is valid, and the signature over h verifies under
+   --  signer.
+   function Well_Formed (R : Grant_Record) return Boolean is
+     (R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
+      and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
+      and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
+
+   procedure Decode_Verified
+     (Frame : Byte_Array; R : in out Grant_Record; Result : out Status)
+   with Global => null,
+        Post => (if Is_Grant_Frame (Frame) and then Well_Formed (Parse_Grant (Frame))
+                 then Result = OK and then R = Parse_Grant (Frame)
+                 else Result = Malformed and then R = R'Old);
+
+   procedure Sign (R : in out Grant_Record; SK : Kome.Crypto.Secret_Key)
+   with Global => null,
+        Pre  => Kome.Crypto.Is_Valid (SK)
+                and then Kome.Crypto.Public_Of (SK) = R.C.Signer,
+        Post => R.C = R'Old.C
+          and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
+          and then Hash (R.C) = Hash (R'Old.C);
+
+   --  The issuing root (the header's Issuer; V.Author is the subject).
+   function Signer_Key (R : Grant_Record) return Key256 is
+     (To_Key256 (R.C.Signer));
+
+   --  DESIGN.md §3: V = (0, subject, 0, h); Issuer = signer.
+   function To_Header (R : Grant_Record) return Header is
+     (K       => K_Grant,
+      NS      => To_Id128 (R.C.NS),
+      Ent     => Zero_Id,
+      FH      => Zero_Key,
+      V       => (T      => 0,
+                  Author => To_Key256 (R.C.Subject),
+                  Seq    => 0,
+                  H      => To_Key256 (Hash (R.C))),
+      Issuer  => Signer_Key (R),
+      Del_TTL => 0);
+
+   procedure Lemma_Header_Canonical (R : Grant_Record) with
+     Ghost, Global => null,
+     Post => To_Header (R).K = K_Grant and then Kome.Headers.Canonical (To_Header (R));
+
+   procedure Lemma_Decode_Encode (R : Grant_Record) with
+     Ghost, Global => null,
+     Post => Is_Grant_Frame (Encode (R)) and then Parse_Grant (Encode (R)) = R;
+
+   procedure Lemma_Encode_Decode_Grant (Frame : Byte_Array) with
+     Ghost, Global => null,
+     Pre  => Is_Grant_Frame (Frame),
+     Post => Encode (Parse_Grant (Frame)) = Frame;
+
+   ---------------------------------------------------------------------------
+   --  Frame accessors for Kome.Store and the transport (bytes only).
+   ---------------------------------------------------------------------------
+
+   --  The frame is an authorization record of some kind.
+   function Is_Auth_Frame (Frame : Byte_Array) return Boolean is
+     (Is_Roster_Frame (Frame) or else Is_Revoke_Frame (Frame)
+      or else Is_Grant_Frame (Frame));
+
+   --  The root_pk field (offset 17) as a key. Kome.Store refuses an
+   --  authorization record whose Root_Key_Of is not the store's founding key
+   --  (DESIGN.md §7 step 0).
+   function Root_Key_Of (Frame : Byte_Array) return Key256 is
+     (To_Key256 (Frame (Frame'First + Roster_O_Root_PK
+                        .. Frame'First + Roster_O_Root_PK + Pubkey_Len - 1)))
+     with Pre  => Is_Auth_Frame (Frame),
+          Post => (if Is_Roster_Frame (Frame)
+                   then Root_Key_Of'Result = To_Key256 (Parse_Roster (Frame).C.Root_PK))
+                  and then (if Is_Revoke_Frame (Frame)
+                            then Root_Key_Of'Result =
+                                   To_Key256 (Parse_Revoke (Frame).C.Root_PK))
+                  and then (if Is_Grant_Frame (Frame)
+                            then Root_Key_Of'Result =
+                                   To_Key256 (Parse_Grant (Frame).C.Root_PK));
+
+   --  Some member of the ROSTER frame has dh_pk = DH (the credential HELLO
+   --  of DESIGN.md §8 must list the sender's Noise key). Opaque
+   --  (quantified); its meaning is Lemma_Roster_Lists_DH.
+   function Roster_Lists_DH (Frame : Byte_Array; DH : Pubkey) return Boolean
+     with Global => null, Pre => Is_Roster_Frame (Frame);
+
+   procedure Lemma_Roster_Lists_DH (Frame : Byte_Array; DH : Pubkey) with
+     Ghost, Global => null,
+     Pre  => Is_Roster_Frame (Frame),
+     Post => Roster_Lists_DH (Frame, DH) =
+               (for some I in 1 .. Parse_Roster (Frame).C.N_Members =>
+                  Member_DH_PK (Parse_Roster (Frame).C, I) = DH);
+
+   --  A REVOKE issued by the founding key (signer = root_pk): a root
+   --  revocation candidate, the records OPEN carries (DESIGN.md §8, R2).
+   function Is_Founding_Revoke (Frame : Byte_Array) return Boolean is
+     (Is_Revoke_Frame (Frame)
+      and then Parse_Revoke (Frame).C.Signer = Parse_Revoke (Frame).C.Root_PK);
+
 private
 
    function Canonical (R : Put_Record) return Boolean is
@@ -1063,14 +1442,17 @@ private
       (for all I in Value_Bytes'Range => (if I >= R.C.VLen then R.C.Value (I) = 0)));
 
    function Canonical (R : Roster_Record) return Boolean is
-     ((for all I in Roots_Bytes'Range =>
-         (if I >= Pubkey_Len * R.C.N_Roots then R.C.Roots (I) = 0))
+     ((for all I in Links_Bytes'Range =>
+         (if I >= Link_Len * R.C.N_Links then R.C.Links (I) = 0))
       and then
       (for all I in Members_Bytes'Range =>
          (if I >= Member_Len * R.C.N_Members then R.C.Members (I) = 0)));
 
-   function Root (C : Roster_Content; I : Root_Index) return Pubkey is
-     ([for K in Pubkey'Range => C.Roots (Pubkey_Len * (I - 1) + K)]);
+   function Link_Nonce (C : Roster_Content; I : Link_Index) return Nonce is
+     ([for K in Nonce'Range => C.Links (Link_Len * (I - 1) + 2 + K)]);
+
+   function Link_Box (C : Roster_Content; I : Link_Index) return Box is
+     ([for K in Box'Range => C.Links (Link_Len * (I - 1) + 2 + Nonce_Len + K)]);
 
    function Member_Sign_PK (C : Roster_Content; I : Member_Index) return Pubkey is
      ([for K in Pubkey'Range => C.Members (Member_Len * (I - 1) + K)]);
@@ -1084,5 +1466,20 @@ private
    function Member_Box (C : Roster_Content; I : Member_Index) return Box is
      ([for K in Box'Range =>
          C.Members (Member_Len * (I - 1) + 2 * Pubkey_Len + Nonce_Len + K)]);
+
+   function DH_Keys_OK (C : Roster_Content) return Boolean is
+     (Kome.Crypto.Is_Good_DH_Key (C.Box_PK)
+      and then (for all I in 1 .. C.N_Members =>
+                  Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I))));
+
+   --  Member I's dh_pk read straight from a ROSTER frame.
+   function Frame_DH (Frame : Byte_Array; I : Member_Index) return Pubkey is
+     ([for K in Pubkey'Range =>
+         Frame (Frame'First + Roster_O_Members (Roster_NL (Frame))
+                + Member_Len * (I - 1) + Pubkey_Len + K)])
+     with Pre => Is_Roster_Frame (Frame) and then I <= Roster_NM (Frame);
+
+   function Roster_Lists_DH (Frame : Byte_Array; DH : Pubkey) return Boolean is
+     (for some I in 1 .. Roster_NM (Frame) => Frame_DH (Frame, I) = DH);
 
 end Kome.Records;

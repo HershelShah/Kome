@@ -3,7 +3,30 @@
 --  primitive set and is implemented here rather than bound from C; its
 --  reference is the standard (FIPS 180-4 §5.1.1 padding, §5.3.3 initial
 --  hash value, §6.2 computation), and vectors/sha256.txt checks it against
---  the NIST examples and against an independent implementation.
+--  the NIST examples, the NIST CAVP vectors and an independent
+--  implementation.
+--
+--  Evidence for the compression. The proof covers the chunking, the
+--  padding and the counter, not the round function: Compress_Words (body)
+--  is the FIPS 180-4 §6.2.2 computation, and that it computes SHA-256 is
+--  established by test, against independent references. Of the two ways
+--  to strengthen that evidence (known gap, IMPLEMENTATION_PLAN.md), the
+--  NIST vectors were done and the ghost model was not:
+--  * done: vectors/sha256.txt carries the NIST CAVP SHA-256 byte-oriented
+--    vectors, all of them (SHA256ShortMsg, 65 messages of 0 .. 64 bytes;
+--    SHA256LongMsg, 64 messages of up to 6 400 bytes; SHA256Monte, the
+--    seed and its 100 checkpoints of 1000 chained hashes each), with their
+--    provenance in the file header, and tests/test_sha256.adb checks every
+--    line one-shot and incrementally;
+--  * not done: a ghost functional model of Compress_Words proved equal to
+--    it. Its loop invariants would have to name the model of the first I
+--    rounds, which -gnata evaluates at every iteration: quadratic work per
+--    block, run on every block the tests hash (the 2**29-byte repeat
+--    vector included: some 2**23 blocks, a 30-fold slowdown of the whole
+--    test), and no new Assertion_Policy (Ignore) may switch proved
+--    assertions off to avoid it. A model written with the same equations
+--    as the body would also add little that the Monte Carlo chain
+--    (100 000 compressions of data no one chose) does not.
 --
 --  Observable semantics: the same digest for the same byte stream, however
 --  it is chunked; Finish pads (0x80, zeros to 56 mod 64, the 64-bit
@@ -130,6 +153,25 @@ package Kome.SHA256 with SPARK_Mode, Pure is
           Post   => Digest = Hash (Data);
 
    --  Laws.
+   --
+   --  Running the lemmas. Lemma_Update_Concat and Lemma_Updated_Eq are
+   --  proved for every length the Pre allows. Their bodies are inductions
+   --  over the 64-byte chunks of the data, and under -gnata (the tests'
+   --  build) each level executes a Post that evaluates the recursive model
+   --  on the rest of the data, so executing either lemma costs time
+   --  quadratic in Length / 64 and recursion depth about 2 * Length / 64.
+   --  Known gap closed: the former proof of Lemma_Update_Concat copied A & B
+   --  and ran two inductive lemmas at every level (cubic time, a copy per
+   --  level on the stack); it is now one induction with constant work per
+   --  level (body, Lemma_Absorbed_Concat), and the two inductions on
+   --  equal contexts and on rebased bytes are one (Lemma_Absorbed_Cong).
+   --  Run bound: tests/test_sha256.adb executes both lemmas on data of up
+   --  to 64 KiB (Lemma_Run_Bound there; about 15 s for six calls at the
+   --  bound, with stack to spare) and no further. A client compiled with
+   --  -gnata should call them only on data of that order: at 4 MiB the
+   --  recursion alone is 2**17 frames deep, which overflows a default
+   --  8 MiB stack, and the quadratic time is hours. The proof is not
+   --  bounded; only the executed check is.
 
    --  Chunking is invisible: absorbing A then B equals absorbing A & B. This
    --  is what makes the incremental and one-shot forms agree, and it is the
@@ -143,7 +185,9 @@ package Kome.SHA256 with SPARK_Mode, Pure is
    --  Proof status: proven, no `pragma Assume`. `Updated` unfolds to
    --  `Absorb`, whose Post is the functional model `Absorbed`; the body calls
    --  `Lemma_Absorbed_Concat`, a ghost lemma proven by induction on A over
-   --  the chunk structure of `Absorbed` (private part, body). Under -gnata
+   --  the chunk structure of `Absorbed` (private part, body), on a copy of
+   --  A & B made once. Executed, it is quadratic: see "Running the lemmas"
+   --  above for the bound the tests keep to. Under -gnata
    --  every step of that induction is an executed assertion, and
    --  tests/test_sha256.adb drives it at every buffer fill 0 .. 63 against
    --  pieces that stop short of, land on, and cross the block boundary, with
@@ -172,6 +216,10 @@ package Kome.SHA256 with SPARK_Mode, Pure is
    --     Finish (Ctx, D);   --  D = Digest_Of (Updated (Initial, A)) = Hash (A)
    --
    --  and, with Lemma_Update_Concat, from two Updates to `Hash (A & B)`.
+   --  Lemma_Updated_Eq is an induction over Data's chunks: executed, it is
+   --  quadratic in Data'Length / 64 ("Running the lemmas" above; the tests
+   --  run it up to 64 KiB). Lemma_Digest_Of_Eq only absorbs the padding
+   --  (at most 72 bytes) and is cheap at any length.
    procedure Lemma_Updated_Eq (C1, C2 : Context; Data : Byte_Array)
      with Ghost,
           Global => null,

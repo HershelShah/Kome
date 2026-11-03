@@ -18,17 +18,26 @@ if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>
 fi
 
 # gnatwhy3 hangs if TMPDIR names a missing directory, and concurrent runs that
-# share the default why3server socket in /tmp crash; give each run its own.
+# share the default why3server socket in /tmp crash; give each run its own,
+# existing directory. The why3server socket and gnatprove's semaphore live
+# there, and a long path fails ("failed to open semaphore": sockets are
+# limited to about 100 bytes of path), so an inherited TMPDIR that is
+# missing, not writable or longer than 40 bytes is replaced by /tmp.
 if [ -z "${KOME_TMPDIR_SET:-}" ]; then
   export KOME_TMPDIR_SET=1
-  TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/kome-check.XXXXXX")"
+  base="${TMPDIR:-/tmp}"
+  if [ ! -d "$base" ] || [ ! -w "$base" ] || [ "${#base}" -gt 40 ]; then
+    base=/tmp
+  fi
+  TMPDIR="$(mktemp -d "$base/kome-check.XXXXXX")"
   export TMPDIR
   trap 'rm -rf -- "$TMPDIR"' EXIT
 fi
 
 # PROOF_WIP lists modules whose unproved checks are not fatal. Unset means
-# the default list; set and empty means none.
-PROOF_WIP_LIST="${PROOF_WIP-store}"
+# the default list, which is empty (every module proves completely); set and
+# empty means none.
+PROOF_WIP_LIST="${PROOF_WIP-}"
 
 run_one() {
   local m="$1"
@@ -42,8 +51,16 @@ run_one() {
   fi
   if [ "${PROVE:-1}" = "1" ] && command -v gnatprove >/dev/null 2>&1; then
     echo "== $m: prove"
+    # gnatprove 14 names its job semaphore without regard to TMPDIR
+    # (/dev/shm/sem.why3server<hash>), so two runs at once still crash with
+    # "failed to open semaphore" and leave gnatwhy3 orphans spinning. A
+    # private TMPDIR is not enough: serialize the prove step.
+    mkdir -p obj
+    exec 9>obj/.prove.lock
+    if command -v flock >/dev/null 2>&1; then flock 9; fi
     gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -u "kome-$m.adb" \
       --level=3 --mode=all --report=fail --warnings=continue
+    exec 9>&-
     # gnatprove exits 0 even with unproved checks; read the summary and fail
     # unless the module is listed in PROOF_WIP (proof known incomplete).
     local total unproved

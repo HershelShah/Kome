@@ -9,11 +9,17 @@
 --  (h) H8 restore/clone detection: seq jumps past a held own record and
 --  Clone_Suspected is raised, so v_emit never equals a held version; (i) a
 --  non-member key is Inadmissible; (j) In_Floor excludes neighbours; (k)
---  the state-level T9 lemmas.
+--  the state-level T9 lemmas; (l) D8: the outcome is the same under two
+--  different content hashes (both records built and applied, each with the
+--  predicted outcome), and the two H lemmas hold on every emitted write;
+--  (m) Seq_Exhausted after an H8 jump to 2^48 - 1.
+--  States are built with the round-three core: write access by GRANT,
+--  rosters V = (ceiling_t, signer, gen, h).
 --  Contracts and lemmas are executed (-gnata).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
+with Ada.Exceptions;   use Ada.Exceptions;
 with Kome;             use Kome;
 with Kome.Versions;    use Kome.Versions;
 with Kome.Headers;     use Kome.Headers;
@@ -33,7 +39,8 @@ procedure Test_Emit with SPARK_Mode => Off is
       end if;
    end Check;
 
-   NS : constant Id128 := (others => 7);
+   NS  : constant Id128 := (others => 7);
+   Fnd : constant Byte  := 9;   --  the founding key
 
    function Key (B : Byte) return Key256 is (others => Word (B));
    function Hsh (B : Byte) return Key256 is (others => Word (B));
@@ -46,53 +53,153 @@ procedure Test_Emit with SPARK_Mode => Off is
 
    function Put (E : Byte; F : Character; V : Version) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => V,
-      Ceiling => 0);
+      Issuer => Zero_Key, Del_TTL => 0);
 
    function Del (E : Byte; V : Version) return Header is
-     (K => K_Del, NS => NS, Ent => Ent (E), FH => Hsh (0), V => V,
-      Ceiling => 0);
+     (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => V,
+      Issuer => Zero_Key, Del_TTL => 0);
 
+   --  A founding-key roster: V = (ceiling_t, signer, gen, h).
    function Roster (Gen, Ceiling : U48; H : Byte) return Header is
-     (K => K_Roster, NS => NS, Ent => Ent (0), FH => Hsh (0),
-      V => (T => 0, Author => Key (9), Seq => Gen, H => Hsh (H)),
-      Ceiling => Ceiling);
+     (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => Ceiling, Author => Key (Fnd), Seq => Gen, H => Hsh (H)),
+      Issuer => Key (Fnd), Del_TTL => Del_TTL_Default);
+
+   --  A founding-key GRANT to Subject: V = (0, subject, 0, h).
+   function Grant (Subject : Byte) return Header is
+     (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => 0, Author => Key (Subject), Seq => 0, H => Hsh (Subject)),
+      Issuer => Key (Fnd), Del_TTL => 0);
 
    function Put_T (E : Byte; F : Character) return Target is
      (Op => W_Put, NS => NS, Ent => Ent (E), FH => Fld (F));
    function Del_T (E : Byte) return Target is
      (Op => W_Del, NS => NS, Ent => Ent (E), FH => (others => 0));
 
-   None : constant Member_Keys (1 .. 0) := [];
-   --  Writers: 1, 2, 3 (this device), 5 (a key above 3), 6 (above 5).
-   W    : constant Member_Keys (1 .. 5) :=
-     [Key (1), Key (2), Key (3), Key (5), Key (6)];
+   function New_State (Cap : Data_Size) return State is
+     (Empty (NS, Key (Fnd), Cap, 8));
+
    No_V : constant Version := (others => <>);
+
+   type Byte_List is array (Positive range <>) of Byte;
+   type Key_List is array (Positive range <>) of Key256;
+   Writers : constant Byte_List := [1, 2, 3, 5, 6];
 
    Self : constant Key256 := Key (3);
    HC   : constant Key256 := Hsh (77);   --  the caller's content hash
+   --  Two extreme content hashes for the D8 checks.
+   H_Lo : constant Key256 := (others => 0);
+   H_Hi : constant Key256 := (others => Word'Last);
 
-   S   : State := Empty (NS, 64);
+   S   : State := New_State (64);
    St  : Status;
    R   : Status;
    Seq : U48;
    V   : Version;
    Cl  : Boolean;   --  Clone_Suspected of the last call
+   Out_Ok : Boolean := True;   --  every Choose output agreed with its Seq_Self
 
+   --  Writers: 1, 2, 3 (this device), 5 (a key above 3), 6 (above 5).
+   procedure Grant_Writers (X : in out State) is
+   begin
+      for B of Writers loop
+         Apply (X, Grant (B), St);
+         if St /= OK then
+            Out_Ok := False;
+         end if;
+      end loop;
+   end Grant_Writers;
+
+   --  Step 1 (Choose), then the version the record gets once step 2 has
+   --  hashed it with content hash H. A refusal gives (0, 0, 0, 0). The D8
+   --  lemmas are executed on every chosen write, for H and two others.
    procedure Do_Emit
      (X    : State; Tgt : Target; Now : U48; Self : Key256; H : Key256;
-      Seq  : in out U48; V : out Version; R : out Status) is
+      Seq  : in out U48; V : out Version; R : out Status)
+   is
+      T, Sq : U48;
    begin
-      Emit_Version (X, Tgt, Now, Self, H, Seq, V, R, Cl);
+      Choose (X, Tgt, Now, Self, Seq, T, Sq, R, Cl);
+      if R in OK | Shadowed then
+         V := Stamp (T, Self, Sq, H);
+         if Sq /= Seq then
+            Out_Ok := False;
+         end if;
+         for HX of Key_List'[H, H_Lo, H_Hi] loop
+            Lemma_Outcome_Independent_Of_H (X, Tgt, T, Self, Sq, HX);
+            if R = OK then
+               Lemma_OK_Undominated (X, Tgt, T, Self, Sq, HX);
+            end if;
+         end loop;
+      else
+         V := (T => T, Author => (others => 0), Seq => Sq, H => (others => 0));
+      end if;
    end Do_Emit;
 
    procedure Apply_Data (X : Header) is
    begin
-      Apply (S, X, None, St);
+      Apply (S, X, St);
    end Apply_Data;
 
-begin
-   Apply (S, Roster (1, 10_000, 1), W, St);
-   Check ("setup: roster ceiling 10000", St = OK and Ceil (Regs (S)) = 10_000);
+   --  D8: choose once, build the record under two different content hashes,
+   --  apply each to a copy of X, and check that each gets the outcome Choose
+   --  predicted: OK -> held; Shadowed (on a PUT) -> Dominated.
+   function Same_Under_Two_Hashes (X : State; Tgt : Target; Now : U48;
+                                   Self : Key256; Seq_Self : U48;
+                                   Expect : Status) return Boolean
+   is
+      Sq_S  : U48 := Seq_Self;
+      T, Sq : U48;
+      Res   : Status;
+      C     : Boolean;
+      Good  : Boolean := True;
+   begin
+      Choose (X, Tgt, Now, Self, Sq_S, T, Sq, Res, C);
+      if Res /= Expect then
+         return False;
+      end if;
+      for HX of Key_List'[H_Lo, H_Hi, HC] loop
+         declare
+            Y   : State := X;
+            Rec : constant Header := To_Header (Tgt, Stamp (T, Self, Sq, HX));
+            A   : Status;
+         begin
+            Apply (Y, Rec, A);
+            case Res is
+               when OK =>
+                  Good := Good and then A = OK and then Holds (Y, Rec);
+               when Shadowed =>
+                  Good := Good and then A = Dominated and then not Holds (Y, Rec);
+               when others =>
+                  Good := False;
+            end case;
+         end;
+      end loop;
+      return Good;
+   end Same_Under_Two_Hashes;
+
+   --  A State carries a Register_File of Writers_Max keys, and under
+   --  -gnata every Post evaluation copies states, so the checks run in a
+   --  task with a large stack (as in test_frontier).
+   procedure Run_All;
+
+   task Runner with Storage_Size => 512 * 1024 * 1024;
+
+   task body Runner is
+   begin
+      Run_All;
+   exception
+      when E : others =>
+         Put_Line ("FAIL unexpected exception: " & Exception_Information (E));
+         Set_Exit_Status (Failure);
+   end Runner;
+
+   procedure Run_All is
+   begin
+   Grant_Writers (S);
+   Apply (S, Roster (1, 10_000, 1), St);
+   Check ("setup: writers granted, roster ceiling 10000",
+          Out_Ok and St = OK and Ceil (Regs (S)) = 10_000);
 
    --  (d) No floor, no clock: t = 0.
    Seq := 0;
@@ -175,7 +282,7 @@ begin
    declare
       S1 : constant State := S;
    begin
-      Apply (S, Roster (2, 20_000, 2), W, St);
+      Apply (S, Roster (2, 20_000, 2), St);
       Check ("setup: ceiling raised to 20000",
              St = OK and Ceil (Regs (S)) = 20_000);
       --  T9 state form: every floor of the new state is under its ceiling.
@@ -199,10 +306,11 @@ begin
 
    --  (f) Floor at t = 2^48 - 1 under a ceiling of 2^48 - 1: no wrap.
    declare
-      T : State := Empty (NS, 8);
+      T : State := New_State (8);
    begin
-      Apply (T, Roster (1, U48'Last, 1), W, St);
-      Apply (T, Put (1, 'n', Ver (U48'Last, 5, 1, 40)), None, St);
+      Grant_Writers (T);
+      Apply (T, Roster (1, U48'Last, 1), St);
+      Apply (T, Put (1, 'n', Ver (U48'Last, 5, 1, 40)), St);
       Check ("setup: PUT at t = 2^48 - 1 held", St = OK);
       Seq := 10;
       Do_Emit (T, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
@@ -215,14 +323,14 @@ begin
 
    --  No roster yet: W is empty, so nobody may write.
    declare
-      T : State := Empty (NS, 4);
+      T : State := New_State (4);
    begin
       Seq := 0;
       Do_Emit (T, Put_T (1, 'n'), 12_345, Self, HC, Seq, V, R);
-      Check ("no roster: Inadmissible, nothing changed",
+      Check ("no GRANT: Inadmissible, nothing changed",
              R = Inadmissible and V = No_V and Seq = 0 and not Cl);
-      --  Ceiling 0: every write is at t = 0.
-      Apply (T, Roster (1, 0, 1), W, St);
+      --  Granted, but no roster: ceiling 0, every write is at t = 0.
+      Grant_Writers (T);
       Do_Emit (T, Put_T (1, 'n'), 12_345, Self, HC, Seq, V, R);
       Check ("ceiling 0: t = 0", R = OK and V.T = 0 and Seq = 1);
    end;
@@ -235,12 +343,13 @@ begin
 
    --  H8: backup restore / clone self-detection, on a fresh collection.
    declare
-      U : State := Empty (NS, 32);
+      U : State := New_State (32);
       F : Version;
    begin
-      Apply (U, Roster (1, 10_000, 1), W, St);
+      Grant_Writers (U);
+      Apply (U, Roster (1, 10_000, 1), St);
       --  The device already emitted seq 50; seq_self was restored to 10.
-      Apply (U, Put (1, 'n', Ver (9_000, 3, 50, 50)), None, St);
+      Apply (U, Put (1, 'n', Ver (9_000, 3, 50, 50)), St);
       Check ("setup: own record with seq 50 held", St = OK);
       Seq := 10;
       Do_Emit (U, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
@@ -258,7 +367,7 @@ begin
       Check ("held own seq = seq_self is not a clone",
              R = OK and not Cl and V.Seq = 51);
       --  Another key's record with a high seq is not this device's.
-      Apply (U, Put (7, 'n', Ver (100, 2, 900, 51)), None, St);
+      Apply (U, Put (7, 'n', Ver (100, 2, 900, 51)), St);
       Seq := 60;
       Do_Emit (U, Put_T (7, 'n'), 0, Self, HC, Seq, V, R);
       Check ("other author's high seq: no clone", R = OK and not Cl
@@ -269,19 +378,19 @@ begin
       --  equal the floor; with it, seq jumps and the write wins.
       Seq := 60;
       F := (T => 10_000, Author => Self, Seq => 61, H => HC);
-      Apply (U, Put (3, 'n', F), None, St);
+      Apply (U, Put (3, 'n', F), St);
       Check ("setup: floor = (ceil, self, seq_self + 1, h) held", St = OK);
       Do_Emit (U, Put_T (3, 'n'), 0, Self, HC, Seq, V, R);
       Check ("v_emit = floor is impossible: seq jumps, OK above the floor",
              R = OK and Cl and V.Seq = 62 and V.T = 10_000 and Lt (F, V)
              and V /= F);
-      Apply (U, To_Header (Put_T (3, 'n'), V), None, St);
+      Apply (U, To_Header (Put_T (3, 'n'), V), St);
       Check ("that write applied is held, the floor freed",
              St = OK and Holds (U, To_Header (Put_T (3, 'n'), V))
              and not Holds (U, Put (3, 'n', F)));
 
       --  DEL with a nonzero FH in the target: FH is ignored.
-      Apply (U, Put (5, 'a', Ver (400, 2, 1, 1)), None, St);
+      Apply (U, Put (5, 'a', Ver (400, 2, 1, 1)), St);
       Seq := 100;
       Do_Emit (U, (Op => W_Del, NS => NS, Ent => Ent (5), FH => Fld ('z')),
                0, Self, HC, Seq, V, R);
@@ -293,9 +402,9 @@ begin
              and To_Header (Del_T (5), V).FH = Key256'(others => 0));
 
       --  In_Floor excludes other entities and other fields.
-      Apply (U, Put (11, 'n', Ver (9_500, 2, 2, 2)), None, St);
-      Apply (U, Del (12, Ver (9_600, 2, 3, 3)), None, St);
-      Apply (U, Put (10, 'm', Ver (9_700, 2, 4, 4)), None, St);
+      Apply (U, Put (11, 'n', Ver (9_500, 2, 2, 2)), St);
+      Apply (U, Del (12, Ver (9_600, 2, 3, 3)), St);
+      Apply (U, Put (10, 'm', Ver (9_700, 2, 4, 4)), St);
       Check ("setup: neighbours held", St = OK);
       Do_Emit (U, Put_T (10, 'n'), 100, Self, HC, Seq, V, R);
       Check ("other entities and fields are not the PUT's floor",
@@ -309,10 +418,11 @@ begin
    --  H8 jump at the bound: a held own record at seq 2^48 - 1 leaves no
    --  seq to emit; refused with nothing changed, clone still reported.
    declare
-      X : State := Empty (NS, 8);
+      X : State := New_State (8);
    begin
-      Apply (X, Roster (1, 10_000, 1), W, St);
-      Apply (X, Put (4, 'n', Ver (5, 3, U48'Last, 9)), None, St);
+      Grant_Writers (X);
+      Apply (X, Roster (1, 10_000, 1), St);
+      Apply (X, Put (4, 'n', Ver (5, 3, U48'Last, 9)), St);
       Check ("setup: own record at seq 2^48 - 1 held", St = OK);
       Seq := 10;
       V := Ver (1, 1, 1, 1);
@@ -320,6 +430,65 @@ begin
       Check ("jump past 2^48 - 1: Seq_Exhausted, clone, nothing changed",
              R = Seq_Exhausted and Cl and Seq = 10 and V = No_V);
    end;
+
+   --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1: a held own record at
+   --  seq 2^48 - 2 makes a restored device jump to 2^48 - 1 (an ordinary
+   --  write, clone reported); once that write is held, nothing is left.
+   declare
+      M : State := New_State (8);
+   begin
+      Grant_Writers (M);
+      Apply (M, Roster (1, 10_000, 1), St);
+      Apply (M, Put (4, 'n', Ver (5, 3, U48'Last - 1, 9)), St);
+      Check ("setup: own record at seq 2^48 - 2 held", St = OK);
+      Seq := 10;
+      Do_Emit (M, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
+      Check ("H8 jump to 2^48 - 1: OK, clone, seq = 2^48 - 1",
+             R = OK and Cl and Seq = U48'Last and V.Seq = U48'Last);
+      Apply (M, To_Header (Put_T (1, 'n'), V), St);
+      Check ("the write at seq 2^48 - 1 is held",
+             St = OK and Holds (M, To_Header (Put_T (1, 'n'), V)));
+      Do_Emit (M, Put_T (2, 'n'), 0, Self, HC, Seq, V, R);
+      Check ("after the jump to 2^48 - 1: Seq_Exhausted, seq unchanged",
+             R = Seq_Exhausted and not Cl and Seq = U48'Last and V = No_V);
+      Seq := 10;
+      Do_Emit (M, Put_T (2, 'n'), 0, Self, HC, Seq, V, R);
+      Check ("restored seq after the jump to 2^48 - 1: Seq_Exhausted, clone",
+             R = Seq_Exhausted and Cl and Seq = 10 and V = No_V);
+   end;
+
+   --  (l) D8: the outcome does not depend on the content hash. Each case
+   --  chooses once and builds the record under three hashes (all-zero,
+   --  all-ones, and HC), and each record gets the predicted outcome.
+   declare
+      D : State := New_State (32);
+   begin
+      Grant_Writers (D);
+      Apply (D, Roster (1, 10_000, 1), St);
+      Apply (D, Put (1, 'n', Ver (9_000, 2, 1, 10)), St);
+      Apply (D, Put (8, 'n', Ver (10_000, 5, 6, 30)), St);
+      Apply (D, Put (9, 'n', Ver (10_000, 2, 7, 31)), St);
+      --  Own record at the ceiling with seq 61 and h = HC, seq_self 60:
+      --  without H8 the all-zero h would lose and the all-ones h win.
+      Apply (D, Put (3, 'n', (T => 10_000, Author => Self, Seq => 61,
+                              H => HC)), St);
+      Check ("setup: D8 floors held", St = OK);
+      Check ("D8: chase, OK under every h",
+             Same_Under_Two_Hashes (D, Put_T (1, 'n'), 100, Self, 0, OK));
+      Check ("D8: ceiling, floor key above: Shadowed (Dominated) under every h",
+             Same_Under_Two_Hashes (D, Put_T (8, 'n'), 0, Self, 0, Shadowed));
+      Check ("D8: ceiling, floor key below: OK under every h",
+             Same_Under_Two_Hashes (D, Put_T (9, 'n'), 0, Self, 0, OK));
+      Check ("D8: own floor, restored seq: OK under every h",
+             Same_Under_Two_Hashes (D, Put_T (3, 'n'), 0, Self, 60, OK));
+      Check ("D8: DEL above the entity's PUT: OK under every h",
+             Same_Under_Two_Hashes (D, Del_T (1), 0, Self, 0, OK));
+      Check ("D8: no floor: OK under every h",
+             Same_Under_Two_Hashes (D, Put_T (20, 'n'), 7, Self, 0, OK));
+   end;
+
+   Check ("every chosen Seq equals the new Seq_Self; every GRANT applied",
+          Out_Ok);
 
    --  Lemmas at run time.
    Lemma_Emit_Bounded (5, True, 3, 4);
@@ -340,4 +509,8 @@ begin
    if Failed then
       Set_Exit_Status (Failure);
    end if;
+   end Run_All;
+
+begin
+   null;
 end Test_Emit;
