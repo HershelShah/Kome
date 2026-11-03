@@ -7,13 +7,16 @@
 # Toolchain: gnat, gprbuild and gnatprove on PATH; otherwise they are taken
 # from nixpkgs (gnat14 + gnatprove), the same set CI uses.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# Absolute path to this script: it re-runs itself (inside nix, and once per
+# module for "all") after the cd below, where a relative path would not resolve.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+cd "$(dirname "$SELF")"
 
 if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>&1; then
   if [ -z "${KOME_IN_NIX:-}" ]; then
     exec env KOME_IN_NIX=1 nix --extra-experimental-features 'nix-command flakes' \
       shell nixpkgs#gnat14 nixpkgs#gnat14Packages.gprbuild nixpkgs#gnat14Packages.gnatprove nixpkgs#cvc5 nixpkgs#z3 \
-      --command "$0" "$@"
+      --command "$SELF" "$@"
   fi
 fi
 
@@ -49,7 +52,10 @@ run_one() {
   else
     echo "== $m: no test main (proof only)"
   fi
-  if [ "${PROVE:-1}" = "1" ] && command -v gnatprove >/dev/null 2>&1; then
+  if [ "${PROVE:-1}" = "1" ]; then
+    if ! command -v gnatprove >/dev/null 2>&1; then
+      echo "== $m: gnatprove not found (set PROVE=0 to run the tests only)"; return 1
+    fi
     echo "== $m: prove"
     # gnatprove 14 names its job semaphore without regard to TMPDIR
     # (/dev/shm/sem.why3server<hash>), so two runs at once still crash with
@@ -82,7 +88,7 @@ if [ "${1:-}" = "all" ]; then
   failed=""
   for f in src/kome-*.adb; do
     m="${f#src/kome-}"; m="${m%.adb}"
-    if ! "$0" "$m"; then failed="$failed $m"; fi
+    if ! "$SELF" "$m"; then failed="$failed $m"; fi
   done
   if [ -n "$failed" ]; then echo "== FAILED:$failed"; exit 1; fi
   echo "== all modules green"
