@@ -1,17 +1,23 @@
---  Test main for Kome.Accumulator (DESIGN.md §8, T6). (a) Hand vectors:
---  a carry out of one limb, a carry through 32 and through 63 limbs, the
---  wraparound of 2^4096 - 1 + 1, a borrow through every limb. (b) The
---  vectors in vectors/accumulator.txt, computed with Python integers,
---  independently of the SPARK model: random-looking, sparse, carry-chain
---  and wraparound cases, through the wire form. (c) The laws on a grid of
---  accumulators, both as plain equalities and through the ghost lemmas,
---  whose Posts (with the Big_Integer model) and bodies run under -gnata,
---  except the limb-by-limb steps the spec's "Run-time cost" note exempts.
---  (d) The byte order as an integer: Value (From_Bytes (B)) =
---  Σ B (I) · 256^I on the vectors and on hand cases (bytes 0, 8 and 511).
---  (e) The acc(e) construction of DESIGN.md §8 (D7): sixteen 32-byte
---  blocks, B_0 least significant. (f) Chaining the laws through
---  Lemma_Eq_Iff_Value and the congruence lemmas.
+--  Test main for Kome.Accumulator (DESIGN.md §8, T6). The test has these
+--  parts:
+--    (a) Hand vectors: a carry out of one limb, a carry through 32 and
+--        through 63 limbs, the wraparound of 2^4096 - 1 + 1, and a borrow
+--        through each limb.
+--    (b) The vectors in vectors/accumulator.txt, through the wire form.
+--        Python integers computed them, independently of the SPARK model:
+--        random-looking, sparse, carry-chain and wraparound cases.
+--    (c) The laws on a grid of accumulators, both as plain equalities and
+--        through the ghost lemmas. The Posts of the lemmas (with the
+--        Big_Integer model) and their bodies run under -gnata. The
+--        exception is the limb-by-limb steps that the "Run-time cost" note
+--        of the spec exempts.
+--    (d) The byte order as an integer: Value (From_Bytes (B)) =
+--        Σ B (I) · 256^I on the vectors and on hand cases (bytes 0, 8 and
+--        511).
+--    (e) The acc(e) construction of DESIGN.md §8 (D7): sixteen 32-byte
+--        blocks, with B_0 the least significant.
+--    (f) A chain of the laws through Lemma_Eq_Iff_Value and the
+--        congruence lemmas.
 pragma Ada_2022;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line;  use Ada.Command_Line;
@@ -107,7 +113,7 @@ begin
    end;
 
    declare
-      --  Y = 2^4096 - X: every limb produces a carry into the next.
+      --  Y = 2^4096 - X: each limb makes a carry into the next limb.
       X : constant Acc :=
         [for L in Limb_Index => (if L mod 2 = 0 then U64'Last else 0)];
       Y : constant Acc :=
@@ -152,7 +158,8 @@ begin
                      N_Add := N_Add + 1;
                      Ok_Op := Ok_Op and then To_Bytes (Add (A, B)) = RB;
                      --  The bytes, read as little-endian integers, are the
-                     --  values (checked by the lemmas' Posts under -gnata).
+                     --  values (the Posts of the lemmas check this under
+                     --  -gnata).
                      Lemma_Value_From_Bytes (AB);
                      Lemma_Value_To_Bytes (B);
                      Lemma_Value_From_Bytes (RB);
@@ -179,7 +186,7 @@ begin
       Check ("vectors: SUB count >= 40 (" & N_Sub'Image & ")", N_Sub >= 40);
    end;
 
-   --  Wire form is little-endian, limb by limb.
+   --  The wire form is little-endian, limb by limb.
    declare
       B : constant Acc_Byte_Array := To_Bytes (Acc'[0 => 16#0807_0605_0403_0201#,
                                                 63 => 16#FF00_0000_0000_0000#,
@@ -236,7 +243,7 @@ begin
       Check ("law: Add associative on the grid", Assoc);
       Lemma_Value_Zero;
       Lemma_Value_Injective (Pseudo (5), Pseudo (5));
-      --  Distinct computations with equal Value.
+      --  Different computations with equal Value.
       Lemma_Value_Injective (Add (Pseudo (5), Pseudo (6)),
                              Add (Pseudo (6), Pseudo (5)));
       Lemma_Value_Injective (Sub (Add (Pseudo (7), All_Ones), All_Ones),
@@ -248,8 +255,9 @@ begin
 
    ----------------------------------------------------------------------
    --  (d) Byte order as an integer (DESIGN.md §8 "as an integer";
-   --  little-endian). Each pragma Assert runs under -gnata and raises on
-   --  failure, so reaching the PASS line means all of them held.
+   --  little-endian). Each pragma Assert runs under -gnata and raises an
+   --  exception on failure. Thus, if the test gets to the PASS line, all of
+   --  them held.
    ----------------------------------------------------------------------
    declare
       Two  : constant Big_Integer := To_Big_Integer (2);
@@ -279,10 +287,10 @@ begin
 
    ----------------------------------------------------------------------
    --  (e) DESIGN.md §8 (D7): acc(e) := Σ_{i=0..15} LE(B_i) · 2^(256·i),
-   --  LE(B) := Σ_j B[j] · 256^j. The sixteen 32-byte blocks concatenated
-   --  in counter order and read by From_Bytes denote exactly that sum,
-   --  computed here block by block with Big_Integers, independently of the
-   --  package's byte-level model.
+   --  LE(B) := Σ_j B[j] · 256^j. The sixteen 32-byte blocks, concatenated
+   --  in counter order and read by From_Bytes, denote exactly that sum.
+   --  This test computes the sum block by block with Big_Integers,
+   --  independently of the byte-level model of the package.
    ----------------------------------------------------------------------
    declare
       subtype Block is Byte_Array (0 .. 31);
@@ -329,10 +337,10 @@ begin
    end;
 
    ----------------------------------------------------------------------
-   --  (f) Chaining the laws: Lemma_Eq_Iff_Value, Lemma_Add_Congruent and
-   --  Lemma_Sub_Congruent. Each lemma's Post
-   --  runs under -gnata on pairs that are equal but computed differently,
-   --  and on pairs that are not equal.
+   --  (f) A chain of the laws: Lemma_Eq_Iff_Value, Lemma_Add_Congruent and
+   --  Lemma_Sub_Congruent. The Post of each lemma runs under -gnata on
+   --  pairs that are equal but computed differently, and on pairs that are
+   --  not equal.
    ----------------------------------------------------------------------
    declare
       P5   : constant Acc := Pseudo (5);
@@ -345,10 +353,10 @@ begin
       --  Equal, computed two ways.
       Lemma_Eq_Iff_Value (L, R);
       pragma Assert (Value (L) = Value (R));
-      --  Not equal: the lemma's Post is (False) = (False).
+      --  Not equal: the Post of the lemma is (False) = (False).
       Lemma_Eq_Iff_Value (P5, P6);
       pragma Assert (Value (P5) /= Value (P6));
-      --  Differ only in the top limb.
+      --  The two differ only in the top limb.
       Lemma_Eq_Iff_Value (Zero, Top);
       pragma Assert (Value (Zero) /= Value (Top));
       Lemma_Eq_Iff_Value (Sub (Add (P7, All_Ones), All_Ones), P7);
@@ -366,8 +374,8 @@ begin
              and then Sub (P7, L) = Sub (P7, R));
 
       --  The recipe in the spec: Add (Add (A, B), C) = Add (Add (B, A), C)
-      --  from Lemma_Add_Comm, and transitivity through three
-      --  Lemma_Eq_Iff_Value calls.
+      --  from Lemma_Add_Comm, and transitivity through three calls of
+      --  Lemma_Eq_Iff_Value.
       Lemma_Add_Comm (P5, P6);
       Lemma_Add_Congruent (Add (P5, P6), Add (P6, P5), P7, P7);
       Lemma_Add_Assoc (P6, P5, P7);

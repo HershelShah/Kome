@@ -1,13 +1,16 @@
---  Test main for Kome.Keys: (a) hand vectors for the big-endian packing
---  (bytes 00..1F, all-FF, DEADBEEF lanes), including a source slice with a
---  non-zero 'First; (b) both round trips on a grid of words and a grid of
---  byte strings; (c) Kome.Lt against a reference byte-lexicographic loop on
---  pairs that differ at every position, and on equal pairs; (d) the same
---  for Id_Lt and Id128 injectivity; (e) slice sliding to Key_Bytes /
---  Id_Bytes; (f) the length precondition of To_Key256 / To_Id128 fails
---  (Assertion_Error under -gnata) on a wrong length. Every call also
---  evaluates the Pre/Post of the conversions and of the ghost lemmas at run
---  time (-gnata).
+--  Test main for Kome.Keys. The test has these parts:
+--    (a) hand vectors for the big-endian packing (bytes 00..1F, all-FF,
+--        DEADBEEF lanes), with a source slice that has a non-zero 'First;
+--    (b) the two round trips on a grid of words and a grid of byte
+--        strings;
+--    (c) Kome.Lt against a reference byte-lexicographic loop, on pairs
+--        that differ at each position and on equal pairs;
+--    (d) the same for Id_Lt, and Id128 injectivity;
+--    (e) slice sliding to Key_Bytes / Id_Bytes;
+--    (f) on a wrong length, the length precondition of To_Key256 /
+--        To_Id128 fails (Assertion_Error under -gnata).
+--  Each call also evaluates the Pre/Post of the conversions and of the
+--  ghost lemmas at run time (-gnata).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -58,9 +61,9 @@ procedure Test_Keys with SPARK_Mode => Off is
    function Id_Pattern (S : Natural) return Id_Bytes is
      ([for I in Id_Index => Byte ((S * 53 + I * 13 + I * I * 3) mod 256)]);
 
-   --  (f): call the decoder on an N-byte array (N /= the required length)
-   --  and expect the precondition to fail. The result is printed if the
-   --  call returns, so it cannot be optimised away.
+   --  (f): call the decoder on an N-byte array (N /= the required length),
+   --  and expect the precondition to fail. If the call returns, the test
+   --  prints the result, so the compiler cannot optimise the call away.
    procedure Expect_Key_Pre_Failure (N : Natural) is
       B : constant Byte_Array (7 .. 7 + N - 1) := [others => 16#5A#];
       K : Key256;
@@ -211,7 +214,7 @@ begin
                begin
                   A (P) := Q.X;
                   B (P) := Q.Y;
-                  --  Bytes after P differ too: they must not matter.
+                  --  Bytes after P also differ: they must have no effect.
                   if P < Key_Index'Last then
                      A (P + 1) := 16#FF#;
                      B (P + 1) := 0;
@@ -255,7 +258,7 @@ begin
    Check ("Lt = byte-lexicographic on pattern pairs; irreflexive", Ok);
 
    ----------------------------------------------------------------------
-   --  (d) Id_Lt is byte-lexicographic; Id128 decoding is injective.
+   --  (d) Id_Lt is byte-lexicographic, and the Id128 decoder is injective.
    ----------------------------------------------------------------------
    declare
       type Pair is record X, Y : Byte; end record;

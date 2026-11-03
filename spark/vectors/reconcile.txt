@@ -1,9 +1,9 @@
-# Kome.Reconcile known-answer vectors. Read by tests/test_reconcile.adb.
+# Kome.Reconcile known-answer vectors. tests/test_reconcile.adb reads them.
 # DESIGN.md §8 (D13), all integers big-endian:
 #   OPEN  = 05 || proto (01) || ns[16] || n_rv:u8 || n_rv x frame[275]
 #   HELLO = 01 || n_auth:u32 || n_data:u32 || digest[32] || cred_len:u16 || cred
-# Built with Python's struct from the layout above, independently of the
-# SPARK code (the frames and credentials are opaque bytes here):
+# A Python script made them with struct, from the layout above. It did not
+# use the SPARK code (the frames and credentials are opaque bytes here):
 #   open  = b'\x05\x01' + ns + bytes([n]) + frames
 #   hello = b'\x01' + struct.pack('>II', na, nd) + dg + struct.pack('>H', len(cr)) + cr
 # Formats:

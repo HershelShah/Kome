@@ -2,7 +2,7 @@ pragma Ada_2022;
 package body Kome.Byteorder with SPARK_Mode is
 
    --  read (encode (V)) = V. Lane I of the encoding, shifted back into
-   --  place, is V masked to bits 8I .. 8I + 7; the OR of the lanes is V.
+   --  place, is V masked to bits 8I .. 8I + 7. The OR of the lanes is V.
    procedure Lemma_Read_Store_U64 (V : U64) is
       B : constant U64_Bytes := To_LE_U64 (V);
    begin
@@ -19,8 +19,8 @@ package body Kome.Byteorder with SPARK_Mode is
       pragma Assert (Read_U64LE (B, 0) = V);
    end Lemma_Read_Store_U64;
 
-   --  encode (read (B)) = B. Lane I of the read is B (I) << 8I; the lanes
-   --  occupy disjoint bit ranges, so (X >> 8I) & FF picks lane I back out.
+   --  encode (read (B)) = B. Lane I of the read is B (I) << 8I. The lanes
+   --  occupy disjoint bit ranges, so (X >> 8I) & FF extracts lane I.
    procedure Lemma_Store_Read_U64 (B : U64_Bytes) is
       X : constant U64 := Read_U64LE (B, 0);
    begin

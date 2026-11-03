@@ -1,8 +1,8 @@
---  Kome.Epochs body. See the spec for what is proved and what is a crypto
---  oracle. In Step, Box_Key, Unbox_Key, Seal_Link and Open_Link every named
---  secret byte buffer is wiped before the subprogram returns;
---  gnatprove's flow analysis reports those final Wipes as having no effect
---  on the SPARK model, which is the point of them (Kome.Crypto.Wipe).
+--  Kome.Epochs body. The spec tells what is proved and what is a crypto
+--  oracle. Step, Box_Key, Unbox_Key, Seal_Link and Open_Link wipe each named
+--  secret byte buffer before they return. The flow analysis of gnatprove
+--  reports that these final Wipes have no effect on the SPARK model. This
+--  is their purpose (Kome.Crypto.Wipe).
 pragma Ada_2022;
 
 package body Kome.Epochs with SPARK_Mode is
@@ -17,16 +17,17 @@ package body Kome.Epochs with SPARK_Mode is
    --  Chain
    ---------------------------------------------------------------------------
 
-   --  Erase secret buffers. gnatprove's flow analysis reports a final Wipe
-   --  as having no effect; that is the point of it (Kome.Crypto.Wipe).
+   --  Erase secret buffers. The flow analysis of gnatprove reports that a
+   --  final Wipe has no effect. This is its purpose (Kome.Crypto.Wipe).
    pragma Warnings (GNATprove, Off, "statement has no effect",
                     Reason => "erasing secrets is not a SPARK effect");
    pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
                     Reason => "erasing secrets is not a SPARK effect");
 
-   --  The procedure form of BLAKE2b-256 into a buffer, so the input (which
-   --  holds k_{e+1}) and the digest are wiped before returning. A function
-   --  may call both procedures because they are Always_Terminates.
+   --  The procedure form of BLAKE2b-256 writes into a buffer. Thus Step
+   --  can wipe the input (which holds k_{e+1}) and the digest before it
+   --  returns. A function can call the two procedures because they are
+   --  Always_Terminates.
    function Step (K : Key256) return Key256 is
       Buf    : Byte_Array (0 .. Hash_Len + Prev_Label_Len - 1) :=
         Kome.Keys.To_Bytes (K) & Prev_Label;
@@ -41,16 +42,17 @@ package body Kome.Epochs with SPARK_Mode is
    end Step;
 
    function Derive (K : Key256; From, To : Epoch) return Key256 is
-      --  The invariant restates the ghost model Iter, which costs I Steps
-      --  to evaluate; executing it on every iteration would make the test
-      --  quadratic (2**31 hashes for a full chain). It is proved, not run;
-      --  the test checks Derive against an independent reference instead.
+      --  The invariant states the ghost model Iter again. To evaluate Iter
+      --  costs I Steps. If the test ran it on each iteration, the test
+      --  would be quadratic (2**31 hashes for a full chain). Thus it is
+      --  proved, not run. The test checks Derive against an independent
+      --  reference instead.
       pragma Assertion_Policy (Loop_Invariant => Ignore);
       N : constant Steps := Natural (From) - Natural (To);
       R : Key256 := K;
    begin
-      --  At most Max_Steps = 2**16 - 1 iterations: the bound is the range
-      --  of the index (subtype Steps).
+      --  At most Max_Steps = 2**16 - 1 iterations: the range of the index
+      --  (subtype Steps) is the bound.
       for I in 1 .. N loop
          R := Step (R);
          pragma Loop_Invariant (R = Iter (K, I));
@@ -65,8 +67,8 @@ package body Kome.Epochs with SPARK_Mode is
    procedure Lemma_Iter_Add (K : Key256; M, N : Steps) is
    begin
       --  Induction on N, as a loop: Iter (Iter (K, M), I) = Iter (K, M + I)
-      --  holds for I = 0 by definition, and one more Step on both sides
-      --  keeps it.
+      --  is true for I = 0 by definition. One more Step on the two sides
+      --  keeps it true.
       for I in 0 .. N loop
          pragma Loop_Invariant (Iter (Iter (K, M), I) = Iter (K, M + I));
       end loop;
@@ -103,7 +105,7 @@ package body Kome.Epochs with SPARK_Mode is
      with Global => null,
           Post => Box_AD'Result'Length = AD_Len;
 
-   --  Wrap_Byte's layout, written into Buf field by field.
+   --  The layout of Wrap_Byte, written into Buf field by field.
    procedure Fill_Wrap
      (Shared  : C.Shared_Secret;
       Box_PK  : Pubkey;
@@ -156,9 +158,9 @@ package body Kome.Epochs with SPARK_Mode is
 
    --  wrap_key = BLAKE2b-256 ("kome/wrap" ‖ shared ‖ box_pk ‖ dh_pk ‖ sign_pk
    --  ‖ ns ‖ u16 (e)), into Key (a secret: the caller wipes it). The input
-   --  holds the shared secret and is wiped here. Buf has the bytes of the
-   --  ghost model Wrap_Input, so it has its digest (Kome.Crypto's
-   --  congruence axiom).
+   --  holds the shared secret. This procedure wipes it. Buf has the bytes of
+   --  the ghost model Wrap_Input, so it has the same digest (the congruence
+   --  axiom of Kome.Crypto).
    procedure Wrap_Key
      (Shared  : C.Shared_Secret;
       Box_PK  : Pubkey;
@@ -178,9 +180,10 @@ package body Kome.Epochs with SPARK_Mode is
       C.Wipe (Buf);
    end Wrap_Key;
 
-   --  The wrap key depends on the shared secret's bytes only: Box_Key and
-   --  Unbox_Key hold the secret X25519 wrote, which equals (Ada "=", not
-   --  the same term) the ghost X25519_Shared their Posts name.
+   --  The wrap key depends only on the bytes of the shared secret. Box_Key
+   --  and Unbox_Key hold the secret that X25519 wrote. That secret is equal
+   --  (Ada "=", not the same term) to the ghost X25519_Shared that their
+   --  Posts name.
    procedure Lemma_Wrap_Shared
      (S1, S2  : C.Shared_Secret;
       Box_PK  : Pubkey;
@@ -202,7 +205,7 @@ package body Kome.Epochs with SPARK_Mode is
                                  Wrap_Input (S2, Box_PK, DH_PK, Sign_PK, Ns, E));
    end Lemma_Wrap_Shared;
 
-   --  The synthetic nonce of K under the key whose bytes are Key_Bytes,
+   --  The synthetic nonce of K under the key with the bytes Key_Bytes,
    --  computed through wiped buffers. Post: it is Synthetic_Nonce.
    procedure Nonce_Of (Key_Bytes : Hash256; K : Key256; N : out Nonce)
      with Global => null,
@@ -217,8 +220,8 @@ package body Kome.Epochs with SPARK_Mode is
       C.Wipe (Digest);
    end Nonce_Of;
 
-   --  The link key bytes, through a wiped input buffer. Post: as a key, it
-   --  is Link_Key.
+   --  The bytes of the link key, through a wiped input buffer. Post: as a
+   --  key, it is Link_Key.
    procedure Link_Key_Of (K_S : Key256; Ns : Id128; S : Epoch; Key : out Hash256)
      with Global => null,
           Post   => Kome.Keys.To_Key256 (Key) = Link_Key (K_S, Ns, S)
@@ -247,8 +250,9 @@ package body Kome.Epochs with SPARK_Mode is
       Cipher       : C.AEAD_Key;
       Mac          : C.Tag;
    begin
-      --  Refuse a non-reduced encoding before any exchange: it would seal a
-      --  box its member's reduced key can never open (see the spec header).
+      --  Refuse an encoding that is not reduced before an exchange. It would
+      --  seal a box that the reduced key of its member can never open (see
+      --  the spec header).
       if not Is_Reduced_U (Member_DH_PK) then
          N := [others => 0];
          Sealed := [others => 0];
@@ -332,8 +336,8 @@ package body Kome.Epochs with SPARK_Mode is
       Epoch_Key := Zero_Key;
       Status := Not_Authentic;
       if Authentic then
-         --  Recompute the synthetic nonce from the opened key and refuse a
-         --  mismatch: exactly one box per (wrap_key, k_e) opens (§6).
+         --  Compute the synthetic nonce again from the opened key. Refuse a
+         --  mismatch: exactly one box opens for each (wrap_key, k_e) (§6).
          Nonce_Of (WK, Kome.Keys.To_Key256 (Plain), Expected);
          if Expected = N then
             Epoch_Key := Kome.Keys.To_Key256 (Plain);

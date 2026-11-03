@@ -1,21 +1,28 @@
 --  Test main for Kome.Emit: the write path of DESIGN.md §5 on states built
---  with Kome.Frontier.Apply. (a) chase above a far-future floor; (b) at the
---  ceiling: Shadowed when the floor wins the tie, OK when the write does,
---  and unshadowed once a roster raises the ceiling (T9); (c) seq exhaustion
---  refuses with nothing changed (T13); (d) no clock (Now = 0) still chases;
---  (e) a DEL's floor spans every field and the prior DELs, a PUT's floor
---  includes the entity's DEL; (f) floor.t = 2^48 - 1 does not wrap; (g) an
---  OK write applied back to the state is held (read-your-writes, T8);
+--  with Kome.Frontier.Apply.
+--  (a) Chase above a far-future floor.
+--  (b) At the ceiling: Shadowed if the floor wins the tie, OK if the write
+--      wins it. No shadow after a roster raises the ceiling (T9).
+--  (c) Seq exhaustion refuses and changes nothing (T13).
+--  (d) With no clock (Now = 0), the write also chases.
+--  (e) The floor of a DEL includes each field and the prior DELs. The
+--      floor of a PUT includes the DEL of the entity.
+--  (f) floor.t = 2^48 - 1 does not wrap.
+--  (g) An OK write, applied back to the state, is held (read-your-writes,
+--      T8).
 --  (h) H8 restore/clone detection: seq jumps past a held own record and
---  Clone_Suspected is raised, so v_emit never equals a held version; (i) a
---  non-member key is Inadmissible; (j) In_Floor excludes neighbours; (k)
---  the state-level T9 lemmas; (l) D8: the outcome is the same under three
---  different content hashes (each record built and applied, each with the
---  predicted outcome), and the two H lemmas hold on every emitted write;
+--      Clone_Suspected is True. Thus v_emit is never equal to a held
+--      version.
+--  (i) A non-member key is Inadmissible.
+--  (j) In_Floor excludes neighbours.
+--  (k) The state-level T9 lemmas.
+--  (l) D8: the outcome is the same under three different content hashes.
+--      The test builds and applies each record, and each gets the
+--      predicted outcome. The two H lemmas are true on each emitted write.
 --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1.
---  In the states, write access is by GRANT and a roster's V is
+--  In the states, a GRANT gives write access, and the V of a roster is
 --  (ceiling_t, signer, gen, h).
---  Contracts and lemmas are executed (-gnata).
+--  Contracts and lemmas run (-gnata).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -86,7 +93,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    Writers : constant Byte_List := [1, 2, 3, 5, 6];
 
    Self : constant Key256 := Key (3);
-   HC   : constant Key256 := Hsh (77);   --  the caller's content hash
+   HC   : constant Key256 := Hsh (77);   --  the content hash of the caller
    --  Two extreme content hashes for the D8 checks.
    H_Lo : constant Key256 := (others => 0);
    H_Hi : constant Key256 := (others => Word'Last);
@@ -97,7 +104,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    Seq : U48;
    V   : Version;
    Cl  : Boolean;   --  Clone_Suspected of the last call
-   Out_Ok : Boolean := True;   --  every Choose output agreed with its Seq_Self
+   Out_Ok : Boolean := True;   --  each Choose output agreed with Seq_Self
 
    --  Writers: 1, 2, 3 (this device), 5 (a key above 3), 6 (above 5).
    procedure Grant_Writers (X : in out State) is
@@ -110,9 +117,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       end loop;
    end Grant_Writers;
 
-   --  Step 1 (Choose), then the version the record gets once step 2 has
-   --  hashed it with content hash H. A refusal gives (0, 0, 0, 0). The D8
-   --  lemmas are executed on every chosen write, for H and two others.
+   --  Step 1 (Choose), then the version that the record gets after step 2
+   --  hashes it with content hash H. A refusal gives (0, 0, 0, 0). The D8
+   --  lemmas run on each chosen write, for H and for two other hashes.
    procedure Do_Emit
      (X    : State; Tgt : Target; Now : U48; Self : Key256; H : Key256;
       Seq  : in out U48; V : out Version; R : out Status)
@@ -141,9 +148,12 @@ procedure Test_Emit with SPARK_Mode => Off is
       Apply (S, X, St);
    end Apply_Data;
 
-   --  D8: choose once, build the record under three content hashes (H_Lo,
-   --  H_Hi, HC), apply each to a copy of X, and check that each gets the
-   --  outcome Choose predicted: OK -> held; Shadowed (on a PUT) -> Dominated.
+   --  D8: do these steps:
+   --    1. Choose once.
+   --    2. Build the record under three content hashes (H_Lo, H_Hi, HC).
+   --    3. Apply each record to a copy of X.
+   --    4. Check that each record gets the outcome that Choose predicted:
+   --       OK -> held; Shadowed (on a PUT) -> Dominated.
    function Same_Under_Two_Hashes (X : State; Tgt : Target; Now : U48;
                                    Self : Key256; Seq_Self : U48;
                                    Expect : Status) return Boolean
@@ -178,9 +188,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       return Good;
    end Same_Under_Two_Hashes;
 
-   --  A State carries a Register_File of Writers_Max keys, and under
-   --  -gnata every Post evaluation copies states, so the checks run in a
-   --  task with a large stack (as in test_frontier).
+   --  A State has a Register_File of Writers_Max keys. Under -gnata, each
+   --  Post evaluation copies states. Thus the checks run in a task with a
+   --  large stack (as in test_frontier).
    procedure Run_All;
 
    task Runner with Storage_Size => 512 * 1024 * 1024;
@@ -208,7 +218,7 @@ procedure Test_Emit with SPARK_Mode => Off is
           R = OK and V.T = 0 and V.Seq = 1 and Seq = 1 and not Cl
           and V.Author = Self and V.H = HC);
 
-   --  No floor, clock beyond the ceiling: clamped.
+   --  No floor, clock above the ceiling: clamped.
    Do_Emit (S, Put_T (1, 'n'), 50_000, Self, HC, Seq, V, R);
    Check ("no floor, Now above ceiling: t = ceiling, OK",
           R = OK and V.T = 10_000 and Seq = 2);
@@ -224,11 +234,12 @@ procedure Test_Emit with SPARK_Mode => Off is
    Do_Emit (S, Put_T (1, 'x'), 100, Self, HC, Seq, V, R);
    Check ("other field has no floor: t = Now", R = OK and V.T = 100);
 
-   --  (d) No clock still chases.
+   --  (d) With no clock, the write also chases.
    Do_Emit (S, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
    Check ("Now = 0 chases the floor", R = OK and V.T = 9_001);
 
-   --  (g) Read-your-writes: the emitted PUT, applied, replaces the floor.
+   --  (g) Read-your-writes: the emitted PUT, when applied, replaces the
+   --  floor.
    declare
       P : constant Header := To_Header (Put_T (1, 'n'), V);
    begin
@@ -238,12 +249,12 @@ procedure Test_Emit with SPARK_Mode => Off is
              and not Holds (S, Put (1, 'n', Ver (9_000, 2, 1, 10))));
    end;
 
-   --  (e) PUT floor includes the entity's DEL.
+   --  (e) The PUT floor includes the DEL of the entity.
    Apply_Data (Del (4, Ver (700, 2, 2, 20)));
    Do_Emit (S, Put_T (4, 'q'), 10, Self, HC, Seq, V, R);
    Check ("PUT chases the entity's DEL", R = OK and V.T = 701);
 
-   --  DEL floor spans every field and the prior DELs.
+   --  The DEL floor includes each field and the prior DELs.
    Apply_Data (Put (6, 'a', Ver (300, 2, 3, 21)));
    Apply_Data (Put (6, 'b', Ver (800, 1, 4, 22)));
    Apply_Data (Put (6, 'c', Ver (500, 2, 5, 23)));
@@ -285,7 +296,7 @@ procedure Test_Emit with SPARK_Mode => Off is
       Apply (S, Roster (2, 20_000, 2), St);
       Check ("setup: ceiling raised to 20000",
              St = OK and Ceil (Regs (S)) = 20_000);
-      --  T9 state form: every floor of the new state is under its ceiling.
+      --  T9 state form: each floor of the new state is below its ceiling.
       Lemma_Roster_Unpins (S1, S, Put_T (8, 'n'));
       Lemma_Roster_Unpins (S1, S, Del_T (6));
    end;
@@ -293,7 +304,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    Check ("after the raise the same cell is unshadowed",
           R = OK and V.T = 10_001 and Lt (Ver (10_000, 5, 6, 30), V));
 
-   --  (c) Seq exhaustion: nothing emitted, Seq_Self unchanged.
+   --  (c) Seq exhaustion: nothing is emitted, Seq_Self does not change.
    Seq := U48'Last;
    V := Ver (1, 1, 1, 1);
    Do_Emit (S, Put_T (1, 'n'), 100, Self, HC, Seq, V, R);
@@ -321,7 +332,7 @@ procedure Test_Emit with SPARK_Mode => Off is
              R = OK and V.T = U48'Last);
    end;
 
-   --  No roster yet: W is empty, so nobody may write.
+   --  No roster yet: W is empty, so no key can write.
    declare
       T : State := New_State (4);
    begin
@@ -329,13 +340,13 @@ procedure Test_Emit with SPARK_Mode => Off is
       Do_Emit (T, Put_T (1, 'n'), 12_345, Self, HC, Seq, V, R);
       Check ("no GRANT: Inadmissible, nothing changed",
              R = Inadmissible and V = No_V and Seq = 0 and not Cl);
-      --  Granted, but no roster: ceiling 0, every write is at t = 0.
+      --  Granted, but no roster: ceiling 0, each write is at t = 0.
       Grant_Writers (T);
       Do_Emit (T, Put_T (1, 'n'), 12_345, Self, HC, Seq, V, R);
       Check ("ceiling 0: t = 0", R = OK and V.T = 0 and Seq = 1);
    end;
 
-   --  Non-member key: refused, nothing changed (DESIGN.md §4).
+   --  Non-member key: refused, nothing changes (DESIGN.md §4).
    Seq := 40;
    Do_Emit (S, Put_T (1, 'n'), 100, Key (8), HC, Seq, V, R);
    Check ("non-member key: Inadmissible, nothing changed",
@@ -348,7 +359,7 @@ procedure Test_Emit with SPARK_Mode => Off is
    begin
       Grant_Writers (U);
       Apply (U, Roster (1, 10_000, 1), St);
-      --  The device already emitted seq 50; seq_self was restored to 10.
+      --  The device emitted seq 50 before. A restore set seq_self to 10.
       Apply (U, Put (1, 'n', Ver (9_000, 3, 50, 50)), St);
       Check ("setup: own record with seq 50 held", St = OK);
       Seq := 10;
@@ -366,16 +377,18 @@ procedure Test_Emit with SPARK_Mode => Off is
       Do_Emit (U, Put_T (2, 'z'), 5, Self, HC, Seq, V, R);
       Check ("held own seq = seq_self is not a clone",
              R = OK and not Cl and V.Seq = 51);
-      --  Another key's record with a high seq is not this device's.
+      --  A record of a different key with a high seq is not a record of
+      --  this device.
       Apply (U, Put (7, 'n', Ver (100, 2, 900, 51)), St);
       Seq := 60;
       Do_Emit (U, Put_T (7, 'n'), 0, Self, HC, Seq, V, R);
       Check ("other author's high seq: no clone", R = OK and not Cl
              and V.Seq = 61 and V.T = 101);
 
-      --  The floor is exactly the version a restored device would emit
-      --  again: (ceil, self, seq_self + 1, h). Without H8 the write would
-      --  equal the floor; with it, seq jumps and the write wins.
+      --  The floor is exactly the version that a restored device would
+      --  emit again: (ceil, self, seq_self + 1, h). Without H8, the write
+      --  would be equal to the floor. With H8, seq jumps and the write
+      --  wins.
       Seq := 60;
       F := (T => 10_000, Author => Self, Seq => 61, H => HC);
       Apply (U, Put (3, 'n', F), St);
@@ -389,7 +402,7 @@ procedure Test_Emit with SPARK_Mode => Off is
              St = OK and Holds (U, To_Header (Put_T (3, 'n'), V))
              and not Holds (U, Put (3, 'n', F)));
 
-      --  DEL with a nonzero FH in the target: FH is ignored.
+      --  DEL with a nonzero FH in the target: Choose ignores FH.
       Apply (U, Put (5, 'a', Ver (400, 2, 1, 1)), St);
       Seq := 100;
       Do_Emit (U, (Op => W_Del, NS => NS, Ent => Ent (5), FH => Fld ('z')),
@@ -401,7 +414,7 @@ procedure Test_Emit with SPARK_Mode => Off is
                  = To_Header (Del_T (5), V)
              and To_Header (Del_T (5), V).FH = Key256'(others => 0));
 
-      --  In_Floor excludes other entities and other fields.
+      --  In_Floor excludes different entities and different fields.
       Apply (U, Put (11, 'n', Ver (9_500, 2, 2, 2)), St);
       Apply (U, Del (12, Ver (9_600, 2, 3, 3)), St);
       Apply (U, Put (10, 'm', Ver (9_700, 2, 4, 4)), St);
@@ -415,8 +428,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       Lemma_Floor_Admitted (U, Put_T (1, 'n'));
    end;
 
-   --  H8 jump at the bound: a held own record at seq 2^48 - 1 leaves no
-   --  seq to emit; refused with nothing changed, clone still reported.
+   --  H8 jump at the bound: after a held own record at seq 2^48 - 1, no
+   --  seq is available. Choose refuses and changes nothing. It also gives
+   --  the clone flag.
    declare
       X : State := New_State (8);
    begin
@@ -431,9 +445,10 @@ procedure Test_Emit with SPARK_Mode => Off is
              R = Seq_Exhausted and Cl and Seq = 10 and V = No_V);
    end;
 
-   --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1: a held own record at
+   --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1. A held own record at
    --  seq 2^48 - 2 makes a restored device jump to 2^48 - 1 (an ordinary
-   --  write, clone reported); once that write is held, nothing is left.
+   --  write, with the clone flag). When the state holds that write, no seq
+   --  is available.
    declare
       M : State := New_State (8);
    begin
@@ -459,7 +474,7 @@ procedure Test_Emit with SPARK_Mode => Off is
 
    --  (l) D8: the outcome does not depend on the content hash. Each case
    --  chooses once and builds the record under three hashes (all-zero,
-   --  all-ones, and HC), and each record gets the predicted outcome.
+   --  all-ones, and HC). Each record gets the predicted outcome.
    declare
       D : State := New_State (32);
    begin
@@ -468,8 +483,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       Apply (D, Put (1, 'n', Ver (9_000, 2, 1, 10)), St);
       Apply (D, Put (8, 'n', Ver (10_000, 5, 6, 30)), St);
       Apply (D, Put (9, 'n', Ver (10_000, 2, 7, 31)), St);
-      --  Own record at the ceiling with seq 61 and h = HC, seq_self 60:
-      --  without H8 the all-zero h would lose and the all-ones h win.
+      --  Own record at the ceiling with seq 61 and h = HC, seq_self 60.
+      --  Without H8, the all-zero h would lose and the all-ones h would
+      --  win.
       Apply (D, Put (3, 'n', (T => 10_000, Author => Self, Seq => 61,
                               H => HC)), St);
       Check ("setup: D8 floors held", St = OK);

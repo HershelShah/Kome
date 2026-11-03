@@ -1,7 +1,7 @@
 pragma Ada_2022;
 package body Kome.Registers with SPARK_Mode is
 
-   --  The quantified definitions live here, out of every client's view.
+   --  The quantified definitions are here, where no client can see them.
 
    function In_W (R : Register_File; A : Key256) return Boolean is
      (for some I in 1 .. R.NW => R.W (I) = A);

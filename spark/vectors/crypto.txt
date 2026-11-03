@@ -1,9 +1,11 @@
-# Kome.Crypto known-answer vectors. Read by tests/test_crypto.adb.
-# One vector per line, hex fields separated by single spaces, "-" for the
-# empty byte string, "#" starts a comment line. Every value comes from a
-# published test suite or from an implementation independent of monocypher:
+# Kome.Crypto known-answer vectors. tests/test_crypto.adb reads them.
+# Each line holds one vector. Single spaces separate the hex fields, and "-"
+# is the empty byte string. A line that starts with "#" is a comment line.
+# Each value comes from a published test suite or from an implementation
+# that is independent of monocypher:
 #   blake2b256      Python hashlib.blake2b(digest_size=32) (RFC 7693 BLAKE2b).
-#                   Lengths 127/128/129, 255/256/257 straddle the 128-byte block.
+#                   Lengths 127/128/129 and 255/256/257 cross the 128-byte
+#                   block boundary.
 #   ed25519         RFC 8032 section 7.1 TEST 1, TEST 2 and TEST 3 verbatim
 #                   (https://www.rfc-editor.org/rfc/rfc8032.txt, fetched
 #                   2026-11-02, file SHA-256
@@ -16,9 +18,10 @@
 #                   https://raw.githubusercontent.com/C2SP/wycheproof/main/
 #                   testvectors_v1/ed25519_test.json, fetched 2026-11-02,
 #                   file SHA-256 ea80ffebac085e21cb9d3e903e7fa2b448d96702da5b31f061d0b83b430b74b3,
-#                   schema eddsa_verify_schema_v1.json, 210 tests, groups'
-#                   source google-wycheproof 0.9rc5). Fields are copied
-#                   verbatim: tcId, result, the group's public key, msg, sig.
+#                   schema eddsa_verify_schema_v1.json, 210 tests, source of
+#                   the groups google-wycheproof 0.9rc5). The fields are
+#                   verbatim copies: tcId, result, the public key of the
+#                   group, msg, sig.
 #                   Selected tcIds:
 #                     valid: 1 2 3 7 80 81 82 84 86 114 119 181
 #                     S >= L (s + L, 2L, 4L, 8L, 2^253, 2^254, 2^255, p;
@@ -28,58 +31,60 @@
 #                     truncated or wrong length: 30 (empty), 31 (s missing),
 #                       32 (62 bytes), 33 (66 bytes), 38 (63 bytes)
 #                     mixed-order public key regression: 210
-#                   The test main requires Verify = (result = valid) for every
-#                   64-byte signature and, for the others, that the bytes
-#                   cannot be made a Sig at all (a length check).
-#                   All 210 tests were also run through the same strict
-#                   check in C (scratch harness, not committed): every
-#                   "valid" accepted, every "invalid" rejected. Plain
-#                   crypto_ed25519_check accepts tcId 151 (see
+#                   The test main requires Verify = (result = valid) for each
+#                   64-byte signature. For the other signatures, it requires
+#                   that the bytes cannot become a Sig (a length check).
+#                   All 210 tests also ran through the same strict check in
+#                   C (a scratch harness, not committed): the check accepted
+#                   each "valid" test and rejected each "invalid" test.
+#                   Plain crypto_ed25519_check accepts tcId 151 (refer to
 #                   kome-crypto.ads, STRICT VERIFICATION).
 #   ed25519_strict  Non-canonical encodings that plain crypto_ed25519_check
-#                   accepts and Verify must reject, each paired with its
-#                   canonical control. Generated (Python, hashlib.sha512 and
-#                   integers) for the RFC 8032 TEST 1 key and message
-#                   "kome strict": R is a small-order point, so with
-#                   S = SHA-512(R ‖ A ‖ M) * a mod L the cofactored equation
+#                   accepts and Verify must reject. Each is paired with its
+#                   canonical control. Generated with Python (hashlib.sha512
+#                   and integers) for the RFC 8032 TEST 1 key and the
+#                   message "kome strict". R is a small-order point, so with
+#                   S = SHA-512(R ‖ A ‖ M) * a mod L, the cofactored equation
 #                   [8][S]B = [8]R + [8][k]A holds. The controls verify under
-#                   both the plain and the strict check; the non-canonical
+#                   both the plain and the strict check. The non-canonical
 #                   lines verify under the plain check only (checked with the
 #                   same C harness). The last two lines are a non-canonical
 #                   public key (the identity as y = p + 1, and as y = 1 with
-#                   the sign bit set), signature R = identity, S = 0.
+#                   the sign bit set), with the signature R = identity,
+#                   S = 0.
 #   b2eddsa_old     REGRESSION: the BLAKE2b-512 EdDSA (monocypher crypto_eddsa)
-#                   answers the binding used before D4, for the RFC 8032
-#                   TEST 1-3 seeds and messages (from an independent Python
-#                   RFC 8032 reference with the hash swapped, and confirmed
-#                   with monocypher's crypto_eddsa_check). Key_Pair must no
-#                   longer derive that public key, and Verify must reject the
-#                   old signature under both the old and the new public key.
+#                   answers that the binding used before D4, for the RFC 8032
+#                   TEST 1-3 seeds and messages. They come from an
+#                   independent Python RFC 8032 reference with the hash
+#                   swapped, and crypto_eddsa_check of monocypher confirmed
+#                   them. Key_Pair must not derive that public key now.
+#                   Verify must reject the old signature under both the old
+#                   and the new public key.
 #   b2eddsa_old_pk  REGRESSION: published Ed25519-BLAKE2b key pairs (nano-docs,
 #                   docs/integration-guides/key-management.md, "Derived
 #                   Private Key" -> "Derived Public key"). Derive_Public must
-#                   no longer produce them.
+#                   not produce them now.
 #   x25519          RFC 7748 section 5.2 (cross-checked with pyca/cryptography).
 #   x25519dh        RFC 7748 section 6.1 Alice/Bob exchange.
 #   x25519_low      Low-order u-coordinates: 0, 1, the order-8 points
-#                   e0eb7a7c... and 5f9c95bc... (libsodium's low-order
-#                   blocklist; RFC 7748 §6.1 says to check for all zeros),
-#                   p - 1, and the non-canonical encodings p and p + 1. Any
+#                   e0eb7a7c... and 5f9c95bc... (the low-order blocklist of
+#                   libsodium; RFC 7748 §6.1 says to check for all zeros),
+#                   p - 1, and the non-canonical encodings p and p + 1. Each
 #                   scalar gives an all-zero shared secret (pyca/cryptography
-#                   refuses every one with "Error computing shared key"), so
-#                   X25519 must report Contributory = False.
-#   dh_key          Known answers for Is_Reduced_U and Is_Low_Order_U (and so
-#                   Is_Good_DH_Key = reduced and not low order), by
-#                   definition (DESIGN.md §2 rule 3, E5): the five reduced
-#                   low-order encodings are reduced and low order; p, p + 1,
-#                   2^255 - 1 and anything with bit 255 set are not reduced;
-#                   the RFC 7748 §6.1 public keys and the base point u = 9
-#                   are good keys.
+#                   refuses each one with "Error computing shared key").
+#                   Thus X25519 must report Contributory = False.
+#   dh_key          Known answers for Is_Reduced_U and Is_Low_Order_U (and
+#                   thus for Is_Good_DH_Key = reduced and not low order), by
+#                   definition (DESIGN.md §2 rule 3, E5). The five reduced
+#                   low-order encodings are reduced and low order. p, p + 1,
+#                   2^255 - 1 and all values with bit 255 set are not
+#                   reduced. The RFC 7748 §6.1 public keys and the base
+#                   point u = 9 are good keys.
 #   aead            XChaCha20-Poly1305, IETF construction (monocypher 4
-#                   crypto_aead_lock): the first line is
-#                   draft-irtf-cfrg-xchacha-03 appendix A.3.1; the rest are
-#                   computed with HChaCha20 (checked against the draft's 2.2.1)
-#                   plus pyca/cryptography ChaCha20Poly1305.
+#                   crypto_aead_lock). The first line is
+#                   draft-irtf-cfrg-xchacha-03 appendix A.3.1. The other
+#                   lines are computed with HChaCha20 (checked against 2.2.1
+#                   of the draft) plus pyca/cryptography ChaCha20Poly1305.
 #
 # Formats:
 #   blake2b256     <msg> <digest32>
@@ -144,7 +149,8 @@ wycheproof 33 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369e
 wycheproof 38 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 546573743137 93de3ca252426c95f735cb9edd92e83321ac62372d5aa5b379786bae111ab6b17251330e8f9a7c30d6993137c596007d7b001409287535ac4804e662bc58a3
 # Wycheproof: mixed-order public key regression, rejected (tcIds 210)
 wycheproof 210 invalid d1e06adf4e05e248e1e52beca14b6be4da0af01b41645d2849b407ec22f41d47 af82 6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a
-# Non-canonical encodings (see the header): control first, then the encoding plain crypto_ed25519_check accepts.
+# Non-canonical encodings (refer to the header): first the control, then the
+# encoding that plain crypto_ed25519_check accepts.
 # R = (sqrt(-1), 0), order 4, canonical
 ed25519_strict valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 0000000000000000000000000000000000000000000000000000000000000000ed0109af2225e449ccf54304f75cafce5fc7ac4f4f82aae07d8689253da0ce04
 # same R, y encoded as p (y >= p)
@@ -163,11 +169,13 @@ ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f
 ed25519_strict invalid eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 # public key = identity encoded as y = 1 with the sign bit set
 ed25519_strict invalid 0100000000000000000000000000000000000000000000000000000000000080 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-# REGRESSION: BLAKE2b-512 EdDSA (the pre-D4 binding) for RFC 8032 TEST 1-3; must be rejected now.
+# REGRESSION: BLAKE2b-512 EdDSA (the pre-D4 binding) for RFC 8032 TEST 1-3.
+# Verify must reject these now.
 b2eddsa_old 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f - 99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805
 b2eddsa_old 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 5e71392d91e6a58fedeb0850364f56cd158a60447557d7890389c9b3d4576d4d 72 6da75e15b5707f4de5a153c48a5d839fb85074c38aeb6285977f03a13977597f976069fdb903f183474aaa5ed0cfe878ba8ef868c5e47ca3f96ccfb3a89b2a06
 b2eddsa_old c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7 8d53ca70f0eab23b9178345785fcdb69ed6723f8148f7e339e88653700b718da af82 7cc3c13852bd12abf3ce4ca8ca2836cbf86da96c4634c50df3fb80dc809e29db0e109c361353407c1236a904f636868aa33977a99d3f844598db1538b4295203
-# REGRESSION: nano-docs key-management.md Ed25519-BLAKE2b pairs; Derive_Public must differ now.
+# REGRESSION: nano-docs key-management.md Ed25519-BLAKE2b pairs.
+# Derive_Public must give a different result now.
 b2eddsa_old_pk 3be4fc2ef3f3b7374e6fc4fb6e7bb153f8a2998b3b3dab50853eabe128024143 5b65b0e8173ee0802c2c3e6c9080d1a16b06de1176c938a924f58670904e82c4
 b2eddsa_old_pk ce7e429e683d652446261c17a96da9ed1897aea96c8046f2b8036f6b05cb1a83 d9f7762e9cd4e7ed632481308cdb8f54abf0241332c0a8641f61e92e2fb03c12
 b2eddsa_old_pk 1257df74609b9c6461a3f4e7fd6e3278f2ddcf2562694f2c3aa0515af4f09e38 a46da51986e25a14d82e32d765dcee69b9eeccd4405411430d91ddb61b717566
@@ -199,7 +207,8 @@ dh_key ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 1 0
 dh_key 0900000000000000000000000000000000000000000000000000000000000000 1 0
 dh_key 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a 1 0
 dh_key de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f 1 0
-# draft-irtf-cfrg-xchacha-03 A.3.1 first, then generated): HChaCha20 + python cryptography ChaCha20Poly1305
+# AEAD: first draft-irtf-cfrg-xchacha-03 A.3.1, then generated lines
+# (HChaCha20 + python cryptography ChaCha20Poly1305).
 aead 808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f 404142434445464748494a4b4c4d4e4f5051525354555657 50515253c0c1c2c3c4c5c6c7 4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b4522f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff921f9664c97637da9768812f615c68b13b52e c0875924c1c7987947deafd8780acf49
 aead 000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55 01060b10151a1f24292e33383d42474c51565b60656a6f74 - - - 9ba45b303d0a84d5716aa8ec74306b43
 aead 202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75 01060b10151a1f24292e33383d42474c51565b60656a6f74 - 020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895 807b54d7bc97881ecc6810eeae167a6e971201adf6f8b10b46271458b3fd5f3f 8459d0ec91ab7bbc5e649c88bdf7a63c

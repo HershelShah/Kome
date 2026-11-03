@@ -3,23 +3,25 @@ Monocypher 4.0.2, vendored
 
 Upstream: https://monocypher.org/ (Loup Vaillant et al.), dual-licensed
 BSD-2-Clause OR CC0-1.0 (see the header of each file). Kome binds it from
-spark/src/kome-crypto.adb; nothing here is modified except as noted below.
+spark/src/kome-crypto.adb. The files here are not modified, except where the
+notes below say so.
 
-Files, SHA-256 of the file as committed here, and where it came from:
+For each file: the SHA-256 of the file as committed here, and its source:
 
   monocypher.c
     02174117935699d418443c75a558a287deb06ef8cf7c1adced61d9047d2f323d
     https://raw.githubusercontent.com/LoupVaillant/Monocypher/4.0.2/src/monocypher.c
-    Byte-identical to the GitHub tag 4.0.2 (first line reads
-    "// Monocypher version __git__"). The release tarball's copy differs only
-    in that first line ("// Monocypher version 4.0.2"; tarball file SHA-256
+    Byte-identical to the GitHub tag 4.0.2 (the first line is
+    "// Monocypher version __git__"). The copy in the release tarball is
+    different only in that first line ("// Monocypher version 4.0.2";
+    tarball file SHA-256
     afe2b098c8569577a84488e0b98d276d1fba6506adea68bb9241a52111734c59).
 
   monocypher.h
     34555bfd178f8c8d3e15ad1a6c62184c7adf987d0359360834fce9fb8c2dc246
-    GitHub tag 4.0.2 src/monocypher.h with the first line edited to
-    "// Monocypher version 4.0.2 (vendored)"; otherwise identical to both the
-    tag and the release tarball (tarball file SHA-256
+    GitHub tag 4.0.2 src/monocypher.h, with the first line changed to
+    "// Monocypher version 4.0.2 (vendored)". All other lines are identical
+    to the tag and to the release tarball (tarball file SHA-256
     f78bb31255cfb7beba66afd2137f5194c8a025cf40488b6cc1e295234d43f374).
 
   monocypher-ed25519.c
@@ -34,25 +36,26 @@ Files, SHA-256 of the file as committed here, and where it came from:
 
 Release tarball monocypher-4.0.2.tar.gz (fetched 2026-11-02):
   SHA-256 38d07179738c0c90677dba3ceb7a7b8496bcfea758ba1a53e803fed30ae0879c
-  CHANGELOG.md heads "4.0.2 / 2023/08/24".
+  The first heading in CHANGELOG.md is "4.0.2 / 2023/08/24".
 
 Cross-check of the optional files: the copies at
   https://raw.githubusercontent.com/LoupVaillant/Monocypher/4.0.2/src/optional/monocypher-ed25519.c
   https://raw.githubusercontent.com/LoupVaillant/Monocypher/4.0.2/src/optional/monocypher-ed25519.h
-differ from the tarball's only in the first line ("__git__" instead of
-"4.0.2"), the same release-script substitution as monocypher.c. So all four
-files are the 4.0.2 release.
+are different from the copies in the tarball only in the first line
+("__git__" in place of "4.0.2"). This is the same release-script
+substitution as in monocypher.c. Thus all four files are the 4.0.2 release.
 
 Why monocypher-ed25519 (DESIGN.md §1.2 D4, §2, A1): Kome signs with RFC 8032
-Ed25519, SHA-512 inside the signature only. Core monocypher's crypto_eddsa_*
-is EdDSA with BLAKE2b-512, which is not RFC 8032 and is no longer used for
-signatures. Kome.Crypto binds crypto_ed25519_key_pair, crypto_ed25519_sign
-and crypto_ed25519_check; BLAKE2b, X25519, XChaCha20-Poly1305 and crypto_wipe
-still come from monocypher.c.
+Ed25519, and uses SHA-512 only inside the signature. The crypto_eddsa_*
+functions of core monocypher are EdDSA with BLAKE2b-512. This is not
+RFC 8032, and Kome no longer uses it for signatures. Kome.Crypto binds
+crypto_ed25519_key_pair, crypto_ed25519_sign and crypto_ed25519_check.
+BLAKE2b, X25519, XChaCha20-Poly1305 and crypto_wipe still come from
+monocypher.c.
 
-Note on strictness: crypto_ed25519_check refuses S >= L but, by design,
+Note on strictness: crypto_ed25519_check refuses S >= L. But, by design, it
 accepts non-canonical encodings of R and A (y >= p, or x = 0 with the sign
-bit set). Wycheproof ed25519_test.json tcId 151 is such a signature and
-crypto_ed25519_check accepts it. Kome.Crypto.Verify therefore checks the
-RFC 8032 §5.1.3 encodings of R and A itself before calling
-crypto_ed25519_check (see kome-crypto.ads, Is_Canonical_Point).
+bit set). Wycheproof ed25519_test.json tcId 151 is such a signature, and
+crypto_ed25519_check accepts it. Thus Kome.Crypto.Verify itself checks the
+RFC 8032 §5.1.3 encodings of R and A before it calls crypto_ed25519_check
+(see kome-crypto.ads, Is_Canonical_Point).

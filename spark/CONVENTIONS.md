@@ -1,135 +1,152 @@
 # Conventions for the Kome SPARK implementation
 
-Every package under `spark/src/` follows these rules so the result is a
-proved implementation of `docs/design/DESIGN.md`, refining the Lean model in
-`lean/Kome/Frontier.lean`, and not merely Ada that compiles.
+Every package under `spark/src/` must obey these rules. The rules make the
+result a proved implementation of `docs/design/DESIGN.md` that refines the
+Lean model in `lean/Kome/Frontier.lean`. Ada that only compiles is not
+sufficient.
 
-## What is being built
+## What the project builds
 
 The design document is the specification. The Lean file proves theorems
-about the *functions* the design is made of (the version order, domination,
-the frontier, admission, apply). The SPARK code implements those functions
-with bounded, in-place data, and its contracts state that it implements
-exactly them. gnatprove discharges the contracts. The division of labour is
-strict: Lean proves set-level theorems (convergence in any order, the frontier
-homomorphism); SPARK proves that the code is the function the theorem is
-about, plus every run-time check. Neither is asked to do the other's job.
+about the *functions* of the design (the version order, domination, the
+frontier, admission, apply). The SPARK code implements those functions with
+bounded, in-place data. Its contracts state that it implements exactly those
+functions. gnatprove discharges the contracts.
 
-Where a SPARK contract mirrors a Lean theorem, the comment names it
-(`T2'`, `Frontier.lean dominates_trans`). Where the implementation differs
-deliberately from the model, the comment says so and DESIGN.md §10 records
-it (today: the model holds inadmissible records, the implementation refuses
-them).
+The division of work is strict. Lean proves set-level theorems (convergence
+in any order, the frontier homomorphism). SPARK proves that the code is the
+function that the theorem is about, and it proves every run-time check.
+Neither tool does the work of the other tool.
+
+If a SPARK contract mirrors a Lean theorem, name the theorem in the comment
+(`T2'`, `Frontier.lean dominates_trans`). If the implementation is
+intentionally different from the model, say so in the comment and record
+the difference in DESIGN.md §10. Today there is one difference: the model
+holds inadmissible records, and the implementation refuses them.
 
 ## Layout
 
-- One DESIGN.md concept = one child package `Kome.<Name>` in
-  `kome-<name>.ads` / `kome-<name>.adb`. Helper children are allowed
+- Put each DESIGN.md concept in one child package `Kome.<Name>`, in the
+  files `kome-<name>.ads` and `kome-<name>.adb`. You can add helper children
   (`Kome.<Name>.<Part>`, file `kome-<name>-<part>.ads`).
-- One test main per package that has behaviour: `tests/test_<name>.adb`,
-  procedure `Test_<Name>`. It prints `PASS <check>` / `FAIL <check>` per
-  check and ends with `Set_Exit_Status (Failure)` if anything failed. No test
-  framework. Tests are compiled with `-gnata`, so every `Pre`, `Post`,
-  `Loop_Invariant`, `Assert` and ghost lemma is also *executed* on the test's
-  data; a lemma whose proof is still open is at least checked on examples.
-- Known-answer vectors go in `vectors/<name>.txt`, one per line, hex fields
-  separated by spaces, `#` comments allowed. For standard algorithms
-  (BLAKE2b, Ed25519, X25519) the vectors come from published test suites
-  or from an implementation independent of monocypher, and the header
-  comment says which.
-- Build, run and prove with `spark/check.sh <name>`; `check.sh all` does every
-  module. It fetches GNAT 14, gprbuild, gnatprove and the provers from
-  nixpkgs when they are not on the path.
+- Write one test main for each package that has behaviour:
+  `tests/test_<name>.adb`, procedure `Test_<Name>`.
+  - The main must print `PASS <check>` or `FAIL <check>` for each check.
+  - If a check failed, the main must end with `Set_Exit_Status (Failure)`.
+  - Do not use a test framework.
+
+  The tests compile with `-gnata`. Thus every `Pre`, `Post`,
+  `Loop_Invariant`, `Assert` and ghost lemma also *executes* on the test
+  data. If the proof of a lemma is still open, the tests at least check the
+  lemma on examples.
+- Put known-answer vectors in `vectors/<name>.txt`, with one vector on each
+  line. Separate the hex fields with spaces. You can use `#` comments. For
+  standard algorithms (BLAKE2b, Ed25519, X25519), get the vectors from
+  published test suites or from an implementation that is independent of
+  monocypher. The header comment must name the source.
+- To build, run and prove a module, use `spark/check.sh <name>`.
+  `check.sh all` does every module. If GNAT 14, gprbuild, gnatprove or the
+  provers are not on the path, the script gets them from nixpkgs.
 
 ## SPARK rules
 
-- `pragma SPARK_Mode (On)` on every spec and body. The only exceptions are
-  thin bindings to C (`Kome.Crypto` over monocypher, OS calls in the
-  transport layer): their bodies are `SPARK_Mode (Off)` and their specs stay
-  `On` with full contracts, so callers remain provable.
-- No access types, no exceptions as control flow, no recursion unless
-  bounded by a `Subprogram_Variant`, no `Ada.Unchecked_*`, no tasking.
-- Every variable-length thing is bounded: an array plus a length, or a
-  discriminant that fixes the capacity when the object is created (as
-  `Kome.Frontier.State (Cap)` does). The bound comes from `Kome` (root) and
-  cites the DESIGN.md section that sets it.
-- Semantic integers are *range* types (`U48`, `Epoch`, counts), never
-  modular, so every overflow is a proof obligation and no value is reserved
-  (H6). Modular types exist only for wire encoding and hashing
-  (`Kome.Byteorder`, `Kome.Accumulator`, `Kome.Digest`), where wrap is the
+- Put `pragma SPARK_Mode (On)` on every spec and body. The only exceptions
+  are thin bindings to C (`Kome.Crypto` over monocypher, OS calls in the
+  transport layer). Their bodies must be `SPARK_Mode (Off)`, and their specs
+  must stay `On` with full contracts. This keeps the callers provable.
+- Do not use access types, exceptions as control flow, `Ada.Unchecked_*` or
+  tasking. Do not use recursion unless a `Subprogram_Variant` bounds it.
+- Bound every item of variable length. Use an array plus a length, or a
+  discriminant that sets the capacity when the object is created (as
+  `Kome.Frontier.State (Cap)` does). Take the bound from `Kome` (root), and
+  cite the DESIGN.md section that sets it.
+- Use *range* types for semantic integers (`U48`, `Epoch`, counts), never
+  modular types. Then every overflow is a proof obligation, and no value is
+  reserved (H6). Use modular types only for wire encoding and hashing
+  (`Kome.Byteorder`, `Kome.Accumulator`, `Kome.Digest`). There, wrap is the
   intended semantics.
-- An operation that could exceed a bound refuses with a `Status` and leaves
-  the state unchanged, and its `Post` says so (T13). Nothing saturates
-  silently.
-- Contracts are the point. Every public subprogram has `Pre`/`Post`.
-  Algebraic laws are ghost lemma procedures named `Lemma_<Law>` with the law
-  as `Post`; their bodies are proofs (calls to other lemmas, loops with
-  invariants, asserts), not code.
-- Keep the prover's view small, and keep equality logical. Without these
-  two rules the frontier proof does not go through:
-  1. In the lattice, identifiers and keys are records of fixed words
-     (`Id128`, `Key256`), never byte arrays. Ada equality on a record that
-     contains an array is not logical equality for the prover, so it
-     cannot substitute inside `Dominates`; on a record of scalars it is.
-     The byte-lexicographic order becomes a chain of word comparisons with
-     no loop, and T1 proves by unfolding. Bytes exist only at the wire and
-     crypto boundary (`Kome.Records`, `Kome.Crypto`).
+- If an operation can exceed a bound, it must refuse with a `Status` and
+  leave the state unchanged. Its `Post` must say so (T13). Do not let a
+  value saturate silently.
+- Give every public subprogram a `Pre` and a `Post`. The contracts are the
+  most important part of the code. Write each algebraic law as a ghost
+  lemma procedure named `Lemma_<Law>`, with the law as its `Post`. The body
+  of a lemma must be a proof (calls to other lemmas, loops with invariants,
+  asserts), not code.
+- Keep the view of the prover small, and keep equality logical. Without
+  these two rules, the frontier proof fails:
+  1. In the lattice, make identifiers and keys records of fixed words
+     (`Id128`, `Key256`), never byte arrays. For the prover, Ada equality
+     on a record that contains an array is not logical equality. Thus the
+     prover cannot substitute it inside `Dominates`. On a record of
+     scalars, Ada equality is logical equality. The byte-lexicographic
+     order becomes a chain of word comparisons with no loop, and T1 proves
+     by unfolding. Use bytes only at the wire and crypto boundary
+     (`Kome.Records`, `Kome.Crypto`).
   2. A public expression function is an axiom in every unit that sees it.
-     Quantifier-free ones (`Lt`, `Dominates`, `Admitted`) are harmless and
-     should be public so the prover can unfold them. A *quantified* one
-     (a set membership, a loop's postcondition) is instantiated on every
-     goal in every unit and makes unrelated goals time out: keep it
-     private to its package (`Kome.Registers` exports `In_W` and `Extends`
-     opaquely with lemmas) or accept that it is only visible where needed.
+     Make quantifier-free expression functions (`Lt`, `Dominates`,
+     `Admitted`) public. They cause no problems, and the prover can then
+     unfold them. Keep a *quantified* expression function (a set
+     membership, the postcondition of a loop) private to its package. The
+     prover instantiates a public one on every goal in every unit, and
+     unrelated goals time out. (`Kome.Registers` exports `In_W` and
+     `Extends` opaquely, with lemmas.) If a unit must see the definition,
+     make it visible only to that unit and accept the cost there.
 - Write contracts, assertions and invariants with the public functions of a
-  private type (`Held`, `Count`, `Regs`), never its fields, and after every
-  state change assert a "bridge" (`for all I => Held (S, I) = Held (Old, I)`).
-  SMT provers instantiate a hypothesis only on terms that already exist in
-  the goal; the bridge creates them.
-- Prefer explicit witnesses to nested existentials in loop invariants: a
-  ghost array that records *which* old index each kept element came from is
-  first-order and proves; "some index exists" inside "for all" often does
-  not.
-- `Global`/`Depends` on anything that touches a file or a clock, so flow
-  analysis can prove "open never writes".
+  private type (`Held`, `Count`, `Regs`), never with its fields. After every
+  state change, assert a "bridge"
+  (`for all I => Held (S, I) = Held (Old, I)`). SMT provers instantiate a
+  hypothesis only on terms that are already in the goal. The bridge makes
+  these terms.
+- Where possible, use explicit witnesses in loop invariants, not nested
+  existentials. A ghost array that records *which* old index each kept
+  element came from is first-order, and it proves. "Some index exists"
+  inside "for all" frequently does not prove.
+- Put `Global`/`Depends` on all code that touches a file or a clock. Then
+  flow analysis can prove "open never writes".
 
 ## Proof hygiene
 
-- "Private" in rule 2 means completed in the body. In gnatprove 14 an
-  expression function completed in the private part is visible to clients,
-  even with a private-part `Hide_Info`. Only a body completion, or
-  `Hide_Info "Expression_Function_Body"` in the visible part, hides it. The
-  probe is recorded in `kome-accumulator.ads`.
-- No `Dynamic_Predicate` on a state type such as `Kome.Frontier.State` or
-  `Kome.Store.Store`. gnatprove 14 crashed when such an object was
-  assigned. State the invariant as a named function (`Is_Frontier`,
-  `Valid`) in each `Pre`/`Post`.
+- "Private" in rule 2 means "completed in the body". To hide an expression
+  function, complete it in the body, or put
+  `Hide_Info "Expression_Function_Body"` in the visible part. In gnatprove
+  14, clients can see an expression function that is completed in the
+  private part, even with a private-part `Hide_Info`. `kome-accumulator.ads`
+  records the probe.
+- Do not put a `Dynamic_Predicate` on a state type such as
+  `Kome.Frontier.State` or `Kome.Store.Store`. gnatprove 14 crashed when
+  the code assigned such an object. State the invariant as a named function
+  (`Is_Frontier`, `Valid`) in each `Pre`/`Post`.
 - Decide every refusal before the state changes. State each outcome as an
   iff in the `Post`, with `Unchanged (S'Old, S)` or `S = S'Old` on refusal.
   Do not restore the state after a failed step.
-- Every ghost lemma runs under `-gnata`. Bound its quantifiers by the
-  object's counts, never by a whole index type. To make a relation hold,
-  call a lemma (`Lemma_Unchanged_Refl`), not real code.
-  `Assertion_Policy (... => Ignore)` is only for proved steps that would
+- Bound the quantifiers of a ghost lemma by the counts of the object, never
+  by a full index type. Every ghost lemma runs under `-gnata`.
+- To make a relation true, call a lemma (`Lemma_Unchanged_Refl`), not real
+  code.
+- Use `Assertion_Policy (... => Ignore)` only for proved steps that would
   make a test quadratic. List each such region in
   `docs/design/IMPLEMENTATION_PLAN.md`.
-- gnatprove has no extensionality for the array argument of a function.
-  For element-wise equal inputs to have equal results, an imported function
-  needs a congruence axiom (`Kome.Crypto.Lemma_Blake2b_Congruent`), and each
-  layer above it needs its own congruence lemma.
-- A `Post` conjunct about the pre-state alone triggers `-gnatw.t`. Move it
-  to the caller's `Pre` or into a ghost lemma (`Lemma_Ends_Below`).
-- A procedure that a function calls needs `Always_Terminates`. A value
-  derived from a secret and used only in contracts is a ghost function
-  (`X25519_Shared`), so that no executable temporary holds the secret.
-- Proof margin: every goal should prove well under the 20 s step limit,
-  by both cvc5 and z3 where possible. Split any goal that only one prover
-  proves, or that takes more than about 10 s: restate the invariant at the
-  operation's end, or use two witness invariants in place of one. Run one
-  gnatprove at a time. `check.sh` takes a lock because gnatprove 14's
-  `/dev/shm` semaphore ignores `TMPDIR`.
+- If element-wise equal inputs must give equal results, give the imported
+  function a congruence axiom (`Kome.Crypto.Lemma_Blake2b_Congruent`). Give
+  each layer above it its own congruence lemma. gnatprove has no
+  extensionality for the array argument of a function.
+- Do not put a conjunct about only the pre-state in a `Post`. Move it to the
+  `Pre` of the caller or into a ghost lemma (`Lemma_Ends_Below`). Such a
+  conjunct triggers `-gnatw.t`.
+- If a function calls a procedure, give the procedure `Always_Terminates`.
+- If a value comes from a secret and only contracts use it, make it a ghost
+  function (`X25519_Shared`). Then no executable temporary holds the
+  secret.
+- Every goal must prove well under the 20 s step limit. Where possible,
+  both cvc5 and z3 must prove it. If only one prover proves a goal, or if a
+  goal takes more than approximately 10 s, split the goal. For example,
+  restate the invariant at the end of the operation, or use two witness
+  invariants in place of one.
+- Run only one gnatprove at a time. `check.sh` takes a lock, because the
+  `/dev/shm` semaphore of gnatprove 14 ignores `TMPDIR`.
 
 ## Cryptography
 
 `Kome.Crypto` binds monocypher (Ed25519, X25519, BLAKE2b,
-XChaCha20-Poly1305). Do not reimplement them.
+XChaCha20-Poly1305). Do not implement these algorithms again.

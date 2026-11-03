@@ -1,11 +1,11 @@
 pragma Ada_2022;
 package body Kome.Views with SPARK_Mode is
 
-   --  Each view is a scan of the held array for a maximal (or any) witness.
-   --  The scans return an index (0 for none) so that the lemmas below can
-   --  name the witness; the public views are expression functions over the
-   --  index, so inside this body the prover sees their definitions, and
-   --  outside it they are opaque (Lemma_<View>_Def).
+   --  Each view scans the held array for a maximal witness (or for one
+   --  witness). The scans return an index (0 for none), so that the lemmas
+   --  below can name the witness. The public views are expression functions
+   --  over the index. Thus in this body the prover sees their definitions,
+   --  and outside it they are opaque (Lemma_<View>_Def).
 
    ---------------------------------------------------------------------------
    --  Witness scans
@@ -146,7 +146,7 @@ package body Kome.Views with SPARK_Mode is
    function Root_Void (S : State; K : Key256) return Boolean is
      (K /= Founding (S) and then Find_Root_Revoke (S, K) /= 0);
 
-   --  A GRANT of K whose issuer is not root_void.
+   --  A GRANT of K with an issuer that is not root_void.
    function Find_Grant (S : State; K : Key256) return Held_Count with
      Global => null,
      Post =>
@@ -172,7 +172,7 @@ package body Kome.Views with SPARK_Mode is
       return 0;
    end Find_Grant;
 
-   --  A REVOKE that voids P and whose issuer is not root_void.
+   --  A REVOKE that voids P and has an issuer that is not root_void.
    function Find_Void (S : State; P : Header) return Held_Count with
      Global => null,
      Post =>
@@ -199,7 +199,7 @@ package body Kome.Views with SPARK_Mode is
    end Find_Void;
 
    --  The Roster_Lt-maximal eligible roster. The root_void scan runs only
-   --  for a roster that would improve on the best so far.
+   --  for a roster that is better than the best roster found before it.
    function Find_Roster (S : State) return Held_Count with
      Global => null,
      Post =>
@@ -246,7 +246,7 @@ package body Kome.Views with SPARK_Mode is
       return Best;
    end Find_Roster;
 
-   --  The eligible roster with the largest del_ttl. On a frontier its
+   --  The eligible roster with the largest del_ttl. On a frontier, its
    --  del_ttl is in range (canonical rosters).
    function Find_TTL (S : State) return Held_Count with
      Global => null,
@@ -292,7 +292,7 @@ package body Kome.Views with SPARK_Mode is
    --  Views
    ---------------------------------------------------------------------------
 
-   --  Each scan runs once (a declare expression binds its index).
+   --  Each scan runs one time (a declare expression binds its index).
    function Cell (S : State; NS, Ent : Id128; FH : Key256) return Header_View is
      (declare
         I : constant Held_Count := Find_Put (S, NS, Ent, FH);
@@ -366,7 +366,7 @@ package body Kome.Views with SPARK_Mode is
    --  Laws
    ---------------------------------------------------------------------------
 
-   --  A record held in S, with the index it is held at.
+   --  A record held in S, with the index where S holds it.
    function Index_Of (S : State; X : Header) return Held_Count with
      Ghost, Global => null,
      Pre  => Holds (S, X),
@@ -391,9 +391,9 @@ package body Kome.Views with SPARK_Mode is
       Lemma_Frontier_Shape (S);
       pragma Assert (Slot_Key (S, 1) = Founding (S));
 
-      --  Flat to slot: the founding REVOKE lies in the authorization rows
-      --  (it is not data), in the slot whose key is its issuer, which is
-      --  slot 1 because slot keys are distinct.
+      --  Flat to slot: the founding REVOKE is in the authorization rows (it
+      --  is not data). It is in the slot that has its issuer as key. This
+      --  is slot 1, because slot keys are distinct.
       if Root_Void (S, K) then
          declare
             I : constant Held_Count := Find_Root_Revoke (S, K);
@@ -418,7 +418,8 @@ package body Kome.Views with SPARK_Mode is
          end;
       end if;
 
-      --  Slot to flat: a REVOKE of slot 1 is held, issued by Slot_Key (S, 1).
+      --  Slot to flat: a REVOKE of slot 1 is held, and Slot_Key (S, 1)
+      --  issued it.
       for J in 1 .. Slot_Count (S, 1) loop
          Lemma_Held_Auth (S, 1, J);
          Lemma_Frontier_Auth (S, 1, J);
@@ -483,8 +484,9 @@ package body Kome.Views with SPARK_Mode is
       pragma Assert (I = J);
    end Lemma_Del_Unique;
 
-   --  Two canonical rosters of one collection equal in (V, Del_TTL) are
-   --  one record: Ent and FH are zero and Issuer is V.Author.
+   --  Two canonical rosters of one collection that are equal in
+   --  (V, Del_TTL) are one record: Ent and FH are zero and Issuer is
+   --  V.Author.
    procedure Lemma_Roster_Eq (X, Y : Header) with
      Ghost, Global => null,
      Pre  => X.K = K_Roster and then Y.K = K_Roster
@@ -519,8 +521,8 @@ package body Kome.Views with SPARK_Mode is
 
    procedure Lemma_Roster_Eff_Present (S : State) is
    begin
-      --  The founding key is never root_void, so every founding roster is
-      --  eligible, and Find_Roster finds an eligible roster if there is one.
+      --  The founding key is never root_void, so each founding roster is
+      --  eligible. Find_Roster finds an eligible roster if there is one.
       pragma Assert (not Root_Void (S, Founding (S)));
       pragma Assert
         (for all I in 1 .. Count (S) =>
@@ -553,8 +555,8 @@ package body Kome.Views with SPARK_Mode is
         (for all I in 1 .. Count (S2) =>
            (if Is_Data (Held (S2, I)) then Holds (S1, Held (S2, I))));
 
-      --  deleted_at: each maximum is held on the other side, so neither
-      --  version is below the other, so they are equal.
+      --  deleted_at: the other side holds each maximum. Thus no version is
+      --  below the other, so they are equal.
       declare
          I1 : constant Held_Count := Find_Del (S1, NS, Ent);
          I2 : constant Held_Count := Find_Del (S2, NS, Ent);
@@ -587,7 +589,7 @@ package body Kome.Views with SPARK_Mode is
          pragma Assert (Deleted_At (S1, NS, Ent) = Deleted_At (S2, NS, Ent));
       end;
 
-      --  exists: a witness on either side is a witness on the other.
+      --  exists: a witness on one side is a witness on the other side.
       declare
          I1 : constant Held_Count := Find_Put_In (S1, NS, Ent);
          I2 : constant Held_Count := Find_Put_In (S2, NS, Ent);
@@ -612,8 +614,8 @@ package body Kome.Views with SPARK_Mode is
       end;
    end Lemma_Data_Local;
 
-   --  Unique_Versions instantiated at two indices; kept separate so that the
-   --  quantifier is unfolded in a small context.
+   --  Unique_Versions instantiated at two indices. It is separate, so that
+   --  the prover unfolds the quantifier in a small context.
    procedure Lemma_A2 (S : State; I, J : Held_Index) with
      Ghost, Global => null,
      Pre  => Unique_Versions (S)
@@ -664,8 +666,8 @@ package body Kome.Views with SPARK_Mode is
          Lemma_Trichotomy (Held (S1, I1).V, Held (S2, I2).V);
          pragma Assert (Held (S1, I1).V = Held (S2, I2).V);
          pragma Assert (Cell (S1, NS, Ent, FH).Hdr.V = Cell (S2, NS, Ent, FH).Hdr.V);
-         --  The two maxima are both held in S1 (at I1 and at J) with the
-         --  same version and on the same cell.
+         --  S1 holds the two maxima (at I1 and at J), with the same version
+         --  and on the same cell.
          declare
             J : constant Held_Count := Index_Of (S1, Held (S2, I2));
          begin
@@ -808,8 +810,9 @@ package body Kome.Views with SPARK_Mode is
         (for all I in 1 .. Count (S2) =>
            (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
 
-      --  Each side's result is held and eligible on the other side, so it
-      --  makes the other side present and is not beaten there.
+      --  The result of each side is held and eligible on the other side.
+      --  Thus it makes the other side present, and no roster beats it
+      --  there.
       if I1 /= 0 then
          declare
             X : constant Header := Held (S1, I1);
@@ -893,13 +896,13 @@ package body Kome.Views with SPARK_Mode is
 
    procedure Lemma_Apply_Auth_Local (Before, After : State; R : Header) is
    begin
-      --  After ⊆ Before ∪ {R}, and R is not data: every data record of After
-      --  is held in Before.
+      --  After ⊆ Before ∪ {R}, and R is not data. Thus Before holds each
+      --  data record of After.
       pragma Assert
         (for all I in 1 .. Count (After) =>
            (if Is_Data (Held (After, I)) then Holds (Before, Held (After, I))));
-      --  Before ⊆ After for data: a data record is dominated only by a data
-      --  record, and R is not one.
+      --  Before ⊆ After for data: only a data record can dominate a data
+      --  record, and R is not a data record.
       pragma Assert
         (for all I in 1 .. Count (Before) =>
            (if Is_Data (Held (Before, I)) then not Dominates (R, Held (Before, I))));
@@ -913,8 +916,8 @@ package body Kome.Views with SPARK_Mode is
       pragma Assert
         (for all I in 1 .. Count (After) =>
            (if Is_Auth (Held (After, I)) then Holds (Before, Held (After, I))));
-      --  An authorization record is dominated only by one of its own kind
-      --  (a REVOKE by nothing), and R is data.
+      --  Only a record of the same kind can dominate an authorization record
+      --  (nothing dominates a REVOKE), and R is data.
       pragma Assert
         (for all I in 1 .. Count (Before) =>
            (if Is_Auth (Held (Before, I)) then not Dominates (R, Held (Before, I))));

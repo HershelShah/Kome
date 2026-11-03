@@ -1,7 +1,7 @@
---  Body of Kome.Keys. The conversions are their definitions plus the
---  per-word lemma calls that discharge the round-trip conjuncts of their
---  Posts; the lemma bodies give the prover the quotient / remainder
---  decomposition one division by 256 at a time.
+--  Body of Kome.Keys. Each conversion is its definition plus one lemma call
+--  for each word. These calls discharge the round-trip conjuncts of the
+--  Posts. The lemma bodies give the prover the quotient / remainder
+--  decomposition, one division by 256 at a time.
 pragma Ada_2022;
 package body Kome.Keys with SPARK_Mode is
 
@@ -71,7 +71,7 @@ package body Kome.Keys with SPARK_Mode is
       WA  : constant Word := Word_Of (A0, A1, A2, A3);
       WB  : constant Word := Word_Of (B0, B1, B2, B3);
    begin
-      --  Byte order (bit-vector) is integer order on the values.
+      --  The byte order (bit-vector) is the integer order on the values.
       pragma Assert ((A0 < B0) = (Word (A0) < Word (B0)));
       pragma Assert ((A1 < B1) = (Word (A1) < Word (B1)));
       pragma Assert ((A2 < B2) = (Word (A2) < Word (B2)));
@@ -317,9 +317,9 @@ package body Kome.Keys with SPARK_Mode is
    -------------------------------
 
    --  Suffix_K (A, B): the tail of Lex_Lt that starts at byte 4K. Lex_Lt
-   --  is Suffix_0 by unfolding, and each Suffix_K is one word's four-byte
-   --  chain wrapped around Suffix_K+1, which the word lemma turns into
-   --  one word comparison. Ghost and local to this body.
+   --  is Suffix_0 by unfolding. Each Suffix_K is the four-byte chain of one
+   --  word, wrapped around Suffix_K+1. The word lemma converts this chain
+   --  into one word comparison. Ghost, and local to this body.
    function Suffix_7 (A, B : Key_Bytes) return Boolean is
       (A (28) < B (28) or else (A (28) = B (28) and then
        (A (29) < B (29) or else (A (29) = B (29) and then
@@ -493,7 +493,7 @@ package body Kome.Keys with SPARK_Mode is
    ----------------------------------
 
    --  Id_Suffix_K (A, B): the tail of Id_Lex_Lt that starts at byte 4K,
-   --  as Suffix_K above for keys. Ghost and local to this body.
+   --  as Suffix_K above for keys. Ghost, and local to this body.
    function Id_Suffix_3 (A, B : Id_Bytes) return Boolean is
       (A (12) < B (12) or else (A (12) = B (12) and then
        (A (13) < B (13) or else (A (13) = B (13) and then

@@ -1,14 +1,14 @@
 pragma Ada_2022;
 package body Kome.Reconcile with SPARK_Mode is
 
-   --  Proof style (CONVENTIONS.md): assertions go through the public view
-   --  (Count, Key, Frame_Len) and every quantified fact the provers need
-   --  at a point is asserted there, instance by instance where an
-   --  ordering lemma is involved.
+   --  Proof style (CONVENTIONS.md): assertions use the public view (Count,
+   --  Key, Frame_Len). The body asserts each quantified fact at the point
+   --  where the provers need it. Where an ordering lemma is necessary, it
+   --  asserts the fact one instance at a time.
 
    ----------------------------------------------------------------------
-   --  Order lemmas. Key_Lt is a quantifier-free chain; each law is proved
-   --  by unfolding it.
+   --  Order lemmas. Key_Lt is a quantifier-free chain. The proof of each
+   --  law unfolds the chain.
    ----------------------------------------------------------------------
 
    procedure Lemma_Key_Lt_Irrefl (A : Elem_Key) is null;
@@ -29,9 +29,9 @@ package body Kome.Reconcile with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  Key_Lt is bytewise order on the wire key. The 81 bytes are kind ‖
-   --  ent[16] ‖ fh[32] ‖ h[32]; each field is decoded by Kome.Keys
-   --  (Wire_Id128 / Wire_Key256 are To_Id128 / To_Key256 of the slice),
-   --  whose Id128 and Key256 laws give the field orders; Key_Lt is their
+   --  ent[16] ‖ fh[32] ‖ h[32]. Kome.Keys decodes each field (Wire_Id128 /
+   --  Wire_Key256 are To_Id128 / To_Key256 of the slice). The Id128 and
+   --  Key256 laws of Kome.Keys give the field orders. Key_Lt is their
    --  lexicographic composition.
    ----------------------------------------------------------------------
 
@@ -162,8 +162,8 @@ package body Kome.Reconcile with SPARK_Mode is
          Off : constant Positive := S.Used + 1;
          L   : constant Frame_Size := F'Length;
       begin
-         --  Every key held is below K: the last one is, and the others
-         --  are below the last one (pairwise sorted).
+         --  Every held key is below K: the last key is below K, and the
+         --  other keys are below the last key (pairwise order).
          for I in 1 .. S.N loop
             if I < S.N then
                pragma Assert (Key_Lt (Key (S, I), Key (S, S.N)));
@@ -212,7 +212,7 @@ package body Kome.Reconcile with SPARK_Mode is
       F : Lo_Bound := N + 1;
       L : Elem_Count;
 
-      --  Everything from F on is at or above Lo.
+      --  All keys from F to the end are at or above Lo.
       procedure Above_Lo with
         Ghost, Global => (Input => (S, Lo, F, N)),
         Pre  => Valid (S) and then N = Count (S) and then F <= N
@@ -230,7 +230,7 @@ package body Kome.Reconcile with SPARK_Mode is
          end loop;
       end Above_Lo;
 
-      --  Everything after L is at or above Hi.
+      --  All keys after L are at or above Hi.
       procedure Above_Hi with
         Ghost, Global => (Input => (S, Hi, L, N)),
         Pre  => Valid (S) and then N = Count (S) and then L < N
@@ -320,7 +320,7 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (In_Window (Key (S, I), Lo, Hi));
       pragma Assert (In_Window (Key (S, J), Lo, Hi));
 
-      --  The bounds lie inside [Lo, Hi].
+      --  The bounds are in [Lo, Hi].
       if B = I then
          Lemma_Key_Lt_Irrefl (Lo);
       else
@@ -430,7 +430,7 @@ package body Kome.Reconcile with SPARK_Mode is
 
    procedure Lemma_Exact_Plan (S : Snapshot; O : Outbox; T : Positive) is null;
 
-   --  Every RANGE / ELEMENTS plan that is well formed and non-empty is
+   --  Each RANGE / ELEMENTS plan that is well formed and non-empty is
    --  exact (its cover is the window).
    procedure Prove_Exact (S : Snapshot; O : Outbox) with
      Ghost, Global => null,
@@ -511,14 +511,14 @@ package body Kome.Reconcile with SPARK_Mode is
       return Sum;
    end Item_Bytes;
 
-   --  Split [Lo, Hi), holding our elements I .. J (more than
-   --  Ship_Threshold of them), into min (Split_Fanout, n) children of
-   --  n / 16 or n / 16 + 1 elements. Each child is [Child_Lo, Child_Hi)
-   --  over a run B .. E; the runs partition I .. J, so the children tile
-   --  [Lo, Hi). The first run is short of J and every later one starts
-   --  after I, so each child holds strictly fewer of our elements than
-   --  the parent. (The last child takes whatever is left, which with
-   --  these sizes is exactly its share. The balance is tested, not proved:
+   --  Split [Lo, Hi) into min (Split_Fanout, n) children of n / 16 or
+   --  n / 16 + 1 elements. [Lo, Hi) holds our elements I .. J (more than
+   --  Ship_Threshold of them). Each child is [Child_Lo, Child_Hi) over a
+   --  run B .. E. The runs partition I .. J, so the children tile
+   --  [Lo, Hi). The first run stops before J, and each later run starts
+   --  after I. So each child holds strictly fewer of our elements than
+   --  the parent. (The last child takes the remaining elements. With these
+   --  sizes, this is exactly its share. The balance is tested, not proved:
    --  the Post states only that each child is strictly smaller.)
    procedure Split
      (S : Snapshot; Lo, Hi : Elem_Key; I, J : Elem_Index; O : out Outbox)
@@ -596,9 +596,9 @@ package body Kome.Reconcile with SPARK_Mode is
    end Split;
 
    --  Ship our elements I .. J (the window of [Lo, Hi), at most
-   --  Ship_Threshold) as ELEMENTS: one message if they fit, else one per
-   --  element over a sub-range holding it alone (each fits:
-   --  Frame_Ship_Max). Every plan is exact.
+   --  Ship_Threshold) as ELEMENTS. If they fit, use one message. If not,
+   --  use one message for each element, over a sub-range that holds only
+   --  that element (each fits: Frame_Ship_Max). Every plan is exact.
    procedure Ship
      (S : Snapshot; Lo, Hi : Elem_Key; I : Lo_Bound; J : Elem_Count; O : out Outbox)
    with
@@ -656,9 +656,10 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (All_Kind (O, P_Elements));
    end Ship;
 
-   --  Our elements I .. J (at most Ship_Threshold) that M does not list
-   --  go back as HAVE: one message if they fit (an empty HAVE if there
-   --  are none), else one per element. Exactly those (Have_Exact).
+   --  Send back as HAVE our elements I .. J (at most Ship_Threshold) that
+   --  M does not list. If they fit, use one message (an empty HAVE if
+   --  there are none). If not, use one message for each element. Send
+   --  exactly those elements (Have_Exact).
    procedure Have_Back
      (S : Snapshot; M : Message; I : Lo_Bound; J : Elem_Count; O : out Outbox)
    with
@@ -673,7 +674,8 @@ package body Kome.Reconcile with SPARK_Mode is
    is
       L   : Index_List := [others => 1];
       C   : Item_Count := 0;
-      --  Pos (K - I + 1): where our element K went in L, if it did.
+      --  Pos (K - I + 1): the position of our element K in L, if L has
+      --  it.
       Pos : Index_List := [others => 1] with Ghost;
    begin
       O := Reply_Box;
@@ -698,7 +700,7 @@ package body Kome.Reconcile with SPARK_Mode is
         (for all K2 in I .. J =>
            In_Msg (M, Key (S, K2))
            or else (Pos (K2 - I + 1) <= C and then L (Pos (K2 - I + 1)) = K2));
-      --  Outside I .. J nothing of ours is in the range.
+      --  Outside I .. J, none of our elements is in the range.
       pragma Assert
         (for all K in 1 .. Count (S) =>
            (if In_Window (Key (S, K), M.Lo, M.Hi) then K >= I and then K <= J));
@@ -765,9 +767,9 @@ package body Kome.Reconcile with SPARK_Mode is
       end if;
    end Have_Back;
 
-   --  The items of M we do not hold, exactly. Ours in [M.Lo, M.Hi) are
-   --  I .. J, and every item lies in that range, so a scan of I .. J
-   --  decides it.
+   --  Exactly the items of M that we do not hold. Our elements in
+   --  [M.Lo, M.Hi) are I .. J, and every item is in that range. So a scan
+   --  of I .. J decides it.
    procedure Deliver
      (S : Snapshot; M : Message; I : Lo_Bound; J : Elem_Count; D : out Delivery)
    with
@@ -835,7 +837,7 @@ package body Kome.Reconcile with SPARK_Mode is
       J : constant Elem_Count := W.Last;
       N : constant Elem_Count := J + 1 - I;
 
-      --  The measure of each child, by its cover.
+      --  The measure of each child, from its cover.
       procedure Measure with
         Ghost, Global => (Input => (S, Out_Box), Proof_In => (M, N)),
         Pre  => Valid (S) and then Msg_OK (M)
@@ -860,7 +862,7 @@ package body Kome.Reconcile with SPARK_Mode is
          end loop;
       end Measure;
 
-      --  No RANGE in O: Shrinks holds vacuously.
+      --  O has no RANGE, so Shrinks holds vacuously.
       procedure No_Ranges with
         Ghost, Global => (Proof_In => (S, Out_Box, M)),
         Pre  => Valid (S) and then Msg_OK (M)
@@ -984,8 +986,8 @@ package body Kome.Reconcile with SPARK_Mode is
    end Lemma_Same_Key;
 
    ----------------------------------------------------------------------
-   --  Wire helpers. Big-endian, through Kome.Keys' word lanes. Each
-   --  writer states what it wrote (read back with the Wire_ functions)
+   --  Wire helpers. Big-endian, through the word lanes of Kome.Keys. Each
+   --  writer states what it wrote (as the Wire_ functions read it back)
    --  and that nothing else changed.
    ----------------------------------------------------------------------
 
@@ -1069,8 +1071,8 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Wire_Key256 (Buf, P + 49) = K.H);
    end Put_Key;
 
-   --  Tag, group size and range of a RANGE / ELEMENTS / HAVE; the body
-   --  (from Elems_O_N on) is untouched.
+   --  Tag, group size and range of a RANGE / ELEMENTS / HAVE. The body
+   --  (from Elems_O_N to the end) does not change.
    procedure Write_Head
      (Buf : in out Msg_Buffer; Tag : Byte; G : Group_Size; Lo, Hi : Elem_Key)
    with
@@ -1126,7 +1128,8 @@ package body Kome.Reconcile with SPARK_Mode is
    is
    begin
       Buf := [others => 0];
-      --  The body first, then the head, which leaves the body alone.
+      --  First the body, then the head. The head does not change the
+      --  body.
       case P.Kind is
          when P_Range =>
             Put_Word (Buf, Range_O_Count, Word (P.Last + 1 - P.First));
@@ -1226,8 +1229,8 @@ package body Kome.Reconcile with SPARK_Mode is
    end Lemma_Confirm_Accepted;
 
    ----------------------------------------------------------------------
-   --  OPEN and HELLO. Fixed layout: the header first, then the frames or
-   --  the credential, each written once.
+   --  OPEN and HELLO. Fixed layout: first the header, then the frames or
+   --  the credential. Each part is written one time.
    ----------------------------------------------------------------------
 
    procedure Encode_Open
@@ -1394,8 +1397,8 @@ package body Kome.Reconcile with SPARK_Mode is
 
    procedure Lemma_Range_Fields (Input : Byte_Array; M : Message) is null;
 
-   --  An ELEMENTS / HAVE built from checked items is well-formed, in a
-   --  small context.
+   --  An ELEMENTS / HAVE that is built from checked items is well-formed,
+   --  in a small context.
    procedure Lemma_Items_OK
      (K : Msg_Kind; G : Group_Size; Lo, Hi : Elem_Key; N : Item_Count;
       Items : In_Items)
@@ -1428,8 +1431,8 @@ package body Kome.Reconcile with SPARK_Mode is
    begin
       M := (others => <>);
       OK := False;
-      --  Total over every input: no length is computed before it is
-      --  known to be at most Max_Message_Len.
+      --  Total over every input: Decode_Raw calculates no length before it
+      --  knows that the length is at most Max_Message_Len.
       if Input'Last < Input'First
         or else Input'Last - Input'First >= Max_Message_Len
         or else Input'Last - Input'First < Elems_Fixed - 1
@@ -1595,8 +1598,9 @@ package body Kome.Reconcile with SPARK_Mode is
                    Buf, Len);
    end Start;
 
-   --  Both HELLOs have passed: equal digests end the session; otherwise
-   --  Auth, and the initiator opens the authorization root.
+   --  The two HELLOs have passed. If the digests are equal, the session
+   --  ends. If not, the phase is Auth, and the initiator opens the
+   --  authorization root.
    procedure Exchange_Done (Sess : in out Session; S : Snapshot; O : out Outbox) with
      Global => null,
      Pre  => Valid (S)
@@ -1722,7 +1726,7 @@ package body Kome.Reconcile with SPARK_Mode is
       end if;
 
       if Input (Input'First) = Tag_Open then
-         --  The OPEN, once, first.
+         --  The OPEN, one time, first.
          M.Kind := M_Open;
          if Sess.P /= Await_Open then
             Result := S_Unexpected;
@@ -1757,7 +1761,7 @@ package body Kome.Reconcile with SPARK_Mode is
          pragma Assert (Session_OK (Sess));
 
       elsif Input (Input'First) = Tag_Hello then
-         --  The HELLO, once, in the gate.
+         --  The HELLO, one time, in the gate.
          M.Kind := M_Hello;
          if Sess.P /= Gate or else Sess.Peer_Hello_Seen then
             Result := S_Unexpected;
@@ -1824,8 +1828,8 @@ package body Kome.Reconcile with SPARK_Mode is
                return;
             end if;
             M := D.M;
-            --  g = 0 is a root RANGE: only the expected one, with exact
-            --  bounds (D14); every other message answers an open
+            --  g = 0 is a root RANGE: only the expected root, with exact
+            --  bounds (D14). Every other message answers an open
             --  obligation of ours.
             if not Root_Or_Owed (Sess, M) then
                Result := S_Unexpected;

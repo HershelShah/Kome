@@ -1,22 +1,27 @@
---  Test main for Kome.Records (DESIGN.md §2, §3, T13). Every kind is
---  encoded, decoded and verified at its extreme sizes (empty value,
---  40 960-byte value, 32-byte field, 15 links, 64 members, u48 at 0 and
---  2**48 - 1); truncated, oversized, mistagged and out-of-bound frames are
---  refused with the record unchanged; a tampered signature, content byte
---  or ns is refused by Well_Formed. The signer block (D1): an outsider-
---  signed ROSTER, REVOKE or GRANT is Malformed, a certified root's records
---  are well-formed and its roster above cert_cap is not, a certificate for
---  another ns or cap is refused, a nonzero block for the founding key is
---  refused, and a REVOKE of
---  root_pk is refused. E5: del_ttl outside the clamp and a dh_pk or box_pk
---  that is p or low order are Malformed. D12: vlen 40 960 decodes and
---  40 961 is refused. The header fields are as DESIGN.md §3 /
---  Kome.Headers say, checked against values computed here from the frame
---  bytes (not through Kome.Records.Hash), and satisfy
---  Kome.Headers.Canonical (D3). Known answers in vectors/records.txt pin
---  each layout, h and the certificate hash independently of this package.
---  Compiled with -gnata, so every Pre / Post and the ghost lemmas are also
---  executed on these records.
+--  Test main for Kome.Records (DESIGN.md §2, §3, T13). It checks these
+--  items:
+--    * Every kind encodes, decodes and verifies at its extreme sizes (empty
+--      value, 40 960-byte value, 32-byte field, 15 links, 64 members, u48
+--      at 0 and 2**48 - 1).
+--    * Decode refuses truncated, oversized, mistagged and out-of-bound
+--      frames, and the record does not change.
+--    * Well_Formed refuses a tampered signature, content byte or ns.
+--    * The signer block (D1). A ROSTER, REVOKE or GRANT that an outsider
+--      signs is Malformed. The records of a certified root are well-formed,
+--      but its roster above cert_cap is not. A certificate for a different
+--      ns or cap is refused. A nonzero block for the founding key is
+--      refused. A REVOKE of root_pk is refused.
+--    * E5: del_ttl outside the clamp is Malformed. A dh_pk or box_pk that
+--      is p or low order is Malformed.
+--    * D12: vlen 40 960 decodes, and vlen 40 961 is refused.
+--    * The header fields agree with DESIGN.md §3 / Kome.Headers, and they
+--      satisfy Kome.Headers.Canonical (D3). The test calculates the
+--      expected values here from the frame bytes (not through
+--      Kome.Records.Hash).
+--    * Known answers in vectors/records.txt pin each layout, h and the
+--      certificate hash, independently of this package.
+--  The test compiles with -gnata, so every Pre / Post and the ghost lemmas
+--  also execute on these records.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -47,7 +52,7 @@ procedure Test_Records with SPARK_Mode => Off is
      (Kome.Crypto.Seed (Fill (Kome.Crypto.Seed_Len, N)));
 
    --  A reduced X25519 encoding that is not low order: filler with the top
-   --  byte cleared to below 16#40#.
+   --  byte made less than 16#40#.
    function Good_DH (Seed : Natural) return Pubkey is
       K : Pubkey := Pubkey (Fill (Pubkey_Len, Seed));
    begin
@@ -55,7 +60,7 @@ procedure Test_Records with SPARK_Mode => Off is
       return K;
    end Good_DH;
 
-   --  N members { sign_pk dh_pk nonce box }, each dh_pk a good key.
+   --  N members { sign_pk dh_pk nonce box }. Each dh_pk is a good key.
    function Members_Of (N : Natural; Seed : Natural) return Byte_Array is
       B : Byte_Array := Fill (N * Member_Len, Seed);
    begin
@@ -84,7 +89,7 @@ procedure Test_Records with SPARK_Mode => Off is
                 Nib (S (S'First + 2 * I)) * 16 + Nib (S (S'First + 2 * I + 1))];
    end From_Hex;
 
-   --  check.sh runs the binary from spark; tolerate bin/<module> too.
+   --  check.sh runs the binary from spark. Also accept bin/<module>.
    function Find (Rel : String) return String is
    begin
       if Ada.Directories.Exists (Rel) then
@@ -111,8 +116,8 @@ procedure Test_Records with SPARK_Mode => Off is
    Day     : constant U48 := 86_400_000;
    TTL_OK  : constant U48 := 30 * Day;
 
-   --  X25519 encodings refused at decode (E5): p itself (not reduced) and
-   --  low-order points.
+   --  X25519 encodings that decode refuses (E5): p itself (not reduced)
+   --  and low-order points.
    P_Enc   : constant Pubkey := Pubkey (From_Hex
      ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"));
    Order_8 : constant Pubkey := Pubkey (From_Hex
@@ -120,7 +125,7 @@ procedure Test_Records with SPARK_Mode => Off is
    U_One   : constant Pubkey := [0 => 1, others => 0];
    U_Zero  : constant Pubkey := [others => 0];
 
-   --  The certified secondary root: Other_PK, certified by the founding key
+   --  The certified secondary root: the founding key certifies Other_PK
    --  for NS_A up to Cap_2.
    Cap_2  : constant U48 := 10_000;
    Cert_2 : Sig;
@@ -176,9 +181,9 @@ begin
           and then Kind_Of ([Byte'(2)]) = K_Grant and then Kind_Of ([Byte'(3)]) = K_Del
           and then Kind_Of ([Byte'(4)]) = K_Put
           and then Has_Kind ([Byte'(4)]) and then not Has_Kind ([Byte'(5)]));
-   --  Frame_Max = 176 + Value_Max = 41 136, ROSTER 285 .. 10 099 <= Frame_Max,
-   --  REVOKE 275 and GRANT 263 are Compile_Time_Errors in the spec; the
-   --  encoded lengths are checked below.
+   --  Compile_Time_Error pragmas in the spec check Frame_Max = 176 +
+   --  Value_Max = 41 136, ROSTER 285 .. 10 099 <= Frame_Max, REVOKE 275 and
+   --  GRANT 263. The checks below examine the encoded lengths.
 
    ---------------------------------------------------------------------------
    --  Certificates (D1).
@@ -309,7 +314,7 @@ begin
             Check ("PUT header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          end;
 
-         --  Refusals leave the record unchanged.
+         --  A refusal does not change the record.
          Keep := Back;
          Decode (E (0 .. L - 2), Back, St);
          Check ("PUT truncated by one byte refused, record unchanged",
@@ -352,7 +357,7 @@ begin
                    St = Malformed and then Back = Keep);
          end;
 
-         --  Signature and content tamper.
+         --  Tampered signature and content.
          declare
             Bad : Byte_Array := E;
             R2  : Put_Record;
@@ -409,8 +414,9 @@ begin
       end;
    end;
 
-   --  D12: vlen 40 960 is a value; 40 961 is refused even when the length
-   --  agrees (a 1-byte field leaves room in Put_Frame_Max for it).
+   --  D12: vlen 40 960 is a valid value. Decode refuses 40 961, also when
+   --  the length agrees (with a 1-byte field, Put_Frame_Max has space for
+   --  it).
    declare
       V  : Put_Record := Make_Put (NS_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
       R2 : Put_Record;
@@ -458,8 +464,8 @@ begin
    end;
 
    ---------------------------------------------------------------------------
-   --  Make_Del (DESIGN.md §5 step 2) and the builders' header Posts (both
-   --  Posts run here under -gnata).
+   --  Make_Del (DESIGN.md §5 step 2) and the header Posts of the builders
+   --  (both Posts execute here under -gnata).
    ---------------------------------------------------------------------------
    declare
       D    : Del_Record := Make_Del (NS_A, Ent_A, 1234, Max_U48, Author_PK);
@@ -691,7 +697,8 @@ begin
          end;
       end;
 
-      --  ns must match (root_pk, salt), even when correctly signed.
+      --  ns must agree with (root_pk, salt), also when the signature is
+      --  correct.
       declare
          Wrong : Roster_Record := Big;
       begin
@@ -710,11 +717,11 @@ begin
          Check ("ROSTER signed by a key other than signer is not well-formed",
                 not Well_Formed (Wrong));
          Wrong := Big;
-         Wrong.C.N_Members := 63;   --  member 64's bytes become padding
+         Wrong.C.N_Members := 63;   --  the bytes of member 64 become padding
          Check ("ROSTER nonzero member padding is not canonical",
                 not Canonical (Wrong) and then not Well_Formed (Wrong));
          Wrong := Big;
-         Wrong.C.N_Links := 14;     --  link 15's bytes become padding
+         Wrong.C.N_Links := 14;     --  the bytes of link 15 become padding
          Check ("ROSTER nonzero link padding is not canonical",
                 not Canonical (Wrong) and then not Well_Formed (Wrong));
       end;
@@ -769,8 +776,8 @@ begin
 
       X : Roster_Record;
    begin
-      --  An outsider signs a roster raising the ceiling to 2^48 - 1 and
-      --  names itself as signer, with a zero signer block.
+      --  An outsider signs a roster that increases the ceiling to 2^48 - 1.
+      --  The outsider names itself as signer, with a zero signer block.
       X := R (Author_PK, 0, Zero_Sig, Max_U48);
       St := Verdict (X, Author_SK);
       Check ("ROSTER outsider-signed (zero cert), ceiling 2^48-1: Malformed",
@@ -810,7 +817,7 @@ begin
       St := Verdict (X, Other_SK);
       Check ("ROSTER with a certificate made for another ns: Malformed", St = Malformed);
 
-      --  The founding key's block must be zero.
+      --  The block of the founding key must be zero.
       X := R (Root_PK, 0, Zero_Sig, Max_U48);
       St := Verdict (X, Root_SK);
       Check ("ROSTER by founding key, zero block, any ceiling: OK", St = OK);

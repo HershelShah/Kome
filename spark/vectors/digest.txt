@@ -1,9 +1,10 @@
-# Kome.Digest known-answer vectors. Read by tests/test_digest.adb.
+# Kome.Digest known-answer vectors. tests/test_digest.adb reads them.
 # DESIGN.md §8: acc(e) = BLAKE2b-256("kome/acc" || h || i) for i in 0..15,
-# concatenated (i = 0 first) and read as a 512-byte little-endian integer;
+# concatenated (i = 0 first) and read as a 512-byte little-endian integer.
 # fp(R) = BLAKE2b-256("kome/fp" || |R| as u64 big-endian || ACC(R) as 512
-# bytes little-endian), ACC(R) = sum of acc(e) mod 2^4096. i is one byte.
-# Computed independently of monocypher and of the SPARK code with Python:
+# bytes little-endian), and ACC(R) = sum of acc(e) mod 2^4096. i is one
+# byte. Python computed these values, independently of monocypher and of
+# the SPARK code:
 #   b2 = lambda x: hashlib.blake2b(x, digest_size=32).digest()
 #   acc = lambda h: b''.join(b2(b'kome/acc' + h + bytes([i])) for i in range(16))
 #   fp = lambda hs: b2(b'kome/fp' + len(hs).to_bytes(8, 'big') +

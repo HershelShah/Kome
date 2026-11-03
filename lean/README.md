@@ -1,27 +1,32 @@
 # Kome: the mathematics, in Lean 4
 
 `Kome/Frontier.lean` is the model of the frontier store
-(`docs/design/DESIGN.md` §2–§4, §6, §7) and the proofs of its theorems.
-Core Lean only (no Mathlib), so it builds offline:
+(`docs/design/DESIGN.md` §2–§4, §6, §7). It also contains the proofs of the
+theorems of the model. It uses only core Lean (no Mathlib), so it builds
+offline:
 
 ```bash
 ./build.sh        # or: lake build
 ```
 
-`build.sh` fetches Lean from nixpkgs when `lake` is not installed;
-`lean-toolchain` names the version for anyone using `elan`.
+If `lake` is not installed, `build.sh` gets Lean from nixpkgs.
+`lean-toolchain` names the version for users of `elan`.
 
-## What is modelled
+## What the model contains
 
-Five record kinds (`put`, `del`, per-signer `roster`, `revoke`, issuer-keyed
-`grant`), the version order, domination (the product order on rosters), the
-frontier, admission under `maxceil` and `W` as functions of the held set,
-the discard model, tombstone expiry, and the views `root_void`, `W_eff`,
-`void`, `ROSTER_eff` and `del_ttl_eff`.
+- Five record kinds: `put`, `del`, per-signer `roster`, `revoke` and
+  issuer-keyed `grant`.
+- The version order.
+- Domination (the product order on rosters).
+- The frontier.
+- Admission under `maxceil` and `W`, as functions of the held set.
+- The discard model.
+- Tombstone expiry.
+- The views `root_void`, `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
 
-Out of scope: records are assumed well-formed, so certificates, capacity
-(`NO_SPACE`, `AUTH_FULL`), the horizon's clock clamp and assumption A7 are
-not modelled.
+Out of scope: the model assumes that records are well-formed. Thus it does
+not model certificates, capacity (`NO_SPACE`, `AUTH_FULL`), the clock clamp
+of the horizon or assumption A7.
 
 ## Theorems (numbering from DESIGN.md §9)
 
@@ -29,7 +34,7 @@ not modelled.
 |---|---|
 | T1 versions are a strict total order | `instance : StrictTotal Version` |
 | T2, T2′ domination | `Dom_mono`, `dominates_trans` |
-| T3 frontier homomorphism | `frontier_hom`, `F_idem`, via `F_sandwich` |
+| T3 frontier homomorphism | `frontier_hom`, `F_idem`, through `F_sandwich` |
 | T4 convergence | `auth_first`, `convergence_two_pass`, `convergence` |
 | T4′ admission is monotone | `adm_mono`, `maxCeil_F`, `isWriter_F`, `adm_F` |
 | T5 views | `cell_unique`, `rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_congr`, `rosterEff_F`, `rosterEff_present`, `delTtlEff_congr` |
@@ -40,6 +45,6 @@ not modelled.
 | T13 bounds | `emitT_le` |
 | T18 replay after compaction | `auth_first` |
 
-**Status:** 136 theorems, machine-checked with no `sorry`. The only axioms
-used are Lean's standard `propext`, `Classical.choice` and `Quot.sound`.
-T7 (reconciliation) is open.
+**Status:** Lean machine-checks 136 theorems, with no `sorry`. The only
+axioms that the proofs use are the standard Lean axioms `propext`,
+`Classical.choice` and `Quot.sound`. T7 (reconciliation) is open.
