@@ -61,9 +61,9 @@ package Kome.Headers with SPARK_Mode, Pure is
    --    PUT     beaten by a newer PUT on the same cell or a newer DEL of its entity
    --    DEL     beaten by a newer DEL of the same entity
    --    ROSTER  beaten by a roster of the same signer that is greater in
-   --            (gen, h) and not lower in ceiling_t: the product order (R4)
+   --            (gen, h) and not lower in ceiling_t: the product order (D3)
    --    GRANT   beaten by a GRANT of the same issuer and subject with a
-   --            greater h (R1; keyed by (ns, issuer, subject))
+   --            greater h (D1′; keyed by (ns, issuer, subject))
    --    REVOKE  never beaten (so it can never be lost)
    --  Collections never mix: a record only dominates within its own ns, and
    --  every clause implies that the dominator's version is greater.
@@ -148,7 +148,7 @@ package Kome.Headers with SPARK_Mode, Pure is
      Pre  => X.K = K_Revoke,
      Post => not Dominates (Q, X);
 
-   --  Roster domination is the product order (R4): the version conjunct is
+   --  Roster domination is the product order (D3): the version conjunct is
    --  implied by the others.
    procedure Lemma_Roster_Dom (P, Q : Header) with
      Ghost, Global => null,
@@ -158,7 +158,7 @@ package Kome.Headers with SPARK_Mode, Pure is
                 and then Gen_Lt (P, Q));
 
    --  Grant domination is keyed by (ns, issuer, subject) and ordered by h
-   --  (R1).
+   --  (D1′).
    procedure Lemma_Grant_Dom (P, Q : Header) with
      Ghost, Global => null,
      Pre  => P.K = K_Grant and then Q.K = K_Grant

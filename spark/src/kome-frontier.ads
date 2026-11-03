@@ -20,7 +20,7 @@
 --  the peer that holds them re-offers them, and admission is monotone
 --  (T4'), so replicas converge (T4).
 --
---  Capacity rows (E1, R5, R6; DESIGN.md §7). Data records share one row of
+--  Capacity rows (E1, E9; DESIGN.md §7). Data records share one row of
 --  Cap records. Every signer has its own row, a *slice* of Slice
 --  authorization records, in one of Signers_Max slots; slot 1 is the
 --  founding key's from Empty on, and a slot is assigned to a certified

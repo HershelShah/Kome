@@ -19,7 +19,7 @@
 --    Erasure          crypto_wipe, on byte buffers, signing keys and hash
 --                     contexts.
 --
---  SIGNATURE SCHEME (DECIDED: DESIGN.md §1.2 D4, §2, A1). Signatures are
+--  SIGNATURE SCHEME (DECIDED: DESIGN.md §1 D4, §2, A1). Signatures are
 --  RFC 8032 Ed25519 (PureEd25519), from monocypher's optional
 --  monocypher-ed25519.c (crypto_ed25519_*). SHA-512 is used only inside the
 --  signature: to expand the seed into the secret scalar and nonce prefix,

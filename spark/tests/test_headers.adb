@@ -1,6 +1,6 @@
 --  Test main for Kome.Headers: wire codes, canonical form, domination per
---  kind (DESIGN.md §3 table: the roster product order R4, grants keyed by
---  (issuer, subject) R1, REVOKE never dominated) and expiry. The ghost
+--  kind (DESIGN.md §3 table: the roster product order D3, grants keyed by
+--  (issuer, subject) D1′, REVOKE never dominated) and expiry. The ghost
 --  lemmas are evaluated at run time (-gnata) on every pair of a grid.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -81,7 +81,7 @@ begin
           not Canonical ((Grant (9, 1, 1) with delta V => (1, Key (1), 0, Hsh (1))))
           and then not Canonical ((Grant (9, 1, 1) with delta V => (0, Key (1), 1, Hsh (1)))));
 
-   --  Rosters: the product order (R4).
+   --  Rosters: the product order (D3).
    Check ("roster: higher gen and higher ceiling dominates", Dominates (R2, R1));
    Check ("roster: a stale roster (lower gen, higher ceiling) and the newer one are incomparable",
           not Dominates (RS, R2) and then not Dominates (R2, RS));
@@ -92,7 +92,7 @@ begin
    Check ("roster: another signer never dominates",
           not Dominates (Roster (21, 5, 9000, 12), R1));
 
-   --  Grants: keyed by (issuer, subject), ordered by h (R1).
+   --  Grants: keyed by (issuer, subject), ordered by h (D1′).
    Check ("grant: same issuer and subject, higher h dominates",
           Dominates (Grant (9, 1, 14), Grant (9, 1, 13))
           and then not Dominates (Grant (9, 1, 13), Grant (9, 1, 14)));

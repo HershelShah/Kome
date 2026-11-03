@@ -23,7 +23,7 @@ that are tested rather than proved are listed under Known gaps.
 | 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. @EMIT@ |
 | 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `far`, `ROSTER_eff`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. @VIEWS@ |
 | 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: @ACCUMULATOR@. Digest: @DIGEST@ |
-| 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range, module I sketch) | §8 | T7 (open) | done. @RECONCILE@ |
+| 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range, C8 sketch) | §8 | T7 (open) | done. @RECONCILE@ |
 | 8 | `Kome.Epochs` (hash-chained keys, synthetic-nonce boxes, segment links), `Kome.Roster` (certification, segments, honest-issuer rules) | §6 | T14 (paper) | Epochs done: @EPOCHS@. `Kome.Roster` not started |
 | 9 | Transports (Noise XX, sealed bundles), C ABI | §8, §10.6 | — | not started |
 | 10 | Extension F (typed fields) | §4 | F's T15–T17 | after T7 |
@@ -49,7 +49,7 @@ decision, or a missing test.
   with entries would still meet the contract. T18 is proved over sets in
   Lean (`auth_first`); for the implementation it is tested (the reopen
   scenarios in `test_store.adb`, before and after `Compact`).
-- **Frontier: `Auth_Full` case (c), W full (R5, E2).** Documented as
+- **Frontier: `Auth_Full` case (c), W full (E1, E2).** Documented as
   unreachable on a frontier (|W| is at most the number of held GRANTs, at
   most `Writers_Max`), but the counting argument is not proved. `Coherent`
   proves that every writer has a held grant, not the cardinality bound.
@@ -78,7 +78,7 @@ decision, or a missing test.
 ### Duties of layers not yet built
 
 The message formats and the checks for these exist; the steps that enforce
-them belong to callers that are not built yet, so D13, R2 and E3 are closed
+them belong to callers that are not built yet, so D13 and E3 are closed
 only as far as their formats and checks go.
 
 - **Transport (phase 9)** (the caller duties listed in `kome-reconcile.ads`):
@@ -91,7 +91,7 @@ only as far as their formats and checks go.
 - **`Kome.Roster` (phase 8):**
   - Segment opening by the founding key only, and choosing and delivering
     segment tops (E3).
-  - The honest-issuer gen rule (R2, DESIGN.md §10.3).
+  - The honest-issuer gen rule (DESIGN.md §10.3).
   - Wiping the caller's ephemeral `eph_sk` (D5).
   - A "largest certified cap" view; today only the per-record `cert_cap`
     check exists (`Cert_OK` in `kome-records.ads`).

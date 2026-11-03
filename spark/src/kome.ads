@@ -80,7 +80,7 @@ package Kome with SPARK_Mode, Pure is
    Links_Max   : constant := 15;     --  n_links per ROSTER (epoch segments, E3)
    --  Signers: the founding key plus at most 15 certified roots (A1). Each
    --  signer has its own slice of at most Slice_Max authorization records
-   --  (rosters, REVOKEs and GRANTs it signed) in the frontier (E1, R5).
+   --  (rosters, REVOKEs and GRANTs it signed) in the frontier (E1).
    Signers_Max : constant := 16;
    Slice_Max   : constant := 512;
    --  W holds at most one subject per held GRANT, and the frontier holds at

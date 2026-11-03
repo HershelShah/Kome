@@ -577,7 +577,7 @@ package Kome.Store with SPARK_Mode is
    --  lattice state F (Frontier.Empty (ns, To_Key256 (Root_PK), Cap,
    --  Slice)). It writes the HEADER with F's capacities. The precondition
    --  ties F to the founding key, so the decoder, the capacity rows and
-   --  root_void agree on it (DESIGN.md §7 step 0, and the minors of §1.2).
+   --  root_void agree on it (DESIGN.md §7 step 0, and E6 of §1).
    procedure Open (Root_PK : Pubkey; Salt : Kome.Salt; F : Frontier.State; S : out Store) with
      Global => null,
      Pre  => Is_Frontier (F)

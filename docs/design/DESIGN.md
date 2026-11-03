@@ -1,139 +1,62 @@
-# Kome, redesigned: the frontier store
+# Kome: the frontier store
 
 **Decision.** Build Kome on a single lattice: the *frontier* of a set of
 signed records under one strict total order, with every policy question
 (authorization, far-future clocks, revocation) moved out of the merge and into
-either a monotone admission rule or a pure view. This is candidate A's core
-with candidate D's hygiene, corrected for every counterexample the three
-judges produced. The reasoning is in §1, the design in §2–§8, the theorems
-in §9, and what is still open in §10.
+either a monotone admission rule or a pure view. The decisions are in §1, the
+design in §2–§8, the theorems in §9, and what is still open in §10.
 
-A second round (§1.1) searched four further designs and two modules against
-this one. The core survived unchanged; the round contributed three repairs
-(§4, §7, §9), one protocol module (§8), one authorization module (§6), and
-one specified extension (§4, candidate F) that is not on the critical path.
+## 1. Decisions
 
-A third round (§1.2) built the design in SPARK, reviewed the build
-adversarially, and decided the fifteen design questions the build exposed.
-The lattice core again survived; the round fixed how roots are authorized
-(certificates), moved write access into its own record kind (`GRANT`) so
-that the admission registers are functions of the frontier, put tombstone
-expiry into the lattice state, and pinned down every byte layout, the
-session state machine and the replay of the log. A second adversarial
-review of that amendment then showed that one stolen certified root could
-outlast its own revocation; the repairs (issuer-keyed grants and the
-effective-writer view, the pre-gate `OPEN` message that delivers root
-revocations, a product order on rosters, per-signer capacity slices) are in
-§1.2 under "Review of the amendment". This document is the single source of
-truth for all of it.
+**The governing rule.** The frontier lattice is sound iff every kill
+predicate is a down-set of the record order on its key. Every proposal is
+decided by this rule first; none of the decisions below breaks it, and none
+changes the version order.
 
-## 1. Why this and not the others
+### 1.1 The core
 
-Four designs were produced independently and judged by three adversarial
-reviewers (mathematics, attacker, implementer). The combined verdict:
+| # | Decision |
+|---|---|
+| C1 | The state is the frontier: merge is set union, then drop every record dominated by a newer one on its key (§3). |
+| C2 | The ceiling is a *monotone* admission rule, never an arrival gate: a record above `maxceil` is refused, and admission never shrinks (§4). |
+| C3 | Tombstones are apply-then-expire, not refuse-on-arrival: a `DEL` is held, dominates, and is removed only by expiry at a horizon (§7). |
+| C4 | Cross-author `DEL`s dominate in the store, so deletion is durable and needs no membership knowledge (§3). |
+| C5 | No self-tombstone rule and no device-global clock adoption; a writer's clock affects only its own records (§5). |
+| C6 | Revocation carries a `from_t` and is a view, not a gate: it voids records in the views and never feeds admission (§3, §6). |
+| C7 | Read control uses hash-chained epoch keys (§6). |
+| C8 | Reconciliation starts with a one-message IBLT sketch, then the range split (§8). |
+| C9 | Several root keys, certified by the founding key, so root loss is recoverable; no per-field writer rules (§6). |
+| C10 | Typed fields (counters, sets, multi-value registers per `(cell, author)`) are a specified extension, built only when an application needs them; they require `W`, a saturating fold, and view output read through a cursor (§4). |
 
-| Candidate | Math | Attacker | Implementer | Decisive finding |
-|---|---|---|---|---|
-| A hardened LWW | 2nd | 1st | 1st | Core lattice sound; two stated theorems false (ceiling gate non-monotone; TTL refuse-on-arrival diverges under clock skew) |
-| B causal ORSWOT | 3rd | 3rd | 2nd | Cleanest lattice; but removal is an unsigned, unattributable, irreversible message, and a buffer overflow during catch-up turns undelivered writes into deletions |
-| C signed logs | 4th | 4th | 4th | Height check differs between a trimmed and an untrimmed replica, so they never agree; a self-covering checkpoint forges a maximal height in one entry |
-| D prior art | 1st | 2nd | 3rd | Store lattice has the only monotone admission gate; but cross-author deletion is view-only and expires, so deleted data returns on every replica; and the self-tombstone rule lets a stolen key make honest devices destroy their own data |
+### 1.2 Authorization, storage and wire
 
-B and C are rejected on structural grounds: their worst failures are
-intrinsic to the mechanism each was built around (removal-by-absence, and
-height verification against truncatable history). A and D fail on fixable
-specification errors, and the fixes make them the same design:
-
-- A with its ceiling demoted from an arrival gate to a *monotone* admission
-  rule, and its tombstone expiry changed from refuse-on-arrival to
-  apply-then-expire; or
-- D with cross-author tombstones that dominate in the store (so deletion is
-  durable and membership-free), its self-tombstone rule removed, its
-  device-global clock adoption removed, and its revocation given a `from_t`.
-
-What follows is that design. Candidate B's hash-chained epoch keys are
-adopted for read control. Nothing from C survives except its observation that
-a thief's post-theft writes should be voidable retroactively, which A already
-had.
-
-### 1.1 Round two: the search for a better design
-
-Four more candidates were written against this design as the baseline (S)
-and judged by the same three reviewers:
-
-| Candidate | Idea | Math | Attacker | Implementer | Verdict |
-|---|---|---|---|---|---|
-| E height versions | order by a chasing `height`, keep `t` honest for expiry | 2nd | 2nd | 1st | **Rejected.** Fixes two real baseline warts (cleanup tombstones live `δ + del_ttl`; sub-ceiling pins Lamport-ize a cell) but opens a new one: expiry is by writer-chosen `t` while domination is by `height`, so a `DEL` with `t = 0` and a higher `height` dominates the owner's tombstone and expires at once, leaving no tombstone and letting old signed `PUT`s resurrect the entity. Deleter-chosen tombstone lifetime is a new attacker primitive S does not have. Also incompatible with H. |
-| F typed fields | per-`(cell, author)` records joined per type (counter, set, multi-value) | 3rd | **1st** | 2nd | **Adopted as a specified extension, phase 2.** Composes with S (same-author domination by the full `v` keeps T2'/T3); needs the `W` register (§4) or per-cell state is unbounded. Gives up nothing S has; changes `get` and the index to `(cell, author)`. Built when an application needs engine-side counters or sets. |
-| G causal multi-value | per-author store, parent hashes resolved in the view, no clock in the order | 4th | 3rd | 3rd | **Rejected.** The strongest anti-pin statement of both rounds (no `PUT` can be shadowed), but resolved siblings are retained not freed, "last modified" leaves the engine, and a forged height after each roster can exhaust the ceiling space on the attacker's schedule. Its `W` register is kept (§4). Stays as the answer if a multi-person-list application wants visible conflicts. |
-| H snapshot GC | root-signed per-entity kill levels replace `del_ttl` | 5th | 4th | 4th | **Rejected.** The lattice is sound and "no resurrection ever" is the cleanest theorem of the round, but the liveness assumption it removes from the drop rule reappears as a completeness obligation on the root with *destruction* of synced data as the failure mode (a restored root's chunk kills a re-created entity everywhere); a stolen root key becomes an unrevocable one-record wipe; snapshot traffic scales with live entities, not deletions; and its `t`-keyed kill set is not a down-set of any height order, so it cannot be combined with E or G. |
-| I one-round sketch | IBLT round 0 before the range split | accept | accept | accept | **Adopted** (§8), capped so the sketch fits one message. |
-| J multi-root | several root keys, rotation, per-field writer sets | accept with fix | accept | half | **Adopted without field rules** (§6): root loss becomes recoverable; `roots_ever` must be joined in the handshake and root additions gated by the founding key. Field rules cut (labels only). (Round three replaced `roots_ever` with founding-key certificates, §1.2.) |
-
-The three judges disagreed on E (the implementer wanted it, the other two
-did not) and on how soon F belongs on the critical path; they agreed that
-H and G lose, that I is free, and that the baseline's lattice could not be
-broken. What the round did find in the baseline were two prose faults, both
-repaired below and neither touching a checked theorem: `maxceil` is replica
-state the sync protocol never joined, so a latecomer could refuse a record
-every other replica admits until a root refresh (fixed then by joining the
-grow-only registers in the session handshake; round three replaced the join
-with registers derived from the frontier, §1.2 and §4); and assumption A4 was
-too weak as stated (restated in §7).
-
-The governing rule the math judge extracted, which decides every future
-proposal: **the frontier lattice is sound iff every kill predicate is a
-down-set of the record order on its key.** Every rejected combination in
-this round fails exactly that test.
-
-
-### 1.2 Round three: closing the implementation gaps
-
-The SPARK build (`spark/`, `docs/design/IMPLEMENTATION_PLAN.md`) and its
-reviewers found places where this document was silent, ambiguous or wrong.
-Two independent proposals (an adversary lens and an implementer lens) were
-written for each; the decisions below graft the better parts of both. Every
-decision keeps the governing rule above, and none changes the version order.
-
-| # | Question | Decision |
-|---|---|---|
-| D1 | Who may sign `ROSTER`/`REVOKE` | Bytes-only: every authorization record carries a *signer block*; the signer is the founding key or a root certified by it (`cert_sig` over `ns ‖ signer ‖ cert_cap`). Only the founding key certifies, so only it adds roots. There is no `roots_ever` register and no state-dependent admission (§2, §6). |
-| D1′ | Where write access lives | In a new record kind `GRANT(subject)`, keyed by `(ns, issuer, subject)`. `W(F)` is the set of subjects of the `GRANT`s in `F`, and `maxceil(F)` is the largest `ceiling_t` of the rosters in `F`; a roster leaves `F` only under a roster of the same signer with a ceiling at least its own. Both registers are therefore functions of `F` that never shrink (§3, §4). |
-| D2 | Revoking a root | Only the founding key root-voids, `from_t` is ignored for it, the founding key can never be revoked, and everything a root-voided root issued (rosters, `REVOKE`s, `GRANT`s) stops counting in every view; keys only it granted read `void` through the effective-writer view `W_eff` (§3, §6). |
-| D3 | Canonical rosters | Canonical form is a property of `Header`, produced by decode and required by the lattice. A roster dominates another of its signer iff it is greater in `(gen, h)` *and* not lower in `ceiling_t` (a product order); `ROSTER_eff` is the `(gen, h)`-maximum, so a stale roster can never displace a newer one (§3). |
-| D4 | Signature scheme | RFC 8032 Ed25519 (SHA-512 internal to the signature), from monocypher's optional `monocypher-ed25519`, checked against RFC 8032 and Wycheproof vectors. BLAKE2b stays the hash for everything Kome derives (§2, A1). |
-| D5 | Root X25519 key | None. Each `ROSTER` carries a fresh ephemeral `box_pk` covered by its signature; its secret seals that roster's boxes and is wiped (§2, §6). |
-| D6 | Box key separation | `wrap_key` hashes the DH output with `box_pk`, both member keys, `ns` and `epoch`; the nonce is synthetic, `BLAKE2b(wrap_key ‖ k_e)`, recomputed and checked by the member (§6). |
-| D7 | Accumulator bytes | Little-endian, recorded exactly, with the tags as bytes (§8). |
-| D8 | `h` versus emission | The write path picks `(t, seq)` without `h`, then hashes; a lemma states that the outcome is independent of `h`. `seq_self` is per collection (§5). |
-| D9 | Replay of the log | Nothing but `F` needs persisting (D1′). The log is a `HEADER` (collection, founding key, capacities) and a journal of `APPLY`, `APPLY_EXPIRED` and `EXPIRE` entries; compaction writes authorization records first. New theorem T18, stated over sets (§7). |
-| D10 | Expired `DEL`s | Expiry is an operation on the lattice state (`Frontier.Expire`) at `horizon = min(now_local, maxceil) − del_ttl_eff`, with `del_ttl_eff` the largest `del_ttl` of the non-root-voided rosters (clamped at decode), so a stolen root can lengthen tombstone life but never shorten it (§7). |
-| D11 | Order of operations | Admission, then duplicate, then domination, then room; a dominated record never needs room and nothing changes on any refusal (§7). |
-| D12 | Frames versus messages | `Value_Max` = 40 960, so every frame fits one 48 KiB message (§2, §8). |
-| D13 | HELLO registers | No register value crosses the wire. A pre-gate `OPEN` carries `ns` and the sender's root revocations; the post-gate `HELLO` carries counts, the digest and the sender's credential roster, and is sent only to a peer already admitted. The authorization range is reconciled to completion before the data range (§8). Assumption A6 is deleted. |
-| D14 | Session machine | Phases `Auth` then `Data`; only the initiator sends root `RANGE`s, exactly two, with fixed bounds; replies are exact windows (§8). |
-| D15 | Prefix-sum tail | One more prefix entry, the total; any sub-range costs at most 64 additions and one subtraction (§8). |
-| E1 | Capacity classes | Data records have one capacity; every signer has its own *slice* of authorization capacity, the founding key's reserved. Neither a data flood nor a stolen root can fill anyone else's space, so the founding key's `REVOKE` always lands (§7). |
-| E2 | Authorization overflow | An authorization record that would exceed its signer's slice is refused with `AUTH_FULL`, changing nothing; no key is ever dropped silently. Only a stolen root reaches its slice, and the replicas' disagreement that follows is confined to that root's surplus (§7). |
-| E3 | Epoch keys with several roots | One hash chain per collection, in *segments*; only the founding key opens a segment (on root-void, or when a segment's top is reached), so a root-voided root never sees the new top, and each roster carries links that let a member walk back across segments (§6). |
-| E4 | What `from_t` protects | Only against a key lost, not used by a thief; for a stolen key, revoke from 0 (§6). |
-| E5 | Canonical keys at decode | `box_pk`/`dh_pk` reduced and not low-order, `del_ttl` clamped, the cert block zero exactly for the founding key; one encoding per record (§2). |
-
-**Review of the amendment.** Two adversarial judges re-read the amended
-design. They confirmed the lattice (every kind triple of T2', the Lean
-statements, the layout and message arithmetic, replay) and found that one
-stolen certified root, which A1 allows, outlasted its own revocation. The
-findings and what was done:
-
-| # | Finding | Decision |
-|---|---|---|
-| R1 (blocker) | A root-voided root keeps a valid certificate, so it can still sign well-formed `GRANT`s; `W` counted every `GRANT`, so its new keys wrote unflagged data and the founding key had to revoke them one by one. | `GRANT` is keyed by `(ns, issuer, subject)`, so a thief's grant never displaces an honest one; the view `W_eff(F)` counts only grants whose issuer is not `root_void`; `void(p)` also holds when `p.author ∉ W_eff`. Admission keeps using `W` (it must stay monotone). Recovery no longer races the thief: one `REVOKE` of the root voids every key only it granted (§3, §6). |
-| R2 (blocker) | A stolen root's `gen = 2^48 − 1` roster becomes `ROSTER_eff`, closes both transport gates to honest members, and so blocks delivery of its own root revocation. | A pre-gate `OPEN` message carries the sender's founding-issued `REVOKE`s of roots; the receiver applies them *before* it evaluates the gate, so one honest contact un-captures a replica. The credential `HELLO` is sent only after the peer is admitted and must be a roster that lists the sender's Noise key (§6, §8). The honest-issuer rule sets `gen` to one more than the largest held non-root-voided `gen` (§10.3). |
-| R3 (major) | A revoked key still reaches every replica through a stale one, because admission ignores `REVOKE`. | Option (a): a stated liveness assumption **A7** (a revocation reaches a replica before records its subject signs afterwards), and the H8 bounds and §6 residuals are rewritten to depend on it. Option (b) (refuse and drop records of revoked authors) is rejected: it hands a stolen root a permanent mass-destruction primitive (revoke every member; every replica drops their records; root-voiding the thief cannot bring back what no replica kept), its outcome depends on the order in which one session's authorization records arrive, and it gives up T3. A per-author data quota is not adopted either: a quota refusal is a capacity refusal and disagrees across replicas under a flood exactly as the data class does, so it protects room but strengthens no guarantee; it stays an application policy (§10.5). |
-| R4 (major) | Ordering rosters by ceiling first let a backup-restored root's stale roster (old `gen`, current clock) evict the newer roster and roll back a member removal and the epoch. | Roster domination is the product order: greater `(gen, h)` and `ceiling_t ≥`. A per-signer antichain is now possible and is bounded by the signer's slice (§3). |
-| R5 (major) | `W`'s bound and the delegated class were shared, so one thief could make the founding key's own `GRANT`s fail and push every replica into a divergent `AUTH_FULL`. | Per-signer slices (E1 above); `W`'s capacity is the total of the slices, so it never fills on its own; the residual divergence is stated (§7). |
-| R6 (major) | The single partitioned held array of the core work order is illegal Ada (RM 3.8(12)). | Not a design change: the frontier keeps one data array and one authorization row per signer slot, each bounded by a discriminant used alone (work order). |
-| minors | Founding key of the decoder and of the frontier could differ; replay depended on capacities not in the log; expiry trusted any clock; certificate caps cannot be narrowed; segment openings were uncoordinated; the bundle nonce was unspecified; HELLO leaked membership pre-gate and lacked `ns`; T5 for `ROSTER_eff` needed a full tie-break; T18 holds as sets; reordering a root message aborts a session; batch items must apply in key order; the `EXPIRE` entry grew the log; the cost bound of D15 needed a precise scheme; `del_ttl_eff` could be shortened by a thief. | All adopted, in §6–§9: `root_pk` must equal the store's founding key; a log `HEADER` entry carries `ns`, `root_pk`, `salt` and the capacities; `horizon = min(now_local, maxceil) − del_ttl_eff`; the effective cap is the largest ever certified; only the founding key opens segments; bundle nonces are synthetic; `OPEN`/`HELLO` as in R2 with `ns`; tie-break on the whole roster tuple; T18 as set equality; `EXPIRE` logged only when it removes something or lowers the horizon; the two-accumulator range sum; `del_ttl_eff` is a maximum. The judges' suggestion that the gate also admit members of the founding key's own roster is not adopted: an old founding roster would readmit members a certified root had since removed, and `OPEN` already makes root revocations deliverable. |
+| # | Decision |
+|---|---|
+| D1 | Every authorization record carries a *signer block*; the signer is the founding key or a root certified by it (`cert_sig` over `ns ‖ signer ‖ cert_cap`). Only the founding key certifies, so only it adds roots. Admission depends on bytes only (§2, §6). |
+| D1′ | Write access lives in a record kind `GRANT(subject)`, keyed by `(ns, issuer, subject)`. `W(F)` is the set of subjects of the `GRANT`s in `F`, and `maxceil(F)` is the largest `ceiling_t` of the rosters in `F`; a roster leaves `F` only under a roster of the same signer with a ceiling at least its own. Both registers are functions of `F` that never shrink (§3, §4). |
+| D2 | Only the founding key root-voids, `from_t` is ignored for it, the founding key can never be revoked, and everything a root-voided root issued (rosters, `REVOKE`s, `GRANT`s) stops counting in every view; keys only it granted read `void` through the effective-writer view `W_eff` (§3, §6). |
+| D3 | Canonical form is a property of `Header`, produced by decode and required by the lattice. A roster dominates another of its signer iff it is greater in `(gen, h)` *and* not lower in `ceiling_t` (a product order); `ROSTER_eff` is the `(gen, h)`-maximum, with a tie-break on the whole roster tuple (§3). |
+| D4 | Signatures are RFC 8032 Ed25519 (SHA-512 internal to the signature), from monocypher's `monocypher-ed25519`, checked against RFC 8032 and Wycheproof vectors. BLAKE2b is the hash for everything Kome derives (§2, A1). |
+| D5 | There is no root X25519 key. Each `ROSTER` carries a fresh ephemeral `box_pk` covered by its signature; its secret seals that roster's boxes and is wiped (§2, §6). |
+| D6 | `wrap_key` hashes the DH output with `box_pk`, both member keys, `ns` and `epoch`; the box nonce is synthetic, `BLAKE2b(wrap_key ‖ k_e)`, recomputed and checked by the member. Bundle nonces are synthetic too (§6). |
+| D7 | The accumulator is little-endian, recorded exactly, with the tags as bytes (§8). |
+| D8 | The write path picks `(t, seq)` without `h`, then hashes; the outcome is independent of `h`. `seq_self` is per collection (§5). |
+| D9 | Nothing but `F` is persisted. The log is a `HEADER` (`ns`, `root_pk`, `salt`, capacities) and a journal of `APPLY`, `APPLY_EXPIRED` and `EXPIRE` entries; `EXPIRE` is logged only when it removes something or lowers the horizon; compaction writes authorization records first. Replay gives the same frontier as a set (T18, §7). |
+| D10 | Expiry is an operation on the lattice state at `horizon = min(now_local, maxceil) − del_ttl_eff`, with `del_ttl_eff` the largest `del_ttl` of the non-root-voided rosters (clamped at decode), so a stolen root can lengthen tombstone life but never shorten it (§7). |
+| D11 | Order of checks: admission, duplicate, domination, room. A dominated record never needs room, and nothing changes on any refusal (§7). |
+| D12 | `Value_Max` = 40 960, so every frame fits one 48 KiB message (§2, §8). |
+| D13 | No register value crosses the wire. A pre-gate `OPEN` carries `ns` and the sender's founding-issued `REVOKE`s of roots, which the receiver applies *before* it evaluates the gate. The post-gate `HELLO` carries counts, the digest and the sender's credential roster (which must list the sender's Noise key), and is sent only to a peer already admitted. The authorization range is reconciled to completion before the data range (§6, §8). |
+| D14 | Session phases are `Auth` then `Data`; only the initiator sends root `RANGE`s, exactly two, with fixed bounds; replies are exact windows; items apply in key order (§8). |
+| D15 | Prefix sums carry one more entry, the total; any sub-range costs at most 64 additions and one subtraction, by the two-accumulator scheme (§8). |
+| E1 | Data records have one capacity; every signer has its own *slice* of authorization capacity, the founding key's reserved. `W`'s capacity is the total of the slices, so it never fills on its own. Neither a data flood nor a stolen root can fill anyone else's space, so the founding key's `REVOKE` always lands (§7). |
+| E2 | An authorization record that would exceed its signer's slice is refused with `AUTH_FULL`, changing nothing; no key is ever dropped silently (§7). |
+| E3 | One hash chain per collection, in *segments*; only the founding key opens a segment (on root-void, or when a segment's top is reached), and each roster carries links that let a member walk back across segments (§6). |
+| E4 | `from_t` protects only against a key lost, not one used by a thief; for a stolen key, revoke from 0 (§6). |
+| E5 | Keys are canonical at decode: `box_pk`/`dh_pk` reduced and not low-order, `del_ttl` clamped, the cert block zero exactly for the founding key; one encoding per record (§2). |
+| E6 | `root_pk` must equal the store's founding key; the effective certificate cap is the largest ever certified (§6). |
+| E7 | A revoked key's records are not refused at admission; instead assumption A7 (a revocation reaches a replica before records its subject signs afterwards) is stated, and the H8 bounds depend on it. Refusing them would give a stolen root a permanent mass-deletion primitive and give up T3 (§6, §9). |
+| E8 | No per-author data quota in the engine: a quota refusal is a capacity refusal and would disagree across replicas under a flood; it stays an application policy (§10.5). |
+| E9 | The frontier keeps one data array and one authorization row per signer slot, each bounded by its own discriminant (§7). |
 
 ## 2. Objects
 
@@ -232,8 +155,8 @@ is separate from
 frontier, and roster membership is neither (a later roster drops members,
 and dominated rosters leave the frontier). `REVOKE` is separate from both
 because it must be grow-only: a revocation can never be undone by a later
-roster (the attacker judge's finding against A, where a restored root's
-roster could drop a revocation).
+roster (otherwise a root restored from backup could issue a roster that
+drops a revocation).
 
 ## 3. The lattice
 
@@ -261,7 +184,7 @@ implies that the dominator's version is greater on the record's key:
 | GRANT | `(0, subject, 0, h)` | `(ns, issuer, subject)` | `h` |
 | REVOKE | `(from_t, subject, rev_seq, h)` | none: never dominated | — |
 
-The roster clause is a product order (round-three review, R4). Ordering
+The roster clause is a product order (D3). Ordering
 rosters by ceiling first would let a stale roster with an old `gen` and a
 current clock (a root restored from backup, or a second device holding the
 same root key) evict the newer roster for good and roll back a member
@@ -269,7 +192,7 @@ removal and the epoch; under the product order neither dominates and both
 stay until the root re-issues one that is above both. The product order is
 a strict partial order that the version order extends, and it is monotone,
 so T2, T2' and T3 hold exactly as for a total order; the governing rule of
-§1.1 is read accordingly: every kill predicate is a down-set of a strict
+§1 is read accordingly: every kill predicate is a down-set of a strict
 partial order on its key that the record order extends.
 
 The fields of the lattice's header that a kind does not use are zero, and
@@ -285,8 +208,8 @@ authorization record is dominated only by one with the same issuer.
 
 `F(H)` is the **frontier**, and it is the state. `dom` is monotone in `H`
 (T2) and *upward-closed*: a dominator of a dominator of `x` dominates `x`
-(T2'). The mathematics judge identified T2' as the lemma A's proof needed and
-did not state; it holds for every kind above, which is why `REVOKE` is not
+(T2'). It is the lemma the convergence proof needs, and it holds for every
+kind above, which is why `REVOKE` is not
 allowed to dominate (a revocation dominating a writer's `PUT` would not
 dominate what that `PUT` had already dominated; see §6). From T2 and T2':
 
@@ -351,20 +274,19 @@ W(F)`. Both registers are the derived views of §3: they are functions of the
 frontier, not separate state, and they only grow, because admission of
 authorization records is unconditional and their domination never lowers
 either (§3). `W` bounds who can occupy the store: without it a member could
-relay records under unrostered ground keys and make a cell's state unbounded
-(the math judge's finding against F), and typed fields (below) would have no
+relay records under unrostered ground keys and make a cell's state unbounded,
+and typed fields (below) would have no
 per-cell bound at all. Removal from `W` does not exist; removal of a writer
 is `REVOKE` (§6), and neither `REVOKE` nor root-voiding ever changes
 admission: an admission rule that a later record can withdraw is
 non-monotone, and replicas that saw the two records in different orders
-would hold different frontiers forever (the math judge's finding against A;
-round three's review, R3, rejected the variant that also drops the withdrawn
-records). What keeps a revoked key's later records out is the transport
+would hold different frontiers forever (and the variant that also drops the
+withdrawn records is rejected, E7). What keeps a revoked key's later records out is the transport
 gate, under assumption A7 (§6, §9).
 
-This replaces A's gate ("inadmissible under the currently maximal roster"),
-which the mathematics judge broke with two rosters of equal generation. The
-rule is **monotone in the held history**: once a record is admissible at a
+A gate of the form "inadmissible under the currently maximal roster" would
+break with two rosters of equal generation. This rule is instead
+**monotone in the held history**: once a record is admissible at a
 replica it stays admissible, and a record inadmissible at one replica
 becomes admissible there as soon as the authorization record that made it
 admissible elsewhere arrives. Inadmissible records are **discarded**, not
@@ -383,36 +305,32 @@ implementation may cache `maxceil` and `W` (`Kome.Registers`), provided the
 cache equals the views of §3 on every state (an invariant, not a second
 source of truth).
 
-**Registers are derived, not reconciled (round-three repair).** Round two
-made `maxceil`, `W` and `roots_ever` stored registers and joined their raw
-values in the session HELLO. The SPARK review showed both halves wrong:
-unauthenticated register values let any peer raise `maxceil` or add a
-writer, and not joining them breaks the exchange clause of T4; and a
-roster dominated on arrival raised registers that the log never recorded,
-so a reopened replica diverged. With `GRANT` and the ceiling inside the
-roster's version (D1′) nothing outside `F` needs reconciling or
-persisting: reconciling the authorization records reconciles the registers
-(§8), and replaying the log replays them (§7). `roots_ever` no longer exists:
-root authority is a certificate, checked on bytes (§2).
+**Registers are derived, not reconciled.** Stored registers would have to
+be joined between replicas, and unauthenticated register values on the wire
+would let any peer raise `maxceil` or add a writer; a roster dominated on
+arrival would raise registers the log never recorded. With `GRANT` and the
+ceiling inside the roster's version (D1′) nothing outside `F` needs
+reconciling or persisting: reconciling the authorization records reconciles
+the registers (§8), and replaying the log replays them (§7). Root authority
+is a certificate, checked on bytes (§2).
 
-**Typed fields (extension, candidate F).** When an application needs
+**Typed fields (extension, C10).** When an application needs
 counters, grow-only sets or multi-value registers in the engine, a `PUT`
 may carry `ftype : u8 ∈ {LWW, GSET, PNCOUNTER, MVREG, MAXREG}` as part of
 the cell key, the author's full state for that field as its value, and the
 `PUT`-over-`PUT` clause of `dom` gains the condition `(ftype = LWW ∨ same
 author)`. The frontier then holds at most one record per `(cell, author)`,
 bounded by `|W|`, and the cell's value is a join over the surviving,
-non-void per-author records. LWW cells are unchanged. The round-two judges
-required `W`, a saturating fold, and view output read through a cursor. It
-is not on the critical path: an application can get the same semantics today
+non-void per-author records. LWW cells are unchanged. It requires `W`, a
+saturating fold, and view output read through a cursor. It is not on the
+critical path: an application can get the same semantics today
 with one LWW sub-cell per device.
 
 ## 5. Clocks and writing
 
 There is no engine clock, no `tick`, no `receive`, nothing adopted from a
-peer. The attacker judge's finding against D (device-global adoption carried
-one collection's far-future record into every other collection on the device)
-cannot occur because no timestamp is ever adopted.
+peer, so one collection's far-future record can never carry into another
+collection on the device.
 
 ```
 floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))     -- for DEL: max over all fields and deleted_at
@@ -468,10 +386,9 @@ The honest statement of the residual: **LWW cannot un-ring a wall clock**. A
 cell whose floor was pushed far ahead resolves by chase until wall time passes
 it. The ceiling bounds how far; it does not prevent it. A thief's overwrites
 made before the revocation reaches a replica stand, flagged `void`; the bytes
-they replaced are gone. The attacker judge ranked this acceptable because
-every such act is signed, attributable, bounded, and ends at revocation plus
-one refresh. Round three's review made the "ends" precise: it ends at each
-replica when that replica holds the revocation, and it ends everywhere only
+they replaced are gone. This is acceptable because every such act is
+signed, attributable, bounded, and ends at revocation plus one refresh. It
+ends at each replica when that replica holds the revocation, and it ends everywhere only
 if no stale replica accepts the key's later records first, which is
 assumption A7 (§9). Offline-first makes stale replicas normal, so A7 is a
 deployment duty: revoke promptly, and sync every device after a revocation
@@ -479,7 +396,7 @@ before it talks to anything else.
 
 ## 6. Authorization, encryption, revocation
 
-**Roots (module J, as decided in round three).** A collection has one
+**Roots (C9, D1).** A collection has one
 founding key (`root_pk`, from which `ns` is derived) and up to 15 certified
 roots over its life (`Signers_Max` = 16 signers in all). Any root, founding
 or certified, may sign `ROSTER`, `REVOKE` and `GRANT`; only the founding key
@@ -491,8 +408,8 @@ domination is per signer (§3), and the effective roster is the view
 `ROSTER_eff` (§3): the `(gen, h)`-maximum over frontier rosters whose signer
 is not `root_void`. Two roots racing equal generations resolve by `h`;
 `REVOKE`s are grow-only so nothing a race can do loses one. Per-field
-writer sets were part of module J and are cut: enforced at admission they
-are non-monotone (the math judge's D counterexample), and as a view flag
+writer sets are not part of the design: enforced at admission they
+are non-monotone, and as a view flag
 they are a label that cannot stop an unauthorized write from freeing an
 authorized value's bytes.
 
@@ -552,7 +469,7 @@ backup. That is why the founding key is kept cold with an offline backup.
 
 **Membership is key possession.** The `ROSTER` wraps the current epoch key to
 each member's `dh_pk`. Epoch keys form a hash chain `k_e = BLAKE2b-256(k_{e+1}
-‖ "prev")` within a *segment* (from candidate B): a member holding `k_e`
+‖ "prev")` within a *segment*: a member holding `k_e`
 derives every older key of the segment, so a new member needs one box, and a
 removed member holding `k_e` cannot derive `k_{e+1}`. 2^16 epochs suffice for
 any collection's life.
@@ -614,16 +531,16 @@ Before evaluating the gate each side applies what the peer sent before the
 gate: the `OPEN` message carries the sender's founding-issued `REVOKE`s of
 roots (signed records, admissible everywhere), so one honest contact
 un-captures a replica whose `ROSTER_eff` a root-voided thief had taken over
-(round-three review, R2). The credential `HELLO` follows, and a side sends
+(D13). The credential `HELLO` follows, and a side sends
 its own only after it has admitted the peer, so a non-member learns no
 membership list: the credential is a roster in the sender's `F` that lists
 the sender's Noise key (any other credential is refused), and the receiver
 applies it and re-evaluates the gate, so a newly added member can still
 reach a replica whose rosters are stale (§8). A sealed bundle (mailbox,
 broadcast, BLE) is readable iff the replica holds its epoch key; bundles are
-accepted **only under `ROSTER_eff.epoch`** (the attacker judge's finding
-against A: accepting the previous epoch let a removed member write into
-up-to-date replicas for a whole epoch). A captured replica therefore takes
+accepted **only under `ROSTER_eff.epoch`** (accepting the previous epoch
+would let a removed member write into up-to-date replicas for a whole
+epoch). A captured replica therefore takes
 no bundle from honest members until an interactive session un-captures it.
 Both gates decide who you talk to, never what a record means.
 
@@ -631,8 +548,7 @@ Both gates decide who you talk to, never what a record means.
 Its effect is the view flag `void` on `X`'s records with `t ≥ from_t` (while
 its issuer is not `root_void`), plus the roster that follows it (fresh
 epoch, `X` removed). It is deliberately *not* a prune, and it does not
-change admission. The mathematics judge's analysis of A explains why and it
-is worth restating: if a revocation dropped `X`'s records from `F`, a record
+change admission, for this reason: if a revocation dropped `X`'s records from `F`, a record
 `p'` of `X` that had already dominated (and freed) an honest `p` would vanish
 on one replica and leave the cell empty, while a replica that saw the
 revocation first would still hold `p`. Same records, different frontiers.
@@ -765,10 +681,10 @@ a stolen root can neither set it to zero to mass-resurrect deleted data nor
 shorten it below what an honest root set, and lengthening ends when it is
 root-voided. With no horizon yet, nothing is expired.
 
-The second clause is **apply-then-expire**, not A's refuse-on-arrival: an
+The second clause is **apply-then-expire**, not refuse-on-arrival: an
 arriving `DEL` with `t ≤ horizon` is always applied (it dominates and frees
-the entity's values) and only then, being expired, not held. The
-mathematics judge showed that refusing an expired `DEL` on arrival lets two
+the entity's values) and only then, being expired, not held. Refusing an
+expired `DEL` on arrival would let two
 replicas with a two-millisecond skew diverge and then resurrect the entity
 on both. With apply-then-expire, a skewed pair converges on the next
 exchange (the replica still holding the `DEL` re-sends it; the other
@@ -779,22 +695,21 @@ its stale fields, which the user re-deletes. That requires a device offline
 for longer than `del_ttl` (default 180 days); it is a liveness assumption
 (A4′), stated as such, not hidden in a safety theorem.
 
-**A4, restated (round-two repair).** "Every member syncs with some member
-once per `del_ttl`" is not enough: the math judge gave a four-member
+**Why A4′ and not a sync-frequency assumption.** "Every member syncs with
+some member once per `del_ttl`" is not enough: there is a four-member
 schedule satisfying it in which the `DEL` reaches two members, both expire
 it, and a third member that never saw it re-seeds the entity everywhere.
 The assumption expiry needs is **A4′: every `DEL` reaches every member
 within `del_ttl` of `d.t`**, that is, sync-graph diameter times sync period
 is below `del_ttl`. Its failure mode is resurrection of deleted data, never
-destruction of live data, which is why this clause was kept over candidate
-H's snapshots.
+destruction of live data, which is why tombstone expiry is preferred over
+root-signed snapshots.
 
-**Chased tombstones (residual found by candidate E).** A `DEL` that
+**Chased tombstones (residual).** A `DEL` that
 dominates a far-future `PUT` must chase to `t > p.t`, so its tombstone lives
 `δ + del_ttl` where `δ` is how far ahead the pinning clock was, bounded by
-`maxceil − now`. Candidate E removed this by ordering on a separate counter
-and was rejected because a writer-chosen expiry clock is worse than an
-inflated one (§1.1). The residual is storage of one tombstone frame per
+`maxceil − now`. Ordering on a separate counter would remove it, but a
+writer-chosen expiry clock is worse than an inflated one. The residual is storage of one tombstone frame per
 pinned entity for at most one horizon beyond `del_ttl`.
 
 **Bounds.** After `Expire`, `|F(ns)| ≤ live cells + DELs younger than
@@ -847,9 +762,8 @@ computed with two accumulators, `Plus = P(A(b)) + fwd(b) + bwd(a)` and
 most 64 big-integer additions and exactly one subtraction, for every range
 including those that end in the tail. That is 8
 bytes amortized per element, and a snapshot cache of the prefix sums
-stays valid between sessions. The implementer judge preferred this to
-the per-session keyed sum of C and D, which forces O(n) hashing per session;
-the attacker judge accepted its security: a k-sum attack on a 4096-bit modulus
+stays valid between sessions, where a per-session keyed sum would force
+O(n) hashing per session. A k-sum attack on a 4096-bit modulus
 costs about 2^128 and needs 2^64 inserted records. A 256-bit sum would be
 breakable in about 2^32 by a member, which is why the sum is 4096 bits.
 
@@ -864,7 +778,7 @@ ELEMENTS  3 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u
 HAVE      4 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u32 ‖ frame)
 ```
 
-**OPEN (pre-gate, round-three review R2).** `proto = 1`; `ns` is the
+**OPEN (pre-gate, D13).** `proto = 1`; `ns` is the
 collection (a mismatch aborts the session, so the digest that follows is
 bound to it); the frames are the sender's **root-void set**: every
 founding-issued `REVOKE` in its `F` whose subject has signed an
@@ -965,7 +879,7 @@ carry (`48 KiB − 165 − 85`) and below the sealed-bundle plaintext bound, so
 every well-formed record can be shipped in one message on every transport;
 the implementation checks both inequalities at compile time.
 
-**Round 0: one-round set difference (module I, adopted in round two).**
+**Round 0: one-round set difference (C8).**
 At the start of each phase each side may send an invertible Bloom lookup
 table over the 32-byte element hashes of that phase's range, sized from the
 HELLO counts and clamped so one sketch fits in one message (at most 1 000
@@ -1094,9 +1008,8 @@ epoch space); beyond them a collection is re-founded. A2 BLAKE2b collision-resis
 each horizon (writes degrade to ceiling ties otherwise; convergence
 unaffected). A4′ For tombstone expiry only: every `DEL` reaches every member
 within `del_ttl` of `d.t`. A5 Writers persist `seq_self` per collection
-(violations are detected). (A6, the HELLO register join, is deleted: no
-register value crosses the wire.) **A7 Revocation arrives first** (round
-three's review, R3): every replica receives a `REVOKE` before it receives
+(violations are detected). No assumption is needed about register values
+on the wire: none crosses it. **A7 Revocation arrives first** (E7): every replica receives a `REVOKE` before it receives
 any record signed after that `REVOKE` by its subject, and a root revocation
 before any record signed afterwards by a key that root granted. Only the H8
 bounds (§5) and the post-revocation guarantees of §6 depend on it;
@@ -1132,15 +1045,12 @@ convergence.**
    its slice (`Slice_Max` records) and the founding key within 15
    certificates; a member removal bumps the epoch.
 4. **Conflict visibility.** This design keeps one value per cell and frees
-   losers' bytes. Round two wrote the alternative out in full as candidate G
-   (per-author store, parents resolved in the view) and rejected it for
-   records (§1.1); its sibling view is F's `MVREG` type plus parent hashes,
-   so an application that wants visible conflicts gets them through the F
-   extension rather than a different lattice.
+   losers' bytes. An application that wants visible conflicts gets them
+   through the typed-fields extension (C10: the `MVREG` type plus parent
+   hashes) rather than a different lattice.
 5. **Quotas.** Floods by an authorized writer are bounded only by revocation
    (under A7), owner `DEL`s and the data capacity. A per-author quota at the
-   room step was considered in round three's review (R3) and not adopted: it
-   is a capacity refusal, so under a flood replicas disagree about which of
+   room step is not adopted (E8): it is a capacity refusal, so under a flood replicas disagree about which of
    the flooder's records they hold, as with the data capacity; it protects
    honest room but strengthens no guarantee, and the right bound depends on
    the application. A per-author byte quota in the roster, enforced by the
@@ -1150,11 +1060,10 @@ convergence.**
    operations, `session_*` over Kome.Reconcile, and a digest whose value
    equals the sync fingerprint. Statuses are Kome's `Status`, including
    `AUTH_FULL`; `CLONE_SUSPECTED` is an out flag beside the status.
-7. **Phase 2: typed fields.** Candidate F is specified and composes; build
-   it after the round-three model and T7 are proved, when an application
-   asks for engine-side counters or sets. Estimated at about 7.5
-   person-weeks over the core by the implementer judge.
-8. **Module I sizing.** The sketch cap (1 000 cells) is set by the current
+7. **Typed fields.** The extension (C10) composes with the core; build it
+   after T7 is proved, when an application asks for engine-side counters or
+   sets. Estimated at about 7.5 person-weeks over the core.
+8. **Sketch sizing.** The sketch cap (1 000 cells) is set by the current
    maximum message length; raising the message bound raises the cap. Below
    the cap the common sync is two round trips per phase; above it the range
    protocol runs as before.
@@ -1171,7 +1080,7 @@ convergence.**
     after the frames, the trailing `EXPIRE(horizon)` is omitted; the reopened
     replica then has a lower horizon, which T18 allows.
 
-Effort, per the implementer judge's estimates across both rounds: roughly
-24 person-weeks for the Lean theorems plus the SPARK core, about 3.5 more
-for module I outside the trusted core, about 3 for module J, and about 7.5
-for the F extension when it is built; T7 is the long pole throughout.
+Estimated effort: roughly 24 person-weeks for the Lean theorems plus the
+SPARK core, about 3.5 more for the sketch (C8) outside the trusted core,
+about 3 for multiple roots (C9), and about 7.5 for typed fields (C10) when
+built; T7 is the long pole throughout.

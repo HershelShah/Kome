@@ -1,5 +1,5 @@
 --  Kome.Accumulator: the 4096-bit homomorphic set accumulator of DESIGN.md
---  §8 (decision D7 of §1.2), arithmetic only. DESIGN.md §8 defines
+--  §8 (decision D7 of §1), arithmetic only. DESIGN.md §8 defines
 --
 --    B_i(e) := BLAKE2b-256("kome/acc" ‖ h(e) ‖ u8(i))   for i = 0..15
 --    acc(e) := Σ_{i=0..15} LE(B_i(e)) · 2^(256·i)  mod 2^4096,

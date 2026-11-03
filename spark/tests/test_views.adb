@@ -13,7 +13,7 @@
 --      Inadmissible or No_Space), Lemma_Apply_Data_Local then every
 --      authorization-view locality lemma; root_void only grows;
 --  (f) root revocation as decided (D2): a compromised certified root, its
---      root-void by the founding key, W_eff (R1), re-signed revocations,
+--      root-void by the founding key, W_eff (D1′), re-signed revocations,
 --      del_ttl_eff, a stale same-signer roster;
 --  (g) the hypothesis boundary: rosters equal in V that differ in del_ttl
 --      (A2 fails) still give one ROSTER_eff in every order (full tie-break).
@@ -532,7 +532,7 @@ procedure Test_Views with SPARK_Mode => Off is
                 and Roster_Eff (A) = (Present => True, Hdr => R2));
       end;
 
-      --  (f) A compromised certified root (DESIGN.md §6, D2, R1, R2).
+      --  (f) A compromised certified root (DESIGN.md §6, D1′, D2, D13).
       declare
          M1  : constant Byte := 1;    --  granted by the founding key and by R
          M2  : constant Byte := 2;    --  granted by H; revoked by R and re-revoked by F
@@ -687,7 +687,7 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
 
       --  A stale same-signer roster (lower gen, higher ceiling) stays held
-      --  under the product order (R4) and never becomes ROSTER_eff.
+      --  under the product order (D3) and never becomes ROSTER_eff.
       declare
          RH2 : constant Header := Roster (6, 3, 9_000, 80);
          RHS : constant Header := Roster (6, 2, 15_000, 81);

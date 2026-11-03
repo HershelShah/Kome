@@ -5,7 +5,7 @@
 #   step = lambda k: hashlib.blake2b(k + b'prev', digest_size=32).digest()
 # Format: chain <key at From, 32-byte hex> <From> <To> <key at To, hex>
 #
-# Box and link known answers (DESIGN.md §6 "Boxes (D5, D6)", round three).
+# Box and link known answers (DESIGN.md §6 "Boxes (D5, D6)").
 # Generated 2026-11-02 by the independent Python reference reproduced
 # below (Python 3.13.17; hashlib for BLAKE2b; PyNaCl 1.6.2 = libsodium for
 # X25519 and crypto_aead_xchacha20poly1305_ietf; pyca/cryptography 50.0.1

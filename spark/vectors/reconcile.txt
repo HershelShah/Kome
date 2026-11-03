@@ -1,5 +1,5 @@
 # Kome.Reconcile known-answer vectors. Read by tests/test_reconcile.adb.
-# DESIGN.md §8 (round three D13, R2), all integers big-endian:
+# DESIGN.md §8 (D13), all integers big-endian:
 #   OPEN  = 05 || proto (01) || ns[16] || n_rv:u8 || n_rv x frame[275]
 #   HELLO = 01 || n_auth:u32 || n_data:u32 || digest[32] || cred_len:u16 || cred
 # Built with Python's struct from the layout above, independently of the
