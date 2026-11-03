@@ -1,6 +1,6 @@
---  Test main for Kome.Versions: the order is lexicographic on
---  (t, author, seq, h) with keys as unsigned big-endian integers;
---  the ghost lemmas are evaluated at run time (-gnata) on a grid of values.
+--  Test main for Kome.Versions. The order is lexicographic on
+--  (t, author, seq, h), with keys as unsigned big-endian integers. The test
+--  evaluates the ghost lemmas at run time (-gnata) on a grid of values.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -59,8 +59,9 @@ begin
    end loop;
    Check ("lemmas hold on the grid", True);
 
-   --  D8: two versions with different (t, author, seq) are ordered by that
-   --  prefix alone, whatever their h (Frontier.lean `lt_iff_prefix`).
+   --  D8: if two versions have different (t, author, seq), that prefix
+   --  alone gives their order, whatever their h (Frontier.lean
+   --  `lt_iff_prefix`).
    Check ("same prefix is decided by h only",
           Same_Prefix (V (5, 3, 9, 0), V (5, 3, 9, 200))
           and then Lt (V (5, 3, 9, 0), V (5, 3, 9, 200))
@@ -76,7 +77,7 @@ begin
          for J in Grid'Range loop
             if not Same_Prefix (Grid (I), Grid (J)) then
                Lemma_Prefix_Decides (Grid (I), Grid (J));
-               --  Changing h on either side does not change the outcome.
+               --  A change of h on either side does not change the result.
                for H in Byte'(0) .. 3 loop
                   declare
                      A : Version := Grid (I);

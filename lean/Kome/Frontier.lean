@@ -2,51 +2,70 @@
 The frontier store: the model of docs/design/DESIGN.md.
 
 A replica of one collection holds a finite set of signed records. Its state
-is the FRONTIER of that set: the records not dominated by another record of
-the set (§3). There are five record kinds (§2): the data records `put` and
-`del`, versioned by `(t, author, seq, h)` under one strict total order; and
-the authorization records `roster` (per signer, with its ceiling, generation
-and tombstone lifetime), `revoke` (issuer, subject, `from_t`) and `grant`
-(issuer, subject). Domination is per key: a `put` by a newer `put` of its
-cell or a newer `del` of its entity, a `del` by a newer `del`, a roster by a
-roster of the same signer that is greater in `(gen, h)` and not lower in
-ceiling (a product order), a grant by a grant of the same issuer and subject
-with a greater hash. A `revoke` is never dominated and dominates nothing.
+is the FRONTIER of that set: the records that no other record of the set
+dominates (§3).
 
-Admission (§4) is a function of the authorization records alone: a data
+There are five record kinds (§2):
+- The data records `put` and `del`. Each one has a version
+  `(t, author, seq, h)`. One strict total order compares the versions.
+- The authorization records:
+  - `roster`: one for each signer, with its ceiling, its generation and its
+    tombstone lifetime.
+  - `revoke`: issuer, subject, `from_t`.
+  - `grant`: issuer, subject.
+
+Domination is per key:
+- A newer `put` of the same cell, or a newer `del` of the same entity,
+  dominates a `put`.
+- A newer `del` dominates a `del`.
+- A roster of the same signer dominates a roster if it is greater in
+  `(gen, h)` and not lower in ceiling (a product order).
+- A grant of the same issuer and subject with a greater hash dominates a
+  grant.
+- A `revoke` is never dominated and dominates nothing.
+
+Admission (§4) is a function of the authorization records alone. A data
 record is admitted iff its `t` is at most `maxceil` (the largest roster
 ceiling) and its author is in `W` (the subjects of the grants). Both
-registers are functions of the frontier that never shrink (T4'), so
-admission is monotone; it never reads `revoke`, `root_void` or `W_eff`.
-Inadmissible records are discarded, not held (§4, §10.1), and convergence
-(T4) is stated for that model: one authorization-first pass (the shape of a
-batch and of replay after compaction, T18), or two passes in any order.
-Tombstone expiry (§7, T11) is an operation on the state that removes `del`s
-at or below a horizon. Revocation is a set of views (§3, §6; T5, T12):
-`root_void`, the effective-writer view `W_eff`, `void`, `ROSTER_eff` (the
-maximum under the whole roster tuple, so it does not depend on list order)
-and `del_ttl_eff`; none of them feeds admission.
+registers are functions of the frontier that never shrink (T4'). So
+admission is monotone. Admission never reads `revoke`, `root_void` or
+`W_eff`.
 
-Scope. The model assumes well-formed records. Who may sign an authorization
-record (the founding key, or a root it certified) is checked on the
-record's bytes, by its certificate (DESIGN §2), and is not modelled: every
-record here is taken to be well-formed. Capacity (data capacity, the
-per-signer slices, `NO_SPACE`, `AUTH_FULL`), the clock clamp of the horizon
-(`min(now_local, maxceil) − del_ttl_eff`: the horizon is a parameter here,
-computed outside the model) and assumption A7 (revocation arrives first)
-are outside the model.
+The model discards inadmissible records and does not hold them (§4, §10.1).
+This file states convergence (T4) for that model in two forms:
+- One pass that applies the authorization records first. This is the shape
+  of a batch and of replay after compaction (T18).
+- Two passes in any order.
 
-Sets are modelled as lists up to membership (order and duplication are the
-things the theorems must not depend on, so the statements are all of the form
-`x ∈ A ↔ x ∈ B`). Identifiers, authors, values and hashes are `Nat`: every
+Tombstone expiry (§7, T11) is an operation on the state. It removes the
+`del`s at or below a horizon.
+
+Revocation is a set of views (§3, §6; T5, T12): `root_void`, the
+effective-writer view `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
+`ROSTER_eff` is the maximum under the whole roster tuple, so it does not
+depend on list order. None of these views feeds admission.
+
+Scope. The model assumes well-formed records. The certificate of an
+authorization record controls who may sign it: the founding key, or a root
+that the founding key certified. A check on the bytes of the record applies
+this rule (DESIGN §2). The model does not include this check: it takes every
+record to be well-formed. These items are also outside the model:
+- Capacity (data capacity, the per-signer slices, `NO_SPACE`, `AUTH_FULL`).
+- The clock clamp of the horizon, `min(now_local, maxceil) − del_ttl_eff`.
+  Here the horizon is a parameter that is calculated outside the model.
+- Assumption A7 (revocation arrives first).
+
+The model uses lists for sets, up to membership. The theorems must not
+depend on order or duplication, so every statement has the form
+`x ∈ A ↔ x ∈ B`. Identifiers, authors, values and hashes are `Nat`. Every
 theorem uses only decidable equality and, for versions, a total order.
 
 Theorem numbers refer to DESIGN.md §9.
 -/
 namespace Kome
 
-/-- A strict total order with a decidable comparison (T1 instantiates it for
-versions). -/
+/-- A strict total order with a decidable comparison. T1 gives an instance of
+it for versions. -/
 class StrictTotal (α : Type) where
   lt : α → α → Prop
   dec : ∀ a b, Decidable (lt a b)
@@ -60,8 +79,8 @@ namespace Kome.Frontier
 
 /-! ### Versions (T1) -/
 
-/-- `v = (t, author, seq, h)`, compared lexicographically. `h` is the record's
-content hash, so distinct records never tie. -/
+/-- `v = (t, author, seq, h)`. The comparison is lexicographic. `h` is the
+content hash of the record, so two different records never tie. -/
 structure Version where
   t : Nat
   author : Nat
@@ -101,11 +120,13 @@ instance : StrictTotal Version where
 
 /-! ### Records (DESIGN §2, §3) -/
 
-/-- One collection's records, reduced to what the lattice and the views read.
-`put`/`del` carry a version. `roster` carries its signer, its ceiling, its
-generation, its `del_ttl` and its hash; `revoke` its issuer, its subject,
-`from_t`, `rev_seq` and its hash; `grant` its issuer, its subject and its
-hash. -/
+/-- The records of one collection, reduced to the fields that the lattice and
+the views read:
+- `put` and `del` carry a version.
+- `roster` carries its signer, its ceiling, its generation, its `del_ttl` and
+  its hash.
+- `revoke` carries its issuer, its subject, `from_t`, `rev_seq` and its hash.
+- `grant` carries its issuer, its subject and its hash. -/
 inductive Record where
   | put (ent field : Nat) (v : Version) (value : Nat)
   | del (ent : Nat) (v : Version)
@@ -116,11 +137,12 @@ deriving DecidableEq, Repr
 
 open Record
 
-/-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, `dom`'s witness). Rosters
-are compared by the product order (D3): same signer, ceiling not lower, and
-greater in `(gen, h)`. Grants are keyed by `(issuer, subject)`. Nothing else
-dominates: `revoke` is never dominated and never dominates, and there is no
-cross-kind clause for authorization records. -/
+/-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, the witness of `dom`).
+The product order (D3) compares rosters: the same signer, a ceiling that is
+not lower, and a greater `(gen, h)`. The key of a grant is
+`(issuer, subject)`. No other record dominates. A `revoke` is never
+dominated and never dominates. No clause compares authorization records of
+different kinds. -/
 def dominates : Record → Record → Bool
   | put e' f' v' _, put e f v _ => decide (e = e' ∧ f = f' ∧ Version.lt v v')
   | del e' v',      put e _ v _ => decide (e = e' ∧ Version.lt v v')
@@ -134,8 +156,8 @@ theorem dominates_irrefl (x : Record) : dominates x x = false := by
   cases x <;> simp [dominates, Version.lt] <;> omega
 
 /-- T2' (upward closure): a dominator of a dominator is a dominator, for every
-kind triple. This is the lemma the frontier homomorphism rests on, and the
-reason `revoke` must not dominate anything. -/
+triple of kinds. The frontier homomorphism rests on this lemma. This lemma
+is also the reason that `revoke` must dominate nothing. -/
 theorem dominates_trans {x y z : Record} (hyx : dominates y x = true)
     (hzy : dominates z y = true) : dominates z x = true := by
   cases x <;> cases y <;> cases z <;>
@@ -154,7 +176,7 @@ theorem revoke_never_dominates (x : Record) (i s f r h : Nat) :
 
 /-! ### Domination and the frontier -/
 
-/-- `x` is dominated by something in `H`. -/
+/-- A record in `H` dominates `x`. -/
 def Dom (x : Record) (H : List Record) : Prop := ∃ q, q ∈ H ∧ dominates q x = true
 
 def dom (x : Record) (H : List Record) : Bool := H.any (fun q => dominates q x)
@@ -171,7 +193,8 @@ theorem Dom_congr {x : Record} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y �
     Dom x H ↔ Dom x H' :=
   ⟨fun ⟨q, hq, hqx⟩ => ⟨q, (h q).mp hq, hqx⟩, fun ⟨q, hq, hqx⟩ => ⟨q, (h q).mpr hq, hqx⟩⟩
 
-/-- The frontier: the records of `H` not dominated within `H`. This is the state. -/
+/-- The frontier: the records of `H` that no record of `H` dominates. This is
+the state. -/
 def F (H : List Record) : List Record := H.filter (fun x => !dom x H)
 
 theorem mem_F_iff {x : Record} {H : List Record} : x ∈ F H ↔ x ∈ H ∧ ¬ Dom x H := by
@@ -200,8 +223,9 @@ theorem F_congr {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (x : Reco
     x ∈ F H ↔ x ∈ F H' := by
   rw [mem_F_iff, mem_F_iff, h x, Dom_congr h]
 
-/-- Every dominated record has a dominator that is itself undominated: pick a
-maximal one. Finite sets under a strict order always have one. -/
+/-- Every dominated record has a dominator that is itself undominated. The
+proof picks a maximal dominator. A finite set under a strict order always
+has one. -/
 theorem exists_max_dominator :
     ∀ (H : List Record) (x : Record), Dom x H →
       ∃ y, y ∈ H ∧ dominates y x = true ∧ ¬ Dom y H := by
@@ -257,7 +281,8 @@ theorem F_sandwich {A A' : List Record} (h1 : ∀ x, x ∈ F A → x ∈ A')
     rintro ⟨y, hy, hyx⟩
     exact hnd ⟨y, h2 y hy, hyx⟩
 
-/-- Dropping dominated records from a prefix does not change the frontier. -/
+/-- The removal of dominated records from a prefix does not change the
+frontier. -/
 theorem F_prefix (s t : List Record) (x : Record) : x ∈ F (F s ++ t) ↔ x ∈ F (s ++ t) := by
   apply F_sandwich
   · intro y hy
@@ -286,8 +311,8 @@ theorem F_suffix (s t : List Record) (x : Record) : x ∈ F (s ++ F t) ↔ x ∈
     · exact Or.inl h
     · exact Or.inr (F_subset t h)
 
-/-- T3 (frontier homomorphism): `F(H₁ ∪ H₂) = F(F(H₁) ∪ F(H₂))`. Dominated
-records may be dropped anywhere, at any time, on any subset of replicas. -/
+/-- T3 (frontier homomorphism): `F(H₁ ∪ H₂) = F(F(H₁) ∪ F(H₂))`. Any subset
+of replicas can remove dominated records, at any place and at any time. -/
 theorem frontier_hom (H₁ H₂ : List Record) (x : Record) :
     x ∈ F (F H₁ ++ F H₂) ↔ x ∈ F (H₁ ++ H₂) := by
   rw [F_prefix H₁ (F H₂) x, F_suffix H₁ H₂ x]
@@ -298,14 +323,15 @@ theorem F_idem (H : List Record) (x : Record) : x ∈ F (F H) ↔ x ∈ F H := b
   · intro y hy; exact hy
   · intro y hy; exact F_subset H hy
 
-/-- `y` is held in `T` or dominated by something held in `T`: nothing that
-was in a set and is "covered" by `T` can resurface against `T`. -/
+/-- `T` holds `y`, or a record that `T` holds dominates `y`. If `T` "covers" a
+record of a set, that record cannot resurface against `T`. -/
 def Cov (y : Record) (T : List Record) : Prop := y ∈ T ∨ Dom y T
 
 theorem Cov_mono {y : Record} {T T' : List Record} (h : Cov y T) (hs : T ⊆ T') : Cov y T' :=
   h.elim (fun hy => Or.inl (hs hy)) (fun hd => Or.inr (Dom_mono hd hs))
 
-/-- A record dominated in `H` is dominated in `F H` (by a maximal dominator). -/
+/-- If a record of `H` dominates `y`, then a record of `F H` (a maximal
+dominator) also dominates `y`. -/
 theorem Dom_F {y : Record} {H : List Record} (hd : Dom y H) : Dom y (F H) := by
   obtain ⟨z, hz, hzy, hzmax⟩ := exists_max_dominator H y hd
   exact ⟨z, mem_F_iff.mpr ⟨hz, hzmax⟩, hzy⟩
@@ -321,12 +347,14 @@ theorem Cov_F {y : Record} {H : List Record} (h : Cov y H) : Cov y (F H) :=
 
 /-! ### T4 without admission: apply-with-GC in any order -/
 
-/-- Apply one record and drop what it dominates (and what dominates nothing new). -/
+/-- Add one record and keep the frontier. The result drops every record that
+the new set dominates. This includes `r` when a held record dominates `r`. -/
 def applyF (S : List Record) (r : Record) : List Record := F (S ++ [r])
 
 def applyAllF (S : List Record) (l : List Record) : List Record := l.foldl applyF S
 
-/-- Applying with GC after every record yields the frontier of the whole set. -/
+/-- If GC runs after each record, the result is the frontier of the whole
+set. -/
 theorem applyAllF_mem (l : List Record) :
     ∀ (s : List Record) (x : Record), x ∈ applyAllF (F s) l ↔ x ∈ F (s ++ l) := by
   induction l with
@@ -339,8 +367,9 @@ theorem applyAllF_mem (l : List Record) :
     show x ∈ applyAllF (F (F s ++ [r])) l ↔ x ∈ F (s ++ r :: l)
     rw [ih (F s ++ [r]) x, List.append_assoc, List.singleton_append, F_prefix]
 
-/-- T4 (no admission): two replicas that applied the same set of records, in
-any order, with any duplication, from the same start, hold the same frontier. -/
+/-- T4 (no admission): two replicas start from the same state and apply the
+same set of records. Each replica can use any order and any duplication.
+The two replicas then hold the same frontier. -/
 theorem convergence_F {l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') (s : List Record)
     (x : Record) : x ∈ applyAllF (F s) l ↔ x ∈ applyAllF (F s) l' := by
   rw [applyAllF_mem, applyAllF_mem]
@@ -396,8 +425,9 @@ def ceilOf : Record → Nat
 theorem ceilOf_of_not_auth {r : Record} (h : isAuth r = false) : ceilOf r = 0 := by
   cases r <;> simp [isAuth, ceilOf] at h ⊢
 
-/-- A dominator's ceiling is at least the dominated record's (the product
-order on rosters; every other kind has ceiling 0). -/
+/-- The ceiling of a dominator is at least the ceiling of the dominated
+record. For rosters, this follows from the product order. Every other kind
+has ceiling 0. -/
 theorem dominates_ceil {q y : Record} (h : dominates q y = true) : ceilOf y ≤ ceilOf q := by
   cases y <;> cases q <;> simp [dominates, ceilOf] at h ⊢ <;> omega
 
@@ -489,7 +519,8 @@ theorem writerB_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
   Bool.eq_iff_iff.mpr (by rw [writerB_iff, writerB_iff]; exact isWriter_cover hsub hcov k)
 
 /-- T4': `maxceil(F(H)) = maxceil(H)`. A dominated roster has an undominated
-dominator, of the same signer and with a ceiling at least its own. -/
+dominator. This dominator has the same signer and a ceiling that is at least
+as high. -/
 theorem maxCeil_F (H : List Record) : maxCeil (F H) = maxCeil H :=
   maxCeil_cover (fun _ hy => F_subset H hy) (fun _ hy _ => F_covers hy)
 
@@ -514,8 +545,8 @@ theorem isWriter_mono_auth {H H' : List Record} (h : ∀ x ∈ H, isAuth x = tru
 /-! ### Admission (§4; T4', T9) -/
 
 /-- A data record is admitted iff its `t` is at most `maxceil` and its author
-is in `W`; authorization records always are. Admission reads neither
-`revoke`, nor `root_void`, nor `W_eff`. -/
+is in `W`. Authorization records are always admitted. Admission does not
+read `revoke`, `root_void` or `W_eff`. -/
 def adm (H : List Record) : Record → Bool
   | put _ _ v _ => decide (v.t ≤ maxCeil H) && writerB H v.author
   | del _ v => decide (v.t ≤ maxCeil H) && writerB H v.author
@@ -534,7 +565,7 @@ theorem adm_congr {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') {r : Re
   adm_cover (fun y hy => (h y).mp hy) (fun y hy _ => Or.inl ((h y).mpr hy))
 
 /-- T4' (monotone admission): if every authorization record of `H` is in `H'`,
-whatever `H` admits `H'` admits. -/
+then `H'` admits every record that `H` admits. -/
 theorem adm_mono {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x ∈ H') {r : Record}
     (ha : adm H r = true) : adm H' r = true := by
   have hc := maxCeil_mono_auth h
@@ -549,7 +580,8 @@ theorem adm_mono {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x �
     exact ⟨Nat.le_trans ha.1 hc, hw _ ha.2⟩
   | _ => rfl
 
-/-- T4': admission under the frontier is admission under the whole set. -/
+/-- T4': admission under the frontier is the same as admission under the
+whole set. -/
 theorem adm_F (H : List Record) {r : Record} : adm (F H) r = adm H r :=
   adm_cover (fun _ hy => F_subset H hy) (fun _ hy _ => F_covers hy)
 
@@ -578,8 +610,9 @@ theorem mem_admitted {H : List Record} {x : Record} :
 
 /-! ### The discard model (§4, §10.1) -/
 
-/-- Apply one record: an admitted record is added and the result reduced to
-its frontier; an inadmissible record is discarded (it is re-offered later). -/
+/-- Apply one record. If the record is admitted, `applyD` adds it and reduces
+the result to its frontier. If the record is inadmissible, `applyD`
+discards it. The record is offered again later. -/
 def applyD (S : List Record) (r : Record) : List Record := if adm S r then F (S ++ [r]) else S
 
 def applyAllD (S : List Record) (l : List Record) : List Record := l.foldl applyD S
@@ -587,7 +620,7 @@ def applyAllD (S : List Record) (l : List Record) : List Record := l.foldl apply
 /-- `S` is its own frontier. -/
 def Frontier (S : List Record) : Prop := ∀ x ∈ S, ¬ Dom x S
 
-/-- Every record of `S` is admitted by `S`. -/
+/-- `S` admits every record of `S`. -/
 def Admitted (S : List Record) : Prop := ∀ x ∈ S, adm S x = true
 
 theorem applyD_pos {S : List Record} {r : Record} (h : adm S r = true) :
@@ -683,7 +716,8 @@ theorem applyAllD_cov {S l : List Record} {y : Record} (h : Cov y S) :
   | nil => exact h
   | cons r l ih => exact ih (applyD_cov h)
 
-/-- Every authorization record applied stays covered: it is never discarded. -/
+/-- Every authorization record that a replica applies stays covered. The
+replica never discards it. -/
 theorem applyAllD_auth {S l : List Record} {y : Record} (hy : y ∈ l) (ha : isAuth y = true) :
     Cov y (applyAllD S l) := by
   induction l generalizing S with
@@ -719,9 +753,10 @@ theorem F_prefix_filter (A : Record → Bool) (s t : List Record) (hs : ∀ y �
     · exact List.mem_append_left _ (F_subset s h)
     · exact List.mem_append_right _ h
 
-/-- A pass in which admission is already fixed: from a state that holds only
-records of `U` and covers every authorization record of `U`, applying records
-of `U` in any order is GC-with-filter under `adm U`. -/
+/-- A pass in which admission is already fixed. The start state holds only
+records of `U` and covers every authorization record of `U`. From this
+state, the application of records of `U` in any order is GC-with-filter
+under `adm U`. -/
 theorem applyAllD_fixed (U : List Record) (x : Record) :
     ∀ (l T : List Record), Frontier T → Admitted T → (∀ y ∈ T, y ∈ U) →
       (∀ y ∈ U, isAuth y = true → Cov y T) → (∀ r ∈ l, r ∈ U) →
@@ -772,10 +807,13 @@ theorem applyAllD_fixed (U : List Record) (x : Record) :
         · rw [List.mem_singleton.mp h, ← hTU]; exact hr
       rw [F_prefix_filter (adm U) (T ++ [r]) l hall x, List.append_assoc, List.singleton_append]
 
-/-- The shape every T4 statement reduces to: after a first phase that leaves a
-state `T` holding only records of `U`, covering every authorization record
-of `U` and every record of the part `P` already processed, applying the rest
-`l` of `U` yields the frontier of the admitted records of `U`. -/
+/-- The shape to which every T4 statement reduces. A first phase leaves a
+state `T` with these properties:
+- `T` holds only records of `U`.
+- `T` covers every authorization record of `U`.
+- `T` covers every record of the part `P` that is already processed.
+Then the application of the rest `l` of `U` gives the frontier of the
+admitted records of `U`. -/
 theorem finish {T U P l : List Record} (x : Record) (hF : Frontier T) (hA : Admitted T)
     (hsub : ∀ y ∈ T, y ∈ U) (hcov : ∀ y ∈ U, isAuth y = true → Cov y T)
     (hP : ∀ y ∈ P, Cov y T) (hU : ∀ y, y ∈ U ↔ y ∈ P ∨ y ∈ l) :
@@ -801,10 +839,11 @@ theorem finish {T U P l : List Record} (x : Record) (hF : Frontier T) (hA : Admi
     · exact hsub y h
     · exact hlU y h
 
-/-- T4 (a), T18: one pass that applies a set's authorization records before
-its data records, from a frontier whose records are admitted, yields the
-frontier of the admitted records of the union. This is a batch applied in
-element-key order (§4) and the replay of a compacted log (§7). -/
+/-- T4 (a), T18: one pass starts from a frontier of admitted records. It
+applies the authorization records of a set before the data records of the
+set. The result is the frontier of the admitted records of the union. This
+is the shape of a batch that is applied in element-key order (§4), and of
+the replay of a compacted log (§7). -/
 theorem auth_first {S la ld : List Record} (x : Record) (hF : Frontier S) (hA : Admitted S)
     (hla : ∀ y ∈ la, isAuth y = true) (hld : ∀ y ∈ ld, isAuth y = false) :
     x ∈ applyAllD S (la ++ ld) ↔ x ∈ F (admitted (S ++ la ++ ld)) := by
@@ -825,9 +864,9 @@ theorem auth_first {S la ld : List Record} (x : Record) (hF : Frontier S) (hA : 
     · exact hP y h
     · rw [hld y h] at ha; exact absurd ha Bool.false_ne_true
 
-/-- T4 (b): two passes over the same records, in any order and with any
-duplication (the second re-offering what the first refused), yield the
-frontier of the admitted records of the union. -/
+/-- T4 (b): two passes apply the same records, in any order and with any
+duplication. The second pass offers again the records that the first pass
+refused. The result is the frontier of the admitted records of the union. -/
 theorem convergence_two_pass {S l : List Record} (x : Record) (hF : Frontier S)
     (hA : Admitted S) :
     x ∈ applyAllD (applyAllD S l) l ↔ x ∈ F (admitted (S ++ l)) := by
@@ -840,9 +879,9 @@ theorem convergence_two_pass {S l : List Record} (x : Record) (hF : Frontier S)
     · exact applyAllD_auth h ha
   · intro y hy; exact applyAllD_cov (Or.inl hy)
 
-/-- T4: two replicas that started from the same admitted frontier and applied
-the same set of records (twice each, in any order, with any duplication)
-hold the same frontier. -/
+/-- T4: two replicas start from the same admitted frontier. Each replica
+applies the same set of records twice, in any order and with any
+duplication. The two replicas then hold the same frontier. -/
 theorem convergence {S l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') (x : Record)
     (hF : Frontier S) (hA : Admitted S) :
     x ∈ applyAllD (applyAllD S l) l ↔ x ∈ applyAllD (applyAllD S l') l' := by
@@ -853,9 +892,9 @@ theorem convergence {S l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') (x 
   intro y
   rw [mem_admitted, mem_admitted, hm y, adm_congr hm]
 
-/-- The empty store is an admitted frontier, and `applyD` preserves both
-(`applyD_frontier`, `applyD_admitted`), so every state a replica reaches
-meets the hypotheses of `auth_first`, `convergence_two_pass` and
+/-- The empty store is an admitted frontier. `applyD` keeps both properties
+(`applyD_frontier`, `applyD_admitted`). So every state that a replica
+reaches meets the hypotheses of `auth_first`, `convergence_two_pass` and
 `convergence`. -/
 theorem frontier_nil : Frontier [] := fun _ hx => absurd hx List.not_mem_nil
 
@@ -869,7 +908,7 @@ theorem convergence_empty {l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l')
 /-! ### Tombstone expiry (§7, T11) -/
 
 /-- A `del` at or below the horizon `h`. The horizon itself (with its clock
-clamp, `min(now_local, maxceil) − del_ttl_eff`) is computed outside the
+clamp, `min(now_local, maxceil) − del_ttl_eff`) is calculated outside the
 model. -/
 def isExpiredDel (h : Nat) : Record → Bool
   | del _ v => decide (v.t ≤ h)
@@ -902,7 +941,7 @@ theorem expire_none {h : Nat} {S : List Record} {x : Record} (hx : x ∈ expire 
     isExpiredDel h x = false :=
   (mem_expire.mp hx).2
 
-/-- Expiry removes nothing but `del`s at or below the horizon. -/
+/-- Expiry removes only `del`s at or below the horizon. -/
 theorem expire_only_del {h : Nat} {S : List Record} {x : Record} (hx : x ∈ S)
     (hn : x ∉ expire h S) : ∃ e v, x = del e v ∧ v.t ≤ h := by
   cases hk : isExpiredDel h x
@@ -928,8 +967,8 @@ theorem expire_admitted {h : Nat} {S : List Record} (hA : Admitted S) :
   rw [expire_adm]
   exact hA x (expire_subset h S hx)
 
-/-- Two replicas, one holding the data record `d` (state `A`) and one not
-(state `B`), stay related by `A = F(B ∪ {d})` through any further records. -/
+/-- Two replicas: one holds the data record `d` (state `A`), and one does not
+(state `B`). After any further records, `A = F(B ∪ {d})` stays true. -/
 theorem reapply_rel {d : Record} (hd : isAuth d = false) :
     ∀ (l A B : List Record), (∀ y, y ∈ A ↔ y ∈ F (B ++ [d])) →
       ∀ y, y ∈ applyAllD A l ↔ y ∈ F (applyAllD B l ++ [d]) := by
@@ -955,10 +994,11 @@ theorem reapply_rel {d : Record} (hd : isAuth d = false) :
       simp only [List.mem_append, List.mem_singleton]
       exact or_right_comm
 
-/-- T11 (b), apply-then-expire: a replica that holds the expired `del` `d` and
-one that does not agree, after the same further records `l`, a re-sent `d`
-and an expiry at `h`, on every record. No hypothesis beyond the statement's
-is needed (in fact the two agree before the expiry already). -/
+/-- T11 (b), apply-then-expire: one replica holds the expired `del` `d`, and
+one does not. After the same further records `l`, a re-sent `d` and an
+expiry at `h`, the two replicas agree on every record. The theorem needs no
+hypothesis other than those in its statement. (In fact, the two replicas
+agree before the expiry.) -/
 theorem expire_reapply {S l : List Record} {d : Record} {h : Nat} (x : Record)
     (hF : Frontier S) (hA : Admitted S) (hd : d ∈ S) (hexp : isExpiredDel h d = true) :
     x ∈ expire h (applyD (applyAllD (S.erase d) l) d) ↔ x ∈ expire h (applyAllD S l) := by
@@ -980,10 +1020,11 @@ theorem expire_reapply {S l : List Record} {d : Record} {h : Nat} (x : Record)
     exact h1
   rw [applyD_pos hadmB, mem_expire, mem_expire, ← hrel x]
 
-/-! ### Views (§3, §6; T5, T12). `founding` is the collection's founding key. -/
+/-! ### Views (§3, §6; T5, T12). `founding` is the founding key of the
+collection. -/
 
-/-- `root_void(k)`: the founding key revoked `k` (its `from_t` is ignored);
-the founding key is never root-voided. -/
+/-- `root_void(k)`: the founding key revoked `k`. This view ignores the
+`from_t` of the revocation. The founding key is never root-voided. -/
 def rootVoid (founding : Nat) (H : List Record) (k : Nat) : Prop :=
   k ≠ founding ∧ ∃ f r hh, revoke founding k f r hh ∈ H
 
@@ -995,7 +1036,7 @@ def wEff (founding : Nat) (H : List Record) (k : Nat) : Prop :=
 def revokeVoids (founding : Nat) (H : List Record) (a t : Nat) : Prop :=
   ∃ i f r hh, revoke i a f r hh ∈ H ∧ f ≤ t ∧ ¬ rootVoid founding H i
 
-/-- `void(p)` for a data record; false for the other kinds. -/
+/-- `void(p)` for a data record. It is false for the other kinds. -/
 def voided (founding : Nat) (H : List Record) : Record → Prop
   | put _ _ v _ => revokeVoids founding H v.author v.t ∨ ¬ wEff founding H v.author
   | del _ v => revokeVoids founding H v.author v.t ∨ ¬ wEff founding H v.author
@@ -1157,7 +1198,8 @@ def lexLt (p q : Nat × Nat × Nat × Nat × Nat) : Bool :=
     (p.2.2.1 < q.2.2.1 ∨ (p.2.2.1 = q.2.2.1 ∧
       (p.2.2.2.1 < q.2.2.2.1 ∨ (p.2.2.2.1 = q.2.2.2.1 ∧ p.2.2.2.2 < q.2.2.2.2))))))))
 
-/-- The order `ROSTER_eff` maximizes. On rosters it is a strict total order. -/
+/-- The order that `ROSTER_eff` maximizes. On rosters, it is a strict total
+order. -/
 def rkLt (a b : Record) : Bool := lexLt (rkey a) (rkey b)
 
 theorem lexLt_asymm {p q : Nat × Nat × Nat × Nat × Nat} (h : lexLt p q = true) :
@@ -1202,9 +1244,9 @@ def maxStep (cand : Record → Bool) (acc : Option Record) (r : Record) : Option
     | some a => if rkLt a r then some r else some a
   else acc
 
-/-- `ROSTER_eff`: the roster with a signer that is not root-voided that is
-maximal under `(gen, h, signer, ceil, ttl)` (a strict total order on
-rosters), or `none`. -/
+/-- `ROSTER_eff`: of the rosters whose signer is not root-voided, the one that
+is maximal under `(gen, h, signer, ceil, ttl)`. This order is a strict total
+order on rosters. If there is no such roster, the value is `none`. -/
 def rosterEff (founding : Nat) (H : List Record) : Option Record :=
   H.foldl (maxStep (isRosterOK founding H)) none
 
@@ -1329,9 +1371,9 @@ theorem rosterEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y
     obtain ⟨h1, h2, h3⟩ := maxOf_some hr
     exact (maxOf_eq hc ⟨(h m).mp h1, h2, fun r hr' hc' => h3 r ((h r).mpr hr') hc'⟩).symm
 
-/-- T5: `ROSTER_eff(F(H)) = ROSTER_eff(H)`. The maximum is undominated: a
-dominator has the same signer (so it is a candidate too) and a strictly
-greater `(gen, h)`. -/
+/-- T5: `ROSTER_eff(F(H)) = ROSTER_eff(H)`. The maximum is undominated. A
+dominator has the same signer, so it is also a candidate. A dominator also
+has a strictly greater `(gen, h)`. -/
 theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff f H := by
   unfold rosterEff
   rw [isRosterOK_F]
@@ -1355,7 +1397,8 @@ theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff 
       exact Bool.false_ne_true hlt
     exact maxOf_eq hc ⟨hmF, h2, fun r hr' hc' => h3 r (F_subset H hr') hc'⟩
 
-/-- `ROSTER_eff` is present whenever a roster signed by the founding key is held. -/
+/-- If the held set contains a roster that the founding key signed, then
+`ROSTER_eff` is present. -/
 theorem rosterEff_present {f : Nat} {H : List Record}
     (h : ∃ c g t hh, roster f c g t hh ∈ H) : rosterEff f H ≠ none := by
   obtain ⟨c, g, t, hh, hm⟩ := h
@@ -1371,7 +1414,7 @@ def ttlOf : Record → Nat
   | roster _ _ _ t _ => t
   | _ => 0
 
-/-- The largest `ttl` among the candidates (0 if none). -/
+/-- The largest `ttl` of the candidates (0 if there is no candidate). -/
 def maxTtl (cand : Record → Bool) : List Record → Nat
   | [] => 0
   | r :: l => if cand r then max (ttlOf r) (maxTtl cand l) else maxTtl cand l
@@ -1420,9 +1463,9 @@ theorem delTtlEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y
 
 /-! ### T12: authorization records do not touch data -/
 
-/-- T12: applying an authorization record `a` neither adds nor removes a
-`put` or `del`: the data records of `F (S ++ [a])` are those of `F S`. (This
-holds for every `S`; for a frontier `S`, `F S` is `S`.) -/
+/-- T12: the application of an authorization record `a` does not add or
+remove a `put` or a `del`. The data records of `F (S ++ [a])` are those of
+`F S`. This is true for every `S`. For a frontier `S`, `F S` is `S`. -/
 theorem data_F_auth_free {S : List Record} {a x : Record} (ha : isAuth a = true)
     (hx : isAuth x = false) : x ∈ F (S ++ [a]) ↔ x ∈ F S := by
   have hxa : x ≠ a := fun he => by rw [he, ha] at hx; exact absurd hx (by decide)
@@ -1443,9 +1486,9 @@ theorem data_F_auth_free_frontier {S : List Record} {a x : Record} (hF : Frontie
     (ha : isAuth a = true) (hx : isAuth x = false) : x ∈ F (S ++ [a]) ↔ x ∈ S := by
   rw [data_F_auth_free ha hx, frontier_mem_F hF]
 
-/-- T12 (locality): applying any record removes from the frontier only records
-it dominates itself (so, for an authorization record, only records of its own
-kind and key). -/
+/-- T12 (locality): when a replica applies a record, only records that this
+record dominates leave the frontier. For an authorization record, these are
+only records of its own kind and key. -/
 theorem applyF_local {S : List Record} {a y : Record} (hy : y ∈ F S) (hy' : y ∉ F (S ++ [a])) :
     dominates a y = true := by
   obtain ⟨hyS, hnd⟩ := mem_F_iff.mp hy
@@ -1460,9 +1503,9 @@ theorem applyF_local {S : List Record} {a y : Record} (hy : y ∈ F S) (hy' : y 
 
 /-! ### T5: one value per cell -/
 
-/-- Two frontier PUTs on one cell with versions that are equal only when the
-records are (hash injectivity) are the same record: there is one value per
-cell. -/
+/-- Take two frontier PUTs on one cell. Their versions are equal only when the
+records are equal (hash injectivity). Then the two PUTs are the same record,
+so there is one value per cell. -/
 theorem cell_unique {H : List Record} {e f : Nat} {vx vy : Version} {ax ay : Nat}
     (hx : put e f vx ax ∈ F H) (hy : put e f vy ay ∈ F H)
     (hinj : vx = vy → put e f vx ax = put e f vy ay) :
@@ -1476,12 +1519,12 @@ theorem cell_unique {H : List Record} {e f : Nat} {vx vy : Version} {ax ay : Nat
 
 /-! ### T8: the chase, and D8 -/
 
-/-- The emitted `t`: the wall clock, or just above the cell's floor, capped at
-the ceiling. -/
+/-- The emitted `t`: the larger of the wall clock and the value just above the
+floor of the cell, capped at the ceiling. -/
 def emitT (now floorT c : Nat) : Nat := min (max now (floorT + 1)) c
 
-/-- T8: below the ceiling, a local write beats the cell's floor on `t` alone,
-whatever the authors (read-your-writes). -/
+/-- T8: below the ceiling, a local write beats the floor of the cell on `t`
+alone, for all authors (read-your-writes). -/
 theorem chase {now floorT c : Nat} (h : floorT < c) : floorT < emitT now floorT c := by
   unfold emitT; omega
 

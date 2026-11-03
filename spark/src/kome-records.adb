@@ -1,9 +1,10 @@
---  Body of Kome.Records. Encoders are the layout read position by position
---  (Frame_Byte) into one aggregate; parsers are one aggregate per field.
---  The round-trip lemmas instantiate the encoder's per-byte Post at each
---  field's offsets (Decode o Encode) or walk the frame segment by segment
---  (Encode o Decode); the integer lanes are discharged by the u48 / u16
---  lemmas, which rest on Kome.Keys' word lemmas.
+--  Body of Kome.Records. An encoder is the layout, read position by
+--  position (Frame_Byte) into one aggregate. A parser is one aggregate for
+--  each field. For Decode o Encode, the round-trip lemmas instantiate the
+--  per-byte Post of the encoder at the offsets of each field. For Encode o
+--  Decode, they go through the frame one segment at a time. The u48 / u16
+--  lemmas discharge the integer lanes, and these lemmas use the word lemmas
+--  of Kome.Keys.
 pragma Ada_2022;
 package body Kome.Records with SPARK_Mode is
 
@@ -84,7 +85,7 @@ package body Kome.Records with SPARK_Mode is
                          (if I < VL then Value (Value'First + I) else 0)]),
          Signature => [others => 0]);
    begin
-      --  FH: the stored field's first FL bytes are the argument's bytes.
+      --  FH: the first FL bytes of the stored field are the argument bytes.
       pragma Assert (for all K in 0 .. FL - 1 => R.C.Field (K) = Field (Field'First + K));
       Kome.Crypto.Lemma_Blake2b_Congruent (R.C.Field (0 .. FL - 1), Field);
       Lemma_Header_Canonical (R);
@@ -166,9 +167,9 @@ package body Kome.Records with SPARK_Mode is
 
    procedure Lemma_Header_Canonical (R : Put_Record) is null;
 
-   --  Lemma_Decode_Encode (PUT) is split into one helper per field so that
-   --  each VC holds only Encode's and Parse_Put's Posts and one field's
-   --  steps (a single body with every step timed out on the late goals).
+   --  Lemma_Decode_Encode (PUT) has one helper for each field. So each VC
+   --  holds only the Posts of Encode and Parse_Put and the steps for one
+   --  field. (With all the steps in one body, the late goals timed out.)
 
    function Put_Shape_OK (R : Put_Record) return Boolean is
      (Canonical (R)
@@ -538,8 +539,9 @@ package body Kome.Records with SPARK_Mode is
    --  Round-trip helpers shared by the authorization kinds.
    ---------------------------------------------------------------------------
 
-   --  E agrees with Frame (shifted to 'First = 0) on Lo .. Hi. E is passed
-   --  in so that run-time evaluation under -gnata encodes once.
+   --  E agrees with Frame (shifted to 'First = 0) on Lo .. Hi. The caller
+   --  gives E as an argument, so a run-time check under -gnata encodes only
+   --  one time.
    function Same_At (Frame, E : Byte_Array; Lo, Hi : Natural) return Boolean is
      (for all J in Lo .. Hi => E (J) = Frame (Frame'First + J))
    with Ghost,
@@ -692,9 +694,9 @@ package body Kome.Records with SPARK_Mode is
 
    procedure Lemma_Header_Canonical (R : Roster_Record) is null;
 
-   --  Lemma_Decode_Encode (ROSTER) is split into one helper per group of
-   --  fields, as for PUT, so that each VC holds only Encode's and
-   --  Parse_Roster's Posts and that group's steps.
+   --  Lemma_Decode_Encode (ROSTER) has one helper for each group of fields,
+   --  as for PUT. So each VC holds only the Posts of Encode and
+   --  Parse_Roster and the steps for that group.
 
    function Roster_Shape_OK (R : Roster_Record) return Boolean is
      (Canonical (R)
@@ -900,8 +902,8 @@ package body Kome.Records with SPARK_Mode is
       end;
    end Lemma_Decode_Encode;
 
-   --  Lemma_Encode_Decode_Roster is split into five parts: the fixed head
-   --  in two halves, the link block, the member block and the signature.
+   --  Lemma_Encode_Decode_Roster has five parts: the fixed head (in two
+   --  halves), the link block, the member block and the signature.
 
    procedure Lemma_Roster_ED_Head1 (Frame : Byte_Array) with
      Ghost, Global => null,

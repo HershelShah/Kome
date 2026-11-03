@@ -1,31 +1,38 @@
 --  Test main for Kome.Store (DESIGN.md §7, §9 T11, T13, T18). Real signed
 --  frames from Kome.Records go through the store.
 --
---  Covered: the HEADER against independent vectors (vectors/store.txt);
---  put, overwrite (the older frame leaves the index), a dominated re-offer
---  and a duplicate (nothing appended), a DEL that frees every field of its
---  entity; refusals that change nothing (an unrostered author and a record
---  above the ceiling, Inadmissible; a frontier full, No_Space; a slice
---  full, Auth_Full; a log full, No_Space); a dominated PUT and a dominated
---  roster on a full log are Dominated, not No_Space; an authorization
---  record of a foreign founding key; expiry (the horizon of DESIGN.md §7
---  with del_ttl_eff and the maxceil clamp, EXPIRE logged iff something was
---  removed or the horizon lowered, periodic calls do not grow the log, a
---  clock stepped back, a horizon below 0); apply-then-expire (an arriving
---  expired DEL frees its entity, is logged as APPLY_EXPIRED and is not
---  held); compaction (the HEADER, authorization records first, each part in
---  index order, byte for byte, EXPIRE (horizon)); the index never refuses
---  on its own (index = F); and replay (T18): after a roster refresh, a
---  dominated-on-arrival roster and a stale incomparable roster, a member
---  revoke, a GRANT that arrives after a PUT it admits, a clock stepped back
---  and a stale PUT, and a data row full of DELs that expire, reopening
---  from the log gives the same held set (Holds both ways), the same index
---  entries up to order, the same Kome.Digest.Frontier_Digest and a horizon
---  at most the live one, and its log is the input byte for byte.
---  Reopening with smaller capacities is refused (No_Space); a corrupt log
---  is Malformed.
---  Compiled with -gnata, so every Pre / Post (Valid included) and every
---  ghost lemma is also executed on these stores.
+--  The tests cover these items:
+--    * the HEADER against independent vectors (vectors/store.txt);
+--    * put and overwrite (the older frame leaves the index), a dominated
+--      re-offer and a duplicate (nothing appended), and a DEL that frees
+--      every field of its entity;
+--    * refusals that change nothing: an unrostered author and a record
+--      above the ceiling (Inadmissible), a full frontier (No_Space), a full
+--      slice (Auth_Full) and a full log (No_Space);
+--    * a dominated PUT and a dominated roster on a full log give Dominated,
+--      not No_Space;
+--    * an authorization record of a foreign founding key;
+--    * expiry: the horizon of DESIGN.md §7 with del_ttl_eff and the maxceil
+--      clamp; EXPIRE logged iff a record was removed or the horizon was
+--      lowered; periodic calls that do not make the log larger; a clock set
+--      back; a horizon below 0;
+--    * apply-then-expire: an arriving expired DEL frees its entity, the
+--      store logs it as APPLY_EXPIRED, and the DEL is not held;
+--    * compaction: the HEADER, authorization records first, each part in
+--      index order, byte for byte, EXPIRE (horizon);
+--    * the index itself never causes a refusal (index = F);
+--    * replay (T18) after these sequences: a roster refresh, a
+--      dominated-on-arrival roster and a stale incomparable roster; a member
+--      revoke; a GRANT that arrives after a PUT that it admits; a clock set
+--      back and a stale PUT; a data row full of DELs that expire. When the
+--      store opens again from the log, it has the same held set (Holds both
+--      ways), the same index entries up to order, the same
+--      Kome.Digest.Frontier_Digest and a horizon at most the live horizon.
+--      Its log is the input byte for byte;
+--    * Open_From_Log refuses smaller capacities (No_Space), and a corrupt
+--      log is Malformed.
+--  The build uses -gnata, so the tests also execute every Pre / Post (Valid
+--  included) and every ghost lemma on these stores.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -237,7 +244,8 @@ procedure Test_Store with SPARK_Mode => Off is
    function Has_Header (S : Store_T; X : Header) return Boolean is
      (for some I in 1 .. Entries (S) => Entry_At (S, I).H = X);
 
-   --  Every index entry's frame decodes to its header (tested, not proved).
+   --  The frame of each index entry decodes to its header (tested, not
+   --  proved).
    function Every_Frame_Matches (S : Store_T) return Boolean is
      (for all I in 1 .. Entries (S) =>
         Is_Record_Frame (Frame_Of (S, I))
@@ -245,7 +253,8 @@ procedure Test_Store with SPARK_Mode => Off is
         and then Frame_Of (S, I)'Length = Entry_At (S, I).Len);
 
    --  A scan of the log as a file (offset 0, then Next_Offset) visits
-   --  exactly the entry chain of the invariant and ends at the log's end.
+   --  exactly the entry chain of the invariant and stops at the end of the
+   --  log.
    function Scan_Matches_Chain (S : Store_T; L : Lattice) return Boolean is
       Off : Natural := 0;
       K   : Natural := 0;
@@ -280,8 +289,8 @@ procedure Test_Store with SPARK_Mode => Off is
       and then (for all I in 1 .. Entries (A) => Indexed (B, Entry_At (A, I).H))
       and then (for all I in 1 .. Entries (B) => Indexed (A, Entry_At (B, I).H)));
 
-   --  T18: the same held set (hence registers and digest), the same index
-   --  entries up to order, a horizon at most the live one.
+   --  T18: the same held set (and thus the same registers and digest), the
+   --  same index entries up to order, and a horizon at most the live horizon.
    function T18 (S : Store_T; L : Lattice; R : Store_T; RL : Lattice) return Boolean is
      (Valid (R, RL)
       and then Same_Set (L, RL)
@@ -292,9 +301,9 @@ procedure Test_Store with SPARK_Mode => Off is
       and then Horizon (R) <= Horizon (S)
       and then Log_Bytes (R) = Log_Bytes (S));
 
-   --  T18 for a store reopened with larger capacities: the same, but its
-   --  HEADER records the new capacities, and the log differs from the live
-   --  one there only.
+   --  T18 for a store that opens again with larger capacities: the same
+   --  checks, but its HEADER records the new capacities. The log is different
+   --  from the live log only in those capacity bytes.
    function T18_Caps (S : Store_T; L : Lattice; R : Store_T; RL : Lattice) return Boolean is
      (Valid (R, RL)
       and then Same_Set (L, RL)
@@ -344,8 +353,8 @@ procedure Test_Store with SPARK_Mode => Off is
       Open_From_Log (Log_Bytes (S), RL, R, St);
    end Reopen;
 
-   --  A State carries a Register_File of Writers_Max keys (256 KiB), and
-   --  under -gnata every Post evaluation copies states and stores, so the
+   --  A State contains a Register_File of Writers_Max keys (256 KiB). Under
+   --  -gnata, each evaluation of a Post copies states and stores. Thus the
    --  checks run in a task with a large stack.
    procedure Run_All;
 
@@ -547,10 +556,11 @@ procedure Test_Store with SPARK_Mode => Off is
                 St = Inadmissible and then S = B and then SL = BL);
       end;
 
-      --  An authorization record of a foreign founding key. Its ns is that
-      --  key's collection, so Put_Frame's precondition (H.NS = Collection)
-      --  already excludes it short of a 128-bit collision; the store's step
-      --  0 still names it, and a log carrying it is Malformed.
+      --  An authorization record of a foreign founding key. Its ns is the
+      --  collection of that key. Thus the precondition of Put_Frame
+      --  (H.NS = Collection) already excludes it, unless a 128-bit collision
+      --  occurs. But step 0 of the store still names it, and a log that
+      --  contains it is Malformed.
       declare
          GX : Byte_Array := Founding_Grant (Author2_PK);
       begin
@@ -744,7 +754,7 @@ procedure Test_Store with SPARK_Mode => Off is
                 St = OK and then Log_Length (S) = L0 + Apply_Prefix + D2'Length);
       end;
 
-      --  A clock stepped back, then a stale PUT.
+      --  A clock set back, then a stale PUT.
       declare
          L0 : constant Log_Size := Log_Length (S);
          PS : constant Byte_Array := Put_Of (1, 'n', 25 * Day, 11, [6]);
@@ -770,7 +780,8 @@ procedure Test_Store with SPARK_Mode => Off is
          end;
       end;
 
-      --  Expire's No_Space: a full log refuses an EXPIRE it must write.
+      --  No_Space from Expire: a full log refuses an EXPIRE that Expire must
+      --  write.
       declare
          Room : constant Natural :=
            Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
@@ -795,7 +806,7 @@ procedure Test_Store with SPARK_Mode => Off is
       end;
 
       ------------------------------------------------------------------------
-      --  Compact, then reopen (T18); and reopen the raw log.
+      --  Compact, then open again (T18). Also open the raw log again.
       ------------------------------------------------------------------------
       declare
          Before  : constant Store_T := S;
@@ -916,8 +927,8 @@ procedure Test_Store with SPARK_Mode => Off is
          Open_From_Log (Img (0 .. Header_Len - 1), RL, R, St);
          Check ("a log that is only the HEADER: OK, empty",
                 St = OK and then Kome.Frontier.Count (RL) = 0 and then Entries (R) = 0);
-         --  The completeness clause of Open_From_Log's Post (without it, a
-         --  replay that refused every log would meet the contract).
+         --  The completeness clause of the Post of Open_From_Log. (Without it,
+         --  a replay that refused every log would meet the contract.)
          Open_From_Log (Img (0 .. Header_Len - 1), RLb, Rb, St);
          Check ("only the HEADER, larger capacities: OK, empty, the new capacities logged",
                 St = OK and then Kome.Frontier.Count (RLb) = 0 and then Entries (Rb) = 0
@@ -945,7 +956,7 @@ procedure Test_Store with SPARK_Mode => Off is
 
    ---------------------------------------------------------------------------
    --  T18: a roster refresh, a dominated-on-arrival roster, a stale
-   --  incomparable roster, a GRANT, data, Compact, reopen.
+   --  incomparable roster, a GRANT, data, Compact, open again.
    ---------------------------------------------------------------------------
    declare
       S   : Store_T (ICap, LCap);
@@ -1036,7 +1047,7 @@ procedure Test_Store with SPARK_Mode => Off is
    end;
 
    ---------------------------------------------------------------------------
-   --  T18: a GRANT that arrives after a PUT it admits.
+   --  T18: a GRANT that arrives after a PUT that it admits.
    ---------------------------------------------------------------------------
    declare
       S    : Store_T (ICap, LCap);
@@ -1111,10 +1122,10 @@ procedure Test_Store with SPARK_Mode => Off is
       end;
    end;
 
-   --  T18 with raised capacities: a log of data_cap 4 reopened with
-   --  data_cap 8, then given more data records than 4. Its HEADER records
-   --  8, so it is refused at 4 (No_Space, not a silent loss) and replays
-   --  at 8, uncompacted and compacted.
+   --  T18 with raised capacities: a log of data_cap 4 opens again with
+   --  data_cap 8 and then gets more than 4 data records. Its HEADER records
+   --  8. Thus an open at 4 refuses it (No_Space, not a silent loss), and it
+   --  replays at 8, before and after Compact.
    declare
       S4  : Store_T (4 + Signers_Max * Slice, LCap);
       L4  : Lattice (4, Slice);
@@ -1152,9 +1163,9 @@ procedure Test_Store with SPARK_Mode => Off is
              St = OK and then T18 (S8, L8, R8, RL8));
    end;
 
-   --  Expire lowering the horizon on a full log: No_Space, nothing
-   --  changed; Compact with no room for the EXPIRE keeps the horizon in
-   --  memory only, and the reopened horizon is none.
+   --  Expire lowers the horizon on a full log: No_Space, and nothing
+   --  changes. If Compact has no room for the EXPIRE, it keeps the horizon
+   --  in memory only, and the reopened horizon is none.
    declare
       R1   : constant Byte_Array := Founding_Roster (1, 100 * Day);
       G1   : constant Byte_Array := Founding_Grant (Author_PK);
@@ -1197,7 +1208,7 @@ procedure Test_Store with SPARK_Mode => Off is
    end;
 
    --  Compact, then more operations (an APPLY_EXPIRED, a lowered EXPIRE, a
-   --  re-held DEL), then reopen.
+   --  DEL that is held again), then open again.
    declare
       S   : Store_T (ICap, LCap);
       SL  : Lattice (Cap, Slice);

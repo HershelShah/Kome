@@ -1,5 +1,5 @@
-# Kome.Store log encodings (DESIGN.md §7), computed with Python's hashlib
-# (BLAKE2b-256) independently of the SPARK code.
+# Kome.Store log encodings (DESIGN.md §7). Python's hashlib (BLAKE2b-256)
+# computed them, independently of the SPARK code.
 # header <root_pk> <salt> <data_cap> <slice> <80-byte HEADER>
 header 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 6465666768696a6b6c6d6e6f70717273 32 8 006b6f6d652f6c6f670118554e6ec31be310bef2030355045eba000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6465666768696a6b6c6d6e6f70717273000000200008
 header ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 00000000000000000000000000000000 300 260 006b6f6d652f6c6f6701fa63d837acd8a8710a08ae9e58242fd9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000000000000000000000000000000000000012c0104

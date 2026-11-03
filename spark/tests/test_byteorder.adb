@@ -1,8 +1,9 @@
---  Test main for Kome.Byteorder: every vector in vectors/byteorder.txt is
---  checked byte for byte against To_LE_U64 and Read_U64LE (also at a
---  non-zero offset inside a larger buffer), against an arithmetic reference
---  (divide and sum instead of shift and or), and through both round-trip
---  lemmas, whose assertions and Posts run under -gnata.
+--  Test main for Kome.Byteorder. The test checks each vector in
+--  vectors/byteorder.txt byte for byte against To_LE_U64 and Read_U64LE,
+--  also at a non-zero offset in a larger buffer. It also checks each vector
+--  against an arithmetic reference (divide and sum, not shift and or).
+--  Last, it checks each vector through the two round-trip lemmas. Their
+--  assertions and Posts run under -gnata.
 pragma Ada_2022;
 with Ada.Text_IO;         use Ada.Text_IO;
 with Ada.Command_Line;    use Ada.Command_Line;
@@ -21,8 +22,8 @@ procedure Test_Byteorder with SPARK_Mode => Off is
       end if;
    end Check;
 
-   --  Arithmetic references: byte I is V / 2**(8I) mod 256, and the read
-   --  is the sum of the shifted bytes (the lanes are disjoint).
+   --  Arithmetic references: byte I is V / 2**(8I) mod 256. The read is the
+   --  sum of the shifted bytes, because the lanes are disjoint.
    function Ref_Byte (V : U64; I : U64_Index) return Byte is
      (Byte ((V / (2 ** (8 * I))) mod 256));
 
@@ -76,7 +77,7 @@ begin
                  Hex_U64 (Line (Line'First .. Line'First + 15));
                B   : constant U64_Bytes :=
                  Hex_Bytes (Line (Line'First + 17 .. Line'First + 32));
-               --  The encoding placed at offset 5 of a buffer starting at 3.
+               --  The encoding at offset 5 of a buffer that starts at 3.
                Buf : Byte_Array (3 .. 20) := [others => 16#A5#];
             begin
                N := N + 1;

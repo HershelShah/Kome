@@ -1,14 +1,16 @@
 pragma Ada_2022;
 package body Kome.Store with SPARK_Mode is
 
-   --  Proof style (CONVENTIONS.md): the invariant is split into parts over
-   --  explicit components (Live, Covered, Fresh, Framed, Sorted, Chain,
-   --  At_Bounds, Head_OK), each step of an operation re-establishes one
-   --  part through a small ghost lemma, and every "some record" is turned
-   --  into a named index by a ghost witness function before it is used.
+   --  Proof style (CONVENTIONS.md):
+   --    * The invariant has parts over explicit components (Live, Covered,
+   --      Fresh, Framed, Sorted, Chain, At_Bounds, Head_OK).
+   --    * Each step of an operation makes one part true again through a small
+   --      ghost lemma.
+   --    * Before the proof uses a "some record", a ghost witness function
+   --      changes it into a named index.
 
    ---------------------------------------------------------------------------
-   --  The invariant's parts (defined by their Posts in the spec).
+   --  The parts of the invariant (their Posts in the spec define them).
    ---------------------------------------------------------------------------
 
    function Has_Entry (Idx : Entry_Array; N : Held_Count; X : Header) return Boolean is
@@ -254,7 +256,8 @@ package body Kome.Store with SPARK_Mode is
    --  The HEADER and the chain of entries.
    ---------------------------------------------------------------------------
 
-   --  The HEADER only reads bytes below Header_Len, which an append keeps.
+   --  The HEADER reads only bytes below Header_Len. An append keeps these
+   --  bytes.
    procedure Lemma_Head_Grow
      (Log1 : Byte_Array; LL1 : Log_Size; Log2 : Byte_Array; LL2 : Log_Size;
       NSb  : NS_Id; Root : Pubkey; Slt : Salt; DCap : Data_Size; Slc : Slice_Count)
@@ -301,8 +304,8 @@ package body Kome.Store with SPARK_Mode is
    procedure Lemma_Chain_At
      (Log : Byte_Array; LL : Log_Size; Bnd : Offset_Array; NB : Natural; K : Positive) is null;
 
-   --  An entry of a log stays an entry, of the same size, when the log is
-   --  extended past it.
+   --  An entry of a log stays an entry of the same size when the log grows
+   --  after it.
    procedure Lemma_Entry_Same
      (Log1 : Byte_Array; LL1 : Log_Size; Log2 : Byte_Array; LL2 : Log_Size; P : Natural)
    with
@@ -331,7 +334,7 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Lemma_Entry_Same;
 
-   --  Appending one entry at LL1 extends the chain by it.
+   --  An append of one entry at LL1 adds that entry to the chain.
    procedure Lemma_Chain_Grow
      (Log1 : Byte_Array; LL1 : Log_Size; Log2 : Byte_Array; LL2 : Log_Size;
       Bnd1 : Offset_Array; NB1 : Natural; Bnd2 : Offset_Array)
@@ -376,10 +379,10 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Chain_Grow;
 
    ---------------------------------------------------------------------------
-   --  Appending entries.
+   --  Append entries.
    ---------------------------------------------------------------------------
 
-   --  Log (P .. P + Frame'Length - 1) holds Frame. Defined by its Post.
+   --  Log (P .. P + Frame'Length - 1) contains Frame. Its Post defines it.
    function Bytes_At (Log : Byte_Array; P : Natural; Frame : Byte_Array) return Boolean
    with Ghost, Global => null,
         Pre  => Log'First = 0 and then Log'Last <= Log_Max
@@ -544,8 +547,8 @@ package body Kome.Store with SPARK_Mode is
    --  Index lemmas.
    ---------------------------------------------------------------------------
 
-   --  Every entry of Idx (1 .. N) is an entry of Old (1 .. N0). Defined by
-   --  its Post so that it stays one atom in goals that carry it along.
+   --  Each entry of Idx (1 .. N) is an entry of Old (1 .. N0). Its Post
+   --  defines it, so it stays one atom in goals that carry it along.
    function Sub (Idx : Entry_Array; N : Held_Count; Old : Entry_Array; N0 : Held_Count)
      return Boolean
    with Ghost, Global => null,
@@ -590,7 +593,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Framed_Sub;
 
-   --  Appending to the log keeps every entry's APPLY.
+   --  An append to the log keeps the APPLY of each entry.
    procedure Lemma_Framed_Grow
      (Log1 : Byte_Array; LL1 : Log_Size; Log2 : Byte_Array; LL2 : Log_Size;
       Idx  : Entry_Array; N : Held_Count)
@@ -623,7 +626,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Framed_Grow;
 
-   --  At_Bounds from an explicit witness: entry J's APPLY is the
+   --  At_Bounds from an explicit witness: the APPLY of entry J is the
    --  Wit (J)-th entry of the chain.
    procedure Lemma_At_Bounds_Of
      (Idx : Entry_Array; N : Held_Count; Bnd : Offset_Array; NB : Natural; Wit : Pos_Map)
@@ -712,7 +715,8 @@ package body Kome.Store with SPARK_Mode is
       Lemma_At_Bounds_Of (Idx, N, Bnd, NB, Wit);
    end Lemma_Bounds_Push;
 
-   --  Entries picked from an index whose APPLYs are on the chain are too.
+   --  If the APPLYs of an index are on the chain, then the APPLYs of the
+   --  entries picked from that index are also on the chain.
    procedure Lemma_Bounds_Sub
      (Idx : Entry_Array; N : Held_Count; Old : Entry_Array; N0 : Held_Count;
       Bnd : Offset_Array; NB : Natural)
@@ -743,11 +747,11 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Bounds_Sub;
 
    ---------------------------------------------------------------------------
-   --  Filtering the index.
+   --  Filter the index.
    ---------------------------------------------------------------------------
 
-   --  Which entries a filter drops: those R dominates, or the DELs expired
-   --  under Hz.
+   --  The entries that a filter drops: the entries that R dominates, or the
+   --  DELs that are expired at Hz.
    type Drop_Rule is record
       By_Dom : Boolean := True;
       R      : Header;
@@ -796,7 +800,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Sorted_Sub;
 
-   --  Remove the entries D drops, keeping the others in order.
+   --  Remove the entries that D drops, and keep the other entries in
+   --  order.
    procedure Filter (Idx : in out Entry_Array; N : in out Held_Count; D : Drop_Rule) with
      Global => null,
      Pre  => Idx'First = 1 and then N <= Idx'Last,
@@ -812,8 +817,8 @@ package body Kome.Store with SPARK_Mode is
       Old  : constant Entry_Array := Idx with Ghost;
       N0   : constant Held_Count := N;
       Kept : Held_Count := 0;
-      --  Src (J): the old position of kept entry J. Dst (I): where old
-      --  entry I went (0 if dropped).
+      --  Src (J): the old position of kept entry J. Dst (I): the new position
+      --  of old entry I (0 if it was dropped).
       Src  : Index_Map (1 .. N0) := [others => 0] with Ghost;
       Dst  : Index_Map (1 .. N0) := [others => 0] with Ghost;
    begin
@@ -847,8 +852,8 @@ package body Kome.Store with SPARK_Mode is
       N := Kept;
    end Filter;
 
-   --  A new last entry past every entry's APPLY, with a new record, keeps
-   --  the index sorted.
+   --  A new last entry after the APPLY of each entry, with a new record,
+   --  keeps the index sorted.
    procedure Lemma_Sorted_Push
      (Old : Entry_Array; N0 : Held_Count; Idx : Entry_Array; N : Held_Count)
    with
@@ -876,11 +881,12 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Sorted_Push;
 
    ---------------------------------------------------------------------------
-   --  The lattice side of a step: what Frontier's Posts give the index.
+   --  The lattice side of a step: what the Posts of Frontier give the
+   --  index.
    ---------------------------------------------------------------------------
 
-   --  Kept entries were held and not dropped, so they are held after a step
-   --  that keeps every record it does not drop.
+   --  Kept entries were held and were not dropped. Thus they are held
+   --  after a step that keeps each record that it does not drop.
    procedure Lemma_Live_Kept
      (Old_F, New_F : Frontier.State; D : Drop_Rule;
       Old : Entry_Array; N0 : Held_Count; Idx : Entry_Array; N : Held_Count)
@@ -914,8 +920,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Live_Kept;
 
-   --  A record not held is not an entry of a live index, nor of any part of
-   --  one.
+   --  A record that is not held is not an entry of a live index, or of a
+   --  part of a live index.
    procedure Lemma_Not_Indexed
      (F   : Frontier.State;
       Old : Entry_Array; N0 : Held_Count; Idx : Entry_Array; N : Held_Count;
@@ -947,8 +953,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Not_Indexed;
 
-   --  In a frontier that holds R, R dominates nothing held (T2', the held
-   --  set is its own frontier).
+   --  In a frontier that holds R, R dominates no held record (T2': the
+   --  held set is its own frontier).
    procedure Lemma_Apply_Kept (Old_F, New_F : Frontier.State; R : Header) with
      Ghost, Global => null,
      Pre  => Is_Frontier (New_F)
@@ -974,9 +980,9 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Apply_Kept;
 
-   --  Covered after a step: every record held after it is the applied
-   --  record R (indexed), or was held before and is not dropped, so its
-   --  entry was kept.
+   --  Covered after a step: each record that is held after the step is the
+   --  applied record R (indexed), or it was held before and is not dropped.
+   --  In the second case, its entry was kept.
    procedure Lemma_Covered_Kept
      (Old_F, New_F : Frontier.State; D : Drop_Rule;
       Old : Entry_Array; N0 : Held_Count; Idx : Entry_Array; N : Held_Count)
@@ -1023,7 +1029,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Covered_Kept;
 
-   --  Fresh after a step that holds nothing new but R.
+   --  Fresh after a step that holds no new record other than R.
    procedure Lemma_Fresh_Kept
      (Old_F, New_F : Frontier.State; R : Header; Hz : Time64)
    with
@@ -1050,7 +1056,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Fresh_Kept;
 
-   --  Fresh after a step that holds nothing new.
+   --  Fresh after a step that holds no new record.
    procedure Lemma_Fresh_Sub (Old_F, New_F : Frontier.State; Hz : Time64) with
      Ghost, Global => null,
      Pre  => Fresh (Old_F, Hz)
@@ -1070,8 +1076,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Fresh_Sub;
 
-   --  Appending one entry for R (or none) keeps every entry and every
-   --  fact about which records are indexed.
+   --  An append of one entry for R (or of no entry) keeps each entry and
+   --  each fact about which records are indexed.
    procedure Lemma_Index_Grow
      (F   : Frontier.State; D : Drop_Rule;
       Old : Entry_Array; N0 : Held_Count;
@@ -1130,7 +1136,8 @@ package body Kome.Store with SPARK_Mode is
         Post => Num'Result <= K,
         Subprogram_Variant => (Decreases => K);
 
-   --  Setting one flag that was clear adds one to every count that sees it.
+   --  If one clear flag is set, each count that includes it increases by
+   --  one.
    procedure Lemma_Num_Set (B1, B2 : Flag_Array; P : Positive; K : Natural) with
      Ghost, Global => null,
      Pre  => B1'First = 1 and then B2'First = 1 and then B1'Last = B2'Last
@@ -1221,8 +1228,8 @@ package body Kome.Store with SPARK_Mode is
       Lemma_Pigeon (M2, N, C - 1);
    end Lemma_Pigeon_Minus;
 
-   --  The entries of a sorted, live index that does not hold R, where R is
-   --  held, are fewer than the held records.
+   --  Let R be held, and let a sorted, live index not hold R. Then the
+   --  index has fewer entries than there are held records.
    procedure Lemma_Index_Room
      (Idx : Entry_Array; N : Held_Count; F : Frontier.State; R : Header)
    with
@@ -1263,11 +1270,12 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Index_Room;
 
    ---------------------------------------------------------------------------
-   --  Nothing changes: the frontier through Frontier.Apply's own Post.
+   --  Nothing changes: the frontier through the Post of Frontier.Apply
+   --  itself.
    ---------------------------------------------------------------------------
 
    --  Two frontiers with the same held records, position by position,
-   --  keep the invariant's frontier parts.
+   --  keep the frontier parts of the invariant.
    procedure Lemma_Same_Held (S : Store; Old_F, New_F : Frontier.State) with
      Ghost, Global => null,
      Pre  => Valid (S, Old_F) and then Is_Frontier (New_F)
@@ -1301,9 +1309,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Fresh (New_F, S.Hz));
    end Lemma_Same_Held;
 
-   --  An unchanged frontier keeps the invariant. Executed under -gnata
-   --  like every other lemma (Kome.Frontier.Lemma_Unchanged has bounded
-   --  quantifiers).
+   --  An unchanged frontier keeps the invariant. The tests execute it
+   --  under -gnata, as all other lemmas (Kome.Frontier.Lemma_Unchanged has
+   --  bounded quantifiers).
    procedure Lemma_Valid_Unchanged (S : Store; Old_F, New_F : Frontier.State) with
      Ghost, Global => null,
      Pre  => Valid (S, Old_F) and then Unchanged (Old_F, New_F) and then Is_Frontier (New_F),
@@ -1316,12 +1324,12 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Valid_Unchanged;
 
    ---------------------------------------------------------------------------
-   --  Appending an entry, with the invariant's log parts carried along (in a
-   --  context that knows nothing of the frontier).
+   --  Append an entry, and carry the log parts of the invariant along (in
+   --  a context that knows nothing about the frontier).
    ---------------------------------------------------------------------------
 
-   --  Frame is stored at Off as an APPLY's payload: its length word and
-   --  its bytes. Defined by its Post, so that it is one atom on the log.
+   --  Frame is at Off as the payload of an APPLY: its length word and its
+   --  bytes. Its Post defines it, so it is one atom on the log.
    function Stored_At (Log : Byte_Array; Off : Natural; Frame : Byte_Array) return Boolean
    with
      Ghost, Global => null,
@@ -1338,8 +1346,8 @@ package body Kome.Store with SPARK_Mode is
       and then (for all K in 0 .. Frame'Length - 1 =>
                   Log (Off + Apply_Prefix + K) = Frame (Frame'First + K)));
 
-   --  Every framed entry ends inside the log (a fact about the state
-   --  before an append; Put_Fresh needs it about the old end).
+   --  Each framed entry ends in the log. This is a fact about the state
+   --  before an append; Put_Fresh needs it for the old end.
    procedure Lemma_Ends_Below
      (Log : Byte_Array; LL : Log_Size; Idx : Entry_Array; NI : Held_Count)
    with
@@ -1464,7 +1472,8 @@ package body Kome.Store with SPARK_Mode is
       Lemma_Head_Grow (Old_Log, Old_LL, Log, LL, NSb, Root, Slt, DCap, Slc);
    end Log_Entry_Expire;
 
-   --  Pushing one entry whose APPLY is in place keeps the index framed.
+   --  A push of one entry whose APPLY is in place keeps the index
+   --  framed.
    procedure Lemma_Framed_Push
      (Log : Byte_Array; LL : Log_Size; Old : Entry_Array; N0 : Held_Count;
       Idx : Entry_Array; N : Held_Count)
@@ -1562,11 +1571,11 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Stored_From;
 
    ---------------------------------------------------------------------------
-   --  Put_Frame's two committing paths.
+   --  The two paths of Put_Frame that commit a change.
    ---------------------------------------------------------------------------
 
-   --  Step 6: Frontier.Apply held R; drop the entries it dominated, append
-   --  APPLY and index it.
+   --  Step 6: Frontier.Apply held R. Drop the entries that R dominated,
+   --  append APPLY and index R.
    procedure Put_Fresh
      (S     : in out Store;
       F     : in out Frontier.State;
@@ -1616,7 +1625,7 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (St = OK);
       pragma Assert (Applied (Old_F, F, H));
 
-      --  dom (x, F): drop the entries H dominates.
+      --  dom (x, F): drop the entries that H dominates.
       Filter (S.Idx, S.NI, D);
       pragma Assert (for all J in 1 .. S.NI => not Dominates (H, S.Idx (J).H));
       Lemma_Live_Kept (Old_F, F, D, Old_Idx, Old_NI, S.Idx, S.NI);
@@ -1628,7 +1637,7 @@ package body Kome.Store with SPARK_Mode is
            (if not Drops (D, Old_Idx (I)) then Has_Entry (S.Idx, S.NI, Old_Idx (I).H)));
 
       --  The index has room: the kept entries are distinct held records
-      --  other than H, so fewer than Count (F) <= S.Cap.
+      --  other than H. Thus there are fewer than Count (F) <= S.Cap of them.
       Lemma_Index_Room (S.Idx, S.NI, F, H);
       Lemma_Frontier_Shape (F);
       pragma Assert (S.NI < S.Cap);
@@ -1666,8 +1675,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Has_Entry (S.Idx, S.NI, H));
    end Put_Fresh;
 
-   --  Step 4: an expired DEL that drops something. Frontier.Apply_Expired,
-   --  drop the entries it dominated, append APPLY_EXPIRED (not indexed).
+   --  Step 4: an expired DEL that drops a record. Do
+   --  Frontier.Apply_Expired, drop the entries that the DEL dominated, and
+   --  append APPLY_EXPIRED (not indexed).
    procedure Do_Apply_Expired
      (S     : in out Store;
       F     : in out Frontier.State;
@@ -1742,7 +1752,7 @@ package body Kome.Store with SPARK_Mode is
    --  Expiry.
    ---------------------------------------------------------------------------
 
-   --  Frontier.Expire's Post, read in the flat view.
+   --  The Post of Frontier.Expire, read in the flat view.
    procedure Lemma_Expire_Flat (Old_F, New_F : Frontier.State; Hz : Time64) with
      Ghost, Global => null,
      Pre  => Is_Frontier (Old_F) and then Is_Frontier (New_F)
@@ -1812,7 +1822,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Expire_Flat;
 
-   --  A frontier with nothing expired at Hz, read as its own expiry at a
+   --  A frontier with no record expired at Hz is its own expiry at a
    --  horizon Hn <= Hz.
    procedure Lemma_Out_Refl (F : Frontier.State; Hz, Hn : Time64) with
      Ghost, Global => null,
@@ -1832,9 +1842,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Fresh (F, Hn));
    end Lemma_Out_Refl;
 
-   --  The log of S is that of Old_S with EXPIRE (Hn) appended (a bridge
-   --  lemma: the facts of Log_Entry_Expire's Post, read through the
-   --  store's accessors, in a small context).
+   --  The log of S is the log of Old_S with EXPIRE (Hn) appended. This is
+   --  a bridge lemma: it reads the facts of the Post of Log_Entry_Expire
+   --  through the accessors of the store, in a small context.
    procedure Lemma_Expire_Appended (Old_S, S : Store; Hn : Horizon_Value) with
      Ghost, Global => null,
      Pre  => Old_S.LL <= Old_S.Log_Cap and then S.LL <= S.Log_Cap
@@ -1866,8 +1876,11 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Code_At (S, Old_S.LL + 1) = Horizon_Code (Hn));
    end Lemma_Expire_Appended;
 
-   --  Perform EXPIRE (Hn): if Hn is above the horizon, Frontier.Expire and
-   --  drop the expired entries; append EXPIRE (Hn); set the horizon.
+   --  Perform EXPIRE (Hn):
+   --    1. If Hn is above the horizon, do Frontier.Expire and drop the
+   --       expired entries.
+   --    2. Append EXPIRE (Hn).
+   --    3. Set the horizon.
    procedure Do_Expire (S : in out Store; F : in out Frontier.State; Hn : Horizon_Value) with
      Global => null,
      Pre  => Valid (S, F) and then S.Log_Cap - S.LL >= Expire_Len,
@@ -1919,7 +1932,7 @@ package body Kome.Store with SPARK_Mode is
    end Do_Expire;
 
    ---------------------------------------------------------------------------
-   --  Creating a store.
+   --  Store creation.
    ---------------------------------------------------------------------------
 
    --  Byte J of the HEADER.
@@ -1937,8 +1950,8 @@ package body Kome.Store with SPARK_Mode is
       else Kome.Records.Byte_Of_U16 (Slc, J - HO_Slice))
    with Pre => J < Header_Len;
 
-   --  A store holding only the HEADER of (Root, Slt) with the capacities
-   --  DCap and Slc.
+   --  A store that holds only the HEADER of (Root, Slt) with the
+   --  capacities DCap and Slc.
    procedure Init (S : out Store; Root : Pubkey; Slt : Salt; DCap : Data_Size; Slc : Slice_Count)
    with
      Global => null,
@@ -2044,7 +2057,7 @@ package body Kome.Store with SPARK_Mode is
    end Open;
 
    ---------------------------------------------------------------------------
-   --  Reading the log.
+   --  Read the log.
    ---------------------------------------------------------------------------
 
    function Read_Frame (S : Store; Off : Natural) return Byte_Array is
@@ -2091,7 +2104,7 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Lemma_Expired_Not_Held;
 
-   --  Put_Frame's postcondition, over explicit old values: the two
+   --  The postcondition of Put_Frame, over explicit old values. The two
    --  branches below prove it separately, each in a smaller context.
    function Put_Post
      (Old_S, S : Store; Old_F, F : Frontier.State; Frame : Byte_Array; H : Header;
@@ -2174,10 +2187,10 @@ package body Kome.Store with SPARK_Mode is
          Lemma_Valid_Unchanged (S, Saved_F, F);
          Result := St;
       elsif not Drops_Any (F, H) then
-         Lemma_Unchanged_Refl (F);   --  drops nothing: OK, F is untouched
+         Lemma_Unchanged_Refl (F);   --  drops nothing: OK, F does not change
          Result := OK;
       elsif Short then
-         Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+         Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
          Result := No_Space;
       else
          Do_Apply_Expired (S, F, Frame, H);
@@ -2185,7 +2198,7 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Put_Expired;
 
-   --  Put_Frame for every other record (steps 1-3, 5, 6).
+   --  Put_Frame for all other records (steps 1-3, 5, 6).
    procedure Put_Live
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -2221,8 +2234,8 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Log_Length (S) = S.LL);
       pragma Assert (Frame (Frame'First) = Kome.Records.Tag_Of (H.K));
 
-      --  (1), (2), (3) and Frontier's room rules (5): Frontier.Apply
-      --  answers them and changes nothing.
+      --  (1), (2), (3) and the room rules of Frontier (5): Frontier.Apply
+      --  gives the result and changes nothing.
       if not Admitted (F, H)
         or else Holds (F, H)
         or else Dom (F, H)
@@ -2235,9 +2248,9 @@ package body Kome.Store with SPARK_Mode is
          return;
       end if;
 
-      --  (5) Frontier would hold it, but the log has no room for its APPLY.
+      --  (5) Frontier can hold it, but the log has no room for its APPLY.
       if S.Log_Cap - S.LL < Apply_Prefix + Frame'Length then
-         Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+         Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
          Result := No_Space;
          return;
       end if;
@@ -2273,7 +2286,7 @@ package body Kome.Store with SPARK_Mode is
    is
    begin
       Off := S.LL;
-      Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+      Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
       Result := Malformed;
    end Put_Foreign;
 
@@ -2297,7 +2310,7 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Put_Frame;
 
-   --  Expire's postcondition, over explicit old values.
+   --  The postcondition of Expire, over explicit old values.
    function Expire_Post
      (Old_S, S : Store; Old_F, F : Frontier.State; Now : U48; Result : Status)
       return Boolean
@@ -2311,8 +2324,8 @@ package body Kome.Store with SPARK_Mode is
       and Log_Extends (Old_S, S)
       and (if Result = OK then
              Horizon (S) = Horizon_At (Old_F, Now)
-             --  The held set is the old one minus exactly the DELs at or
-             --  below the new horizon (none unless it rose).
+             --  The held set is the old set minus exactly the DELs at or
+             --  below the new horizon (none if the horizon did not rise).
              and then Expired_Out (Old_F, F, Horizon (S))
              and then (if Logs_Expire (Old_S, Old_F, Now)
                        then Appended_Expire (Old_S, S, Log_Length (Old_S), Horizon (S))
@@ -2337,7 +2350,7 @@ package body Kome.Store with SPARK_Mode is
    begin
       if Expires_Any (F, Hn) then
          if S.Log_Cap - S.LL < Expire_Len then
-            Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+            Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
             Result := No_Space;
             return;
          end if;
@@ -2351,7 +2364,7 @@ package body Kome.Store with SPARK_Mode is
       Result := OK;
    end Expire_Raise;
 
-   --  Expire when the horizon is lowered or stays.
+   --  Expire when the horizon goes down or stays the same.
    procedure Expire_Other
      (S : in out Store; F : in out Frontier.State; Now : U48; Result : out Status)
    with
@@ -2366,7 +2379,7 @@ package body Kome.Store with SPARK_Mode is
    begin
       if Hn < S.Hz then
          if S.Log_Cap - S.LL < Expire_Len then
-            Lemma_Unchanged_Refl (F);   --  a refusal: F is untouched
+            Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
             Result := No_Space;
             return;
          end if;
@@ -2395,9 +2408,9 @@ package body Kome.Store with SPARK_Mode is
    --  Compaction.
    ---------------------------------------------------------------------------
 
-   --  Dst (W .. W + Size - 1) := Src (From .. From + Size - 1); everything
-   --  below W is untouched. The first six bytes (op, length, tag) are
-   --  stated one by one, so that callers need no instantiation at +0.
+   --  Dst (W .. W + Size - 1) := Src (From .. From + Size - 1); no byte
+   --  below W changes. The Post states the first six bytes (op, length, tag)
+   --  one by one, so callers need no instantiation at +0.
    procedure Copy_Bytes
      (Dst : in out Byte_Array; W : Natural; Src : Byte_Array; From : Natural;
       Size : Positive)
@@ -2513,7 +2526,7 @@ package body Kome.Store with SPARK_Mode is
    end Prefix_Of;
 
    --  A (PA .. PA + Len - 1) = B (PB .. PB + Len - 1), both in range.
-   --  Defined by its Post, so that a range of byte equalities is one atom.
+   --  Its Post defines it, so a range of byte equalities is one atom.
    function Bytes_Eq
      (A : Byte_Array; PA : Natural; B : Byte_Array; PB : Natural; Len : Natural)
       return Boolean
@@ -2535,12 +2548,14 @@ package body Kome.Store with SPARK_Mode is
                 and then PB <= B'Last and then Len - 1 <= B'Last - PB))
       and then (for all M in 0 .. Len - 1 => A (PA + M) = B (PB + M)));
 
-   --  The first K entries of New_Idx are copies of entries of Idx: their
-   --  records, lengths and APPLY bytes, laid out contiguously from
-   --  Header_Len to W; the authorization records come first (the first
-   --  CA entries), each part in index order; Src (J) is the old position
-   --  of new entry J. Defined by its Post so that it is one atom in goals
-   --  that only carry it along.
+   --  The first K entries of New_Idx are copies of entries of Idx:
+   --    * their records, lengths and APPLY bytes are copied, with no gaps,
+   --      from Header_Len to W;
+   --    * the authorization records are first (the first CA entries), and
+   --      each part is in index order;
+   --    * Src (J) is the old position of new entry J.
+   --  Its Post defines it, so it is one atom in goals that only carry it
+   --  along.
    function Copied
      (Log : Byte_Array; Idx : Entry_Array; N : Held_Count; CA : Natural;
       New_Log : Byte_Array; W : Log_Size; New_Idx : Entry_Array; K : Held_Count;
@@ -2599,7 +2614,7 @@ package body Kome.Store with SPARK_Mode is
                   (for all J2 in J + 1 .. K =>
                      (if J2 <= CA or else J > CA then Src (J) < Src (J2)))));
 
-   --  Bytes_Eq, spelled out.
+   --  The full definition of Bytes_Eq.
    procedure Lemma_Bytes_Unfold
      (A : Byte_Array; PA : Natural; B : Byte_Array; PB : Natural; Len : Natural)
    with
@@ -2621,7 +2636,8 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Lemma_Bytes_Unfold;
 
-   --  Bytes below W0 are kept, so a copy that lies below W0 is kept.
+   --  Bytes below W0 do not change, so a copy below W0 does not
+   --  change.
    procedure Lemma_Bytes_Kept
      (Old_Log, New_Log : Byte_Array; W0 : Natural; Log : Byte_Array;
       Off, From, Len : Natural)
@@ -2651,7 +2667,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Bytes_Kept;
 
-   --  Copied, spelled out (so that a caller gets its parts as hypotheses).
+   --  The full definition of Copied (so a caller gets its parts as
+   --  hypotheses).
    procedure Lemma_Copied_Unfold
      (Log : Byte_Array; Idx : Entry_Array; N : Held_Count; CA : Natural;
       New_Log : Byte_Array; W : Log_Size; New_Idx : Entry_Array; K : Held_Count;
@@ -2688,7 +2705,7 @@ package body Kome.Store with SPARK_Mode is
       New_Log : Byte_Array; W : Log_Size; New_Idx : Entry_Array; K : Held_Count;
       Src : Index_Map) is null;
 
-   --  Copy entry I of Idx as new entry K + 1, at W, keeping Copied.
+   --  Copy entry I of Idx as new entry K + 1 at W, and keep Copied.
    procedure Copy_One
      (Log     : Byte_Array;
       LL      : Log_Size;
@@ -2862,9 +2879,9 @@ package body Kome.Store with SPARK_Mode is
    end Copy_One;
 
    --  Copy the frames of one part (the data records iff Data) of
-   --  Idx (1 .. N), in index order, from Log into New_Log contiguously from
-   --  W, and append their entries to New_Idx from K + 1, keeping Copied.
-   --  Dst (J) is the new position of old entry J.
+   --  Idx (1 .. N) in index order. Copy them from Log into New_Log, with no
+   --  gaps, from W. Append their entries to New_Idx from K + 1, and keep
+   --  Copied. Dst (J) is the new position of old entry J.
    procedure Copy_Part
      (Log     : Byte_Array;
       LL      : Log_Size;
@@ -2949,7 +2966,7 @@ package body Kome.Store with SPARK_Mode is
          pragma Loop_Invariant
            (for all J in 1 .. K => (if J > K0 then Src (J) <= I));
          --  The witnesses Dst, in two parts (prover time): the entries of
-         --  the earlier pass, then this pass's entries so far.
+         --  the earlier pass, then the entries of this pass up to now.
          pragma Loop_Invariant
            (for all J in 1 .. N =>
               (if Data and then not Is_Data (Idx (J).H)
@@ -2980,7 +2997,7 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Size_At (Log, E.Off) = Apply_Prefix + E.Len);
    end Lemma_Compacted_Entry;
 
-   --  The compacted log is a chain: the HEADER, the entries contiguously
+   --  The compacted log is a chain: the HEADER, the entries with no gaps
    --  from Header_Len to W, then EXPIRE iff Ex.
    procedure Lemma_Chain_Compacted
      (Log : Byte_Array; LL : Log_Size; W : Log_Size; Idx : Entry_Array; N : Held_Count;
@@ -3060,7 +3077,7 @@ package body Kome.Store with SPARK_Mode is
         (for all J in 1 .. N => (for some K in 1 .. NB => Bnd (K) = Idx (J).Off));
    end Lemma_Chain_Compacted;
 
-   --  The copied entries' APPLYs are in place in the new log.
+   --  The APPLYs of the copied entries are in place in the new log.
    procedure Lemma_Copied_Frames
      (New_Log : Byte_Array; W : Log_Size; Log : Byte_Array; LL : Log_Size;
       Old : Entry_Array; N : Held_Count; New_Idx : Entry_Array; Src : Index_Map)
@@ -3105,7 +3122,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Copied_Frames;
 
-   --  Contiguous entries are in increasing order of offset.
+   --  Entries with no gaps between them are in increasing order of
+   --  offset.
    procedure Lemma_Contiguous (Idx : Entry_Array; N : Held_Count) with
      Ghost, Global => null,
      Pre  => Idx'First = 1 and then N <= Idx'Last
@@ -3123,7 +3141,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Contiguous;
 
-   --  Contiguous entries with distinct sources are sorted.
+   --  Entries with no gaps and with distinct sources are sorted.
    procedure Lemma_Copied_Sorted
      (Old : Entry_Array; N : Held_Count; New_Idx : Entry_Array; Src : Index_Map;
       KA  : Held_Count)
@@ -3171,7 +3189,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Copied_Sorted;
 
-   --  The new index has the old index's records: still live and covering.
+   --  The new index has the records of the old index: it is still live
+   --  and covering.
    procedure Lemma_Copied_Records
      (F : Frontier.State; Old : Entry_Array; N : Held_Count; New_Idx : Entry_Array;
       Src, Dst : Index_Map)
@@ -3212,7 +3231,8 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Copied_Records;
 
-   --  The chain of a compacted log: 0, the entries' offsets, then W if Ex.
+   --  The chain of a compacted log: 0, the offsets of the entries, then W
+   --  if Ex.
    procedure Set_Chain
      (Bnd : in out Offset_Array; Idx : Entry_Array; N : Held_Count; Ex : Boolean;
       W   : Log_Size)
@@ -3272,7 +3292,8 @@ package body Kome.Store with SPARK_Mode is
         (for all K in 0 .. Len - 1 => Log_Byte (S, PA + K) = Log_Byte (Old_S, PB + K));
    end Lemma_Same_From;
 
-   --  Compact's byte-for-byte clause, from the copies (no frontier).
+   --  The byte-for-byte clause of Compact, from the copies (no
+   --  frontier).
    procedure Lemma_Compact_Bytes
      (Old_S, S : Store; New_Log, Old_Log : Byte_Array; Old_Idx : Entry_Array;
       Src : Index_Map)
@@ -3331,7 +3352,7 @@ package body Kome.Store with SPARK_Mode is
    end Lemma_Compact_Bytes;
 
    --  The tail of a compacted log: EXPIRE (horizon) at W, if there is a
-   --  horizon and it fits; the bytes below W are kept.
+   --  horizon and it fits. The bytes below W do not change.
    procedure Write_Tail
      (Log     : in out Byte_Array;
       LL      : out Log_Size;
@@ -3412,7 +3433,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Write_Tail;
 
-   --  Compact's contract about the old store's positions.
+   --  The contract of Compact about the positions of the old store.
    procedure Lemma_Compact_Post
      (Old_S, S : Store; F : Frontier.State; Src : Index_Map; CA : Natural)
    with
@@ -3515,7 +3536,7 @@ package body Kome.Store with SPARK_Mode is
       Old_S   : constant Store := S with Ghost;
       N       : constant Held_Count := S.NI;
       Old_LL  : constant Log_Size := S.LL;
-      Old_Log : constant Byte_Array := S.Log;    --  the file being rewritten
+      Old_Log : constant Byte_Array := S.Log;    --  the file to write again
       Old_Idx : constant Entry_Array := S.Idx;
       P       : constant Prefix := Prefix_Of (Old_Idx, N, Old_LL);
       Src     : Index_Map (1 .. N) := [others => 0];
@@ -3531,8 +3552,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (for all I in 1 .. N => Frame_OK (Old_Log, Old_LL, Old_Idx (I)));
       pragma Assert (for all I in 1 .. N => End_Of (Old_Idx (I)) <= Old_LL);
       pragma Assert (Copied (Old_Log, Old_Idx, N, P.CA (N), S.Log, W, S.Idx, K, Src));
-      --  Pass 1: the authorization records, in index order; pass 2: the
-      --  data records, in index order. Both write S.Log from Header_Len on.
+      --  Pass 1 copies the authorization records, in index order. Pass 2
+      --  copies the data records, in index order. Both passes write S.Log from
+      --  Header_Len.
       Copy_Part (Old_Log, Old_LL, Old_Idx, N, P, False, S.Log, W, S.Idx, K, Src, Dst);
       Copy_Part (Old_Log, Old_LL, Old_Idx, N, P, True, S.Log, W, S.Idx, K, Src, Dst);
       pragma Assert (K = N);
@@ -3598,13 +3620,13 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Valid (Old_S, F));
       Lemma_Compact_Post (Old_S, S, F, Src, P.CA (N));
       pragma Assert (In_Old_Order (Old_S, S));
-      --  The Post's simple conjuncts, one at a time (prover time).
+      --  The simple conjuncts of the Post, one at a time (prover time).
       pragma Assert (Same_Identity (Old_S, S));
       pragma Assert (Horizon (S) = Horizon (Old_S));
       pragma Assert (Body_End (S) <= Log_Length (Old_S));
       pragma Assert (Log_Length (S) >= Header_Len and then Log_Length (Old_S) >= Header_Len);
-      --  Valid, restated at the end part by part (prover time: the Post's
-      --  Valid conjunct then closes from these atoms).
+      --  Valid, stated again at the end, part by part (prover time: the
+      --  Valid conjunct of the Post then closes from these atoms).
       pragma Assert (Framed (S.Log, S.LL, S.Idx, S.NI));
       pragma Assert (Chain (S.Log, S.LL, S.Bnd, S.NB));
       pragma Assert (At_Bounds (S.Idx, S.NI, S.Bnd, S.NB));
@@ -3705,7 +3727,8 @@ package body Kome.Store with SPARK_Mode is
       Kome.Records.Lemma_U16_Bytes_Round_Trip (B0, B1);
    end Lemma_U16_Bytes;
 
-   --  Appending an entry that is not an EXPIRE keeps the logged horizon.
+   --  An append of an entry that is not an EXPIRE keeps the logged
+   --  horizon.
    procedure Lemma_Horizon_Append (Old_S, S : Store) with
      Ghost, Global => null,
      Pre  => Horizon_Logged (Old_S)
@@ -3774,8 +3797,9 @@ package body Kome.Store with SPARK_Mode is
          and then (for all K2 in N + 1 .. Log_Entries (S) => not Is_Expire (S, K2)));
    end Lemma_Horizon_Expire;
 
-   --  Replay_Frame's OK facts, read in the log array (a bridge lemma, so
-   --  that each branch of Replay_Frame proves them in a small context).
+   --  The OK facts of Replay_Frame, read in the log array. This is a
+   --  bridge lemma, so each branch of Replay_Frame proves them in a small
+   --  context.
    procedure Lemma_Replayed (Old_S, S : Store; Op : Byte; Frame : Byte_Array) with
      Ghost, Global => null,
      Pre  => Frame'Length in Frame_Size
@@ -3855,7 +3879,7 @@ package body Kome.Store with SPARK_Mode is
          return;
       end if;
       if Op = Op_Apply then
-         --  Put_Frame must newly hold and index it.
+         --  Put_Frame must hold and index it as a new record.
          if not Admitted (F, H) or else Holds (F, H) or else Dom (F, H)
            or else Expired (H, S.Hz)
          then
@@ -3863,7 +3887,8 @@ package body Kome.Store with SPARK_Mode is
          end if;
          Put_Frame (S, F, Frame, H, Off, St);
          if St /= OK then
-            --  Refused for room: not a log this store's capacities wrote.
+            --  Refused for room: a store with these capacities did not write
+            --  this log.
             return;
          end if;
          pragma Assert (Appended (Saved, S, Frame, H, Off));
@@ -4096,7 +4121,8 @@ package body Kome.Store with SPARK_Mode is
       Result := OK;
    end Replay_Entry;
 
-   --  The HEADER Init writes for the fields read from Input is Input's.
+   --  The HEADER that Init writes for the fields read from Input is the
+   --  HEADER of Input.
    procedure Lemma_Header_Agree
      (Log, Input : Byte_Array; Root : Pubkey; Slt : Salt; Cap_W : Word;
       Slc_V : Kome.Records.U16_Value)
@@ -4154,7 +4180,7 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Lemma_Header_Agree;
 
-   --  S's log, read through Log_Byte, is Image (a bridge lemma).
+   --  The log of S, read through Log_Byte, is Image (a bridge lemma).
    procedure Lemma_Log_Agrees (S : Store; Image : Byte_Array) with
      Ghost, Global => null,
      Pre  => Image'First = 0 and then Image'Last < S.Log_Cap
@@ -4233,15 +4259,16 @@ package body Kome.Store with SPARK_Mode is
 
          F := Frontier.Empty (Kome.Keys.To_Id128 (NSb), Kome.Keys.To_Key256 (Root),
                               F.Cap, F.Slice);
-         --  The HEADER records F's capacities (see the spec's header).
+         --  The HEADER records the capacities of F (see the comment at the
+         --  top of the spec).
          Init (S, Root, Slt, F.Cap, F.Slice);
          Lemma_Valid_Start (S, F);
          pragma Assert (not Is_Expire (S, 1));
          pragma Assert (Horizon_Logged (S));
 
          declare
-            --  The image replayed against: Input with the HEADER's
-            --  capacities set to F's.
+            --  The image for the replay: Input with the capacities of F in the
+            --  HEADER.
             Image : Byte_Array (0 .. Input'Last) := Input;
          begin
             Image (HO_Cap) := S.Log (HO_Cap);
@@ -4273,8 +4300,9 @@ package body Kome.Store with SPARK_Mode is
               (if Cap_W = Word (F.Cap) and then Slc_V = F.Slice
                then (for all J in 0 .. Input'Last => Image (J) = Input (J)));
 
-            --  The HEADER written is the image's, and the pair is valid.
-            --  Input's fields first, then the image's (prover time).
+            --  The written HEADER is the HEADER of the image, and the pair
+            --  is valid. First the fields of Input, then the fields of the
+            --  image (prover time).
             pragma Assert (for all J in 0 .. Magic_Len - 1 => Input (HO_Magic + J) = Magic (J));
             pragma Assert (for all J in 0 .. NS_Len - 1 => Input (HO_NS + J) = NSb (J));
             pragma Assert (for all J in 0 .. Pubkey_Len - 1 => Root (J) = Input (HO_Root + J));
@@ -4452,7 +4480,8 @@ package body Kome.Store with SPARK_Mode is
             then Len_At (S, S.Bnd (K)) = Len_Word (S.Log, S.Bnd (K)));
          pragma Assert (Has_Log_Entry (S, S.Bnd (K)));
          pragma Assert (Entry_Size (S, S.Bnd (K)) = Size_At (S.Log, S.Bnd (K)));
-         --  This K's facts, in the invariant's terms (prover time).
+         --  The facts for this K, in the terms of the invariant (prover
+         --  time).
          pragma Assert ((Op_At (S, S.Bnd (K)) = Op_Header) = (K = 1));
          pragma Assert
            (Next_Offset (S, S.Bnd (K)) = (if K < S.NB then S.Bnd (K + 1) else S.LL));

@@ -1,17 +1,18 @@
-# Kome.Records known-answer vectors. Read by tests/test_records.adb.
-# One vector per line: <case> <bytes hex> <h hex>, "#" starts a comment.
-# Provenance: produced by an independent Python reference written from the
-# DESIGN.md §2 layout text and offset table, not from Kome.Records. The
-# script is embedded at the end of this file on the "#|" lines; it prints
-# everything above them:  sed -n 's/^#| \{0,1\}//p' records.txt | python3 -I -
-# It uses hashlib.blake2b
-# (digest_size=32) for h, for ns = BLAKE2b-256 (root_pk || salt)[0:16] and
-# for the certificate hash. Tags: ROSTER 0, REVOKE 1, GRANT 2, DEL 3, PUT 4.
+# Kome.Records known-answer vectors. tests/test_records.adb reads them.
+# One vector per line: <case> <bytes hex> <h hex>. "#" starts a comment.
+# Provenance: an independent Python reference made these vectors. The
+# reference uses the DESIGN.md §2 layout text and offset table, not
+# Kome.Records. The script is at the end of this file, on the "#|" lines.
+# It prints everything above them, with this command:
+#   sed -n 's/^#| \{0,1\}//p' records.txt | python3 -I -
+# It uses hashlib.blake2b (digest_size=32) for h, for ns = BLAKE2b-256
+# (root_pk || salt)[0:16] and for the certificate hash. Tags: ROSTER 0,
+# REVOKE 1, GRANT 2, DEL 3, PUT 4.
 # For a record, <bytes> is the frame without its 64-byte signature (tag ||
-# content) and h = BLAKE2b-256 (tag || content); the test builds the same
+# content), and h = BLAKE2b-256 (tag || content). The test builds the same
 # record with Make_* and compares Content_Bytes, Hash and Encode (with a
 # zero signature). For cert1, <bytes> is the 63-byte certificate input
-# "kome/root" || ns || signer || u48 (cap) and h is Cert_Hash.
+# "kome/root" || ns || signer || u48 (cap), and h is Cert_Hash.
 # Filler: fill(n, s)[i] = (s + 7 i) mod 256; DAY = 86 400 000 ms.
 #   put1     ns=fill(16,1) ent=fill(16,2) field=fill(5,3) t=0x010203040506
 #            seq=7 author=fill(32,4) value=fill(10,5)
@@ -123,20 +124,21 @@ cert1 6b6f6d652f726f6f74d07367d1ad47d2ba1f2c14d2c1ad13450a11181f262d343b42495057
 #|     ("cert1", cert_input(ns_of(RT, SA), SG, 0x0000_0102_0304)),
 #| ]
 #|
-#| print(r"""# Kome.Records known-answer vectors. Read by tests/test_records.adb.
-#| # One vector per line: <case> <bytes hex> <h hex>, "#" starts a comment.
-#| # Provenance: produced by an independent Python reference written from the
-#| # DESIGN.md §2 layout text and offset table, not from Kome.Records. The
-#| # script is embedded at the end of this file on the "#|" lines; it prints
-#| # everything above them:  sed -n 's/^#| \{0,1\}//p' records.txt | python3 -I -
-#| # It uses hashlib.blake2b
-#| # (digest_size=32) for h, for ns = BLAKE2b-256 (root_pk || salt)[0:16] and
-#| # for the certificate hash. Tags: ROSTER 0, REVOKE 1, GRANT 2, DEL 3, PUT 4.
+#| print(r"""# Kome.Records known-answer vectors. tests/test_records.adb reads them.
+#| # One vector per line: <case> <bytes hex> <h hex>. "#" starts a comment.
+#| # Provenance: an independent Python reference made these vectors. The
+#| # reference uses the DESIGN.md §2 layout text and offset table, not
+#| # Kome.Records. The script is at the end of this file, on the "#|" lines.
+#| # It prints everything above them, with this command:
+#| #   sed -n 's/^#| \{0,1\}//p' records.txt | python3 -I -
+#| # It uses hashlib.blake2b (digest_size=32) for h, for ns = BLAKE2b-256
+#| # (root_pk || salt)[0:16] and for the certificate hash. Tags: ROSTER 0,
+#| # REVOKE 1, GRANT 2, DEL 3, PUT 4.
 #| # For a record, <bytes> is the frame without its 64-byte signature (tag ||
-#| # content) and h = BLAKE2b-256 (tag || content); the test builds the same
+#| # content), and h = BLAKE2b-256 (tag || content). The test builds the same
 #| # record with Make_* and compares Content_Bytes, Hash and Encode (with a
 #| # zero signature). For cert1, <bytes> is the 63-byte certificate input
-#| # "kome/root" || ns || signer || u48 (cap) and h is Cert_Hash.
+#| # "kome/root" || ns || signer || u48 (cap), and h is Cert_Hash.
 #| # Filler: fill(n, s)[i] = (s + 7 i) mod 256; DAY = 86 400 000 ms.
 #| #   put1     ns=fill(16,1) ent=fill(16,2) field=fill(5,3) t=0x010203040506
 #| #            seq=7 author=fill(32,4) value=fill(10,5)

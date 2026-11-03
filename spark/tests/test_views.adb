@@ -1,22 +1,26 @@
 --  Test main for Kome.Views: the views of DESIGN.md §3 and §6 over states
 --  built with Kome.Frontier.Apply. Contracts and ghost lemmas run on the
---  test data (-gnata). Covered:
+--  test data (-gnata). The tests include:
 --  (a) cell / deleted_at / exists through a PUT, a newer PUT, a DEL and a
---      re-creating PUT;
---  (b) void at, below and above from_t and for another author;
+--      PUT that creates the entity again;
+--  (b) void at, below and above from_t, and for a different author;
 --  (c) ROSTER_eff across signers and under a founding root revocation;
 --  (d) T5: Lemma_Cell_Unique / Lemma_Del_Unique / Lemma_Roster_Unique on
---      every pair they apply to, and every view from two arrival orders;
---  (e) T12: around every ROSTER, REVOKE and GRANT applied (held, dominated,
---      or refused with Auth_Full), Lemma_Apply_Auth_Local then
---      Lemma_Views_Local; around every PUT and DEL (held, Dominated,
---      Inadmissible or No_Space), Lemma_Apply_Data_Local then every
---      authorization-view locality lemma; root_void only grows;
+--      each pair that they apply to, and each view from two arrival orders;
+--  (e) T12:
+--      - around each applied ROSTER, REVOKE and GRANT (held, dominated, or
+--        refused with Auth_Full), Lemma_Apply_Auth_Local then
+--        Lemma_Views_Local;
+--      - around each PUT and DEL (held, Dominated, Inadmissible or
+--        No_Space), Lemma_Apply_Data_Local then each authorization-view
+--        locality lemma;
+--      - root_void only grows;
 --  (f) root revocation as decided (D2): a compromised certified root, its
 --      root-void by the founding key, W_eff (D1′), re-signed revocations,
 --      del_ttl_eff, a stale same-signer roster;
---  (g) the hypothesis boundary: rosters equal in V that differ in del_ttl
---      (A2 fails) still give one ROSTER_eff in every order (full tie-break).
+--  (g) the hypothesis boundary: rosters that are equal in V but different
+--      in del_ttl (A2 fails) still give one ROSTER_eff in each order (full
+--      tie-break).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -84,8 +88,8 @@ procedure Test_Views with SPARK_Mode => Off is
    function All_Canonical (S : State) return Boolean is
      (for all I in 1 .. Kome.Frontier.Count (S) => Canonical (Held (S, I)));
 
-   --  A2 on the held set, computed (Unique_Versions is ghost, so a test
-   --  verdict cannot use it directly; the assertion ties the two together).
+   --  A2 on the held set, computed. Unique_Versions is ghost, so a test
+   --  verdict cannot use it directly. The assertion ties the two together.
    function Versions_Unique (S : State) return Boolean is
      (for all I in 1 .. Kome.Frontier.Count (S) =>
         (for all J in 1 .. Kome.Frontier.Count (S) =>
@@ -108,7 +112,7 @@ procedure Test_Views with SPARK_Mode => Off is
       return 0;
    end Index_In;
 
-   --  The fields and entities the data views are compared on.
+   --  The fields and entities on which the test compares the data views.
    type Probe is record
       E : Byte;
       F : Character;
@@ -116,7 +120,8 @@ procedure Test_Views with SPARK_Mode => Off is
    Probes : constant array (1 .. 6) of Probe :=
      [(1, 'n'), (1, 'a'), (1, 'z'), (2, 'n'), (3, 'n'), (0, 'n')];
 
-   --  The keys and records the authorization views are compared on.
+   --  The keys and records on which the test compares the authorization
+   --  views.
    type Key_List is array (Positive range <>) of Byte;
    Keys : constant Key_List := [1, 2, 4, 6, 8, 9, 20, 21, 30];
 
@@ -136,7 +141,7 @@ procedure Test_Views with SPARK_Mode => Off is
    end Same_Views;
 
    --  T5: Lemma_Cell_Unique / Lemma_Del_Unique / Lemma_Roster_Unique on
-   --  every pair they apply to; returns how many pairs were checked.
+   --  each pair that they apply to. It returns the number of checked pairs.
    function Unique_Checked (S : State) return Natural is
       N : Natural := 0;
    begin
@@ -164,7 +169,7 @@ procedure Test_Views with SPARK_Mode => Off is
       return N;
    end Unique_Checked;
 
-   --  Every definition lemma on the probes (their Posts run under -gnata).
+   --  Each definition lemma on the probes (their Posts run under -gnata).
    procedure Def_Lemmas (S : State; Void_Probes : Header_List) is
    begin
       for P of Probes loop
@@ -207,9 +212,11 @@ procedure Test_Views with SPARK_Mode => Off is
 
    St : Status;
 
-   --  Apply an authorization record and check T12 around it: the lemma
-   --  chain runs (and its contracts are evaluated), the data views on every
-   --  probe are unchanged whatever the Status, and root_void only grows.
+   --  Apply an authorization record and check T12 around it:
+   --    * the lemma chain runs (and its contracts are evaluated);
+   --    * the data views on each probe do not change, for all values of
+   --      Status;
+   --    * root_void only grows.
    procedure Apply_Auth
      (T : in out State; R : Header; Name : String; Expect : Status := OK)
    is
@@ -229,7 +236,7 @@ procedure Test_Views with SPARK_Mode => Off is
    end Apply_Auth;
 
    --  Apply a data record and check the converse: root_void, W_eff, void,
-   --  ROSTER_eff and del_ttl_eff are unchanged, through
+   --  ROSTER_eff and del_ttl_eff do not change. The check uses
    --  Lemma_Apply_Data_Local and the authorization-view locality lemmas.
    procedure Apply_Data
      (T : in out State; R : Header; Name : String; Void_Probes : Header_List;
@@ -253,8 +260,9 @@ procedure Test_Views with SPARK_Mode => Off is
              St = Expect and then Same_Auth_Views (Old, T, Void_Probes));
    end Apply_Data;
 
-   --  A complete reconciliation of a list: a refused record is re-offered
-   --  (DESIGN.md §4), so apply in passes until nothing new is held.
+   --  A complete reconciliation of a list: a refused record is offered
+   --  again (DESIGN.md §4). Thus apply in passes until no new record is
+   --  held.
    function Run (L : Header_List) return State is
       S        : State := New_State;
       Progress : Boolean := True;
@@ -278,9 +286,9 @@ procedure Test_Views with SPARK_Mode => Off is
 
    procedure Run_All;
 
-   --  A State carries a Register_File of Writers_Max keys (256 KiB), and
-   --  under -gnata every Post evaluation copies states, so the checks run
-   --  in a task with a large stack.
+   --  A State has a Register_File of Writers_Max keys (256 KiB). Under
+   --  -gnata, each Post evaluation copies states. Thus the checks run in a
+   --  task with a large stack.
    task Runner with Storage_Size => 512 * 1024 * 1024;
 
    task body Runner is
@@ -366,7 +374,7 @@ procedure Test_Views with SPARK_Mode => Off is
              Deleted_At (S, NS, Ent (1)) = (Present => False, V => No_Version));
       Check ("T5: unique on every PUT/roster pair", Unique_Checked (S) = 4);
 
-      --  T12 converse with every data refusal: Dominated,
+      --  T12 converse with each data refusal: Dominated,
       --  Inadmissible (author not in W; t above maxceil).
       Apply_Data (S, P1, "a dominated PUT", Void_Probes, Expect => Dominated);
       Apply_Data (S, Put (1, 'q', V (100, 30, 1, 70)), "a PUT by a key not in W",
@@ -452,9 +460,9 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
       Def_Lemmas (S, Void_Probes);
 
-      --  D2: a certified root cannot root-void anyone and the founding key
-      --  is never root_void, so with a founding roster held ROSTER_eff is
-      --  always present.
+      --  D2: a certified root cannot root-void a key, and the founding key
+      --  is never root_void. Thus, if a founding roster is held, ROSTER_eff
+      --  is always present.
       declare
          T : State := S;
       begin
@@ -490,7 +498,8 @@ procedure Test_Views with SPARK_Mode => Off is
          Def_Lemmas (T, VP);
       end;
 
-      --  Equal generations across two signers are decided by h, in any order.
+      --  h decides between equal generations of two signers, in each
+      --  order.
       declare
          RA : constant Header := Roster (5, 7, 100, 40);
          RB : constant Header := Roster (6, 7, 200, 30);
@@ -506,7 +515,7 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
 
       --  (d) T5 across arrival orders: two states built from the same
-      --  records in different orders hold the same records, and every view
+      --  records in different orders hold the same records, and each view
       --  agrees.
       declare
          A : constant State :=
@@ -622,7 +631,8 @@ procedure Test_Views with SPARK_Mode => Off is
                 Is_Void (C, PK2) and not Revoke_Void (C, PK2) and not W_Eff (C, Key (K2))
                 and Is_Writer (C, Key (K2)));
 
-         --  Recovery step 3: the founding key re-signs R's revocation of M2.
+         --  Recovery step 3: the founding key re-signs the revocation of M2
+         --  by R.
          declare
             Before : constant State := C;
          begin
@@ -635,8 +645,8 @@ procedure Test_Views with SPARK_Mode => Off is
                 Is_Void (C, PM2) and Revoke_Void (C, PM2)
                 and not Is_Void (C, PM1) and not Is_Void (C, PM4));
 
-         --  R keeps granting; admission takes it (W only grows), the views
-         --  do not (W_eff).
+         --  R continues to grant. Admission accepts the grants (W only
+         --  grows), but the views do not (W_eff).
          declare
             Before : constant State := C;
          begin
@@ -687,7 +697,7 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
 
       --  A stale same-signer roster (lower gen, higher ceiling) stays held
-      --  under the product order (D3) and never becomes ROSTER_eff.
+      --  under the product order (D3). It never becomes ROSTER_eff.
       declare
          RH2 : constant Header := Roster (6, 3, 9_000, 80);
          RHS : constant Header := Roster (6, 2, 15_000, 81);
@@ -705,8 +715,9 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
 
       --  (g) Hypothesis boundary. Two canonical rosters with the same V and
-      --  different del_ttl violate A2; neither dominates the other, so both
-      --  are held. The full tie-break still picks one header in every order.
+      --  different del_ttl violate A2. No roster of the two dominates the
+      --  other, so the two are held. The full tie-break still chooses one
+      --  header in each order.
       declare
          RA : constant Header := Roster (5, 3, 1000, 50);
          RB : constant Header := (RA with delta Del_TTL => Del_TTL_Max);

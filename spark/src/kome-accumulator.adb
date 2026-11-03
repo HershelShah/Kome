@@ -2,9 +2,9 @@ pragma Ada_2022;
 package body Kome.Accumulator with SPARK_Mode is
 
    ----------------------------------------------------------------------
-   --  Limb arithmetic is done in a range type wide enough for a + b + 1
-   --  and a + 2^64 - b - 1, so the carry is an ordinary integer fact and
-   --  not a bit-vector wraparound the prover would have to reconstruct.
+   --  Limb arithmetic uses a range type that is wide enough for a + b + 1
+   --  and a + 2^64 - b - 1. Thus the carry is an ordinary integer fact, not
+   --  a bit-vector wraparound that the prover must reconstruct.
    ----------------------------------------------------------------------
 
    Limb_Base : constant := 2**Limb_Bits;
@@ -41,10 +41,10 @@ package body Kome.Accumulator with SPARK_Mode is
           Subprogram_Variant => (Decreases => N),
           Post => Pow'Result > 0;
 
-   --  Suffix (A, K) = Σ_{K <= I < 64} A (I) · 2^(64·(I - K)), the value of
-   --  limbs K .. 63 read as a number of their own, in Horner form:
-   --  Suffix (A, K) = A (K) + 2^64 · Suffix (A, K + 1). Multiplying only by
-   --  the literal 2^64 keeps every step of every proof linear.
+   --  Suffix (A, K) = Σ_{K <= I < 64} A (I) · 2^(64·(I - K)). This is the
+   --  value of limbs K .. 63, read as a number of their own, in Horner form:
+   --  Suffix (A, K) = A (K) + 2^64 · Suffix (A, K + 1). Multiplication only
+   --  by the literal 2^64 keeps each step of each proof linear.
    function Suffix (A : Acc; K : Limb_Count) return Big_Integer is
      (if K = Limbs then 0
       else Limb_Value (A (K)) + Base * Suffix (A, K + 1))
@@ -52,7 +52,8 @@ package body Kome.Accumulator with SPARK_Mode is
           Subprogram_Variant => (Increases => K);
 
    --  The same over bytes: Byte_Suffix (B, K) = B (K) + 256 ·
-   --  Byte_Suffix (B, K + 1), the value of bytes K .. 511, little-endian.
+   --  Byte_Suffix (B, K + 1). This is the value of bytes K .. 511,
+   --  little-endian.
    function Byte_Suffix (B : Acc_Byte_Array; K : Byte_Count)
                          return Big_Integer is
      (if K = Acc_Bytes then 0
@@ -61,8 +62,8 @@ package body Kome.Accumulator with SPARK_Mode is
           Subprogram_Variant => (Increases => K);
 
    ----------------------------------------------------------------------
-   --  Completions of the public model functions. Being in the body, they
-   --  are invisible to clients' provers.
+   --  Completions of the public model functions. They are in the body, so
+   --  the provers of clients cannot see them.
    ----------------------------------------------------------------------
 
    function Value (A : Acc) return Big_Integer is (Suffix (A, 0));
@@ -76,12 +77,13 @@ package body Kome.Accumulator with SPARK_Mode is
    --  Private proof helpers.
    ----------------------------------------------------------------------
 
-   --  The carry (or borrow) into each limb, recorded by Add and Sub as
-   --  they go: Cs (0) = 0, Cs (64) is the carry out that is discarded.
+   --  The carry (or borrow) into each limb, which Add and Sub record as
+   --  they go: Cs (0) = 0, and Cs (64) is the carry out that the code
+   --  discards.
    type Carry_Array is array (Limb_Count) of Bit with Ghost;
 
-   --  Base-2^64 digit uniqueness: X + 2^64·SX = Y + 2^64·SY with X and Y
-   --  limbs forces X = Y and SX = SY.
+   --  Base-2^64 digit uniqueness: if X + 2^64·SX = Y + 2^64·SY, with X and
+   --  Y limbs, then X = Y and SX = SY.
    procedure Lemma_Digit (X, Y : U64; SX, SY : Big_Integer)
      with Ghost, Global => null,
           Pre  => Limb_Value (X) + Base * SX = Limb_Value (Y) + Base * SY,
@@ -103,7 +105,7 @@ package body Kome.Accumulator with SPARK_Mode is
       pragma Assert (Wide (X) = Wide (Y));
    end Lemma_Digit;
 
-   --  The "mod" of Big_Integers on the two ranges Add and Sub produce.
+   --  The "mod" of Big_Integers on the two ranges that Add and Sub give.
    procedure Lemma_Mod_Add (S, M : Big_Integer)
      with Ghost, Global => null,
           Pre  => M > 0 and then S >= 0 and then S < 2 * M,
@@ -119,8 +121,8 @@ package body Kome.Accumulator with SPARK_Mode is
    procedure Lemma_Mod_Sub (D, M : Big_Integer) is null;
 
    --  The carry chain of Add, limb by limb, sums to the integer identity
-   --  Value (R) + carry_out · 2^4096 = Value (A) + Value (B). Induction
-   --  from the top limb down over Suffix.
+   --  Value (R) + carry_out · 2^4096 = Value (A) + Value (B). The proof is
+   --  an induction over Suffix, from the top limb down.
    procedure Lemma_Add_Chain (A, B, R : Acc; Cs : Carry_Array)
      with Ghost, Global => null,
           Pre  => Cs (0) = 0
@@ -131,8 +133,9 @@ package body Kome.Accumulator with SPARK_Mode is
                   = Value (A) + Value (B);
 
    procedure Lemma_Add_Chain (A, B, R : Acc; Cs : Carry_Array) is
-      --  Proved; not re-executed under -gnata (only the Post is), so
-      --  that Add and Sub stay cheap at run time (see the spec).
+      --  Proved, but not executed again under -gnata (only the Post
+      --  executes). Thus Add and Sub stay cheap at run time (refer to the
+      --  spec).
       pragma Assertion_Policy (Assert => Ignore, Loop_Invariant => Ignore);
    begin
       for K in reverse Limb_Index loop
@@ -164,8 +167,9 @@ package body Kome.Accumulator with SPARK_Mode is
                   = Value (A) + (if Cs (Limbs) = 1 then Modulus else 0);
 
    procedure Lemma_Sub_Chain (A, B, R : Acc; Cs : Carry_Array) is
-      --  Proved; not re-executed under -gnata (only the Post is), so
-      --  that Add and Sub stay cheap at run time (see the spec).
+      --  Proved, but not executed again under -gnata (only the Post
+      --  executes). Thus Add and Sub stay cheap at run time (refer to the
+      --  spec).
       pragma Assertion_Policy (Assert => Ignore, Loop_Invariant => Ignore);
    begin
       for K in reverse Limb_Index loop
@@ -246,7 +250,7 @@ package body Kome.Accumulator with SPARK_Mode is
    begin
       for I in Limb_Index loop
          declare
-            --  Two steps, each obviously in range: D in 1 .. Limb_Base,
+            --  Two steps, each clearly in range: D in 1 .. Limb_Base,
             --  then S in 0 .. 2 * Limb_Base - 1.
             D     : constant Wide := Limb_Base - Wide (B (I));
             S     : constant Wide := Wide (A (I)) + D - C;
@@ -322,8 +326,8 @@ package body Kome.Accumulator with SPARK_Mode is
 
    procedure Lemma_Value_Injective (X, Y : Acc) is
    begin
-      --  Peel limbs from the bottom: equal values have equal low limbs
-      --  and equal quotients by 2^64, and so on up.
+      --  Remove limbs from the bottom: equal values have equal low limbs
+      --  and equal quotients by 2^64, and so on upward.
       for K in Limb_Index loop
          pragma Loop_Invariant (Suffix (X, K) = Suffix (Y, K));
          pragma Loop_Invariant (for all J in 0 .. K - 1 => X (J) = Y (J));
@@ -364,7 +368,7 @@ package body Kome.Accumulator with SPARK_Mode is
    --  Byte order as an integer fact
    ----------------------------------------------------------------------
 
-   --  A limb is the little-endian number its eight bytes spell.
+   --  A limb is the little-endian number that its eight bytes spell.
    procedure Lemma_Limb_Bytes (V : U64)
      with Ghost, Global => null,
           Post => Limb_Value (V)
@@ -378,10 +382,11 @@ package body Kome.Accumulator with SPARK_Mode is
                Byte_Value (Byte_Of_U64 (V, 7))))))));
 
    procedure Lemma_Limb_Bytes (V : U64) is
-      --  The limb split into its eight byte lanes, then each lane is its
-      --  byte times 256^K. Every step has a literal mask and shift, which
-      --  is the form the SMT solvers' bit-vector-to-integer reasoning
-      --  (bv2nat) handles; "mod 256" and "/ 256" on a 64-bit limb are not.
+      --  The limb is split into its eight byte lanes, then each lane is its
+      --  byte times 256^K. Each step has a literal mask and shift. The
+      --  bit-vector-to-integer reasoning (bv2nat) of the SMT solvers can
+      --  process this form. It cannot process "mod 256" and "/ 256" on a
+      --  64-bit limb.
       B0 : constant Wide := Wide (Byte_Of_U64 (V, 0)) with Ghost;
       B1 : constant Wide := Wide (Byte_Of_U64 (V, 1)) with Ghost;
       B2 : constant Wide := Wide (Byte_Of_U64 (V, 2)) with Ghost;
@@ -415,7 +420,7 @@ package body Kome.Accumulator with SPARK_Mode is
            (B5 + 256 * (B6 + 256 * B7)))))));
    end Lemma_Limb_Bytes;
 
-   --  Limb L read from bytes 8L .. 8L+7, in Horner form against the byte
+   --  Limb L, read from bytes 8L .. 8L+7, in Horner form against the byte
    --  suffix: B (8L) + 256 · (... + 256 · B (8L + 7)) + 2^64 · rest.
    procedure Lemma_Limb_From_Bytes (B : Acc_Byte_Array; L : Limb_Index)
      with Ghost, Global => null,
@@ -456,7 +461,7 @@ package body Kome.Accumulator with SPARK_Mode is
                Byte_Value (B (P + 7)))))))));
    end Lemma_Limb_From_Bytes;
 
-   --  An accumulator whose limbs are read from B denotes B's integer.
+   --  An accumulator whose limbs are read from B denotes the integer of B.
    procedure Lemma_Limbs_Bytes (A : Acc; B : Acc_Byte_Array)
      with Ghost, Global => null,
           Pre  => (for all L in Limb_Index => A (L) = Read_U64LE (B, 8 * L)),

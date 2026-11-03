@@ -2,12 +2,12 @@ pragma Ada_2022;
 package body Kome.Emit with SPARK_Mode is
 
    ---------------------------------------------------------------------------
-   --  Proof-only helpers. Ghost, so neither they nor their loops run
-   --  outside -gnata.
+   --  Proof-only helpers. They are ghost. Thus they and their loops do not
+   --  run outside -gnata.
    ---------------------------------------------------------------------------
 
-   --  A version at or below B is, on the prefix, below anything whose
-   --  prefix is above B's.
+   --  On the prefix, a version at or below B is below each version with a
+   --  prefix above the prefix of B.
    procedure Lemma_Le_Prefix_Lt (A, B, C : Version) with
      Ghost, Global => null,
      Pre  => (A = B or else Lt (A, B)) and then Prefix_Lt (B, C),
@@ -15,8 +15,8 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Le_Prefix_Lt (A, B, C : Version) is null;
 
-   --  Two different prefixes are strictly ordered one way (T1 on the
-   --  prefix).
+   --  Two different prefixes have a strict order in one direction (T1 on
+   --  the prefix).
    procedure Lemma_Prefix_Total (A, B : Version) with
      Ghost, Global => null,
      Pre  => not Same_Prefix (A, B),
@@ -24,8 +24,8 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Prefix_Total (A, B : Version) is null;
 
-   --  Floor's step: when the running maximum Old_V is replaced by a greater
-   --  New_V, every earlier candidate (at or below Old_V) is below New_V.
+   --  The step of Floor: a greater New_V replaces the current maximum
+   --  Old_V. Then each earlier candidate (at or below Old_V) is below New_V.
    procedure Lemma_Raise_Max
      (S : State; Tgt : Target; I : Held_Index; Old_V, New_V : Version)
    with
@@ -54,8 +54,9 @@ package body Kome.Emit with SPARK_Mode is
       end loop;
    end Lemma_Raise_Max;
 
-   --  Choose's OK case: every floor record is at or below the floor FV,
-   --  whose prefix is below P, so every floor record's prefix is below P.
+   --  The OK case of Choose: each floor record is at or below the floor FV.
+   --  The prefix of FV is below P. Thus the prefix of each floor record is
+   --  below P.
    procedure Lemma_Below_Prefix
      (S : State; Tgt : Target; FV, P : Version)
    with
@@ -95,11 +96,12 @@ package body Kome.Emit with SPARK_Mode is
             if not R.Present then
                R := (Present => True, V => Held (S, I).V);
             elsif Lt (R.V, Held (S, I).V) then
-               --  Every earlier candidate is <= R.V < Held (S, I).V.
+               --  Each earlier candidate is <= R.V < Held (S, I).V.
                Lemma_Raise_Max (S, Tgt, I, R.V, Held (S, I).V);
                R := (Present => True, V => Held (S, I).V);
             else
-               --  Not above R.V, so at or below it (T1, trichotomy).
+               --  It is not above R.V, so it is at or below R.V (T1,
+               --  trichotomy).
                Lemma_Trichotomy (R.V, Held (S, I).V);
             end if;
          end if;
@@ -188,7 +190,7 @@ package body Kome.Emit with SPARK_Mode is
       T := T_Emit (Now, F.Present, F.V.T, C);
       Lemma_Emit_Bounded (Now, F.Present, F.V.T, C);
 
-      --  H8: every own held record has seq <= O.Seq <= B < Seq.
+      --  H8: each own held record has seq <= O.Seq <= B < Seq.
       pragma Assert
         (for all I in 1 .. Count (S) =>
            (if Own (Held (S, I), Self) then Held (S, I).V.Seq < Seq));
@@ -196,8 +198,9 @@ package body Kome.Emit with SPARK_Mode is
       if F.Present then
          Lemma_Floor_Admitted (S, Tgt);
          pragma Assert (F.V.T <= C);
-         --  The floor is a held data record: by another author, or by
-         --  Self with a smaller seq. Either way its prefix differs (D8).
+         --  The floor is a held data record: by a different author, or by
+         --  Self with a smaller seq. In the two cases, its prefix is
+         --  different (D8).
          pragma Assert
            (for all I in 1 .. Count (S) =>
               (if In_Floor (Held (S, I), Tgt)
@@ -208,14 +211,15 @@ package body Kome.Emit with SPARK_Mode is
       end if;
 
       if F.Present and then Prefix_Lt (Stamp (T, Self, Seq, Zero_Key), F.V) then
-         --  Only at the ceiling: below it t_emit > floor.t.
+         --  Only at the ceiling: below the ceiling, t_emit > floor.t.
          pragma Assert (T <= F.V.T);
          pragma Assert (F.V.T >= C);
          Result := Shadowed;
       else
          Result := OK;
          if F.Present then
-            --  T8: every floor record is <= F.V, whose prefix is below.
+            --  T8: each floor record is <= F.V, and the prefix of F.V is
+            --  below.
             Lemma_Below_Prefix (S, Tgt, F.V, Stamp (T, Self, Seq, Zero_Key));
          end if;
       end if;
@@ -239,8 +243,8 @@ package body Kome.Emit with SPARK_Mode is
    begin
       for I in 1 .. Count (S) loop
          if In_Floor (Held (S, I), Tgt) then
-            --  A floor record is data: by another author, or Own with a
-            --  smaller seq, so its prefix is not X's.
+            --  A floor record is data: by a different author, or Own with a
+            --  smaller seq. Thus its prefix is not the prefix of X.
             pragma Assert (Is_Data (Held (S, I)));
             pragma Assert (not Same_Prefix (Held (S, I).V, X));
             Lemma_Prefix_Decides (Held (S, I).V, X);
@@ -272,7 +276,7 @@ package body Kome.Emit with SPARK_Mode is
             pragma Assert (Lt (Held (S, I).V, X));
             Lemma_Lt_Asym (Held (S, I).V, X);
          end if;
-         --  A dominator of P is In_Floor and above X, contradicting the
+         --  A dominator of P is In_Floor and above X. This contradicts the
          --  line above (T1, asymmetry).
          pragma Assert (not Dominates (Held (S, I), P));
          pragma Loop_Invariant
@@ -312,8 +316,8 @@ package body Kome.Emit with SPARK_Mode is
       F : constant Floor_View := Floor (S, Tgt);
    begin
       if F.Present then
-         --  Every In_Floor held record is a data record, admitted, hence
-         --  at or below the ceiling; the floor is one of them.
+         --  Each In_Floor held record is an admitted data record. Thus it
+         --  is at or below the ceiling. The floor is one of these records.
          for I in 1 .. Count (S) loop
             Lemma_Frontier_Held (S, I);
             pragma Assert (Admitted (S, Held (S, I)));
@@ -333,8 +337,8 @@ package body Kome.Emit with SPARK_Mode is
       F : constant Floor_View := Floor (S2, Tgt);
    begin
       if F.Present then
-         --  Every In_Floor record of S2 is a data record, so it was held in
-         --  S1, where it was admitted: its t is <= the old ceiling.
+         --  Each In_Floor record of S2 is a data record, so S1 held it. It
+         --  was admitted in S1, so its t is <= the old ceiling.
          for I in 1 .. Count (S2) loop
             if In_Floor (Held (S2, I), Tgt) then
                pragma Assert (Is_Data (Held (S2, I)));

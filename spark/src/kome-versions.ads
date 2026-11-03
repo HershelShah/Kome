@@ -1,13 +1,14 @@
 --  Kome.Versions: the version tuple and its strict total order (DESIGN.md §2,
---  T1). Refines lean/Kome/Frontier.lean `Version` and `Version.lt`.
+--  T1). This package refines lean/Kome/Frontier.lean `Version` and
+--  `Version.lt`.
 --
 --    v = (t : u48, author : [32]u8, seq : u48, h : [32]u8)
 --
---  compared lexicographically, with `author` and `h` as unsigned 256-bit
---  integers. `h` is the record's own content hash, so two distinct
---  well-formed records never compare equal (A2) and the order is total by
---  construction. Keys are Key256 words, so the whole order is a quantifier-
---  free formula and every lemma below is proved by unfolding.
+--  The order is lexicographic, with `author` and `h` as unsigned 256-bit
+--  integers. `h` is the content hash of the record itself. Thus two
+--  different well-formed records never compare equal (A2), and the order is
+--  total by construction. Keys are Key256 words, so the full order is a
+--  quantifier-free formula. gnatprove proves each lemma below by unfolding.
 pragma Ada_2022;
 package Kome.Versions with SPARK_Mode, Pure is
 
@@ -28,7 +29,7 @@ package Kome.Versions with SPARK_Mode, Pure is
 
    function "<" (A, B : Version) return Boolean renames Lt;
 
-   --  T1: strict total order. Each is a theorem of Frontier.lean.
+   --  T1: strict total order. Each lemma is a theorem of Frontier.lean.
 
    procedure Lemma_Lt_Irrefl (A : Version) with
      Ghost, Global => null,
@@ -48,9 +49,10 @@ package Kome.Versions with SPARK_Mode, Pure is
      Ghost, Global => null,
      Post => Lt (A, B) or else A = B or else Lt (B, A);
 
-   --  D8: the write path picks (t, seq) before it knows h (h hashes content
-   --  that includes t and seq). Two versions that differ in their prefix
-   --  (t, author, seq) are ordered by that prefix alone, whatever their h.
+   --  D8: the write path picks (t, seq) before it knows h, because h hashes
+   --  content that includes t and seq. If two versions differ in their
+   --  prefix (t, author, seq), that prefix alone gives their order, whatever
+   --  their h.
    function Same_Prefix (A, B : Version) return Boolean is
      (A.T = B.T and then A.Author = B.Author and then A.Seq = B.Seq);
 

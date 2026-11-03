@@ -3,10 +3,10 @@ package body Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  Transitivity of "=" on Acc. Ada "=" on Acc is element-wise, so the
-   --  prover does not always chain two equalities by itself; this goes
-   --  through the integer model (Value is a function of the limbs, and
-   --  equal Values mean equal accumulators). The congruences of Add and
-   --  Sub are Kome.Accumulator's.
+   --  prover does not always chain two equalities by itself. This lemma
+   --  uses the integer model (Value is a function of the limbs, and equal
+   --  Values mean equal accumulators). The congruences of Add and Sub come
+   --  from Kome.Accumulator.
    ----------------------------------------------------------------------
 
    procedure Lemma_Eq_Trans (A, B, C : Acc)
@@ -21,8 +21,8 @@ package body Kome.Digest with SPARK_Mode is
       Lemma_Value_Injective (A, C);
    end Lemma_Eq_Trans;
 
-   --  (X + A) + B = (X + B) + A: the two-element exchange every order
-   --  independence law reduces to.
+   --  (X + A) + B = (X + B) + A: each order-independence law reduces to
+   --  this two-element exchange.
    procedure Lemma_Add_Exchange (X, A, B : Acc)
      with Ghost, Global => null,
           Post => Add (Add (X, A), B) = Add (Add (X, B), A);
@@ -37,7 +37,7 @@ package body Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  The accumulator as a record of 64 words. Its equality is logical
-   --  (CONVENTIONS.md, rule 1), so a hash of a function of the image is
+   --  (CONVENTIONS.md, rule 1). Thus a hash of a function of the image is
    --  the same term for element-wise equal accumulators.
    ----------------------------------------------------------------------
 
@@ -141,7 +141,7 @@ package body Kome.Digest with SPARK_Mode is
      with Global => null,
           Post => (for all L in Limb_Index => Limb (Image'Result, L) = A (L));
 
-   --  The fp input built from the image.
+   --  The fp input, built from the image.
    function Fp_Input_W (N : Elem_Count; W : Acc_Image) return Fp_Input_Bytes
      with Global => null,
           Post => Fp_Input_W'Result (0 .. Fp_Tag_Len - 1) = Fp_Tag
@@ -340,7 +340,7 @@ package body Kome.Digest with SPARK_Mode is
                       Sum_Of (L1, I + 2, La), Sum_Of (L2, I + 2, La));
    end Lemma_Sum_Swap;
 
-   --  Σ L2 (Lo .. Hi) = Σ L1 (Lo + 1 .. Hi + 1) where L2 is L1 shifted
+   --  Σ L2 (Lo .. Hi) = Σ L1 (Lo + 1 .. Hi + 1), where L2 is L1 shifted
    --  down by one.
    procedure Lemma_Sum_Shift
      (L1, L2 : Hash_Array; Lo : Lo_Bound; Hi : Elem_Count)
@@ -380,8 +380,8 @@ package body Kome.Digest with SPARK_Mode is
       Lemma_Add_Congruent (Sum_Of (L1, 1, J), Add (X, A), T, T);
       Lemma_Eq_Trans (Sum_Of (L1, 1, N), Add (Sum_Of (L1, 1, J), T),
                       Add (Add (X, A), T));
-      --  Σ L2 (1 .. N - 1) = X + T: the head is unchanged, the tail is
-      --  shifted down by one.
+      --  Σ L2 (1 .. N - 1) = X + T: the head does not change, and the tail
+      --  is shifted down by one.
       Lemma_Sum_Split (L2, 1, J - 1, N - 1);
       Lemma_Sum_Ext (L1, L2, 1, J - 1);
       Lemma_Sum_Shift (L1, L2, J, N - 1);
@@ -412,10 +412,10 @@ package body Kome.Digest with SPARK_Mode is
    procedure Lemma_Is_Perm_Elim
      (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count) is null;
 
-   --  Induction on N: L1 (N) sits at J = M (N) in L2. Deleting it from L2
-   --  (L3) and renumbering M past J (M3) leaves a permutation of
-   --  L1 (1 .. N - 1); the recursive call sums that, Lemma_Sum_Delete puts
-   --  acc (L2 (J)) = acc (L1 (N)) back.
+   --  Induction on N: L1 (N) is at J = M (N) in L2. Delete it from L2 (L3),
+   --  and renumber M after J (M3). The result is a permutation of
+   --  L1 (1 .. N - 1). The recursive call adds that permutation, and
+   --  Lemma_Sum_Delete puts acc (L2 (J)) = acc (L1 (N)) back.
    procedure Lemma_Sum_Perm
      (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count)
    is
@@ -453,13 +453,13 @@ package body Kome.Digest with SPARK_Mode is
 
    function Digest_Of (L : Hash_Array) return Digest_State is
       --  Proved; at run time only the Pre and Post are evaluated (each
-      --  invariant would recompute Sum_Of: quadratic).
+      --  invariant would compute Sum_Of again, which is quadratic).
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore);
 
-      --  The congruence step, declared here so that the Ignore policy
-      --  above applies to it and its calls are not executed (the policy
-      --  of a ghost call is that of the called subprogram).
+      --  The congruence step. It is declared here so that the Ignore
+      --  policy above applies to it, and its calls do not execute (a ghost
+      --  call has the policy of the called subprogram).
       procedure Step (X1, X2, Y : Acc)
         with Ghost, Global => null,
              Pre  => X1 = X2,
@@ -546,13 +546,14 @@ package body Kome.Digest with SPARK_Mode is
                 Elem_Acc (Kome.Frontier.Held (F, K).V.H)));
 
    function State_Of (F : Kome.Frontier.State) return Digest_State is
-      --  Proved; at run time only the Post is evaluated (see Digest_Of).
+      --  Proved; at run time only the Post is evaluated (refer to
+      --  Digest_Of).
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore);
 
-      --  The congruence step, declared here so that the Ignore policy
-      --  above applies to it and its calls are not executed (the policy
-      --  of a ghost call is that of the called subprogram).
+      --  The congruence step. It is declared here so that the Ignore
+      --  policy above applies to it, and its calls do not execute (a ghost
+      --  call has the policy of the called subprogram).
       procedure Step (X1, X2, Y : Acc)
         with Ghost, Global => null,
              Pre  => X1 = X2,
@@ -626,16 +627,17 @@ package body Kome.Digest with SPARK_Mode is
    --  Prefix sums
    ----------------------------------------------------------------------
 
-   --  ACC of the first K blocks. A function of its own so that the
-   --  prover substitutes K by congruence: an argument written 64·K is an
-   --  arithmetic term, and two of them (64·K, 64·B) are not merged from
-   --  K = B the way two calls Block_Prefix (L, K), Block_Prefix (L, B) are.
+   --  ACC of the first K blocks. It is a separate function, so that the
+   --  prover substitutes K by congruence. An argument written 64·K is an
+   --  arithmetic term. The prover does not merge two such terms (64·K,
+   --  64·B) from K = B, as it merges two calls Block_Prefix (L, K),
+   --  Block_Prefix (L, B).
    function Block_Prefix (L : Hash_Array; K : Natural) return Acc is
      (Sum_Of (L, 1, Block_Elems * K))
      with Ghost, Global => null,
           Pre => L'First = 1 and then K <= L'Length / Block_Elems;
 
-   --  Every full block's prefix, then the total (D15).
+   --  The prefix of each full block, then the total (D15).
    function Prefix_Valid (L : Hash_Array; P : Acc_Array) return Boolean is
      (L'First = 1 and then P'First = 1
       and then P'Length = L'Length / Block_Elems + 1
@@ -649,9 +651,9 @@ package body Kome.Digest with SPARK_Mode is
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore);
 
-      --  The congruence step, declared here so that the Ignore policy
-      --  above applies to it and its calls are not executed (the policy
-      --  of a ghost call is that of the called subprogram).
+      --  The congruence step. It is declared here so that the Ignore
+      --  policy above applies to it, and its calls do not execute (a ghost
+      --  call has the policy of the called subprogram).
       procedure Step (X1, X2, Y : Acc)
         with Ghost, Global => null,
              Pre  => X1 = X2,
@@ -695,10 +697,10 @@ package body Kome.Digest with SPARK_Mode is
       P (NB + 1) := R;
    end Build_Prefix;
 
-   --  The two-accumulator identity of §8. With X0 = Pre (a), S the range
-   --  sum, Xb the terms end b walked backward and Ya those end a walked
-   --  backward: Plus = ((X0 + S) + Xb) + Ya and Minus = (X0 + Ya) + Xb, so
-   --  Plus - Minus = S.
+   --  The two-accumulator identity of §8. Let X0 = Pre (a), S the range
+   --  sum, Xb the terms that end b walked backward, and Ya the terms that
+   --  end a walked backward. Then Plus = ((X0 + S) + Xb) + Ya and
+   --  Minus = (X0 + Ya) + Xb, so Plus - Minus = S.
    procedure Lemma_Plus_Minus (X0, S, Xb, Ya : Acc)
      with Ghost, Global => null,
           Post => Sub (Add (Add (Add (X0, S), Xb), Ya),
@@ -736,18 +738,19 @@ package body Kome.Digest with SPARK_Mode is
       Adds   : out Add_Count;
       Subs   : out Natural)
    is
-      --  Proved; at run time only Range_Sum's own Pre and Post (in the
-      --  spec) are evaluated: the ghost steps below, and Start's contract,
-      --  would each recompute sums over the whole list. The counters are
-      --  not ghost: they run, and the test checks them (they are the
-      --  calls made by the routing discipline below, not by proof).
+      --  Proved; at run time only the Pre and Post of Range_Sum (in the
+      --  spec) are evaluated. The ghost steps below, and the contract of
+      --  Start, would each compute sums over the full list again. The
+      --  counters are not ghost: they run, and the test checks them. (The
+      --  routing discipline below makes them the calls made; the proof does
+      --  not.)
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore,
          Pre => Ignore, Post => Ignore);
 
-      --  The ghost steps, declared here so that the Ignore policy above
-      --  applies to them and their calls are not executed (the policy of a
-      --  ghost call is that of the called subprogram).
+      --  The ghost steps. They are declared here so that the Ignore policy
+      --  above applies to them, and their calls do not execute (a ghost
+      --  call has the policy of the called subprogram).
 
       --  One forward term: R = X gives R + Y = X + Y.
       procedure Step (X1, X2, Y : Acc)
@@ -771,11 +774,11 @@ package body Kome.Digest with SPARK_Mode is
          Lemma_Eq_Trans (A, B, C);
       end Trans;
 
-      --  The only way this body adds: R := R + E, and one more Add call
-      --  counted in C. Review invariant (not provable, see the spec
-      --  header): no Add or Sub appears in Range_Sum outside Add_Term and
-      --  Sub_Term, and Adds and Subs are set only from their counters, so
-      --  the counts are the calls made.
+      --  The only way that this body adds: R := R + E, and C counts one
+      --  more Add call. Review invariant (not provable, refer to the spec
+      --  header): no Add or Sub occurs in Range_Sum outside Add_Term and
+      --  Sub_Term. Adds and Subs are set only from their counters. Thus the
+      --  counts are the calls made.
       procedure Add_Term (R : in out Acc; E : Acc; C : in out Natural)
         with Global => null,
              Pre  => C < Block_Elems,
@@ -787,7 +790,7 @@ package body Kome.Digest with SPARK_Mode is
          C := C + 1;
       end Add_Term;
 
-      --  The only way this body subtracts: R := X - Y, counted in C.
+      --  The only way that this body subtracts: R := X - Y, counted in C.
       procedure Sub_Term (R : out Acc; X, Y : Acc; C : in out Natural)
         with Global => null,
              Pre  => C < Natural'Last,
@@ -873,8 +876,8 @@ package body Kome.Digest with SPARK_Mode is
       end Finish;
 
       --  Pre (Start_Pos (X, n)), read from P: the block boundary below X
-      --  (Zero for 0), the one above it, or P_end for an end in the tail
-      --  that walks back.
+      --  (Zero for 0), the boundary above it, or P_end for an end in the
+      --  tail that walks back.
       function Start (X : Elem_Count) return Acc
         with Global => (Input => (L, P)),
              Pre  => L'First = 1 and then P'First = 1
@@ -913,9 +916,9 @@ package body Kome.Digest with SPARK_Mode is
       --  The range is L (A + 1 .. B): Pre (B) - Pre (A).
       A  : constant Elem_Count := Lo - 1;
       B  : constant Elem_Count := Hi;
-      --  Where each end starts, and the far end of its walk: an end that
-      --  walks forward covers SX + 1 .. X, one that walks back X + 1 .. SX,
-      --  and HX = max (SX, X).
+      --  Where each end starts, and the far end of its walk. An end that
+      --  walks forward covers SX + 1 .. X. An end that walks back covers
+      --  X + 1 .. SX. HX = max (SX, X).
       SA : constant Elem_Count := Start_Pos (A, N);
       SB : constant Elem_Count := Start_Pos (B, N);
       HA : constant Elem_Count := (if SA > A then SA else A);
@@ -1001,7 +1004,8 @@ package body Kome.Digest with SPARK_Mode is
       end loop;
       pragma Assert (Minus = Add (Sum_Of (L, 1, HA), Sum_Of (L, B + 1, HB)));
 
-      --  The cost: one Add per term walked, Range_Cost in all; and one Sub.
+      --  The cost: one Add for each term walked, Range_Cost in total, and
+      --  one Sub.
       pragma Assert (Count = Range_Cost (A, B, N));
       Finish (L, Plus, Minus, A, B, HA, HB);
       Sub_Term (Result, Plus, Minus, Subs_Made);

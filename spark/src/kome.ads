@@ -1,23 +1,26 @@
---  Root of Kome: the byte types, the integer ranges and the size bounds that
---  every package shares. The design is docs/design/DESIGN.md; the proved
---  model it refines is lean/Kome/Frontier.lean. Each DESIGN.md section is a
---  child package (Kome.Versions, Kome.Headers, Kome.Frontier, ...); see
---  CONVENTIONS.md for the rules every child follows.
+--  Root of Kome. This package holds the byte types, the integer ranges and
+--  the size bounds that all packages share. docs/design/DESIGN.md gives the
+--  design. This code refines the proved model in lean/Kome/Frontier.lean.
+--  Each section of DESIGN.md is a child package (Kome.Versions,
+--  Kome.Headers, Kome.Frontier, ...). CONVENTIONS.md gives the rules that
+--  each child follows.
 pragma Ada_2022;
 package Kome with SPARK_Mode, Pure is
 
    type Byte is mod 2**8 with Size => 8;
    type Byte_Array is array (Natural range <>) of Byte;
 
-   --  The one modular type, for the accumulator's limbs and their byte
-   --  encoding only (Kome.Byteorder, Kome.Accumulator, Kome.Digest).
-   --  Semantic quantities use the range types below, so that every overflow
-   --  is a proof obligation and no value is reserved (H6).
+   --  This is the only modular type. Use it only for the limbs of the
+   --  accumulator and for their byte encoding (Kome.Byteorder,
+   --  Kome.Accumulator, Kome.Digest). Semantic quantities use the range
+   --  types below, so that each overflow is a proof obligation and no value
+   --  is reserved (H6).
    type U64 is mod 2**64 with Size => 64;
 
-   --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl, from_t, rev_seq are
-   --  48-bit. 0 is an ordinary value; 2**48 - 1 is an ordinary value; an
-   --  emission that would exceed the range fails with no side effect (T13).
+   --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl, from_t and rev_seq are
+   --  48-bit values. 0 is an ordinary value, and 2**48 - 1 is an ordinary
+   --  value. If an emission would go above the range, it fails and has no
+   --  side effect (T13).
    type U48 is range 0 .. 2**48 - 1 with Size => 64;
    type Epoch is range 0 .. 2**16 - 1 with Size => 16;
 
@@ -31,11 +34,12 @@ package Kome with SPARK_Mode, Pure is
    Nonce_Len  : constant := 24;   --  XChaCha20-Poly1305
    Box_Len    : constant := 48;   --  32-byte epoch key + 16-byte tag
 
-   --  In the lattice, identifiers and keys are records of fixed-width words
-   --  (big-endian: W0 is the most significant), not byte arrays, so that
-   --  equality on them is logical equality for the prover and the byte-
-   --  lexicographic order is a chain of word comparisons. Kome.Keys converts
-   --  from the wire bytes (To_Key256 / To_Id128), and Kome.Records calls it.
+   --  In the lattice, identifiers and keys are records of fixed-width words,
+   --  not byte arrays. The words are big-endian: W0 is the most significant.
+   --  Thus, for the prover, equality on these records is logical equality,
+   --  and the byte-lexicographic order is a chain of word comparisons.
+   --  Kome.Keys converts the wire bytes to these records (To_Key256 /
+   --  To_Id128), and Kome.Records calls Kome.Keys.
    type Word is range 0 .. 2**32 - 1 with Size => 32;
 
    type Id128 is record
@@ -66,9 +70,9 @@ package Kome with SPARK_Mode, Pure is
    subtype Nonce   is Byte_Array (0 .. Nonce_Len - 1);
    subtype Box     is Byte_Array (0 .. Box_Len - 1);
 
-   --  Variable-length bounds (DESIGN.md §2). A field name is 1..32 bytes; a
-   --  value is 0..40_960 bytes, and the empty value is a value. The value
-   --  bound (D12) is what makes every frame, at most 41_136 bytes, fit in
+   --  Variable-length bounds (DESIGN.md §2). A field name has 1..32 bytes. A
+   --  value has 0..40_960 bytes, and the empty value is a value. A frame has
+   --  at most 41_136 bytes. The value bound (D12) makes each frame fit in
    --  one 48 KiB reconciliation message (§8).
    Field_Max  : constant := 32;
    Value_Max  : constant := 40_960;
@@ -79,25 +83,27 @@ package Kome with SPARK_Mode, Pure is
    Members_Max : constant := 64;     --  n_members per ROSTER
    Links_Max   : constant := 15;     --  n_links per ROSTER (epoch segments, E3)
    --  Signers: the founding key plus at most 15 certified roots (A1). Each
-   --  signer has its own slice of at most Slice_Max authorization records
-   --  (rosters, REVOKEs and GRANTs it signed) in the frontier (E1).
+   --  signer has its own slice in the frontier (E1). A slice holds at most
+   --  Slice_Max authorization records (the rosters, REVOKEs and GRANTs that
+   --  the signer signed).
    Signers_Max : constant := 16;
    Slice_Max   : constant := 512;
-   --  W holds at most one subject per held GRANT, and the frontier holds at
-   --  most Signers_Max * Slice_Max authorization records, so W never fills
-   --  on its own (DESIGN.md §7 "Bounds").
+   --  W holds at most one subject for each held GRANT. The frontier holds at
+   --  most Signers_Max * Slice_Max authorization records. Thus W never
+   --  becomes full on its own (DESIGN.md §7 "Bounds").
    Writers_Max : constant := Signers_Max * Slice_Max;   --  8_192
 
    --  Tombstone lifetime del_ttl, in milliseconds (DESIGN.md §2 rule 3,
-   --  §3 del_ttl_eff, §7). A ROSTER's del_ttl is clamped to
-   --  [Del_TTL_Min, Del_TTL_Max] at decode; with no roster the default holds.
+   --  §3 del_ttl_eff, §7). Decode clamps the del_ttl of a ROSTER to
+   --  [Del_TTL_Min, Del_TTL_Max]. If there is no roster, the default
+   --  applies.
    Del_TTL_Min     : constant := 604_800_000;        --  7 days
    Del_TTL_Default : constant := 15_552_000_000;     --  180 days
    Del_TTL_Max     : constant := 315_360_000_000;    --  3 650 days
 
-   --  Signed 64-bit time for the expiry horizon (DESIGN.md §7): horizon :=
-   --  min (now_local, maxceil) - del_ttl_eff is computed in 64 bits, so it
-   --  never wraps, and a value below 0 means "no horizon".
+   --  Signed 64-bit time for the expiry horizon (DESIGN.md §7). The code
+   --  computes horizon := min (now_local, maxceil) - del_ttl_eff in 64 bits,
+   --  so it never wraps. A value below 0 means "no horizon".
    type Time64 is range -(2**62) .. 2**62 with Size => 64;
    No_Horizon : constant Time64 := -1;
 
@@ -107,16 +113,17 @@ package Kome with SPARK_Mode, Pure is
    Max_Message_Len : constant := 48 * 1024;
 
    --  Result codes of decode and of the store operations (Kome.Records,
-   --  Kome.Frontier, Kome.Store, Kome.Emit), and of the C ABI once it exists
-   --  (DESIGN.md §10.6). Every operation that can fail returns one of these
-   --  and leaves the store unchanged on failure.
+   --  Kome.Frontier, Kome.Store, Kome.Emit). They are also the result codes
+   --  of the C ABI, when it exists (DESIGN.md §10.6). Each operation that can
+   --  fail returns one of these codes. On failure, it does not change the
+   --  store.
    type Status is
      (OK,
-      Dominated,        --  record applied: already beaten by a held record
+      Dominated,        --  record applied: a held record already beats it
       Inadmissible,     --  record refused: above the ceiling or author not in W
-      Malformed,        --  bounds or signature failed; a function of the bytes
-      Shadowed,         --  write emitted at the ceiling and loses to the floor
-      Seq_Exhausted,    --  seq would exceed 2**48 - 1; nothing emitted
+      Malformed,        --  bounds or signature failed; depends on bytes only
+      Shadowed,         --  write emitted at the ceiling; the floor beats it
+      Seq_Exhausted,    --  seq would go above 2**48 - 1; nothing emitted
       No_Space,         --  bounded store is full; nothing changed
       Auth_Full);       --  the signer's authorization slice, or the slot
                         --  table, is full; nothing changed (DESIGN.md §7)

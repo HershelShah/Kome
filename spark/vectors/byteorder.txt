@@ -1,6 +1,6 @@
 # Little-endian u64 vectors: <value, 16 hex digits> <its 8-byte encoding>.
-# Generated with Python's int.to_bytes(8, 'little'): edge values, every
-# power of two, and 200 values from random.Random(20261103).
+# Python int.to_bytes(8, 'little') generated these vectors: edge values,
+# each power of two, and 200 values from random.Random(20261103).
 0000000000000000 0000000000000000
 0000000000000001 0100000000000000
 0000000000000002 0200000000000000

@@ -1,15 +1,15 @@
---  Test main for Kome.Frontier: the lattice core exercised the way the Lean
+--  Test main for Kome.Frontier: it tests the lattice core as the Lean
 --  theorems and DESIGN.md §3, §4, §7 state it. Contracts and ghost lemmas
---  are evaluated at run time (-gnata) on every call. Covered:
+--  are evaluated at run time (-gnata) on each call. The tests include:
 --  (a) admission by GRANT (D1′) and refusal without one;
 --  (b) GRANT domination keyed by (issuer, subject) (D1′);
 --  (c) roster domination as the product order (D3);
---  (d) every refusal leaves the state unchanged (D11, T13);
---  (e) capacity rows: a data flood or a full slice takes no one else's
---      room, and the founding key's REVOKE lands (E1, E2);
+--  (d) each refusal leaves the state unchanged (D11, T13);
+--  (e) capacity rows: a data flood or a full slice takes no room from a
+--      different row, and the REVOKE of the founding key is held (E1, E2);
 --  (f) expiry (D10): Expire and Apply_Expired;
 --  (g) convergence: the same set in several orders, with duplicates and
---      re-offers, gives the same held set and registers (T4).
+--      records offered again, gives the same held set and registers (T4).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -73,8 +73,8 @@ procedure Test_Frontier with SPARK_Mode => Off is
    function New_State (Cap : Data_Size := 64; Slice : Slice_Count := 8) return State is
      (Empty (NS, Key (Fnd), Cap, Slice));
 
-   --  Every public view of two states agrees (the test's reading of
-   --  Unchanged, which is ghost; Apply's Post also checks Unchanged itself).
+   --  Each public view of two states agrees. This is how the test reads
+   --  Unchanged, which is ghost. The Post of Apply also checks Unchanged.
    function Same_State (X, Y : State) return Boolean is
    begin
       if Kome.Frontier.Count (X) /= Kome.Frontier.Count (Y)
@@ -129,7 +129,7 @@ procedure Test_Frontier with SPARK_Mode => Off is
       end if;
    end App;
 
-   --  Every lemma on every index of a state.
+   --  Each lemma on each index of a state.
    procedure Lemmas (S : State) is
    begin
       Lemma_Unchanged_Refl (S);
@@ -163,9 +163,9 @@ procedure Test_Frontier with SPARK_Mode => Off is
 
    type Header_List is array (Positive range <>) of Header;
 
-   --  A complete reconciliation: a refused record is re-offered by whoever
-   --  holds it (DESIGN.md §4), so apply the list in passes until a pass
-   --  holds nothing new. Admission is monotone, so this terminates (T4).
+   --  A complete reconciliation: the holder of a refused record offers it
+   --  again (DESIGN.md §4). Thus apply the list in passes until a pass
+   --  holds no new record. Admission is monotone, so this stops (T4).
    function Run (L : Header_List) return State is
       S        : State := New_State;
       St       : Status;
@@ -187,9 +187,9 @@ procedure Test_Frontier with SPARK_Mode => Off is
       return S;
    end Run;
 
-   --  A State carries a Register_File of Writers_Max keys (256 KiB), and
-   --  under -gnata every Post evaluation copies states and registers, so
-   --  the checks run in a task with a large stack.
+   --  A State has a Register_File of Writers_Max keys (256 KiB). Under
+   --  -gnata, each Post evaluation copies states and registers. Thus the
+   --  checks run in a task with a large stack.
    procedure Run_All;
 
    task Runner with Storage_Size => 512 * 1024 * 1024;
@@ -250,9 +250,9 @@ begin
       App (S, Put (2, 'n', V (9000, 1, 2, 11)), St);
       Check ("PUT above the ceiling is Inadmissible", St = Inadmissible);
       Lemmas (S);
-      --  Lemmas ran Lemma_Unchanged_Refl and Lemma_Unchanged (S, S), and App
-      --  ran Lemma_Unchanged after each refusal and duplicate: both lemmas
-      --  are executable (bounded quantifiers) and returned.
+      --  Lemmas ran Lemma_Unchanged_Refl and Lemma_Unchanged (S, S). App
+      --  ran Lemma_Unchanged after each refusal and duplicate. The two
+      --  lemmas are executable (bounded quantifiers) and returned.
       Lemma_Unchanged_Refl (S);
       Lemma_Unchanged (S, S);
       Check ("Lemma_Unchanged_Refl and Lemma_Unchanged execute (3 held)",
@@ -317,7 +317,7 @@ begin
       Lemmas (S);
    end;
 
-   --  (d)+(e) Data flood, then the founding key's REVOKE.
+   --  (d)+(e) Data flood, then the REVOKE of the founding key.
    declare
       S : State := New_State (Cap => 8, Slice => 4);
       Before : State := New_State (Cap => 8, Slice => 4);
@@ -345,7 +345,8 @@ begin
       Lemmas (S);
    end;
 
-   --  (e) Slices: one signer's slice full; others still land.
+   --  (e) Slices: the slice of one signer is full. Records of other
+   --  signers are still held.
    declare
       S      : State := New_State (Cap => 8, Slice => 4);
       Before : State := New_State (Cap => 8, Slice => 4);
@@ -484,7 +485,7 @@ begin
       Lemmas (A);
    end;
 
-   --  Is_Frontier after every step of a long mixed run.
+   --  Is_Frontier after each step of a long mixed run.
    declare
       Mixed : constant Header_List :=
         [Put (1, 'n', V (100, 1, 1, 10)), Roster (Fnd, 1, 5000, 1),

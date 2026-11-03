@@ -1,12 +1,14 @@
 pragma Ada_2022;
 package body Kome.Frontier with SPARK_Mode is
 
-   --  Proof style (CONVENTIONS.md): every quantified definition lives in
-   --  this body, out of the clients' view; each state change is followed by
-   --  "bridge" assertions relating the new state to the old one; and every
-   --  "some record" in an invariant is a named index held in a ghost witness
-   --  array (Src: where a kept record came from; Dst: where an old record
-   --  went, 0 if it was dropped).
+   --  Proof style (CONVENTIONS.md):
+   --    * each quantified definition is in this body, out of the view of
+   --      the clients;
+   --    * after each state change, "bridge" assertions relate the new state
+   --      to the old state;
+   --    * each "some record" in an invariant is a named index in a ghost
+   --      witness array (Src: the source of a kept record; Dst: the new
+   --      position of an old record, 0 if it was dropped).
 
    Null_Header : constant Header := (others => <>);
 
@@ -17,7 +19,7 @@ package body Kome.Frontier with SPARK_Mode is
    --  The rows and the flat view
    ---------------------------------------------------------------------
 
-   --  Row 0 is the data row, rows 1 .. Signers_Max the slots.
+   --  Row 0 is the data row. Rows 1 .. Signers_Max are the slots.
    function Row_Count (S : State; K : Slot_Number) return Natural is
      (if K = 0 then Data_Count (S) else SC (S.A, K));
 
@@ -26,8 +28,9 @@ package body Kome.Frontier with SPARK_Mode is
       elsif J in 1 .. SC (S.A, K) then S.A.H (K, J)
       else Null_Header);
 
-   --  The slot an authorization position J (counted after the data row)
-   --  falls in: the first K with J <= Offs (K + 1), else the last slot.
+   --  The slot that contains an authorization position J (counted after
+   --  the data row): the first K with J <= Offs (K + 1), else the last
+   --  slot.
    function Flat_Slot (S : State; J : Integer) return Slot_Index is
      (if    J <= S.A.Offs (2)  then 1
       elsif J <= S.A.Offs (3)  then 2
@@ -119,8 +122,9 @@ package body Kome.Frontier with SPARK_Mode is
       and then X.Issuer = S.A.Keys (K));
 
    --  Each slot holds canonical authorization records of this collection
-   --  issued by its key, as an antichain without repetition. Written flat
-   --  (no per-row predicate under the quantifier), which the provers need.
+   --  issued by its key, as an antichain without repetition. It is written
+   --  flat (no per-row predicate under the quantifier) because the provers
+   --  need this form.
    function Auth_OK (A : Auth_Rows; NS : Id128) return Boolean is
      ((for all K in Slot_Index =>
          (for all J in 1 .. SC (A, K) =>
@@ -145,7 +149,7 @@ package body Kome.Frontier with SPARK_Mode is
         (for some J in 1 .. SC (A, K) =>
            A.H (K, J).K = K_Grant and then A.H (K, J).V.Author = W));
 
-   --  The register cache equals the views maxceil(F) and W(F).
+   --  The register copy is equal to the views maxceil(F) and W(F).
    function Coherent (A : Auth_Rows; RG : Register_File) return Boolean is
      ((for all K in Slot_Index =>
          (for all J in 1 .. SC (A, K) => Ceil_Of (A.H (K, J)) <= Ceil (RG)))
@@ -205,7 +209,7 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (S.A.Offs (Signers_Max) <= (Signers_Max - 1) * S.Slice);
    end Lemma_Off_Mono;
 
-   --  Flat_Slot finds the slot interval a position falls in.
+   --  Flat_Slot finds the slot interval that contains a position.
    procedure Lemma_Flat_Slot (S : State; J : Integer) with
      Ghost, Global => null,
      Pre  => Shape (S) and then J in 1 .. S.A.NAuth,
@@ -295,8 +299,8 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Item;
 
    ---------------------------------------------------------------------
-   --  Classification: which row a record can be held, dominated or
-   --  dropping in (Kome.Headers.Lemma_Same_Row).
+   --  Classification: the row in which a record can be held, dominated or
+   --  dropped (Kome.Headers.Lemma_Same_Row).
    ---------------------------------------------------------------------
 
    function Row_For (S : State; R : Header) return Slot_Number is
@@ -329,8 +333,8 @@ package body Kome.Frontier with SPARK_Mode is
    begin
       Lemma_Off_Mono (S);
       Lemma_All_Flat (S);
-      --  Flat to row: a held record equal to, dominating or dominated by R
-      --  is in R's row.
+      --  Flat to row: a held record that is equal to R, dominates R or is
+      --  dominated by R is in the row of R.
       for I in 1 .. Count (S) loop
          Lemma_Item (S, Row_Of (S, I), Pos_Of (S, I));
          if Held (S, I) = R then
@@ -390,9 +394,11 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Classify;
 
    ---------------------------------------------------------------------
-   --  One step on one row K0: every other row is unchanged; row K0 keeps
-   --  some of its old records (Src) and maybe appends R; Dst says where
-   --  each old record of row K0 went (0: dropped).
+   --  One step on one row K0:
+   --    * no other row changes;
+   --    * row K0 keeps some of its old records (Src) and possibly adds R;
+   --    * Dst gives the new position of each old record of row K0
+   --      (0: dropped).
    ---------------------------------------------------------------------
 
    type Index_Map is array (Positive range <>) of Natural with Ghost;
@@ -546,9 +552,10 @@ package body Kome.Frontier with SPARK_Mode is
       J := 1;
    end Find_Grant;
 
-   --  An authorization step on slot K0, on the rows themselves: every other
-   --  slot is unchanged; slot K0 keeps some of its old records (Src) and
-   --  ends in R; an old record of slot K0 is kept (Dst) or dominated by R.
+   --  An authorization step on slot K0, on the rows:
+   --    * no other slot changes;
+   --    * slot K0 keeps some of its old records (Src) and ends in R;
+   --    * an old record of slot K0 is kept (Dst) or dominated by R.
    function Auth_Step
      (Old, Upd : Auth_Rows; K0 : Slot_Index; R : Header; Src, Dst : Index_Map)
       return Boolean
@@ -649,8 +656,8 @@ package body Kome.Frontier with SPARK_Mode is
    is
       N : constant Natural := SC (Upd, K0);
    begin
-      --  The ceiling bounds every held roster, and every held grant's
-      --  subject is a writer.
+      --  The ceiling bounds each held roster, and the subject of each held
+      --  grant is a writer.
       for K in Slot_Index loop
          for J in 1 .. SC (Upd, K) loop
             if K /= K0 then
@@ -692,7 +699,7 @@ package body Kome.Frontier with SPARK_Mode is
                   then In_W (Upd_RG, Upd.H (K2, J2).V.Author))));
       end loop;
 
-      --  The ceiling is some held roster's, or 0.
+      --  The ceiling is the ceiling of a held roster, or 0.
       if Ceil (Upd_RG) /= 0 then
          if R.K = K_Roster and then R.V.T = Ceil (Upd_RG) then
             pragma Assert (N >= 1 and then N <= SC (Upd, K0));
@@ -706,7 +713,7 @@ package body Kome.Frontier with SPARK_Mode is
          end if;
       end if;
 
-      --  Every writer is a held grant's subject.
+      --  Each writer is the subject of a held grant.
       for I in 1 .. Registers.Count (Upd_RG) loop
          if R.K = K_Grant then
             Lemma_In_W_Iff (Upd_RG, Writer (Upd_RG, I));
@@ -771,7 +778,7 @@ package body Kome.Frontier with SPARK_Mode is
    end Compute_Offs;
 
    --  Shape and slot table across an authorization step on slot K0 (Fresh:
-   --  K0 is a newly assigned slot).
+   --  K0 is a slot that the step assigns now).
    procedure Lemma_Slots_Step
      (Old, Upd : Auth_Rows; Fnd : Key256; K0 : Slot_Index; Fresh : Boolean)
    with
@@ -804,7 +811,7 @@ package body Kome.Frontier with SPARK_Mode is
               (if K /= K2 then Upd.Keys (K) /= Upd.Keys (K2))));
    end Lemma_Slots_Step;
 
-   --  The data row is still a frontier row under widened registers (T4').
+   --  The data row is still a frontier row under wider registers (T4').
    procedure Lemma_Data_OK_Regs (Old, Upd : State) with
      Ghost, Global => null,
      Pre  => Data_OK (Old)
@@ -824,8 +831,8 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Data_OK_Regs;
 
    --  Auth_OK across an authorization step: R is a canonical record of the
-   --  slot's issuer, undominated in its row and not already in it; the kept
-   --  records are distinct old ones R does not dominate.
+   --  issuer of the slot, undominated in its row and not already in it. The
+   --  kept records are distinct old records that R does not dominate.
    procedure Lemma_Auth_OK_Step
      (Old, Upd : Auth_Rows; Old_NS, NS : Id128; K0 : Slot_Index; R : Header;
       Src, Dst : Index_Map)
@@ -1020,7 +1027,7 @@ package body Kome.Frontier with SPARK_Mode is
             K : constant Slot_Number := Row_Of (Old, I);
             J : constant Integer := Pos_Of (Old, I);
          begin
-            --  Inside the row both rows agree (above); outside it both
+            --  In the row, the two rows agree (above). Outside it, the two
             --  are Null_Header.
             if J not in 1 .. Row_Count (Old, K) then
                pragma Assert (Row_At (Old, K, J) = Null_Header);
@@ -1089,7 +1096,7 @@ package body Kome.Frontier with SPARK_Mode is
          if Dominates (S.Data_H (I), R) then
             pragma Assert (Row_At (S, 0, I) = S.Data_H (I));
             pragma Assert (Dom_In_Row (S, 0, R));
-            --  A held copy of R would be dominated too.
+            --  A held copy of R would also be dominated.
             pragma Assert
               (for all J in 1 .. N => not Dominates (S.Data_H (I), S.Data_H (J)));
             pragma Assert (for all J in 1 .. N => S.Data_H (J) /= R);
@@ -1122,7 +1129,7 @@ package body Kome.Frontier with SPARK_Mode is
             return;
          end if;
 
-         --  Drop what R beats, compacting in place; then hold R.
+         --  Drop what R beats and compact in place. Then hold R.
          for I in 1 .. N loop
             pragma Loop_Invariant (Kept + Dropped = I - 1);
             pragma Loop_Invariant
@@ -1201,9 +1208,10 @@ package body Kome.Frontier with SPARK_Mode is
       Result := OK;
    end Apply_Data;
 
-   --  Commit an authorization record to slot K0 (Fresh: a newly assigned
-   --  slot): drop what R beats in its own row, hold R, move the offsets,
-   --  derive the registers. Every refusal has been decided by the caller.
+   --  Commit an authorization record to slot K0 (Fresh: a slot that this
+   --  step assigns now). Drop what R beats in its own row, hold R, move the
+   --  offsets and derive the registers. The caller decided all refusals
+   --  before this.
    procedure Commit_Auth (S : in out State; R : Header; K0 : Slot_Index; Fresh : Boolean) with
      Global => null,
      Pre  => Is_Frontier (S) and then Canonical (R) and then R.NS = S.NS
@@ -1247,7 +1255,7 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (N = S.A.NA (K0) and then Slice = S.Slice and then Slice >= 1);
       pragma Assert (if Fresh then N = 0);
 
-      --  Drop what R beats in its own row, compacting in place.
+      --  Drop what R beats in its own row and compact in place.
       for J in 1 .. N loop
          pragma Loop_Invariant (Kept + Dropped = J - 1);
          pragma Loop_Invariant
@@ -1305,8 +1313,8 @@ package body Kome.Frontier with SPARK_Mode is
       --  The offsets of the slots after K0 move.
       Compute_Offs (S.A.NA, S.A.Slice, S.A.Offs, S.A.NAuth);
 
-      --  The registers: derived from the held set, so raised only now
-      --  that R is held.
+      --  The registers: they are derived from the held set. Thus they go
+      --  up only now, after R is held.
       pragma Assert (S.RG = Old_S.RG);
       Lemma_Eq (S.RG, Old_S.RG);
       if R.K = K_Roster then
@@ -1330,7 +1338,7 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (Ceil (S.RG) = U48'Max (Ceil (Old_S.RG), Ceil_Of (R)));
       pragma Assert (Extends (Old_S.RG, S.RG));
 
-      --  Bridge: slot K0 is the kept records plus R; nothing else moved.
+      --  Bridge: slot K0 is the kept records plus R. Nothing else moved.
       pragma Assert (Slot_Count (S, K0) = Kept + 1);
       pragma Assert (S.A.H (K0, Kept + 1) = R);
       pragma Assert
@@ -1378,7 +1386,7 @@ package body Kome.Frontier with SPARK_Mode is
            Holds (S, Held (Old_S, I)) or else Dominates (R, Held (Old_S, I)));
    end Commit_Auth;
 
-   --  Apply to the signer's slot (R an authorization record).
+   --  Apply to the slot of the signer (R is an authorization record).
    procedure Apply_Auth (S : in out State; R : Header; Result : out Status) with
      Global => null,
      Pre  => Is_Frontier (S) and then Canonical (R) and then R.NS = S.NS
@@ -1476,7 +1484,7 @@ package body Kome.Frontier with SPARK_Mode is
          pragma Assert (not Dom_In_Row (S, K0, R));
          pragma Assert (Old_S.A.Keys (K0) = R.Issuer);
       end if;
-      --  The same facts, about the state before any change.
+      --  The same facts, about the state before a change.
       pragma Assert (N = SC (Old_S.A, K0));
       pragma Assert
         (for all J in 1 .. N =>
@@ -1484,8 +1492,9 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (if N > 0 then Old_S.A.Keys (K0) = R.Issuer);
       pragma Assert (not Holds (S, R) and then not Dom (S, R));
 
-      --  Room: decided before anything changes. W first: it is never full
-      --  on a frontier (see the spec), but Add_Writer's bound is checked.
+      --  Room: decided before something changes. W first: it is never full
+      --  on a frontier (see the spec), but the bound of Add_Writer is
+      --  checked.
       if R.K = K_Grant and then not In_W (S.RG, R.V.Author)
         and then Registers.Count (S.RG) = Writers_Max
       then
@@ -1718,9 +1727,9 @@ package body Kome.Frontier with SPARK_Mode is
          Lemma_Step_Flat (Old_S, S, 0, R, Src, Dst);
          Lemma_All_Flat (S);
          Lemma_All_Flat (Old_S);
-         --  Every record held now was held before, so R is not held; and
-         --  R dominates none of them (a kept data record, or an
-         --  authorization record, which a DEL never dominates).
+         --  Each record held now was held before, so R is not held. R
+         --  dominates none of them (a kept data record, or an authorization
+         --  record, which a DEL never dominates).
          pragma Assert (for all I in 1 .. Count (S) => Holds (Old_S, Held (S, I)));
          pragma Assert (not Holds (S, R));
          for I in 1 .. Count (S) loop

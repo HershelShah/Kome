@@ -1,9 +1,10 @@
-# Kome.Accumulator vectors: OP A B R, each the 512-byte little-endian hex
-# of an integer (byte 0 least significant).
+# Kome.Accumulator vectors: OP A B R. Each field is the 512-byte
+# little-endian hex of an integer (byte 0 is the least significant).
 # ADD: R = (A + B) mod 2^4096; SUB: R = (A - B) mod 2^4096.
-# Computed with Python integers, independently of the SPARK model:
+# Python integers computed these values, independently of the SPARK model:
 # random, sparse, carry-chain and wraparound cases, seed 0x6B6F6D65.
-# The generator is the "#|" lines below. To regenerate the data lines:
+# The "#|" lines below are the generator. To make the data lines again, run
+# these commands:
 #   sed -n 's/^#| \{0,1\}//p' vectors/accumulator.txt > gen.py
 #   python3 gen.py   # prints the ADD/SUB lines that follow this header
 #

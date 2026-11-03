@@ -1,6 +1,7 @@
---  Test main for Kome.Registers: the ceiling only rises, Add_Writer counts
---  distinct writers exactly, and Added / Extends say what the lemmas claim.
---  Contracts and ghost lemmas are evaluated at run time (-gnata).
+--  Test main for Kome.Registers. It tests that the ceiling only rises, that
+--  Add_Writer counts distinct writers exactly, and that Added / Extends mean
+--  what the lemmas claim. The test evaluates contracts and ghost lemmas at
+--  run time (-gnata).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 
@@ -55,9 +56,10 @@ begin
    Lemma_Distinct (R, 1, 2);
    Check ("extends is inclusion", Extends (Old, R) and then not Extends (R, Old));
 
-   --  Writers_Max is not filled here: under -gnata every Add_Writer
-   --  evaluates Extends and Distinct, quadratic in Count, so a fill to 8 192
-   --  would take hours. The bound is a proof obligation (Add_Writer's Pre).
+   --  This test does not fill Writers_Max. Under -gnata, each Add_Writer
+   --  evaluates Extends and Distinct, which are quadratic in Count. Thus a
+   --  fill to 8 192 would take hours. The bound is a proof obligation (the
+   --  Pre of Add_Writer).
 
    if Failed then
       Set_Exit_Status (Failure);

@@ -1,7 +1,8 @@
---  Test main for Kome.Headers: wire codes, canonical form, domination per
---  kind (DESIGN.md §3 table: the roster product order D3, grants keyed by
---  (issuer, subject) D1′, REVOKE never dominated) and expiry. The ghost
---  lemmas are evaluated at run time (-gnata) on every pair of a grid.
+--  Test main for Kome.Headers. It tests the wire codes, the canonical form,
+--  domination for each kind, and expiry. Domination follows the DESIGN.md
+--  §3 table: the roster product order D3, grants keyed by (issuer, subject)
+--  D1′, and REVOKE never dominated. The test evaluates the ghost lemmas at
+--  run time (-gnata) on each pair of a grid.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -115,7 +116,7 @@ begin
           Ceil_Of (R4) = 9000 and then Ceil_Of (Grant (9, 1, 13)) = 0
           and then Ceil_Of (Revoke (9, 1, 1234, 17)) = 0);
 
-   --  Every lemma on every pair (and triple, for transitivity).
+   --  Each lemma on each pair (and on each triple, for transitivity).
    for X of Grid loop
       Lemma_Dominates_Irrefl (X);
       Lemma_Gen_Lt_Irrefl (X);

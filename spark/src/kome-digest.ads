@@ -1,7 +1,7 @@
---  Kome.Digest: the fingerprint of a set of records, which is also the
+--  Kome.Digest: the fingerprint of a set of records. This is also the
 --  collection digest (DESIGN.md §8 "Fingerprint = digest (D7)", T6).
 --
---  Definitions, exactly as DESIGN.md §8 (decision D7 of §1) records them:
+--  Definitions, exactly as DESIGN.md §8 (decision D7 of §1) gives them:
 --
 --    B_i(e)     := BLAKE2b-256 ("kome/acc" ‖ h(e) ‖ u8(i))     i = 0 .. 15
 --    acc(e)     := Σ_i LE(B_i(e)) · 2^(256·i)  mod 2^4096,
@@ -10,103 +10,118 @@
 --    fp(R)      := BLAKE2b-256 ("kome/fp" ‖ u64(|R|) ‖ ACC_le(R))
 --    digest(ns) := fp(F|ns)                  (Frontier_Digest below)
 --
---  Bytes (§8, D7): "kome/acc" is 6B 6F 6D 65 2F 61 63 63 and "kome/fp" is
---  6B 6F 6D 65 2F 66 70 (Acc_Tag, Fp_Tag); h(e) is the record's content
---  hash (Kome.Headers.Header.V.H) as its 32 bytes in the order BLAKE2b
---  produced them (Kome.Keys.To_Bytes); u8(i) is one byte; u64(|R|) is
---  big-endian. acc(e) is the 512-byte string B_0 ‖ … ‖ B_15 read as a
---  LITTLE-ENDIAN integer (byte 0 least significant, chunk i at bytes
---  32·i .. 32·i + 31), and ACC_le(R) is the 512-byte little-endian form
---  (Kome.Accumulator.To_Bytes); the accumulator is the only little-endian
---  quantity in Kome. vectors/digest.txt holds the normative known-answer
---  vectors (computed with Python's hashlib).
+--  Bytes (§8, D7): "kome/acc" is 6B 6F 6D 65 2F 61 63 63, and "kome/fp" is
+--  6B 6F 6D 65 2F 66 70 (Acc_Tag, Fp_Tag). h(e) is the content hash of the
+--  record (Kome.Headers.Header.V.H), as its 32 bytes in the order that
+--  BLAKE2b made them (Kome.Keys.To_Bytes). u8(i) is one byte. u64(|R|) is
+--  big-endian.
 --
---  The arithmetic (the integer mod 2^4096 and its "+" and "-") is
---  Kome.Accumulator; this package hashes an element to its acc(e), keeps
---  the running (|R|, ACC(R)) of a set of records, and hashes that pair to
---  fp(R). The hashing is opaque (Kome.Crypto binds monocypher; A2): its
+--  acc(e) is the 512-byte string B_0 ‖ … ‖ B_15 read as a LITTLE-ENDIAN
+--  integer (byte 0 least significant, chunk i at bytes 32·i .. 32·i + 31).
+--  ACC_le(R) is the 512-byte little-endian form (Kome.Accumulator.To_Bytes).
+--  The accumulator is the only little-endian quantity in Kome.
+--  vectors/digest.txt holds the normative known-answer vectors (computed
+--  with Python hashlib).
+--
+--  Kome.Accumulator gives the arithmetic (the integer mod 2^4096 and its
+--  "+" and "-"). This package hashes an element to its acc(e), keeps the
+--  running (|R|, ACC(R)) of a set of records, and hashes that pair to
+--  fp(R). The hashing is opaque (Kome.Crypto binds monocypher; A2). Its
 --  contracts give the exact bytes that are hashed, and the known-answer
---  vectors check the digests themselves. Everything about the arithmetic
---  is proved.
+--  vectors check the digests themselves. gnatprove proves all of the
+--  arithmetic.
 --
---  Equality and the prover (CONVENTIONS.md, rule 1). An Acc is an array,
---  so Ada "=" on two of them is element-wise and not logical equality:
+--  Equality and the prover (CONVENTIONS.md, rule 1). An Acc is an array.
+--  Thus Ada "=" on two of them is element-wise, not logical equality, and
 --  the prover cannot conclude Fp (N, A1) = Fp (N, A2) from A1 = A2 by
---  congruence. Lemma_Fp_Congruent and Lemma_Fingerprint_Congruent prove
---  it (the body hashes a record-of-words image of the accumulator, whose
+--  congruence. Lemma_Fp_Congruent and Lemma_Fingerprint_Congruent prove it
+--  (the body hashes a record-of-words image of the accumulator, whose
 --  equality is logical). The congruences of Add and Sub are
---  Kome.Accumulator's Lemma_Add_Congruent and Lemma_Sub_Congruent.
+--  Lemma_Add_Congruent and Lemma_Sub_Congruent of Kome.Accumulator.
 --
---  Order independence. The state is a commutative-monoid fold: adding
---  records in any order gives the same state (Lemma_Add_Commute for two,
---  Lemma_Sum_Perm for any permutation of a list, given as an injective
---  index map), removing what was added restores it (Lemma_Remove_Add),
---  and the sum over a list splits over any partition into two consecutive
---  ranges (Lemma_Sum_Split, the T6 homomorphism ACC(R₁ ⊎ R₂) = ACC(R₁) +
---  ACC(R₂)). Equal states have equal fingerprints
---  (Lemma_Fingerprint_Congruent). Two frontiers that hold the same
---  records in different array orders have the same digest
---  (Lemma_Frontier_Digest_Perm). The converse (fp(R₁) = fp(R₂) ⇒ R₁ = R₂)
---  is the k-sum hardness assumption A2, not a proof obligation.
+--  Order independence. The state is a commutative-monoid fold:
+--    * an addition of records in any order gives the same state
+--      (Lemma_Add_Commute for two records, Lemma_Sum_Perm for any
+--      permutation of a list, given as an injective index map);
+--    * the removal of an added record restores the state
+--      (Lemma_Remove_Add);
+--    * the sum over a list splits over any partition into two consecutive
+--      ranges (Lemma_Sum_Split, the T6 homomorphism ACC(R₁ ⊎ R₂) =
+--      ACC(R₁) + ACC(R₂)).
+--  Equal states have equal fingerprints (Lemma_Fingerprint_Congruent).
+--  Two frontiers that hold the same records in different array orders
+--  have the same digest (Lemma_Frontier_Digest_Perm). The converse
+--  (fp(R₁) = fp(R₂) ⇒ R₁ = R₂) is the k-sum hardness assumption A2, not a
+--  proof obligation.
 --
 --  The documented contract of the incremental state. Digest_State is only
---  (|R|, ACC(R)); it does not store R, so it cannot know what R holds.
+--  (|R|, ACC(R)). It does not store R, so it cannot know what R holds.
 --  Remove_Record of a record that is not in R, and Add_Record of a record
---  that already is, both return D_OK and apply the arithmetic: the result
---  is the state of no SET (barring a k-sum collision, A2), and nothing in
---  this package detects it. This is inherent in keeping just (|R|, ACC)
---  and is the intended contract, not a defect: T6 is a statement about
---  sets, and the guard is the caller's Models discipline. Models (S, L, N)
---  is the ghost relation "S is the state of the multiset L (1 .. N)", and
---  Lemma_Models_Empty / _Add / _Remove / _Perm carry it across every
---  update; Lemma_Models_Remove asks for the index J at which L holds the
---  removed record, so a client that proves Models proves every removal is
---  of a member. Kome.Frontier holds no record twice (Is_Frontier), and a
---  client that adds exactly what the frontier admits and removes exactly
---  what it drops keeps a state that is the digest recomputed from scratch
---  (Digest_Of, State_Of, Lemma_Digest_Of_Models, Lemma_State_Of_Models).
---  The refusals Add_Record and Remove_Record do report (D_No_Space at
---  |R| = Elem_Max, D_Empty at |R| = 0) are the ones the state can see.
+--  that is already in R, both return D_OK and apply the arithmetic. The
+--  result is not the state of any SET (unless a k-sum collision occurs,
+--  A2), and nothing in this package detects it. This is inherent when the
+--  state keeps only (|R|, ACC). It is the intended contract, not a defect:
+--  T6 is a statement about sets, and the guard is the Models discipline of
+--  the caller.
+--
+--  Models (S, L, N) is the ghost relation "S is the state of the multiset
+--  L (1 .. N)". Lemma_Models_Empty / _Add / _Remove / _Perm carry it
+--  across each update. Lemma_Models_Remove asks for the index J at which L
+--  holds the removed record. Thus, if a client proves Models, it proves
+--  that each removal is of a member.
+--
+--  Kome.Frontier holds no record twice (Is_Frontier). Assume that a client
+--  adds exactly what the frontier admits and removes exactly what it
+--  drops. Then the client keeps a state that is the digest recomputed from
+--  the start (Digest_Of, State_Of, Lemma_Digest_Of_Models,
+--  Lemma_State_Of_Models). The refusals that Add_Record and Remove_Record
+--  report (D_No_Space at |R| = Elem_Max, D_Empty at |R| = 0) are the
+--  refusals that the state can see.
 --
 --  Prefix sums (§8, D15). Build_Prefix stores P (K) = ACC (L (1 .. 64·K))
---  for every full block K = 1 .. ⌊n/64⌋ and one more entry, the total
---  P_end = ACC (L (1 .. n)), as P (⌊n/64⌋ + 1). Range_Sum answers ACC of
---  any sub-range L (a + 1 .. b), proved equal to the sum over the range.
---  Each end x starts from its nearest stored point Start_Pos (x) (the
+--  for each full block K = 1 .. ⌊n/64⌋. It stores one more entry, the
+--  total P_end = ACC (L (1 .. n)), as P (⌊n/64⌋ + 1). Range_Sum gives ACC
+--  of any sub-range L (a + 1 .. b), and gnatprove proves that it is equal
+--  to the sum over the range. Each end x starts from its nearest stored
+--  point Start_Pos (x), at most 32 element terms away. This point is the
 --  block boundary below or above, or n for an end in the tail after the
---  last full block, whose stored value is P_end), at most 32 element
---  terms away, and the two-accumulator scheme of §8 adds the terms:
+--  last full block (the stored value at n is P_end). The two-accumulator
+--  scheme of §8 adds the terms:
 --    Plus  = P(A(b)) + fwd(b) + bwd(a)
 --    Minus = P(A(a)) + bwd(b) + fwd(a)
 --    ACC (L (a + 1 .. b)) = Plus - Minus
---  so every range, including one that ends in the tail, costs at most 64
+--  Thus each range, also a range that ends in the tail, costs at most 64
 --  Add calls and exactly one Sub.
 --
---  What the proof gives about that cost, and what it does not. The Post
---  of Range_Sum proves the formula: Range_Cost (a, b, n) <= 64, each end
---  walking at most 32 terms, Adds = Range_Cost and Subs = 1. Adds and
---  Subs are out values; they equal the Add and Sub calls actually made
---  only because the body routes every Add through one local procedure
---  (Add_Term, Pre C < 64, Post C = C'Old + 1) and the Sub through
---  another (Sub_Term). That routing is checked by review of the body, not
---  by the proof: no contract over out values can count calls, so a body
---  that ignored P, added every element of the range and then set Adds :=
---  Range_Cost (...) and Subs := 1 would still prove, and would pass the
---  tests (Prefix_Valid in the Pre forces P to be right, so the Result is
---  the same either way). The proved part is that the RESULT is right for
---  every range and that the bound is a theorem about the scheme; the
---  bound on the calls this body makes rests on the body's discipline.
+--  What the proof gives about that cost, and what it does not give. The
+--  Post of Range_Sum proves the formula: Range_Cost (a, b, n) <= 64, each
+--  end walks at most 32 terms, Adds = Range_Cost and Subs = 1. Adds and
+--  Subs are out values. They are equal to the Add and Sub calls that the
+--  body actually makes only because the body sends each Add through one
+--  local procedure (Add_Term, Pre C < 64, Post C = C'Old + 1) and the Sub
+--  through another (Sub_Term).
 --
---  Run-time cost under -gnata: every Post that mentions Sum_Of or
---  Frontier_Sum recomputes the sum from scratch (one Add, about 1.5 ms with
---  Kome.Accumulator's checks on, plus 16 hashes per element). The loop
---  invariants and per-step ghost lemmas of Build_Prefix, Range_Sum,
---  Digest_Of and State_Of would make that quadratic, so those bodies set
---  Loop_Invariant, Assert and Ghost to Ignore at run time and call their
---  per-step lemma through a local ghost procedure declared under that
---  policy (a ghost call follows the policy at the called subprogram's
---  declaration). They are proved; their own Pre and Post still run. The
---  ghost lemmas themselves run in full when the test main calls them.
+--  A review of the body checks this routing; the proof does not. No
+--  contract over out values can count calls. Thus a body that ignored P,
+--  added each element of the range and then set Adds := Range_Cost (...)
+--  and Subs := 1 would still prove, and would pass the tests.
+--  (Prefix_Valid in the Pre forces P to be correct, so the Result is the
+--  same in the two cases.) The proved part is that the RESULT is correct
+--  for each range, and that the bound is a theorem about the scheme. The
+--  bound on the calls that this body makes depends on the discipline of
+--  the body.
+--
+--  Run-time cost under -gnata: each Post that mentions Sum_Of or
+--  Frontier_Sum computes the sum again from the start (one Add, about
+--  1.5 ms with the checks of Kome.Accumulator on, plus 16 hashes for each
+--  element). The loop invariants and per-step ghost lemmas of
+--  Build_Prefix, Range_Sum, Digest_Of and State_Of would make that
+--  quadratic. Thus those bodies set Loop_Invariant, Assert and Ghost to
+--  Ignore at run time. They call their per-step lemma through a local
+--  ghost procedure declared under that policy (a ghost call follows the
+--  policy at the declaration of the called subprogram). gnatprove proves
+--  these bodies, and their own Pre and Post still run. The ghost lemmas
+--  themselves run in full when the test main calls them.
 pragma Ada_2022;
 with Ada.Numerics.Big_Numbers.Big_Integers;
 use  Ada.Numerics.Big_Numbers.Big_Integers;
@@ -143,12 +158,12 @@ package Kome.Digest with SPARK_Mode is
    Fp_Input_Len : constant := Acc_Pos + Acc_Bytes;
    subtype Fp_Input_Bytes is Byte_Array (0 .. Fp_Input_Len - 1);
 
-   --  |R| is at most the records one replica holds for one collection
-   --  (DESIGN.md §7; Kome.Frontier.Held_Max).
+   --  |R| is at most the number of records that one replica holds for one
+   --  collection (DESIGN.md §7; Kome.Frontier.Held_Max).
    Elem_Max : constant := Kome.Frontier.Held_Max;
    subtype Elem_Count is Natural range 0 .. Elem_Max;
    subtype Elem_Index is Positive range 1 .. Elem_Max;
-   --  The low end of a possibly empty range Lo .. Hi (Hi = Lo - 1).
+   --  The low end of a range Lo .. Hi that can be empty (Hi = Lo - 1).
    subtype Lo_Bound is Positive range 1 .. Elem_Max + 1;
 
    --  §8: one 512-byte prefix sum per 64 elements.
@@ -156,7 +171,7 @@ package Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  acc(e) (T6). h(e) is a Key256 (the lattice form of the content
-   --  hash); it becomes bytes only here, at the hash boundary.
+   --  hash). It becomes bytes only here, at the hash boundary.
    ----------------------------------------------------------------------
 
    function Acc_Input (H : Key256; I : Chunk_Index) return Acc_Input_Bytes
@@ -174,7 +189,7 @@ package Kome.Digest with SPARK_Mode is
                      Acc_Bytes_Of'Result (Hash_Len * I .. Hash_Len * I + Hash_Len - 1)
                        = Kome.Crypto.Blake2b_256 (Acc_Input (H, I)));
 
-   --  acc(e) as an accumulator. An expression function, so that the
+   --  acc(e) as an accumulator. It is an expression function, so that the
    --  element term is logical in H (a record of words).
    function Elem_Acc (H : Key256) return Acc is
      (From_Bytes (Acc_Bytes_Of (H)))
@@ -189,8 +204,8 @@ package Kome.Digest with SPARK_Mode is
    --  fp (T6).
    ----------------------------------------------------------------------
 
-   --  The bytes fp hashes: tag, |R| big-endian, ACC(R) in wire order (the
-   --  third conjunct is exactly Kome.Accumulator.To_Bytes (A)).
+   --  The bytes that fp hashes: tag, |R| big-endian, ACC(R) in wire order
+   --  (the third conjunct is exactly Kome.Accumulator.To_Bytes (A)).
    function Fp_Input (N : Elem_Count; A : Acc) return Fp_Input_Bytes
      with Global => null,
           Post => Fp_Input'Result (0 .. Fp_Tag_Len - 1) = Fp_Tag
@@ -213,15 +228,15 @@ package Kome.Digest with SPARK_Mode is
           Pre  => A1 = A2,
           Post => Fp (N, A1) = Fp (N, A2);
 
-   --  The ACC part of the fp input is exactly ACC(R)'s wire form.
+   --  The ACC part of the fp input is exactly the wire form of ACC(R).
    procedure Lemma_Fp_Input_Acc (N : Elem_Count; A : Acc)
      with Ghost, Global => null,
           Post => Fp_Input (N, A) (Acc_Pos .. Fp_Input_Len - 1) = To_Bytes (A);
 
    ----------------------------------------------------------------------
    --  Incremental state: (|R|, ACC(R)) of a multiset R of records. A
-   --  record is added when it is held and removed when it is dropped
-   --  (dominated, expired), so the state follows the frontier.
+   --  record is added when it is held, and removed when it is dropped
+   --  (dominated, expired). Thus the state follows the frontier.
    ----------------------------------------------------------------------
 
    type Digest_State is private;
@@ -234,11 +249,11 @@ package Kome.Digest with SPARK_Mode is
      with Global => null,
           Post => Count (Empty'Result) = 0 and then Sum (Empty'Result) = Zero;
 
-   --  The state whose |R| is N and whose ACC(R) is A: for a client that
-   --  stored a state's Count and Sum (a §8 snapshot) and restores it. A
-   --  restored state carries no Models fact: nothing ties (N, A) to a
-   --  set, and it is the state of one only if the client proves Models
-   --  for it again (see the header's documented contract).
+   --  The state whose |R| is N and whose ACC(R) is A. It is for a client
+   --  that stored the Count and Sum of a state (a §8 snapshot) and restores
+   --  it. A restored state carries no Models fact. Nothing ties (N, A) to a
+   --  set. It is the state of a set only if the client proves Models for it
+   --  again (refer to the documented contract in the header).
    function Restore (N : Elem_Count; A : Acc) return Digest_State
      with Global => null,
           Post => Count (Restore'Result) = N and then Sum (Restore'Result) = A;
@@ -250,10 +265,10 @@ package Kome.Digest with SPARK_Mode is
           Post => Count (With_Record'Result) = Count (S) + 1
             and then Sum (With_Record'Result) = Add (Sum (S), Elem_Acc (H));
 
-   --  R ∖ {e}, for an e in R. Nothing here can check that e is in R: the
-   --  arithmetic is applied regardless (see the header's documented
-   --  contract); Lemma_Models_Remove is how a client proves the removal is
-   --  of a member.
+   --  R ∖ {e}, for an e in R. This function cannot check that e is in R: it
+   --  applies the arithmetic in all cases (refer to the documented contract
+   --  in the header). A client uses Lemma_Models_Remove to prove that the
+   --  removal is of a member.
    function Without_Record (S : Digest_State; H : Key256) return Digest_State
      with Global => null,
           Pre  => Count (S) > 0,
@@ -265,14 +280,15 @@ package Kome.Digest with SPARK_Mode is
      (Fp (Count (S), Sum (S)))
      with Global => null;
 
-   --  Why an update was refused. The state is unchanged on refusal (T13).
+   --  Why an update was refused. On refusal, the state does not change
+   --  (T13).
    type Digest_Status is
      (D_OK,          --  applied
       D_No_Space,    --  |R| = Elem_Max: no record can be added
       D_Empty);      --  |R| = 0: no record can be removed
 
-   --  Adds H. D_OK whenever |R| < Elem_Max, even if H is already in R (a
-   --  multiset add; see the header's documented contract).
+   --  Adds H. D_OK when |R| < Elem_Max, also if H is already in R (a
+   --  multiset add; refer to the documented contract in the header).
    procedure Add_Record
      (S : in out Digest_State; H : Key256; Result : out Digest_Status)
      with Global => null,
@@ -287,9 +303,9 @@ package Kome.Digest with SPARK_Mode is
                        and then Sum (S) = Sum (S'Old),
                      when D_Empty    => False);
 
-   --  Removes H, which the caller must hold in R. D_OK whenever |R| > 0,
-   --  whether or not H is in R (see the header's documented contract:
-   --  T6 is about sets, and the caller's Models discipline is the guard).
+   --  Removes H. The caller must hold H in R. D_OK when |R| > 0, whether H
+   --  is in R or not (refer to the documented contract in the header: T6 is
+   --  about sets, and the Models discipline of the caller is the guard).
    procedure Remove_Record
      (S : in out Digest_State; H : Key256; Result : out Digest_Status)
      with Global => null,
@@ -308,7 +324,7 @@ package Kome.Digest with SPARK_Mode is
    --  Laws of the state (T6).
    ----------------------------------------------------------------------
 
-   --  Removing a record that was just added restores the state
+   --  The removal of a record that was just added restores the state
    --  (Kome.Accumulator.Lemma_Sub_Add).
    procedure Lemma_Remove_Add (S : Digest_State; H : Key256)
      with Ghost, Global => null,
@@ -316,14 +332,15 @@ package Kome.Digest with SPARK_Mode is
           Post => Count (Without_Record (With_Record (S, H), H)) = Count (S)
             and then Sum (Without_Record (With_Record (S, H), H)) = Sum (S);
 
-   --  Adding back a removed record restores the state (Lemma_Add_Sub).
+   --  A new addition of a removed record restores the state
+   --  (Lemma_Add_Sub).
    procedure Lemma_Add_Remove (S : Digest_State; H : Key256)
      with Ghost, Global => null,
           Pre  => Count (S) > 0,
           Post => Count (With_Record (Without_Record (S, H), H)) = Count (S)
             and then Sum (With_Record (Without_Record (S, H), H)) = Sum (S);
 
-   --  The order of two adds does not matter.
+   --  The order of two adds has no effect on the result.
    procedure Lemma_Add_Commute (S : Digest_State; H1, H2 : Key256)
      with Ghost, Global => null,
           Pre  => Count (S) <= Elem_Max - 2,
@@ -332,8 +349,8 @@ package Kome.Digest with SPARK_Mode is
             and then Sum (With_Record (With_Record (S, H1), H2))
                     = Sum (With_Record (With_Record (S, H2), H1));
 
-   --  Two states with the same count and sum (e.g. the same records, added
-   --  in different orders) have the same fingerprint.
+   --  Two states with the same count and sum (for example, the same
+   --  records, added in different orders) have the same fingerprint.
    procedure Lemma_Fingerprint_Congruent (S1, S2 : Digest_State)
      with Ghost, Global => null,
           Pre  => Count (S1) = Count (S2) and then Sum (S1) = Sum (S2),
@@ -345,9 +362,10 @@ package Kome.Digest with SPARK_Mode is
 
    type Hash_Array is array (Elem_Index range <>) of Key256;
 
-   --  Σ acc (L (I)) for I in Lo .. Hi, added left to right; Zero when the
-   --  range is empty. Ghost model, opaque to clients (completed in the
-   --  body); use Lemma_Sum_Of_Empty / Lemma_Sum_Of_Step to unfold it.
+   --  Σ acc (L (I)) for I in Lo .. Hi, added from left to right; Zero when
+   --  the range is empty. This is a ghost model, opaque to clients
+   --  (completed in the body). Use Lemma_Sum_Of_Empty / Lemma_Sum_Of_Step
+   --  to unfold it.
    function Sum_Of (L : Hash_Array; Lo : Lo_Bound; Hi : Elem_Count) return Acc
      with Ghost, Global => null,
           Pre => (if Lo <= Hi then Lo >= L'First and then Hi <= L'Last),
@@ -364,7 +382,7 @@ package Kome.Digest with SPARK_Mode is
           Post => Sum_Of (L, Lo, Hi) = Add (Sum_Of (L, Lo, Hi - 1), Elem_Acc (L (Hi)));
 
    --  T6: ACC(R₁ ⊎ R₂) = ACC(R₁) + ACC(R₂), for R₁ = L (Lo .. Mid) and
-   --  R₂ = L (Mid + 1 .. Hi), either possibly empty.
+   --  R₂ = L (Mid + 1 .. Hi). Each of the two ranges can be empty.
    procedure Lemma_Sum_Split
      (L : Hash_Array; Lo : Lo_Bound; Mid : Elem_Count; Hi : Elem_Count)
      with Ghost, Global => null,
@@ -383,8 +401,9 @@ package Kome.Digest with SPARK_Mode is
                      and then (for all I in Lo .. Hi => L1 (I) = L2 (I))),
           Post => Sum_Of (L1, Lo, Hi) = Sum_Of (L2, Lo, Hi);
 
-   --  Order independence: swapping two adjacent elements does not change
-   --  the sum (a special case of Lemma_Sum_Perm, kept for its simplicity).
+   --  Order independence: a swap of two adjacent elements does not change
+   --  the sum. This is a special case of Lemma_Sum_Perm, kept because it is
+   --  simple.
    procedure Lemma_Sum_Swap (L1, L2 : Hash_Array; I : Elem_Index)
      with Ghost, Global => null,
           Pre  => L1'First = L2'First and then L1'Last = L2'Last
@@ -396,8 +415,8 @@ package Kome.Digest with SPARK_Mode is
           Post => Sum_Of (L1, L1'First, L1'Last)
                     = Sum_Of (L2, L2'First, L2'Last);
 
-   --  Deleting the element at J (and shifting the rest down) removes its
-   --  acc from the sum: Σ L1 (1 .. N) = Σ L2 (1 .. N - 1) + acc (L1 (J)).
+   --  A deletion of the element at J (with the rest shifted down) removes
+   --  its acc from the sum: Σ L1 (1 .. N) = Σ L2 (1 .. N - 1) + acc (L1 (J)).
    procedure Lemma_Sum_Delete
      (L1, L2 : Hash_Array; N : Elem_Count; J : Elem_Index)
      with Ghost, Global => null,
@@ -410,16 +429,16 @@ package Kome.Digest with SPARK_Mode is
                     = Add (Sum_Of (L2, 1, N - 1), Elem_Acc (L1 (J)));
 
    --  A permutation witness: M (I) is where L2 holds L1 (I). An injective
-   --  map of 1 .. N into 1 .. N is a bijection, so it is all a caller
-   --  supplies (CONVENTIONS.md: explicit witnesses, not existentials).
+   --  map of 1 .. N into 1 .. N is a bijection, so a caller supplies only
+   --  this map (CONVENTIONS.md: explicit witnesses, not existentials).
    type Index_Map is array (Elem_Index range <>) of Elem_Index;
 
    --  Is_Perm (L1, L2, M, N): M is such a witness for L1 (1 .. N) and
-   --  L2 (1 .. N). Quantified, so opaque (CONVENTIONS.md, rule 2; completed
-   --  in the body, which Kome.Accumulator's probe found is what hides a
-   --  definition from clients). Lemma_Is_Perm_Intro establishes it and
-   --  Lemma_Is_Perm_Elim takes it apart; its Pre and Post are its
-   --  definition.
+   --  L2 (1 .. N). It is quantified, so it is opaque (CONVENTIONS.md, rule
+   --  2). It is completed in the body. The probe of Kome.Accumulator found
+   --  that a body completion hides a definition from clients.
+   --  Lemma_Is_Perm_Intro establishes it, and Lemma_Is_Perm_Elim takes it
+   --  apart. Their Pre and Post are its definition.
    function Is_Perm
      (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count) return Boolean
      with Ghost, Global => null;
@@ -459,8 +478,8 @@ package Kome.Digest with SPARK_Mode is
           Post => Sum_Of (L1, 1, N) = Sum_Of (L2, 1, N),
           Subprogram_Variant => (Decreases => N);
 
-   --  The state of the records whose hashes L lists. (A null array's
-   --  bounds need not lie in Elem_Index, hence the case split.)
+   --  The state of the records whose hashes L lists. (The bounds of a null
+   --  array do not have to be in Elem_Index, so there is a case split.)
    function Digest_Of (L : Hash_Array) return Digest_State
      with Global => null,
           Pre  => L'Length <= Elem_Max,
@@ -470,11 +489,11 @@ package Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  The meaning of an incremental state: S is the state of the multiset
-   --  L (1 .. N). A client keeps L as a ghost list beside S and carries
-   --  Models across each update with the lemmas below; its running state
-   --  is then the digest recomputed from scratch (Lemma_Digest_Of_Models,
-   --  Lemma_State_Of_Models), and two running states that model
-   --  permutations of one multiset have the same fingerprint.
+   --  L (1 .. N). A client keeps L as a ghost list next to S, and carries
+   --  Models across each update with the lemmas below. Its running state
+   --  is then the digest recomputed from the start (Lemma_Digest_Of_Models,
+   --  Lemma_State_Of_Models). Two running states that model permutations of
+   --  one multiset have the same fingerprint.
    ----------------------------------------------------------------------
 
    function Models
@@ -488,8 +507,8 @@ package Kome.Digest with SPARK_Mode is
           Pre  => L'First = 1 and then L'Last >= 0,
           Post => Models (Empty, L, 0);
 
-   --  Adding H appends it: L2 (1 .. N + 1) = L1 (1 .. N) ‖ H. (L2 may be
-   --  L1 updated in place.)
+   --  The addition of H appends it: L2 (1 .. N + 1) = L1 (1 .. N) ‖ H. (L2
+   --  can be L1, updated in place.)
    procedure Lemma_Models_Add
      (S : Digest_State; L1, L2 : Hash_Array; N : Elem_Count; H : Key256)
      with Ghost, Global => null,
@@ -499,7 +518,7 @@ package Kome.Digest with SPARK_Mode is
                   and then L2 (N + 1) = H,
           Post => Models (With_Record (S, H), L2, N + 1);
 
-   --  Removing the member at index J deletes it: L2 (1 .. N - 1) is
+   --  The removal of the member at index J deletes it: L2 (1 .. N - 1) is
    --  L1 (1 .. N) without L1 (J). J is the membership witness.
    procedure Lemma_Models_Remove
      (S : Digest_State; L1, L2 : Hash_Array; N : Elem_Count; J : Elem_Index)
@@ -510,7 +529,7 @@ package Kome.Digest with SPARK_Mode is
                   and then (for all I in J .. N - 1 => L2 (I) = L1 (I + 1)),
           Post => Models (Without_Record (S, L1 (J)), L2, N - 1);
 
-   --  A state models every permutation of its multiset.
+   --  A state models each permutation of its multiset.
    procedure Lemma_Models_Perm
      (S : Digest_State; L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count)
      with Ghost, Global => null,
@@ -533,8 +552,8 @@ package Kome.Digest with SPARK_Mode is
           Post => Models (Digest_Of (L), L, L'Length);
 
    ----------------------------------------------------------------------
-   --  digest(ns) = fp(F|ns) (T6): the fingerprint of one collection's
-   --  frontier (Kome.Frontier.State holds one collection).
+   --  digest(ns) = fp(F|ns) (T6): the fingerprint of the frontier of one
+   --  collection (Kome.Frontier.State holds one collection).
    ----------------------------------------------------------------------
 
    --  Σ acc (Held (F, I).V.H) for I in 1 .. K. Ghost model, opaque.
@@ -565,7 +584,7 @@ package Kome.Digest with SPARK_Mode is
                               L (I) = Kome.Frontier.Held (F, I).V.H),
           Post => Frontier_Sum (F, K) = Sum_Of (L, 1, K);
 
-   --  State_Of (F) is the state of the list of F's held hashes.
+   --  State_Of (F) is the state of the list of the held hashes of F.
    procedure Lemma_State_Of_Models (F : Kome.Frontier.State; L : Hash_Array)
      with Ghost, Global => null,
           Pre  => L'First = 1 and then Kome.Frontier.Count (F) <= L'Last
@@ -575,7 +594,8 @@ package Kome.Digest with SPARK_Mode is
 
    --  T6, digest(ns) = fp(F|ns) is a function of the SET F: two replicas
    --  that hold the same records (T4) in different array orders have the
-   --  same digest. M (I) is where F2 holds F1's I-th record's hash.
+   --  same digest. M (I) is where F2 holds the hash of the I-th record of
+   --  F1.
    procedure Lemma_Frontier_Digest_Perm
      (F1, F2 : Kome.Frontier.State; M : Index_Map)
      with Ghost, Global => null,
@@ -596,15 +616,16 @@ package Kome.Digest with SPARK_Mode is
    --  K = 1 .. ⌊n/64⌋, and P (⌊n/64⌋ + 1) = P_end = ACC of L (1 .. n).
    ----------------------------------------------------------------------
 
-   --  One stored prefix per full block of Block_Elems elements of a list
-   --  of at most Elem_Max, plus the total.
+   --  One stored prefix for each full block of Block_Elems elements of a
+   --  list of at most Elem_Max elements, plus the total.
    subtype Block_Index is Positive range 1 .. Elem_Max / Block_Elems + 1;
    type Acc_Array is array (Block_Index range <>) of Acc;
 
    --  The stored points around a prefix end X of an N-element list (Pre
-   --  (X) = ACC (L (1 .. X))): the block boundary at or below X, and the
-   --  next one above it, or N (where P_end is stored) when X is in the
-   --  tail after the last full block. Quantifier-free, so public.
+   --  (X) = ACC (L (1 .. X))). They are the block boundary at or below X,
+   --  and the next boundary above it. If X is in the tail after the last
+   --  full block, the point above is N (where P_end is stored). The
+   --  function has no quantifier, so it is public.
    function Below (X : Elem_Count) return Elem_Count is
      (Block_Elems * (X / Block_Elems))
      with Global => null;
@@ -614,7 +635,8 @@ package Kome.Digest with SPARK_Mode is
       then Block_Elems * (X / Block_Elems + 1) else N)
      with Global => null, Pre => X <= N;
 
-   --  X starts from the nearer one (below on a tie).
+   --  X starts from the nearer point (the point below, if the distances
+   --  are equal).
    function Walks_Back (X, N : Elem_Count) return Boolean is
      (Above (X, N) - X < X - Below (X))
      with Global => null, Pre => X <= N;
@@ -623,19 +645,19 @@ package Kome.Digest with SPARK_Mode is
      (if Walks_Back (X, N) then Above (X, N) else Below (X))
      with Global => null, Pre => X <= N;
 
-   --  The element terms end X walks: |X - Start_Pos (X, N)|.
+   --  The element terms that end X walks: |X - Start_Pos (X, N)|.
    function Walk_Len (X, N : Elem_Count) return Natural is
      (if Walks_Back (X, N) then Above (X, N) - X else X - Below (X))
      with Global => null, Pre => X <= N;
 
    --  The Add calls of Range_Sum for L (A + 1 .. B) of an N-element list:
-   --  one per element term walked, at either end.
+   --  one call for each element term walked, at either end.
    function Range_Cost (A, B, N : Elem_Count) return Natural is
      (Walk_Len (A, N) + Walk_Len (B, N))
      with Global => null, Pre => A <= B and then B <= N;
 
    --  Ghost, opaque (quantified; CONVENTIONS.md rule 2): P is the prefix
-   --  array of L, every full block's prefix then the total.
+   --  array of L, with the prefix of each full block, then the total.
    function Prefix_Valid (L : Hash_Array; P : Acc_Array) return Boolean
      with Ghost, Global => null;
 
@@ -652,20 +674,23 @@ package Kome.Digest with SPARK_Mode is
           Post => P'First = 1 and then P'Length = L'Length / Block_Elems + 1
                   and then P (P'Last) = Sum_Of (L, 1, L'Length);
 
-   --  The Add calls one Range_Sum makes: at most one block's worth.
+   --  The Add calls that one Range_Sum makes: at most the number of
+   --  elements in one block.
    subtype Add_Count is Natural range 0 .. Block_Elems;
 
    --  Result = ACC of L (Lo .. Hi) (empty when Hi = Lo - 1), by the
-   --  two-accumulator scheme of §8 (see the header). The Post proves the
-   --  formula Range_Cost (Lo - 1, Hi, n) <= 64 with each end at most 32
-   --  terms, and Adds = Range_Cost, Subs = 1. Adds and Subs are the Add
-   --  and Sub calls the body counts: it routes every Add through one local
-   --  procedure (Add_Term) and the Sub through another (Sub_Term), which
-   --  increment the counts. That they are the calls actually made is a
-   --  property of this body, checked by review and not by the proof: a
-   --  body that set Adds and Subs without counting (and, say, ignored P
-   --  and summed the range directly) would also prove this Post and pass
-   --  the tests (see the header).
+   --  two-accumulator scheme of §8 (refer to the header). The Post proves
+   --  the formula Range_Cost (Lo - 1, Hi, n) <= 64, with each end at most
+   --  32 terms, and Adds = Range_Cost, Subs = 1. Adds and Subs are the Add
+   --  and Sub calls that the body counts. The body sends each Add through
+   --  one local procedure (Add_Term) and the Sub through another
+   --  (Sub_Term), and these procedures increment the counts.
+   --
+   --  That they are the calls actually made is a property of this body. A
+   --  review checks it; the proof does not. A body that set Adds and Subs
+   --  without a count (and, for example, ignored P and added the range
+   --  directly) would also prove this Post and pass the tests (refer to the
+   --  header).
    procedure Range_Sum
      (L      : Hash_Array;
       P      : Acc_Array;

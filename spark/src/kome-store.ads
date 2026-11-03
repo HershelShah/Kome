@@ -1,21 +1,25 @@
---  Kome.Store: the storage model of DESIGN.md §7. One collection's replica
---  is a lattice state F (Kome.Frontier.State) plus a Store: an append-only
---  log that is a journal of the operations performed on F, and an
---  in-memory index from each held record to its frame in the log
---  (DESIGN.md §7: "an in-memory index cell -> (offset, v) that holds
---  exactly the records of F"). Every operation takes the pair (S, F) and
---  Valid (S, F) relates them.
+--  Kome.Store: the storage model of DESIGN.md §7. The replica of one
+--  collection has two parts:
+--    * a lattice state F (Kome.Frontier.State);
+--    * a Store, which has an append-only log and an in-memory index. The
+--      log is a journal of the operations on F. The index gives the frame
+--      in the log of each held record (DESIGN.md §7: "an in-memory index
+--      cell -> (offset, v) that holds exactly the records of F").
+--  Each operation takes the pair (S, F). Valid (S, F) relates S and F.
 --
---  Why F is a parameter and not a component of Store: a State is compared
---  only through Frontier.Unchanged, and keeping F beside the Store keeps
---  the store's own state small: Compact takes F in mode `in`, so flow
---  analysis alone proves it leaves the frontier unchanged. (gnatprove 14
---  crashed on a Frontier.State record component while Frontier.State
---  carried a Dynamic_Predicate; CONVENTIONS.md forbids that predicate.)
---  Nothing ever needs restoring: Put_Frame and Expire decide every refusal
---  before they change F, so a refused call changes neither S nor F.
+--  F is a parameter and not a component of Store, for these reasons:
+--    * Frontier.Unchanged is the only comparison of two States. When F is
+--      beside the Store, the state of the Store stays small.
+--    * Compact takes F in mode `in`. Thus flow analysis alone proves that
+--      Compact does not change the frontier.
+--    * gnatprove 14 crashed on a Frontier.State record component when
+--      Frontier.State had a Dynamic_Predicate. (CONVENTIONS.md forbids
+--      that predicate.)
+--  No operation has to restore a state. Put_Frame and Expire find each
+--  refusal before they change F. Thus a refused call changes neither S
+--  nor F.
 --
---  The log (D9, DESIGN.md §7) is a journal, all integers big-endian:
+--  The log (D9, DESIGN.md §7) is a journal. All integers are big-endian:
 --
 --    HEADER         op 0 ‖ "kome/log" ‖ version:u8 (= 1) ‖ ns[16] ‖ root_pk[32]
 --                   ‖ salt[16] ‖ data_cap:u32 ‖ slice:u16            (80 bytes)
@@ -24,128 +28,162 @@
 --    EXPIRE         op 3 ‖ horizon:u48         Frontier.Expire at horizon, or a
 --                                              lowered horizon
 --
---  The HEADER is the first entry, exactly once; its ns is BLAKE2b-256
---  (root_pk ‖ salt)[0:16], which fixes the founding key, and its capacities
---  are those the store was last opened with (see Capacities below). A
---  frame is tag ‖ content ‖ sig exactly as Kome.Records encodes it. The
---  horizon u48 2**48 - 1 encodes "no horizon" (a lowered horizon below
---  0): a real horizon is
---  min (now, maxceil) - del_ttl_eff <= 2**48 - 1 - Del_TTL_Min, so the code
---  is never a horizon (DESIGN.md §7 leaves this encoding open).
---  The log is modelled as a bounded byte buffer written only at its end,
---  so that an OS file can replace it: Put_Frame returns the offset of the
---  entry it appended, Read_Frame reads a frame back, Log_Bytes is the file
---  image, and Compact rewrites the whole log the way a file is rewritten
---  and renamed. The invariant states that the log is a chain of entries
---  from offset 0 to its length (Log_Entries, Entry_Start, Lemma_Scan), the
---  first the HEADER, so a replica can be reopened by scanning it, and every
---  index entry points to one of its APPLY entries.
+--  The HEADER is the first entry, and the log has exactly one HEADER. Its
+--  ns is BLAKE2b-256 (root_pk ‖ salt)[0:16], which fixes the founding key.
+--  Its capacities are the capacities of the last open of the store (see
+--  Capacities below). A frame is tag ‖ content ‖ sig, exactly as
+--  Kome.Records encodes it. The horizon u48 2**48 - 1 encodes "no
+--  horizon" (a lowered horizon below 0). A real horizon is
+--  min (now, maxceil) - del_ttl_eff <= 2**48 - 1 - Del_TTL_Min, so this
+--  code is never a real horizon. (DESIGN.md §7 does not specify this
+--  encoding.)
 --
---  The index is F exactly (D9): a record is held iff it has an index entry,
---  entries are distinct, and every entry's APPLY carries its frame. The
---  index capacity covers F (S.Cap >= F.Cap + Signers_Max * F.Slice, Open's
---  precondition), so the index never refuses on its own.
+--  The model of the log is a bounded byte buffer. The model writes only at
+--  the end of the buffer, so an OS file can replace it:
+--    * Put_Frame returns the offset of the entry that it appended;
+--    * Read_Frame reads a frame back;
+--    * Log_Bytes is the file image;
+--    * Compact writes the full log again, as a program writes a new file
+--      and renames it.
+--  The invariant states that the log is a chain of entries from offset 0
+--  to its length (Log_Entries, Entry_Start, Lemma_Scan). The first entry
+--  is the HEADER. Thus a scan of the log can open a replica again. Each
+--  index entry points to one of the APPLY entries of the log.
+--
+--  The index is F exactly (D9). A record is held iff it has an index
+--  entry. The entries are distinct, and the APPLY of each entry contains
+--  its frame. The index capacity covers F (S.Cap >= F.Cap + Signers_Max *
+--  F.Slice, the precondition of Open). Thus the index itself never causes
+--  a refusal.
 --
 --  Order of operations (D11, E1, E2; DESIGN.md §7) for a decoded, verified
---  frame: (0) an authorization record whose root_pk is not the founding
---  key: Malformed; (1) not admitted: Inadmissible; (2) already held: OK, no
---  change; (3) dominated: Dominated, no room needed, never No_Space;
---  (4) a DEL with t <= horizon (expired on arrival): applied for its
---  effect (Frontier.Apply_Expired) and logged as APPLY_EXPIRED if it drops
---  anything, else OK with no change; it needs log room only; (5) room:
---  Frontier's own rules (No_Space for the data row, Auth_Full for a signer's
---  slice, the slot table or W), then the log bytes (No_Space); (6) apply,
---  append APPLY, index it, and drop the index entries of the records it
---  dominated. Every refusal changes nothing (T13): the Post says
---  Unchanged (F'Old, F) and S = S'Old.
+--  frame:
+--    (0) An authorization record whose root_pk is not the founding key:
+--        Malformed.
+--    (1) Not admitted: Inadmissible.
+--    (2) Already held: OK, no change.
+--    (3) Dominated: Dominated. This step needs no room, so it never gives
+--        No_Space.
+--    (4) A DEL with t <= horizon (expired on arrival): the store applies it
+--        for its effect (Frontier.Apply_Expired). If it drops one or more
+--        records, the store logs it as APPLY_EXPIRED. If not, the result is
+--        OK with no change. This step needs only log room.
+--    (5) Room: first the rules of Frontier (No_Space for the data row,
+--        Auth_Full for the slice of a signer, the slot table or W), then
+--        the log bytes (No_Space).
+--    (6) Apply the record, append APPLY, index the record, and remove the
+--        index entries of the records that it dominated.
+--  A refusal changes nothing (T13): the Post says Unchanged (F'Old, F)
+--  and S = S'Old.
 --
---  Expiry (D10, DESIGN.md §7, T11): Expire (Now) computes, in 64 bits,
---  horizon := min (now, maxceil (F)) - del_ttl_eff (F), or "none" if that
---  is below 0. A higher horizon removes from F (Frontier.Expire) and from
---  the index exactly the DELs with t <= horizon; a lower one only lowers
---  the store's horizon, so fewer arriving DELs expire on arrival. EXPIRE is
---  logged iff the call removed something or lowered the horizon, so
---  periodic calls do not grow the log; a raise that removed nothing is kept
---  in memory only, and Compact makes it durable.
+--  Expiry (D10, DESIGN.md §7, T11): Expire (Now) computes this horizon in
+--  64 bits:
+--    horizon := min (now, maxceil (F)) - del_ttl_eff (F)
+--  If this value is below 0, the horizon is "none". A higher horizon
+--  removes exactly the DELs with t <= horizon from F (Frontier.Expire) and
+--  from the index. A lower horizon only lowers the horizon of the store,
+--  so fewer arriving DELs expire on arrival.
+--  Expire logs EXPIRE iff the call removed a record or lowered the
+--  horizon. Thus periodic calls do not make the log larger. If a raise
+--  removed nothing, the store keeps the new horizon only in memory.
+--  Compact makes it durable.
 --
---  Compaction rewrites the log as the HEADER (the same bytes), one APPLY per
---  index entry, every authorization record first and then every data
---  record, each part in index order, and one EXPIRE (horizon) if the store
---  has a horizon (and, on a log with no 7 bytes left after the frames, no
---  EXPIRE: the reopened horizon is then lower, which T18 allows; DESIGN.md
---  §10 item 10 (b)).
+--  Compaction writes the log again in this layout:
+--    * the HEADER (the same bytes);
+--    * one APPLY for each index entry: first all authorization records,
+--      then all data records, each part in index order;
+--    * one EXPIRE (horizon), if the store has a horizon.
+--  If fewer than 7 bytes of the log are left after the frames, there is
+--  no EXPIRE. The reopened horizon is then lower, and T18 allows this
+--  (DESIGN.md §10 item 10 (b)).
 --
---  Replay (T18): Open_From_Log checks the HEADER, refuses capacities below
---  the logged ones (No_Space), starts from Frontier.Empty with the logged
---  founding key and the capacities it is opened with, and performs the
---  entries in order (APPLY through Put_Frame, which must newly hold the
---  record, anything else is Malformed; APPLY_EXPIRED through
---  Frontier.Apply_Expired; EXPIRE through Frontier.Expire when it raises the
---  horizon, and the horizon is set either way). Replay trusts the logged
---  horizons: an EXPIRE no live store could write (a horizon above
---  maxceil - del_ttl_eff) is performed as written. A bound such as
---  horizon <= maxceil - Del_TTL_Min would not refuse a store's own log
---  (maxceil never falls: Frontier.Apply's Post keeps Ceil non-decreasing,
---  and del_ttl_eff >= Del_TTL_Min), but DESIGN.md §7 does not ask for it
---  and it is not made: the log is sealed at rest (a later layer).
+--  Replay (T18): Open_From_Log does these steps:
+--    1. It checks the HEADER.
+--    2. It refuses capacities below the logged capacities (No_Space).
+--    3. It starts from Frontier.Empty with the logged founding key and the
+--       capacities of this open.
+--    4. It performs the entries in order:
+--         * APPLY through Put_Frame, which must hold the record as a new
+--           record (any other result is Malformed);
+--         * APPLY_EXPIRED through Frontier.Apply_Expired;
+--         * EXPIRE through Frontier.Expire if it raises the horizon. In
+--           all cases, replay sets the horizon.
+--  Replay trusts the logged horizons. If an EXPIRE has a horizon that no
+--  live store can write (above maxceil - del_ttl_eff), replay performs it
+--  as written. A bound such as horizon <= maxceil - Del_TTL_Min would not
+--  refuse a log that a store wrote itself: maxceil never falls (the Post
+--  of Frontier.Apply keeps Ceil non-decreasing), and
+--  del_ttl_eff >= Del_TTL_Min. But DESIGN.md §7 does not ask for this
+--  bound, and the code does not apply it: the log is sealed at rest (a
+--  later layer).
 --
 --  Capacities (for T18; DESIGN.md §10 item 10 (a) records this decision):
---  the HEADER's capacities are always those of F (Valid states
---  Logged_Cap (S) = F.Cap and Logged_Slice (S) = F.Slice). A store reopened
---  with larger capacities can hold more than the old HEADER allows, and its
---  log would then not replay at the logged capacities; so Open_From_Log
---  writes the capacities it is opened with into the HEADER (the six bytes
---  data_cap ‖ slice) and keeps every other byte. The log equals the input
---  byte for byte iff the capacities are the logged ones. A file binding
---  must therefore persist those six bytes (an in-place write of bytes
---  74 .. 79, or a rewrite and rename) before it appends to a log reopened
---  with larger capacities; this is the one write that is not at the end.
+--  the capacities in the HEADER are always the capacities of F (Valid
+--  states Logged_Cap (S) = F.Cap and Logged_Slice (S) = F.Slice). A store
+--  that opens again with larger capacities can hold more than the old
+--  HEADER allows. Then a replay of its log at the logged capacities would
+--  fail. Thus Open_From_Log writes the capacities of this open into the
+--  HEADER (the six bytes data_cap ‖ slice) and keeps all other bytes. The
+--  log is equal to the input byte for byte iff the capacities are the
+--  logged capacities.
+--  Caution: if a log opens again with larger capacities, a file binding
+--  must persist those six bytes before it appends to the log. Use an
+--  in-place write of bytes 74 .. 79, or write a new file and rename it.
+--  This is the only write that is not at the end of the log.
 --
 --  Footprint (for a file binding): Open_From_Log replays against a copy
---  of its input (the image with the new capacities) and Compact copies
---  the whole log buffer before rewriting it, so each needs stack or
---  memory for one more log image (up to Log_Max bytes); the test main
---  runs in a task with a large stack for this reason.
+--  of its input (the image with the new capacities). Compact copies the
+--  full log buffer before it writes the log again. Thus each of the two
+--  needs stack or memory for one more log image (up to Log_Max bytes).
+--  For this reason, the test main runs in a task with a large stack.
 --
---  Open_From_Log proves: the result is Valid, its HEADER well formed, its
---  log the input (but for the capacities as above), its horizon that of
---  the last EXPIRE entry (none if there is none); No_Space only for a log
---  that does not fit or logged capacities above the open ones; Malformed
---  only for a HEADER that is not one or a log with entries after it; and
---  a log that is only a well-formed HEADER whose capacities fit opens.
---  That replay accepts every log a store writes and reproduces its
---  frontier (T18, Lean `auth_first`) is a set statement proved in Lean
---  and tested here, not proved in SPARK: a replay that refused every
---  log with entries would still meet this contract.
+--  gnatprove proves these facts about Open_From_Log:
+--    * the result is Valid and its HEADER is well formed;
+--    * its log is the input (except for the capacities, as above);
+--    * its horizon is the horizon of the last EXPIRE entry (none if there
+--      is no EXPIRE entry);
+--    * the result is No_Space only for a log that does not fit, or for
+--      logged capacities above the capacities of this open;
+--    * the result is Malformed only for a HEADER that is not a HEADER, or
+--      for a log with entries after the HEADER;
+--    * a log that is only a well-formed HEADER, with capacities that fit,
+--      opens.
+--  SPARK does not prove that replay accepts every log that a store writes
+--  and gives back its frontier (T18, Lean `auth_first`). This is a set
+--  statement. Lean proves it, and the tests here test it. A replay that
+--  refused every log with entries would also meet this contract.
 --
---  What is proved (Valid is the store invariant; every operation keeps it):
---    * the index is F: held iff indexed, distinct entries, no held DEL is
---      expired at the store's horizon, a cell has at most one entry (T5);
---    * the log is a chain of entries from 0, the HEADER first and only
---      there, its bytes those of the store's collection, founding key,
---      salt and logged capacities; every index entry is an APPLY entry of
---      the chain with its length and its kind's tag;
+--  What is proved (Valid is the store invariant; each operation keeps it):
+--    * the index is F: a record is held iff it is indexed, the entries are
+--      distinct, no held DEL is expired at the horizon of the store, and a
+--      cell has at most one entry (T5);
+--    * the log is a chain of entries from 0. The HEADER is first and only
+--      there. Its bytes are those of the collection, founding key, salt
+--      and logged capacities of the store. Each index entry is an APPLY
+--      entry of the chain, with its length and the tag of its kind;
 --    * Put_Frame refines Frontier.Apply and Frontier.Apply_Expired, in the
---      order above, with each refusal stated as an iff and changing
---      nothing; the log only grows, bytes written never change, the entry
---      is at the returned offset;
---    * Expire computes the horizon of DESIGN.md §7, removes exactly the
---      expired DELs, logs EXPIRE only as stated, and leaves no held DEL at
---      or below the horizon (T11 (a));
---    * Compact keeps F, the horizon and the index's records, and lays the
---      log out as stated, frames byte for byte;
---    * Open_From_Log returns a Valid pair whose log is its input (but for
---      the capacities) and whose horizon is the last logged one.
---  Not in the invariant, and tested instead: that each entry's frame
---  decodes to the entry's header. The header contains h, a BLAKE2b hash of
---  the frame's content, and gnatprove 14 has no extensionality for arrays:
---  two element-wise equal byte arrays (the frame passed to Put_Frame, its
---  copy in the log, its copy after Compact) are not known to have equal
---  headers, because Kome.Crypto.Blake2b_256 is a function of the whole
---  array value. Carrying it needs Kome.Crypto.Lemma_Blake2b_Congruent and
---  a congruence lemma for To_Header (Parse_*) in Kome.Records, which does
---  not exist. The test main checks it on every index entry
---  (Every_Frame_Matches), after Put_Frame and after Compact.
+--      order above. The contract states each refusal as an iff, and a
+--      refusal changes nothing. The log only grows, written bytes never
+--      change, and the entry is at the returned offset;
+--    * Expire computes the horizon of DESIGN.md §7 and removes exactly the
+--      expired DELs. It logs EXPIRE only as stated, and it leaves no held
+--      DEL at or below the horizon (T11 (a));
+--    * Compact keeps F, the horizon and the records of the index. It
+--      writes the log in the stated layout, with frames byte for byte;
+--    * Open_From_Log returns a Valid pair. Its log is its input (except
+--      for the capacities), and its horizon is the last logged horizon.
+--  This fact is not in the invariant, and the tests check it: the frame of
+--  each entry decodes to the header of the entry. The header contains h,
+--  a BLAKE2b hash of the content of the frame. gnatprove 14 has no
+--  extensionality for arrays. Kome.Crypto.Blake2b_256 is a function of the
+--  full array value. Thus gnatprove does not know that two byte arrays
+--  with equal elements have equal headers. Examples of such arrays are the
+--  frame given to Put_Frame, its copy in the log and its copy after
+--  Compact. To keep this fact in the invariant, the proof needs
+--  Kome.Crypto.Lemma_Blake2b_Congruent and a congruence lemma for
+--  To_Header (Parse_*) in Kome.Records. That lemma does not exist. The
+--  test main checks the fact on each index entry (Every_Frame_Matches),
+--  after Put_Frame and after Compact.
 pragma Ada_2022;
 with Kome.Headers;   use Kome.Headers;
 with Kome.Registers; use Kome.Registers;
@@ -159,8 +197,8 @@ package Kome.Store with SPARK_Mode is
    --  Bounds and the log layout.
    ---------------------------------------------------------------------------
 
-   --  Bound on the log buffer of the model (1 GiB). Chosen so that every
-   --  offset + entry is a Natural; a file binding keeps it.
+   --  The bound on the log buffer of the model (1 GiB). With this bound,
+   --  each offset + entry is a Natural. A file binding keeps this bound.
    Log_Max : constant := 2**30;
    subtype Log_Size is Natural range 0 .. Log_Max;
 
@@ -191,8 +229,9 @@ package Kome.Store with SPARK_Mode is
 
    subtype Frame_Size is Positive range 1 .. Kome.Records.Frame_Max;
 
-   --  The store's horizon: No_Horizon (-1, nothing expired) or a real
-   --  horizon, at most 2**48 - 2 (see the header comment).
+   --  The horizon of the store: No_Horizon (-1, nothing expired) or a
+   --  real horizon of at most 2**48 - 2 (see the comment at the top of
+   --  this file).
    subtype Horizon_Value is Time64 range No_Horizon .. Time64 (U48'Last) - 1;
    No_Horizon_Code : constant U48 := U48'Last;
 
@@ -206,7 +245,7 @@ package Kome.Store with SPARK_Mode is
    --  Frames and their headers (the wire boundary, Kome.Records).
    ---------------------------------------------------------------------------
 
-   --  Frame is the encoding of one record of the kind its tag names.
+   --  Frame is the encoding of one record of the kind that its tag names.
    function Is_Record_Frame (Frame : Byte_Array) return Boolean is
      (Kome.Records.Has_Kind (Frame)
       and then (case Kome.Records.Kind_Of (Frame) is
@@ -227,8 +266,8 @@ package Kome.Store with SPARK_Mode is
                   when K_Revoke => Kome.Records.Well_Formed (Kome.Records.Parse_Revoke (Frame)),
                   when K_Grant  => Kome.Records.Well_Formed (Kome.Records.Parse_Grant (Frame))));
 
-   --  The lattice header of a record frame (Kome.Records.To_Header of what
-   --  it parses to). Lemma_Header_Of spells it out.
+   --  The lattice header of a record frame (Kome.Records.To_Header of the
+   --  parse result). Lemma_Header_Of gives the full definition.
    function Header_Of (Frame : Byte_Array) return Header with
      Global => null,
      Pre    => Is_Record_Frame (Frame);
@@ -245,8 +284,9 @@ package Kome.Store with SPARK_Mode is
                   when K_Revoke => Kome.Records.To_Header (Kome.Records.Parse_Revoke (Frame)),
                   when K_Grant  => Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
 
-   --  A verified frame's header is canonical (D3; Kome.Records
-   --  Lemma_Header_Canonical, the roster's del_ttl clamp from Well_Formed).
+   --  The header of a verified frame is canonical (D3; Kome.Records
+   --  Lemma_Header_Canonical, and the del_ttl clamp of the roster from
+   --  Well_Formed).
    procedure Lemma_Verified_Canonical (Frame : Byte_Array) with
      Ghost, Global => null,
      Pre  => Verified (Frame),
@@ -257,15 +297,15 @@ package Kome.Store with SPARK_Mode is
    --  The store.
    ---------------------------------------------------------------------------
 
-   --  One index entry: the record (its header, which carries v and the
-   --  cell), the offset of its APPLY entry and the frame's length.
+   --  One index entry: the record (its header, which contains v and the
+   --  cell), the offset of its APPLY entry and the length of the frame.
    type Index_Entry is record
       H   : Header;
       Off : Log_Size   := 0;
       Len : Frame_Size := 1;
    end record;
 
-   --  The offset just past an entry's APPLY.
+   --  The offset immediately after the APPLY of an entry.
    function End_Of (E : Index_Entry) return Natural is
      (E.Off + Apply_Prefix + E.Len);
 
@@ -293,8 +333,8 @@ package Kome.Store with SPARK_Mode is
      Global => null,
      Pre => J < Log_Length (S);
 
-   --  The entries of the log, in order: Log_Entries (S) of them, the K-th
-   --  at offset Entry_Start (S, K) (Lemma_Scan).
+   --  The entries of the log, in order. There are Log_Entries (S) entries,
+   --  and the K-th entry is at offset Entry_Start (S, K) (Lemma_Scan).
    function Log_Entries (S : Store) return Natural with
      Global => null,
      Post => Log_Entries'Result <= S.Log_Cap;
@@ -302,7 +342,7 @@ package Kome.Store with SPARK_Mode is
      Global => null,
      Pre => K <= Log_Entries (S);
 
-   --  Some index entry is the record X. Opaque (quantified).
+   --  At least one index entry is the record X. Opaque (quantified).
    function Indexed (S : Store; X : Header) return Boolean with Global => null;
 
    --  The index position of an indexed record (ghost; unique on a valid
@@ -312,8 +352,8 @@ package Kome.Store with SPARK_Mode is
      Pre  => Indexed (S, X),
      Post => Position'Result <= Entries (S) and then Entry_At (S, Position'Result).H = X;
 
-   --  The store invariant, relating the store to its lattice state F (see
-   --  the package comment). Opaque; read it through the lemmas below.
+   --  The store invariant. It relates the store to its lattice state F
+   --  (see the package comment). Opaque: use the lemmas below to read it.
    function Valid (S : Store; F : Frontier.State) return Boolean with Global => null;
 
    --  The identity of a store: collection, founding key, salt, logged
@@ -327,7 +367,7 @@ package Kome.Store with SPARK_Mode is
       and then Logged_Slice (New_S) = Logged_Slice (Old_S));
 
    ---------------------------------------------------------------------------
-   --  Reading the log as a file.
+   --  The log as a file.
    ---------------------------------------------------------------------------
 
    function Op_At (S : Store; P : Natural) return Byte is (Log_Byte (S, P))
@@ -360,7 +400,7 @@ package Kome.Store with SPARK_Mode is
                 elsif Op_At (S, P) = Op_Expire then Log_Length (S) - P >= Expire_Len
                 else Has_Frame (S, P)));
 
-   --  The size of the entry at P, and where the next one starts.
+   --  The size of the entry at P, and the offset of the next entry.
    function Entry_Size (S : Store; P : Natural) return Natural is
      (if Op_At (S, P) = Op_Header then Header_Len
       elsif Op_At (S, P) = Op_Expire then Expire_Len
@@ -388,7 +428,7 @@ package Kome.Store with SPARK_Mode is
        and then (for all J in Log_Bytes'Result'Range => Log_Bytes'Result (J) = Log_Byte (S, J));
 
    ---------------------------------------------------------------------------
-   --  The parts of the operations' contracts, named.
+   --  Named parts of the contracts of the operations.
    ---------------------------------------------------------------------------
 
    --  Step 0 (DESIGN.md §7): an authorization record whose root_pk is not
@@ -397,14 +437,14 @@ package Kome.Store with SPARK_Mode is
      (Kome.Records.Is_Auth_Frame (Frame)
       and then Kome.Records.Root_Key_Of (Frame) /= Founding (S));
 
-   --  Frontier.Apply's room rules, copied from its Post: the data row is
-   --  full and R frees nothing (No_Space) ...
+   --  The room rules of Frontier.Apply, copied from its Post: the data row
+   --  is full and R frees nothing (No_Space) ...
    function Data_Full (F : Frontier.State; R : Header) return Boolean is
      (Is_Data (R) and then Data_Count (F) = F.Cap and then not Drops_Any (F, R));
 
-   --  ... and the authorization rules (Auth_Full): the signer's slice is
-   --  full and R frees nothing, or the signer is new and every slot is
-   --  taken, or W is full (unreachable, see Kome.Frontier.Apply).
+   --  ... and the authorization rules (Auth_Full): the slice of the signer
+   --  is full and R frees nothing; or the signer is new and all slots are
+   --  used; or W is full (unreachable, see Kome.Frontier.Apply).
    function Auth_Rule (F : Frontier.State; R : Header) return Boolean is
      (Is_Auth (R)
       and then ((Slot_Of (F, R.Issuer) /= 0
@@ -419,11 +459,13 @@ package Kome.Store with SPARK_Mode is
    function Log_Short (S : Store; Need : Natural) return Boolean is
      (S.Log_Cap - Log_Length (S) < Need);
 
-   --  No_Space is answered only at a bound (T13), after admission, the
-   --  duplicate and the domination test: an expired DEL that drops
-   --  something and has no log room for its APPLY_EXPIRED, or a record that
-   --  Frontier.Apply refuses for the data row, or one that Frontier would
-   --  hold but whose APPLY does not fit the log.
+   --  The result is No_Space only at a bound (T13), after the admission,
+   --  duplicate and domination tests. These are the cases:
+   --    * an expired DEL that drops a record and has no log room for its
+   --      APPLY_EXPIRED;
+   --    * a record that Frontier.Apply refuses for the data row;
+   --    * a record that Frontier can hold, but its APPLY does not fit the
+   --      log.
    function At_Bound (S : Store; F : Frontier.State; H : Header; Len : Natural) return Boolean is
      (not Holds (F, H) and then not Dom (F, H)
       and then (if Expired (H, Horizon (S))
@@ -432,9 +474,9 @@ package Kome.Store with SPARK_Mode is
                      or else (not Auth_Rule (F, H) and then Log_Short (S, Apply_Prefix + Len))))
      with Pre => Len <= Kome.Records.Frame_Max;
 
-   --  Frontier.Apply's refinement statement (Frontier.lean `applyA` /
-   --  `keep`; T4'): the registers grow exactly by H, nothing is held that
-   --  was not held or is not H, nothing held is lost except by domination.
+   --  The refinement statement of Frontier.Apply (Frontier.lean `applyA` /
+   --  `keep`; T4'): the registers grow exactly by H. Each held record was
+   --  held before or is H. A held record leaves only by domination.
    function Applied (Old_F, New_F : Frontier.State; H : Header) return Boolean is
      (Ceil (Regs (New_F)) = U48'Max (Ceil (Regs (Old_F)), Ceil_Of (H))
       and then Extends (Regs (Old_F), Regs (New_F))
@@ -443,8 +485,9 @@ package Kome.Store with SPARK_Mode is
       and then (for all I in 1 .. Count (Old_F) =>
                   Holds (New_F, Held (Old_F, I)) or else Dominates (H, Held (Old_F, I))));
 
-   --  Frontier.Apply_Expired's effect (apply-then-expire): exactly the
-   --  records H dominates leave F, H is not held, the registers are kept.
+   --  The effect of Frontier.Apply_Expired (apply-then-expire): exactly
+   --  the records that H dominates leave F. H is not held, and the
+   --  registers do not change.
    function Expired_Applied (Old_F, New_F : Frontier.State; H : Header) return Boolean is
      (Ceil (Regs (New_F)) = Ceil (Regs (Old_F))
       and then Extends (Regs (Old_F), Regs (New_F))
@@ -455,8 +498,8 @@ package Kome.Store with SPARK_Mode is
       and then (for all I in 1 .. Count (Old_F) =>
                   Holds (New_F, Held (Old_F, I)) or else Dominates (H, Held (Old_F, I))));
 
-   --  Tombstone expiry's effect (T11 (a)): exactly the DELs with
-   --  t <= Hz leave F, the registers are kept.
+   --  The effect of tombstone expiry (T11 (a)): exactly the DELs with
+   --  t <= Hz leave F. The registers do not change.
    function Expired_Out (Old_F, New_F : Frontier.State; Hz : Time64) return Boolean is
      (Ceil (Regs (New_F)) = Ceil (Regs (Old_F))
       and then Extends (Regs (Old_F), Regs (New_F))
@@ -466,12 +509,13 @@ package Kome.Store with SPARK_Mode is
       and then (for all I in 1 .. Count (Old_F) =>
                   Holds (New_F, Held (Old_F, I)) or else Expired (Held (Old_F, I), Hz)));
 
-   --  Some held DEL is expired at Hz.
+   --  At least one held DEL is expired at Hz.
    function Expires_Any (F : Frontier.State; Hz : Time64) return Boolean is
      (for some I in 1 .. Count (F) => Expired (Held (F, I), Hz));
 
    --  The expiry horizon of DESIGN.md §7 (D10), in 64 bits:
-   --  min (now_local, maxceil (F)) - del_ttl_eff (F), or none below 0.
+   --  min (now_local, maxceil (F)) - del_ttl_eff (F), or none if this
+   --  value is below 0.
    function Horizon_At (F : Frontier.State; Now : U48) return Horizon_Value is
      (if Time64'Min (Time64 (Now), Time64 (Ceil (Regs (F))))
            - Time64 (Kome.Views.Del_TTL_Eff (F)) < 0
@@ -480,15 +524,15 @@ package Kome.Store with SPARK_Mode is
            - Time64 (Kome.Views.Del_TTL_Eff (F)))
      with Pre => Is_Frontier (F);
 
-   --  Expire (Now) logs EXPIRE: it raises the horizon and removes
-   --  something, or it lowers the horizon.
+   --  Expire (Now) logs EXPIRE. It does this if it raises the horizon and
+   --  removes a record, or if it lowers the horizon.
    function Logs_Expire (S : Store; F : Frontier.State; Now : U48) return Boolean is
      ((Horizon_At (F, Now) > Horizon (S) and then Expires_Any (F, Horizon_At (F, Now)))
       or else Horizon_At (F, Now) < Horizon (S))
      with Pre => Is_Frontier (F);
 
-   --  The log of New_S extends that of Old_S: no byte written changes and
-   --  every entry stays where it was.
+   --  The log of New_S extends the log of Old_S: no written byte changes,
+   --  and each entry stays at its offset.
    function Log_Extends (Old_S, New_S : Store) return Boolean is
      (Log_Length (New_S) >= Log_Length (Old_S)
       and then (for all J in 0 .. Log_Length (Old_S) - 1 =>
@@ -505,7 +549,7 @@ package Kome.Store with SPARK_Mode is
       and then Log_Entries (New_S) = Log_Entries (Old_S) + 1
       and then Entry_Start (New_S, Log_Entries (New_S)) = Off);
 
-   --  Frame's bytes are the frame of the entry at Off.
+   --  The bytes of Frame are the frame of the entry at Off.
    function Frame_Stored (S : Store; Off : Natural; Frame : Byte_Array) return Boolean is
      (Off < Log_Length (S)
       and then Log_Length (S) - Off >= Apply_Prefix + Frame'Length
@@ -540,7 +584,8 @@ package Kome.Store with SPARK_Mode is
       and then Code_At (New_S, Off + 1) = Horizon_Code (Hz));
 
    --  A (PA .. PA + Len - 1) = B (PB .. PB + Len - 1) in the two logs.
-   --  Defined by its Post (one atom per range in goals that carry it).
+   --  Its Post defines it (one atom for each range in goals that carry
+   --  it).
    function Same_Bytes (A : Store; PA : Natural; B : Store; PB : Natural; Len : Natural)
      return Boolean
    with
@@ -550,9 +595,9 @@ package Kome.Store with SPARK_Mode is
      Post => Same_Bytes'Result =
        (for all K in 0 .. Len - 1 => Log_Byte (A, PA + K) = Log_Byte (B, PB + K));
 
-   --  Within each part (authorization records, data records), S's entries
-   --  are in the order of their positions in Old_S's index. Defined by its
-   --  Post (one atom in Compact's contract).
+   --  In each part (authorization records, data records), the entries of
+   --  S are in the order of their positions in the index of Old_S. Its
+   --  Post defines it (one atom in the contract of Compact).
    function In_Old_Order (Old_S, S : Store) return Boolean
    with
      Ghost, Global => null,
@@ -565,7 +610,7 @@ package Kome.Store with SPARK_Mode is
                    and then Position (Old_S, Entry_At (S, I).H)
                             < Position (Old_S, Entry_At (S, J).H))));
 
-   --  Where the frames of a compacted log end.
+   --  The offset where the frames of a compacted log end.
    function Body_End (S : Store) return Natural is
      (if Entries (S) = 0 then Header_Len else End_Of (Entry_At (S, Entries (S))));
 
@@ -575,9 +620,10 @@ package Kome.Store with SPARK_Mode is
 
    --  A new store for the collection of (Root_PK, Salt), beside the empty
    --  lattice state F (Frontier.Empty (ns, To_Key256 (Root_PK), Cap,
-   --  Slice)). It writes the HEADER with F's capacities. The precondition
-   --  ties F to the founding key, so the decoder, the capacity rows and
-   --  root_void agree on it (DESIGN.md §7 step 0, and E6 of §1).
+   --  Slice)). It writes the HEADER with the capacities of F. The
+   --  precondition connects F to the founding key. Thus the decoder, the
+   --  capacity rows and root_void agree on the founding key (DESIGN.md §7
+   --  step 0, and E6 of §1).
    procedure Open (Root_PK : Pubkey; Salt : Kome.Salt; F : Frontier.State; S : out Store) with
      Global => null,
      Pre  => Is_Frontier (F)
@@ -599,8 +645,9 @@ package Kome.Store with SPARK_Mode is
        and then Horizon (S) = No_Horizon;
 
    --  Apply one record and store its frame (DESIGN.md §7, steps 0-6 above).
-   --  The caller has decoded and verified Frame (Verified, which is what
-   --  Kome.Records.Decode_Verified accepts) and passes its header H.
+   --  Before the call, the caller decodes and verifies Frame (Verified,
+   --  that is, what Kome.Records.Decode_Verified accepts). The caller
+   --  gives the header H of Frame.
    procedure Put_Frame
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -617,8 +664,8 @@ package Kome.Store with SPARK_Mode is
        and then Kome.Records.Kind_Of (Frame) = H.K
        and then Canonical (H)
        and then H.NS = Collection (S),
-     --  Top-level conjuncts are joined with "and" (each guards its own
-     --  preconditions); the long ones are named above.
+     --  The top-level conjuncts use "and" (each conjunct guards its own
+     --  preconditions). The functions above name the long conjuncts.
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
@@ -655,10 +702,13 @@ package Kome.Store with SPARK_Mode is
                     and then Appended (S'Old, S, Frame, H, Off)));
 
    --  Tombstone expiry at local time Now (D10, DESIGN.md §7, T11 (a)). The
-   --  horizon is Horizon_At (F, Now). A higher one removes the expired
-   --  DELs from F and the index and is logged iff it removed something; a
-   --  lower one is set and logged; an equal one changes nothing. No_Space
-   --  when the EXPIRE entry it must log does not fit, with no change.
+   --  new horizon is Horizon_At (F, Now):
+   --    * if it is higher, Expire removes the expired DELs from F and the
+   --      index, and logs EXPIRE iff it removed a record;
+   --    * if it is lower, Expire sets it and logs EXPIRE;
+   --    * if it is equal, Expire changes nothing.
+   --  If the EXPIRE entry that Expire must log does not fit, the result is
+   --  No_Space and nothing changes.
    procedure Expire
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -676,8 +726,8 @@ package Kome.Store with SPARK_Mode is
        and Log_Extends (S'Old, S)
        and (if Result = OK then
               Horizon (S) = Horizon_At (F'Old, Now)
-              --  The held set is the old one minus exactly the DELs at or
-              --  below the new horizon (none unless it rose).
+              --  The held set is the old set minus exactly the DELs at or
+              --  below the new horizon (none if the horizon did not rise).
               and then Expired_Out (F'Old, F, Horizon (S))
               and then (if Logs_Expire (S'Old, F'Old, Now)
                         then Appended_Expire (S'Old, S, Log_Length (S'Old), Horizon (S))
@@ -686,10 +736,10 @@ package Kome.Store with SPARK_Mode is
        --  T11 (a): no held DEL is at or below the horizon.
        and (for all I in 1 .. Count (F) => not Expired (Held (F, I), Horizon (S)));
 
-   --  Rewrite the log as the HEADER, one APPLY per index entry (every
-   --  authorization record first, then every data record, each part in
-   --  index order) and one EXPIRE (Horizon (S)) if the store has a horizon
-   --  and the log has room for it. The frontier is unchanged.
+   --  Write the log again as: the HEADER; one APPLY for each index entry
+   --  (first all authorization records, then all data records, each part
+   --  in index order); and one EXPIRE (Horizon (S)) if the store has a
+   --  horizon and the log has room for it. The frontier does not change.
    procedure Compact (S : in out Store; F : Frontier.State) with
      Global => null,
      Pre  => Valid (S, F),
@@ -715,7 +765,8 @@ package Kome.Store with SPARK_Mode is
               (for all J in I + 1 .. Entries (S) =>
                  (if Is_Data (Entry_At (S, I).H) then Is_Data (Entry_At (S, J).H))))
        and In_Old_Order (S'Old, S)
-       --  The layout: the HEADER bytes, the APPLYs contiguous, then EXPIRE.
+       --  The layout: the HEADER bytes, the APPLYs with no gaps, then
+       --  EXPIRE.
        and Log_Length (S) >= Header_Len
        and Log_Length (S'Old) >= Header_Len
        and (for all K in 0 .. Header_Len - 1 => Log_Byte (S, K) = Log_Byte (S'Old, K))
@@ -733,7 +784,7 @@ package Kome.Store with SPARK_Mode is
             else Log_Length (S) = Body_End (S)
                  and then Log_Entries (S) = Entries (S) + 1);
 
-   --  The capacities a log's HEADER records.
+   --  The capacities that the HEADER of a log records.
    function Header_Cap (Input : Byte_Array) return Word is
      (Kome.Keys.Word_Of (Input (HO_Cap), Input (HO_Cap + 1),
                          Input (HO_Cap + 2), Input (HO_Cap + 3)))
@@ -743,9 +794,9 @@ package Kome.Store with SPARK_Mode is
      (Kome.Records.U16_Of (Input (HO_Slice), Input (HO_Slice + 1)))
      with Pre => Input'First = 0 and then Input'Last >= Header_Len - 1;
 
-   --  Input begins with a HEADER: its op, magic and version, and an ns that
+   --  Input starts with a HEADER: its op, magic and version, and an ns that
    --  is BLAKE2b-256 (root_pk ‖ salt)[0:16] of its root_pk and salt. These
-   --  are the checks Open_From_Log makes on the HEADER.
+   --  are the checks that Open_From_Log does on the HEADER.
    function Header_Well_Formed (Input : Byte_Array) return Boolean is
      (Input'Last >= Header_Len - 1
       and then Input (0) = Op_Header
@@ -763,14 +814,15 @@ package Kome.Store with SPARK_Mode is
       and then Log_Length (S) - Entry_Start (S, K) >= Expire_Len
       and then Op_At (S, Entry_Start (S, K)) = Op_Expire);
 
-   --  The horizon the K-th entry, an EXPIRE, logs.
+   --  The horizon that the K-th entry (an EXPIRE) logs.
    function Expire_Horizon (S : Store; K : Positive) return Horizon_Value is
      (Horizon_Of_Code (Code_At (S, Entry_Start (S, K) + 1)))
      with Pre => Is_Expire (S, K);
 
-   --  Horizon (S) is the horizon of the log's last EXPIRE entry, or none
-   --  if the log has no EXPIRE entry. (True of a replayed store; a live
-   --  store may hold a higher horizon only in memory, DESIGN.md §7.)
+   --  Horizon (S) is the horizon of the last EXPIRE entry of the log, or
+   --  none if the log has no EXPIRE entry. (This is true for a replayed
+   --  store. A live store can have a higher horizon that is only in
+   --  memory, DESIGN.md §7.)
    function Horizon_Logged (S : Store) return Boolean is
      (if (for some K in 1 .. Log_Entries (S) => Is_Expire (S, K))
       then (for some K in 1 .. Log_Entries (S) =>
@@ -779,22 +831,28 @@ package Kome.Store with SPARK_Mode is
               and then (for all K2 in K + 1 .. Log_Entries (S) => not Is_Expire (S, K2)))
       else Horizon (S) = No_Horizon);
 
-   --  Reopen a store from its log (replay, T18). F's and S's discriminants
-   --  are the capacities to open with; they must be at least the logged
-   --  ones (No_Space otherwise, and when the log does not fit S, which is
-   --  Input'Last >= S.Log_Cap since Input'First = 0). Malformed:
-   --  a HEADER that is not one (op, magic, version, ns = BLAKE2b-256
-   --  (root_pk ‖ salt)[0:16]), an entry that does not parse, a frame that is
-   --  not well-formed or not of the collection, an authorization record
-   --  whose root_pk is not the founding key, an APPLY that Put_Frame would
-   --  not newly hold and index (including one it refuses for room), an
-   --  APPLY_EXPIRED that is not an admitted, undominated DEL. (An
-   --  APPLY_EXPIRED of an admitted, undominated DEL that drops nothing is
-   --  accepted and changes nothing but the log; no store writes one, since
-   --  Put_Frame logs APPLY_EXPIRED only when it drops something.) On OK the pair
-   --  is Valid, the log is the input with the HEADER's capacities set to
-   --  F's (so the input itself when they were F's already), and the horizon
-   --  is the last logged one.
+   --  Open a store again from its log (replay, T18). The discriminants of
+   --  F and S are the capacities for this open. They must be at least the
+   --  logged capacities. If not, the result is No_Space. The result is
+   --  also No_Space when the log does not fit S, that is,
+   --  Input'Last >= S.Log_Cap (because Input'First = 0).
+   --  The result is Malformed for:
+   --    * a HEADER that is not a HEADER (op, magic, version,
+   --      ns = BLAKE2b-256 (root_pk ‖ salt)[0:16]);
+   --    * an entry that does not parse;
+   --    * a frame that is not well-formed or not of the collection;
+   --    * an authorization record whose root_pk is not the founding key;
+   --    * an APPLY that Put_Frame would not hold and index as a new record
+   --      (this includes an APPLY that Put_Frame refuses for room);
+   --    * an APPLY_EXPIRED that is not an admitted, undominated DEL.
+   --  Replay accepts an APPLY_EXPIRED of an admitted, undominated DEL that
+   --  drops nothing. This entry changes only the log. No store writes such
+   --  an entry, because Put_Frame logs APPLY_EXPIRED only when it drops a
+   --  record.
+   --  On OK, the pair is Valid and the horizon is the last logged horizon.
+   --  The log is the input with the capacities of F in the HEADER. Thus
+   --  the log is the input itself if the HEADER already had the capacities
+   --  of F.
    procedure Open_From_Log
      (Input  : in     Byte_Array;
       F      :    out Frontier.State;
@@ -808,9 +866,10 @@ package Kome.Store with SPARK_Mode is
        and then S.Cap >= F.Cap + Signers_Max * F.Slice,
      Post => Result in OK | Malformed | No_Space
        and (if Input'Last >= S.Log_Cap then Result = No_Space)
-       --  Completeness, in part: a log that is only a well-formed HEADER
-       --  whose capacities fit opens; Malformed only for a HEADER that is
-       --  not one or for a log that has entries after it.
+       --  Part of completeness: a log that is only a well-formed HEADER,
+       --  with capacities that fit, opens. The result is Malformed only
+       --  for a HEADER that is not a HEADER, or for a log that has entries
+       --  after the HEADER.
        and (if Input'Last = Header_Len - 1
               and then Input'Last < S.Log_Cap
               and then Header_Well_Formed (Input)
@@ -843,7 +902,7 @@ package Kome.Store with SPARK_Mode is
               and then Horizon_Logged (S));
 
    --  The cell index (DESIGN.md §7 "cell -> (offset, v)"): the entry of
-   --  the PUT on (NS, Ent, FH), if any.
+   --  the PUT on (NS, Ent, FH), if there is one.
    procedure Find_Cell
      (S     : in     Store;
       F     : in     Frontier.State;
@@ -905,8 +964,8 @@ package Kome.Store with SPARK_Mode is
        and then Kome.Records.U16_Of (Log_Byte (S, HO_Slice), Log_Byte (S, HO_Slice + 1))
                 = Logged_Slice (S);
 
-   --  Every index entry is a held record whose APPLY entry is one of the
-   --  log's entries, with its length and its kind's tag.
+   --  Each index entry is a held record. Its APPLY entry is one of the
+   --  entries of the log, with its length and the tag of its kind.
    procedure Lemma_Entry_Held (S : Store; F : Frontier.State; I : Held_Index) with
      Ghost, Global => null,
      Pre  => Valid (S, F) and then I <= Entries (S),
@@ -931,7 +990,7 @@ package Kome.Store with SPARK_Mode is
      Pre  => Valid (S, F) and then K <= Count (F),
      Post => not Expired (Held (F, K), Horizon (S));
 
-   --  Indexed, spelled out.
+   --  The full definition of Indexed.
    procedure Lemma_Indexed (S : Store; X : Header) with
      Ghost, Global => null,
      Post => Indexed (S, X) = (for some I in 1 .. Entries (S) => Entry_At (S, I).H = X);
@@ -943,9 +1002,9 @@ package Kome.Store with SPARK_Mode is
      Post => Indexed (S, Entry_At (S, I).H)
              and then Position (S, Entry_At (S, I).H) = I;
 
-   --  The log is a chain of entries from offset 0 to its length, the
-   --  HEADER first and only there: what a reader scanning it as a file
-   --  relies on.
+   --  The log is a chain of entries from offset 0 to its length. The
+   --  HEADER is first and only there. A reader that scans the log as a
+   --  file relies on this fact.
    procedure Lemma_Scan (S : Store; F : Frontier.State) with
      Ghost, Global => null,
      Pre  => Valid (S, F),
@@ -958,8 +1017,8 @@ package Kome.Store with SPARK_Mode is
                               (if K < Log_Entries (S) then Entry_Start (S, K + 1)
                                else Log_Length (S)));
 
-   --  T5 through the index (Frontier.lean `cell_unique`): one cell, at most
-   --  one entry, so "cell -> (offset, v)" is a function.
+   --  T5 through the index (Frontier.lean `cell_unique`): a cell has at
+   --  most one entry, so "cell -> (offset, v)" is a function.
    procedure Lemma_Cell_Unique (S : Store; F : Frontier.State; I, J : Held_Index) with
      Ghost, Global => null,
      Pre  => Valid (S, F)
@@ -973,14 +1032,15 @@ private
 
    type Entry_Array is array (Held_Index range <>) of Index_Entry;
 
-   --  Entry boundaries of the log, in order: the model's stand-in for the
-   --  file's own framing (a file binding finds them by scanning). Sized by
-   --  the discriminant alone (Ada allows nothing else in a component
-   --  constraint); at most Log_Cap / Min_Entry are used.
+   --  The entry boundaries of the log, in order. In the model, they replace
+   --  the framing of the file (a file binding finds them with a scan). Only
+   --  the discriminant sets the size (Ada allows nothing else in a
+   --  component constraint). The store uses at most Log_Cap / Min_Entry of
+   --  them.
    type Offset_Array is array (Positive range <>) of Log_Size;
 
-   --  No Dynamic_Predicate: the bounds of the counters are part of Valid
-   --  and the accessors clamp, so that clients may assign a Store.
+   --  No Dynamic_Predicate: the bounds of the counters are part of Valid,
+   --  and the accessors clamp. Thus clients can assign a Store.
    type Store (Cap : Held_Count; Log_Cap : Log_Size) is record
       NS   : Id128;
       NSb  : NS_Id         := [others => 0];   --  ns as bytes, for the HEADER
@@ -1024,14 +1084,14 @@ private
         when K_Grant  => Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
 
    ---------------------------------------------------------------------------
-   --  The invariant, in parts over explicit components so that each step of
-   --  an operation can re-establish one part at a time. The quantified
-   --  parts are defined by their Posts rather than as expression functions,
-   --  so that a goal that only carries one along sees one atom.
+   --  The invariant, in parts over explicit components. Thus each step of
+   --  an operation can make one part true again at a time. Their Posts
+   --  define the quantified parts (not expression functions). Thus a goal
+   --  that only carries one part along sees one atom.
    ---------------------------------------------------------------------------
 
-   --  Some entry of Idx (1 .. N) is the record X. Defined by its Post, so
-   --  that it stays one atom in goals that only carry it along.
+   --  At least one entry of Idx (1 .. N) is the record X. Its Post defines
+   --  it, so it stays one atom in goals that only carry it along.
    function Has_Entry (Idx : Entry_Array; N : Held_Count; X : Header) return Boolean
    with
      Global => null,
@@ -1058,17 +1118,17 @@ private
      Global => null,
      Post => Fresh'Result = (for all K in 1 .. Count (F) => not Expired (Held (F, K), Hz));
 
-   --  The len:u32 of an APPLY or APPLY_EXPIRED entry at P, that is the
-   --  word at P + 1 .. P + 4 (0 where there is none). Total, so that its
-   --  definition is never guarded inside a quantifier.
+   --  The len:u32 of an APPLY or APPLY_EXPIRED entry at P, that is, the
+   --  word at P + 1 .. P + 4 (0 if there is no such word). Total, so its
+   --  definition never needs a guard inside a quantifier.
    function Len_Word (Log : Byte_Array; P : Natural) return Word is
      (if P >= Log'First and then P < Log'Last and then Log'Last - P >= 4
       then Kome.Keys.Word_Of (Log (P + 1), Log (P + 2), Log (P + 3), Log (P + 4))
       else 0);
 
-   --  Entry E's APPLY is in Log (0 .. LL - 1), after the HEADER. Defined
-   --  by its Post, so that a goal about one entry keeps the atom that the
-   --  quantifier of Framed is instantiated on.
+   --  The APPLY of entry E is in Log (0 .. LL - 1), after the HEADER. Its
+   --  Post defines it. Thus a goal about one entry keeps the atom on which
+   --  the prover instantiates the quantifier of Framed.
    function Frame_OK (Log : Byte_Array; LL : Log_Size; E : Index_Entry) return Boolean
    with
      Global => null,
@@ -1089,8 +1149,8 @@ private
              and then Idx'First = 1 and then N <= Idx'Last,
      Post => Framed'Result = (for all I in 1 .. N => Frame_OK (Log, LL, Idx (I)));
 
-   --  Entries are in log order, their APPLYs disjoint, their records
-   --  distinct.
+   --  The entries are in log order, their APPLYs are disjoint, and their
+   --  records are distinct.
    function Sorted (Idx : Entry_Array; N : Held_Count) return Boolean
    with
      Global => null,
@@ -1100,8 +1160,8 @@ private
                   (for all J in I + 1 .. N =>
                      End_Of (Idx (I)) <= Idx (J).Off and then Idx (I).H /= Idx (J).H));
 
-   --  A whole entry starts at P in Log (0 .. LL - 1). Defined by its Post,
-   --  like Frame_OK.
+   --  A whole entry starts at P in Log (0 .. LL - 1). Its Post defines it,
+   --  as for Frame_OK.
    function Entry_OK (Log : Byte_Array; LL : Log_Size; P : Natural) return Boolean
    with
      Global => null,
@@ -1117,7 +1177,7 @@ private
                        and then Natural (Len_Word (Log, P)) <= LL - P - Apply_Prefix
                   else False));
 
-   --  The size of the entry at P (0 where there is none). Total.
+   --  The size of the entry at P (0 if there is no entry). Total.
    function Size_At (Log : Byte_Array; P : Natural) return Natural is
      (if P < Log'First or else P > Log'Last then 0
       elsif Log (P) = Op_Header then Header_Len
@@ -1126,8 +1186,8 @@ private
       then Apply_Prefix + Natural (Len_Word (Log, P))
       else 0);
 
-   --  Bnd (1 .. NB) is a chain of entries from 0 to LL: the HEADER at 0
-   --  and nowhere else, each entry ending where the next begins.
+   --  Bnd (1 .. NB) is a chain of entries from 0 to LL: the HEADER is at 0
+   --  and at no other offset, and each entry ends where the next starts.
    function Chain (Log : Byte_Array; LL : Log_Size; Bnd : Offset_Array; NB : Natural)
      return Boolean
    with
@@ -1144,7 +1204,7 @@ private
                     and then Bnd (K) + Size_At (Log, Bnd (K)) =
                                (if K < NB then Bnd (K + 1) else LL)));
 
-   --  Every entry's APPLY is one of the chain's.
+   --  The APPLY of each entry is one of the entries of the chain.
    function At_Bounds (Idx : Entry_Array; N : Held_Count; Bnd : Offset_Array; NB : Natural)
      return Boolean
    with
@@ -1155,10 +1215,11 @@ private
                (for all I in 1 .. N => (for some K in 1 .. NB => Bnd (K) = Idx (I).Off));
 
    --  The HEADER of the collection NSb of (Root, Slt) with the logged
-   --  capacities DCap and Slc is Log (0 .. Header_Len - 1). (ns is kept as
-   --  bytes beside Root and Slt: BLAKE2b is opaque, so Collection_Id of a
-   --  copy of Root is not known to be Collection_Id of Root, while a byte
-   --  array equal element by element is.)
+   --  capacities DCap and Slc is Log (0 .. Header_Len - 1). (The store
+   --  keeps ns as bytes beside Root and Slt. BLAKE2b is opaque, so the
+   --  prover does not know that Collection_Id of a copy of Root is
+   --  Collection_Id of Root. But the prover knows that two byte arrays with
+   --  equal elements are equal.)
    function Head_OK
      (Log : Byte_Array; LL : Log_Size; NSb : NS_Id; Root : Pubkey; Slt : Salt;
       DCap : Data_Size; Slc : Slice_Count) return Boolean

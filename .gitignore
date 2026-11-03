@@ -9,5 +9,5 @@
 .DS_Store
 Thumbs.db
 
-# Build outputs (lean/.gitignore and spark/.gitignore cover their own)
+# Build outputs (lean/.gitignore and spark/.gitignore cover their own outputs)
 build/

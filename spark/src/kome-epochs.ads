@@ -2,108 +2,121 @@
 --  segment links of DESIGN.md §6 ("Membership is key possession", "Epoch
 --  segments and several roots", "Boxes (D5, D6)"; decisions D5, D6, E3).
 --
---  THE CHAIN. k_e = BLAKE2b-256 (k_{e+1} ‖ "prev") within a segment. The
+--  THE CHAIN. Within a segment, k_e = BLAKE2b-256 (k_{e+1} ‖ "prev"). The
 --  founding key draws a random top key k_Top at an epoch Top <= 2**16 - 1
---  ("2^16 epochs suffice for any collection's life", §6; the range is
---  Kome.Epoch) and the chain is derived downward.
---  The randomness is the caller's: nothing in this package reads an RNG or
---  a clock. Step is one link of the chain (one BLAKE2b-256 call through
---  Kome.Crypto); Derive (K, From, To) walks From - To links down.
+--  ("2^16 epochs are sufficient for the life of any collection", §6; the
+--  range is Kome.Epoch). The chain is derived downward from k_Top.
+--  The caller gives the randomness: no part of this package reads an RNG
+--  or a clock. Step is one link of the chain (one BLAKE2b-256 call through
+--  Kome.Crypto). Derive (K, From, To) walks From - To links down.
 --
---  WHAT IS PROVED, AND WHAT IS NOT. T14 (epoch secrecy: a key absent from
---  roster e and every later roster cannot derive k_e' for e' >= e) is a
---  paper reduction to the one-wayness of BLAKE2b (A2) and the AEAD, not a
---  machine theorem (DESIGN.md §9). What this package proves is that the code
---  computes the chain it is meant to:
+--  WHAT IS PROVED, AND WHAT IS NOT. T14 is epoch secrecy: a key that is
+--  not in roster e or in any later roster cannot derive k_e' for e' >= e.
+--  T14 is a paper reduction to the one-wayness of BLAKE2b (A2) and to the
+--  AEAD. It is not a machine theorem (DESIGN.md §9). This package proves
+--  that the code computes the correct chain:
 --
---    * Step is opaque: the prover knows nothing about BLAKE2b and treats it
+--    * Step is opaque. The prover knows nothing about BLAKE2b and uses it
 --      as an uninterpreted function. Iter (K, N) is the ghost model "Step
---      applied N times", and Derive's Post says Derive is exactly
+--      applied N times". The Post of Derive says that Derive is exactly
 --      Iter (K, From - To). The loop that computes it runs at most
---      Max_Steps = 2**16 - 1 times, a bound that is the type of its index.
+--      Max_Steps = 2**16 - 1 times. The type of its index sets this bound.
 --    * The chain algebra, as ghost lemmas over the opaque Step:
 --      Lemma_Derive_Identity (Derive (K, e, e) = K),
---      Lemma_Derive_Compose  (Derive (Derive (K, a, b), b, c) = Derive (K, a, c)),
+--      Lemma_Derive_Compose  (Derive (Derive (K, a, b), b, c)
+--                             = Derive (K, a, c)),
 --      Lemma_Derive_Step     (one epoch down is one Step),
---      Lemma_Derive_Shift    (only the distance From - To matters),
+--      Lemma_Derive_Shift    (only the distance From - To is important),
 --      and the underlying Lemma_Iter_Add on the model.
---    * The API only goes down (Pre: To <= From). There is no operation that
---      maps k_e to k_{e+1}; that is the code shape of T14, whose content
---      (that no other operation can either) is A2.
---    * Boxes and links (DESIGN.md §6 "Boxes (D5, D6)"): the byte layout of
---      a box (ciphertext ‖ tag, 32 + 16 = Box_Len = 48 bytes) and of every
---      hash input (155, 74 and 59 bytes) is checked by the prover on every
---      slice and concatenation; a peer key that is not reduced
---      (Kome.Crypto.Is_Reduced_U) is refused with Non_Canonical_Peer, a
---      low-order one (Kome.Crypto.Is_Low_Order_U, and again the exchange's
---      own non-contributory check) with Low_Order_Peer; a box is reported
---      Box_OK only for a peer key that passes Kome.Crypto.Is_Good_DH_Key;
---      a refused box, nonce or key is all zeros, and the Posts say so.
---      Seal_Link's Post states the synthetic nonce exactly
---      (N = Synthetic_Nonce (Link_Key (K_S, Ns, S), K_Prev)), and
---      Open_Link's Post states that a link it accepts carries exactly that
---      nonce for the key it returns. The same holds for member boxes:
---      Box_Key's Post states N = Synthetic_Nonce (wrap_key, k_e) for a box
---      it seals, and Unbox_Key's that a box it opens carries exactly that
---      nonce for the key it returns, with wrap_key = Wrap_Key_Of (the ghost
---      model, over the ghost Kome.Crypto.X25519_Shared). The body hashes a
---      buffer built field by field and wiped; Kome.Crypto's
---      Lemma_Blake2b_Congruent (an axiom: a hash depends only on its
---      input's bytes) ties that buffer's digest to the model. Open (Seal (k)) = k is
---      monocypher's AEAD guarantee, not a proof obligation (a crypto
---      oracle): the test main runs it and checks known answers from an
---      independent Python reference (vectors/epochs.txt).
+--    * The API goes only down (Pre: To <= From). No operation maps k_e to
+--      k_{e+1}. This is the code shape of T14. The content of T14 (that
+--      no other operation can do this) is A2.
+--    * Boxes and links (DESIGN.md §6 "Boxes (D5, D6)"):
+--      - The prover checks the byte layout of a box (ciphertext ‖ tag,
+--        32 + 16 = Box_Len = 48 bytes) and of each hash input (155, 74
+--        and 59 bytes) on each slice and concatenation.
+--      - A peer key that is not reduced (Kome.Crypto.Is_Reduced_U) gets
+--        the refusal Non_Canonical_Peer.
+--      - A low-order peer key gets the refusal Low_Order_Peer. The test
+--        is Kome.Crypto.Is_Low_Order_U, and again the non-contributory
+--        check of the exchange.
+--      - The status of a box is Box_OK only for a peer key that passes
+--        Kome.Crypto.Is_Good_DH_Key.
+--      - A refused box, nonce or key is all zeros. The Posts say this.
+--      - The Post of Seal_Link gives the synthetic nonce exactly
+--        (N = Synthetic_Nonce (Link_Key (K_S, Ns, S), K_Prev)). The Post
+--        of Open_Link says that a link that it accepts has exactly that
+--        nonce for the key that it returns.
+--      - The same is true for member boxes. The Post of Box_Key gives
+--        N = Synthetic_Nonce (wrap_key, k_e) for a box that it seals.
+--        The Post of Unbox_Key says that a box that it opens has exactly
+--        that nonce for the key that it returns. Here wrap_key =
+--        Wrap_Key_Of (the ghost model, over the ghost
+--        Kome.Crypto.X25519_Shared).
+--      - The body builds a buffer field by field, hashes it and wipes it.
+--        Lemma_Blake2b_Congruent of Kome.Crypto (an axiom: a hash depends
+--        only on the bytes of its input) ties the digest of that buffer
+--        to the model.
+--      - Open (Seal (k)) = k is the AEAD guarantee of monocypher. It is
+--        not a proof obligation (a crypto oracle). The test main runs it
+--        and checks known answers from an independent Python reference
+--        (vectors/epochs.txt).
 --
 --  BOX CONSTRUCTION (DESIGN.md §6, decisions D5 and D6 of §1). There is
---  no root X25519 key. Each ROSTER carries box_pk = X25519_Public (eph_sk)
---  of a fresh ephemeral secret that the signer draws for that one roster
---  (the caller's randomness: no RNG here), seals that roster's boxes with
---  and wipes. Labels are ASCII with no terminator, u16 is big-endian, ns is
---  the 16 bytes of Kome.Keys.To_Bytes (Ns). For member (sign_pk, dh_pk) of
---  a roster of collection ns at epoch e:
+--  no root X25519 key. Each ROSTER has box_pk = X25519_Public (eph_sk).
+--  The signer draws the fresh ephemeral secret eph_sk for that one roster
+--  (the caller gives the randomness: no RNG here). The signer seals the
+--  boxes of that roster with eph_sk and then wipes it. Labels are ASCII
+--  with no terminator, u16 is big-endian, and ns is the 16 bytes of
+--  Kome.Keys.To_Bytes (Ns). For member (sign_pk, dh_pk) of a roster of
+--  collection ns at epoch e:
 --    wrap_key = BLAKE2b-256 ("kome/wrap" ‖ X25519 (eph_sk, dh_pk) ‖ box_pk
 --                            ‖ dh_pk ‖ sign_pk ‖ ns ‖ u16 (e))   (155 bytes)
 --    nonce    = BLAKE2b-256 ("kome/nonce" ‖ wrap_key ‖ k_e)[0:24]
 --    box      = XChaCha20-Poly1305 (wrap_key, nonce, AD = ns ‖ u16 (e), k_e)
 --             = cipher[32] ‖ tag[16].
---  The member computes X25519 (dh_sk, box_pk), opens the box, recomputes
---  the nonce from the opened key and refuses a mismatch (Not_Authentic), so
---  exactly one box per (wrap_key, k_e) opens. A link of a segment starting
---  at epoch s (DESIGN.md §6 "Epoch segments", E3) seals k_{s-1}:
+--  The member computes X25519 (dh_sk, box_pk) and opens the box. Then it
+--  computes the nonce again from the opened key and refuses a mismatch
+--  (Not_Authentic). Thus exactly one box opens for each (wrap_key, k_e).
+--  A segment that starts at epoch s (DESIGN.md §6 "Epoch segments", E3)
+--  has a link that seals k_{s-1}:
 --    link_key = BLAKE2b-256 ("kome/link" ‖ k_s ‖ ns ‖ u16 (s))   (59 bytes)
 --    nonce    = BLAKE2b-256 ("kome/nonce" ‖ link_key ‖ k_{s-1})[0:24]
---    link box = XChaCha20-Poly1305 (link_key, nonce, AD = ns ‖ u16 (s), k_{s-1}).
---  Within a segment the chain step k_e = BLAKE2b-256 (k_{e+1} ‖ "prev") is
---  unchanged. Opening segments (founding key only), choosing segment tops
---  and delivering them belong to Kome.Roster (phase 8), not here.
---  Why ns, the epoch and both member keys are in the wrap key: two boxes
---  for one member at epochs 5 and 6 then never share a key, even under a
---  reused eph_sk, and a removed member holding k5 learns nothing about k6
---  from XORing them (regression test in the test main).
+--    link box = XChaCha20-Poly1305 (link_key, nonce, AD = ns ‖ u16 (s),
+--                                   k_{s-1}).
+--  Within a segment, the chain step k_e = BLAKE2b-256 (k_{e+1} ‖ "prev")
+--  does not change. Kome.Roster (phase 8) opens segments (founding key
+--  only), chooses segment tops and delivers them. This package does not.
+--  The wrap key contains ns, the epoch and the two member keys. Thus two
+--  boxes for one member at epochs 5 and 6 never share a key, also under a
+--  reused eph_sk. A removed member that holds k5 learns nothing about k6
+--  when it XORs the two boxes (the test main has a regression test).
 --
 --  CANONICAL PEER KEYS. X25519 reads a u-coordinate modulo p = 2**255 - 19
---  and ignores bit 255, so one point has several 32-byte encodings with the
---  same shared secret; but the wrap key hashes the encoding. A member opens
---  its box with its own X25519_Public, which is always the reduced encoding
---  (u < p, bit 255 clear). A box sealed to any other encoding of the same
---  point would be reported Box_OK and still never open for its member. So
---  both sides accept only reduced encodings (Is_Reduced_U, defined in
---  Kome.Crypto and renamed here) and refuse the rest with
---  Non_Canonical_Peer; decode refuses them earlier (DESIGN.md §2 rule 3, E5).
+--  and ignores bit 255. Thus one point has several 32-byte encodings with
+--  the same shared secret. But the wrap key hashes the encoding. A member
+--  opens its box with its own X25519_Public, which is always the reduced
+--  encoding (u < p, bit 255 clear). A box sealed to a different encoding
+--  of the same point gets Box_OK, but its member can never open it. Thus
+--  the two sides accept only reduced encodings (Is_Reduced_U, defined in
+--  Kome.Crypto and renamed here). They refuse all other encodings with
+--  Non_Canonical_Peer. Decode refuses them before this (DESIGN.md §2
+--  rule 3, E5).
 --
---  SECRETS. In Step, Box_Key, Unbox_Key, Seal_Link and Open_Link, every
---  named byte buffer that holds a secret (the X25519 output, the wrap or
---  link key, the hash inputs that contain them, the nonce digest, the
---  plaintext epoch key, Step's input and digest) is erased with
---  Kome.Crypto.Wipe before every return (Step can call the procedure form
---  of BLAKE2b-256 and Wipe because both are Always_Terminates). What
---  cannot be erased: the temporaries of the expression functions
---  Nonce_Input and Link_Input, which hold copies of keys while their result
---  is copied into a named buffer (that buffer is wiped), and the compiler's
---  temporary for Step's input expression. The ghost models Wrap_Input and
---  Wrap_Key_Of run only under -gnata. Key256 values themselves are
---  ordinary records (the lattice convention for keys) and are not wiped
---  here.
+--  SECRETS. Step, Box_Key, Unbox_Key, Seal_Link and Open_Link erase each
+--  named byte buffer that holds a secret with Kome.Crypto.Wipe before each
+--  return. These buffers are the X25519 output, the wrap or link key, the
+--  hash inputs that contain them, the nonce digest, the plaintext epoch
+--  key, and the input and digest of Step. (Step can call the procedure
+--  form of BLAKE2b-256 and Wipe because the two are Always_Terminates.)
+--  Some data cannot be erased:
+--    * the temporaries of the expression functions Nonce_Input and
+--      Link_Input. They hold copies of keys while their result goes into a
+--      named buffer (that buffer is wiped);
+--    * the compiler temporary for the input expression of Step.
+--  The ghost models Wrap_Input and Wrap_Key_Of run only under -gnata.
+--  Key256 values are ordinary records (the lattice convention for keys).
+--  This package does not wipe them.
 pragma Ada_2022;
 with Kome.Crypto;
 with Kome.Keys;
@@ -113,32 +126,32 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
    --  The chain
    ---------------------------------------------------------------------------
 
-   --  DESIGN.md §6: 2^16 epochs, so a walk from the top epoch to epoch 0 is
-   --  at most 2**16 - 1 links (Kome.Epoch is 0 .. 2**16 - 1).
+   --  DESIGN.md §6: 2^16 epochs. Thus a walk from the top epoch to epoch 0
+   --  is at most 2**16 - 1 links (Kome.Epoch is 0 .. 2**16 - 1).
    Max_Steps : constant := 2**16 - 1;
    subtype Steps is Natural range 0 .. Max_Steps;
 
    --  The label hashed after the key: ASCII "prev" (DESIGN.md §6).
    Prev_Label_Len : constant := 4;
 
-   --  One link: Step (k_{e+1}) = k_e = BLAKE2b-256 (k_{e+1} ‖ "prev"), with
-   --  the key's 32 bytes in the big-endian order of Kome.Keys. Opaque on
-   --  purpose (no Post): the chain algebra below holds for any function,
-   --  and what this one computes is checked against hashlib in the test.
+   --  One link: Step (k_{e+1}) = k_e = BLAKE2b-256 (k_{e+1} ‖ "prev"). The
+   --  32 bytes of the key are in the big-endian order of Kome.Keys. Step is
+   --  opaque on purpose (no Post): the chain algebra below is true for any
+   --  function. The test checks the result of Step against hashlib.
    function Step (K : Key256) return Key256
      with Global => null;
 
-   --  Ghost model: Step applied N times. Recursion bounded by the variant
-   --  (CONVENTIONS.md: no recursion unless bounded by a Subprogram_Variant).
-   --  Quantifier-free, so public.
+   --  Ghost model: Step applied N times. The variant bounds the recursion
+   --  (CONVENTIONS.md: no recursion unless a Subprogram_Variant bounds it).
+   --  It has no quantifier, so it is public.
    function Iter (K : Key256; N : Steps) return Key256 is
      (if N = 0 then K else Step (Iter (K, N - 1)))
      with Ghost, Global => null,
           Subprogram_Variant => (Decreases => N);
 
    --  The key at epoch To, from the key K at epoch From >= To: From - To
-   --  links down the chain. DESIGN.md §6; refines the chain on which the
-   --  T14 paper argument rests (only downward derivation exists).
+   --  links down the chain. DESIGN.md §6. This refines the chain that the
+   --  T14 paper argument uses (only downward derivation exists).
    function Derive (K : Key256; From, To : Epoch) return Key256
      with Global => null,
           Pre    => To <= From,
@@ -148,7 +161,7 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
    --  Chain algebra (ghost lemmas; the law is the Post). DESIGN.md §6.
    ---------------------------------------------------------------------------
 
-   --  Iterating M then N times is iterating M + N times.
+   --  To iterate M times and then N times is to iterate M + N times.
    procedure Lemma_Iter_Add (K : Key256; M, N : Steps)
      with Ghost, Global => null,
           Pre  => M + N <= Max_Steps,
@@ -165,16 +178,16 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
           Pre  => E < Epoch'Last,
           Post => Derive (K, E + 1, E) = Step (K);
 
-   --  Derivation composes: walking a -> b then b -> c is walking a -> c.
-   --  This is what makes "a member holding k_e derives every older key"
-   --  (§6) independent of the route taken.
+   --  Derivation composes: a walk a -> b and then b -> c is a walk a -> c.
+   --  Thus "a member that holds k_e derives each older key" (§6) does not
+   --  depend on the route.
    procedure Lemma_Derive_Compose (K : Key256; A, B, C : Epoch)
      with Ghost, Global => null,
           Pre  => C <= B and then B <= A,
           Post => Derive (Derive (K, A, B), B, C) = Derive (K, A, C);
 
-   --  Only the distance matters: Derive (K, a, b) = Derive (K, a', b') when
-   --  a - b = a' - b'.
+   --  Only the distance is important: Derive (K, a, b) = Derive (K, a', b')
+   --  if a - b = a' - b'.
    procedure Lemma_Derive_Shift (K : Key256; A, B, A2, B2 : Epoch)
      with Ghost, Global => null,
           Pre  => B <= A and then B2 <= A2
@@ -196,7 +209,8 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
    pragma Compile_Time_Error
      (Cipher_Len /= Hash_Len, "an epoch key is a BLAKE2b-256 digest");
 
-   --  AD bound into every box and link: ns[16] ‖ u16 (epoch), big-endian.
+   --  The AD bound into each box and link: ns[16] ‖ u16 (epoch),
+   --  big-endian.
    AD_Len : constant := NS_Len + 2;
 
    --  The labels (ASCII, no terminator; DESIGN.md §2 "all tags and labels").
@@ -239,9 +253,10 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
      (Wrap_O_E + 2 /= Wrap_Input_Len, "wrap-key input layout");
 
    --  Byte J of "kome/wrap" ‖ shared ‖ box_pk ‖ dh_pk ‖ sign_pk ‖ ns ‖
-   --  u16 (e), the member-box wrap-key input (DESIGN.md §6 D6), position by
-   --  position. Ghost: it reads the shared secret, so only contracts use
-   --  it (the body builds the same bytes in a buffer it wipes).
+   --  u16 (e), position by position. This is the wrap-key input of a member
+   --  box (DESIGN.md §6 D6). It is ghost because it reads the shared
+   --  secret. Thus only contracts use it (the body builds the same bytes in
+   --  a buffer that it wipes).
    function Wrap_Byte
      (Shared  : Kome.Crypto.Shared_Secret;
       Box_PK  : Pubkey;
@@ -252,7 +267,7 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
       J       : Natural) return Byte
      with Ghost, Global => null, Pre => J < Wrap_Input_Len;
 
-   --  The whole wrap-key input. Ghost, for the same reason.
+   --  The full wrap-key input. It is ghost for the same reason.
    function Wrap_Input
      (Shared  : Kome.Crypto.Shared_Secret;
       Box_PK  : Pubkey;
@@ -264,8 +279,8 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
           Post => (for all J in 0 .. Wrap_Input_Len - 1 =>
                      Wrap_Input'Result (J) = Wrap_Byte (Shared, Box_PK, DH_PK, Sign_PK, Ns, E, J));
 
-   --  wrap_key = BLAKE2b-256 (Wrap_Input (...)), as a key. Ghost; opaque
-   --  to clients like Link_Key.
+   --  wrap_key = BLAKE2b-256 (Wrap_Input (...)), as a key. It is ghost.
+   --  Like Link_Key, it is opaque to clients.
    function Wrap_Key_Of
      (Shared  : Kome.Crypto.Shared_Secret;
       Box_PK  : Pubkey;
@@ -275,15 +290,15 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
       E       : Epoch) return Key256
      with Ghost, Global => null;
 
-   --  "kome/nonce" ‖ Key ‖ K, the keys in the byte order of Kome.Keys. The
-   --  keys are records (CONVENTIONS.md rule 1), so equal keys give the same
-   --  term and the nonce below is a congruence of its arguments.
+   --  "kome/nonce" ‖ Key ‖ K, with the keys in the byte order of Kome.Keys.
+   --  The keys are records (CONVENTIONS.md rule 1). Thus equal keys give
+   --  the same term, and the nonce below is a congruence of its arguments.
    function Nonce_Input (Key, K : Key256) return Nonce_Input_Bytes
      with Global => null;
 
    --  The synthetic nonce of a box or link that seals K under the AEAD key
-   --  Key: BLAKE2b-256 ("kome/nonce" ‖ Key ‖ K)[0:24]. Opaque to clients
-   --  (its definition is in the private part).
+   --  Key: BLAKE2b-256 ("kome/nonce" ‖ Key ‖ K)[0:24]. It is opaque to
+   --  clients (its definition is in the private part).
    function Synthetic_Nonce (Key, K : Key256) return Nonce
      with Global => null;
 
@@ -292,7 +307,7 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
      with Global => null;
 
    --  link_key = BLAKE2b-256 ("kome/link" ‖ k_s ‖ ns ‖ u16 (s)), as a key.
-   --  Opaque to clients.
+   --  It is opaque to clients.
    function Link_Key (K_S : Key256; Ns : Id128; S : Epoch) return Key256
      with Global => null;
 
@@ -304,12 +319,12 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
      (B (Cipher_Len .. Box_Len - 1))
      with Global => null;
 
-   --  The all-zero key: what a refusal leaves behind.
+   --  The all-zero key: a refusal gives this key.
    Zero_Key : constant Key256 := (others => 0);
 
-   --  Spelt out byte by byte, not quantified: a public quantified
-   --  expression function is an axiom in every client (CONVENTIONS.md
-   --  rule 2), as Kome.Crypto.Is_Zero is written for the same reason.
+   --  Written byte by byte, without a quantifier: a public quantified
+   --  expression function is an axiom in each client (CONVENTIONS.md
+   --  rule 2). Kome.Crypto.Is_Zero has this form for the same reason.
    function Is_Zero_Box (B : Kome.Box) return Boolean is
      (B (0) = 0 and then B (1) = 0 and then B (2) = 0 and then B (3) = 0
       and then B (4) = 0 and then B (5) = 0 and then B (6) = 0 and then B (7) = 0
@@ -334,38 +349,42 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
       and then N (20) = 0 and then N (21) = 0 and then N (22) = 0 and then N (23) = 0)
      with Global => null;
 
-   --  The reduced-encoding test is Kome.Crypto's (DESIGN.md §2 rule 3, E5:
-   --  decode and box share one definition).
+   --  The reduced-encoding test comes from Kome.Crypto (DESIGN.md §2
+   --  rule 3, E5: decode and box share one definition).
    function Is_Reduced_U (U : Pubkey) return Boolean
      renames Kome.Crypto.Is_Reduced_U;
 
-   --  Package-local result: Kome.Status has no code for any refusal.
+   --  Package-local result: Kome.Status has no code for these refusals.
    type Box_Status is
      (Box_OK,
-      Non_Canonical_Peer, --  the peer's X25519 key is not reduced
-                          --  (Is_Reduced_U): bit 255 set or u >= p. Refused
-                          --  before any exchange (see the header).
+      Non_Canonical_Peer, --  the X25519 key of the peer is not reduced
+                          --  (Is_Reduced_U): bit 255 is set or u >= p.
+                          --  Refused before an exchange (see the header).
       Low_Order_Peer,     --  the peer key is one of the reduced low-order
                           --  encodings (Kome.Crypto.Is_Low_Order_U), or the
-                          --  exchange is otherwise not contributory (the
-                          --  "shared" secret is all zeros). Refused.
-      Not_Authentic);     --  Unbox and Open only: the tag did not verify
+                          --  exchange is not contributory for a different
+                          --  reason (the "shared" secret is all zeros).
+                          --  Refused.
+      Not_Authentic);     --  Unbox and Open only. The tag did not verify
                           --  (wrong key, nonce, epoch, collection, member,
-                          --  box_pk, or a tampered box), or it did and the
-                          --  nonce is not the synthetic nonce of the
-                          --  opened key.
+                          --  box_pk, or a tampered box). Or the tag
+                          --  verified, but the nonce is not the synthetic
+                          --  nonce of the opened key.
 
    --  Seal Epoch_Key, the key of epoch E of collection Ns, to the member
-   --  (Member_DH_PK, Member_Sign_PK) of a roster whose ephemeral secret is
-   --  Eph_Secret (box_pk = X25519_Public (Eph_Secret), computed here). N is
-   --  the synthetic nonce and Sealed is cipher[32] ‖ tag[16] (header). A
-   --  non-reduced Member_DH_PK is refused with Non_Canonical_Peer, a
-   --  low-order one with Low_Order_Peer; on refusal N and Sealed are all
-   --  zeros. Box_OK only for a good key (Is_Good_DH_Key), and then N is
-   --  the synthetic nonce of Epoch_Key under the wrap key of this member,
-   --  epoch and collection (D6). Box_Key never reports Not_Authentic. The
-   --  cipher bytes are monocypher's (no Post on them; the test main checks
-   --  known answers and the round trip).
+   --  (Member_DH_PK, Member_Sign_PK) of a roster. The ephemeral secret of
+   --  the roster is Eph_Secret (box_pk = X25519_Public (Eph_Secret),
+   --  computed here). N is the synthetic nonce. Sealed is
+   --  cipher[32] ‖ tag[16] (see the header).
+   --    * If Member_DH_PK is not reduced, the status is Non_Canonical_Peer.
+   --    * If Member_DH_PK is low-order, the status is Low_Order_Peer.
+   --    * On a refusal, N and Sealed are all zeros.
+   --    * The status is Box_OK only for a good key (Is_Good_DH_Key). Then N
+   --      is the synthetic nonce of Epoch_Key under the wrap key of this
+   --      member, epoch and collection (D6).
+   --  Box_Key never gives Not_Authentic. Monocypher makes the cipher bytes
+   --  (no Post on them; the test main checks known answers and the round
+   --  trip).
    procedure Box_Key
      (Eph_Secret     : Kome.Crypto.DH_Secret;
       Member_DH_PK   : Pubkey;
@@ -391,15 +410,17 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
                     and then (if Status /= Box_OK
                               then Is_Zero_Box (Sealed) and then Is_Zero_Nonce (N));
 
-   --  Open a member box with the member's X25519 secret (its dh_pk =
-   --  X25519_Public (Member_Secret), computed here), its sign_pk, the
-   --  roster's box_pk, the collection and epoch it claims, and the box's
-   --  nonce. Box_OK means the tag verified under the recomputed wrap key
-   --  AND N is the synthetic nonce of the opened key; Epoch_Key is then the
-   --  sealed key. Otherwise Epoch_Key = Zero_Key. A non-reduced Box_PK is
-   --  refused with Non_Canonical_Peer, a low-order one with Low_Order_Peer.
-   --  The Post states the nonce check: on Box_OK, N is the synthetic nonce
-   --  of the returned key under this member's wrap key (D6).
+   --  Open a member box. The inputs are the X25519 secret of the member
+   --  (its dh_pk = X25519_Public (Member_Secret), computed here), its
+   --  sign_pk, the box_pk of the roster, the collection and epoch that the
+   --  box claims, and the nonce of the box. Box_OK means two things: the
+   --  tag verified under the wrap key computed again here, AND N is the
+   --  synthetic nonce of the opened key. Epoch_Key is then the sealed key.
+   --  If not, Epoch_Key = Zero_Key. If Box_PK is not reduced, the status
+   --  is Non_Canonical_Peer. If Box_PK is low-order, the status is
+   --  Low_Order_Peer. The Post gives the nonce check: on Box_OK, N is the
+   --  synthetic nonce of the returned key under the wrap key of this
+   --  member (D6).
    procedure Unbox_Key
      (Member_Secret  : Kome.Crypto.DH_Secret;
       Member_Sign_PK : Pubkey;
@@ -425,9 +446,9 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
                     and then (if Status /= Box_OK then Epoch_Key = Zero_Key);
 
    --  Seal K_Prev = k_{s-1}, the last key of the previous segment, under
-   --  link_key = Link_Key (K_S, Ns, S), where K_S = k_s is the first key of
-   --  the segment starting at epoch S >= 1 (DESIGN.md §6, E3). N is the
-   --  synthetic nonce, stated exactly.
+   --  link_key = Link_Key (K_S, Ns, S). K_S = k_s is the first key of the
+   --  segment that starts at epoch S >= 1 (DESIGN.md §6, E3). N is the
+   --  synthetic nonce. The Post gives N exactly.
    procedure Seal_Link
      (K_S    : Key256;
       Ns     : Id128;
@@ -440,9 +461,9 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
           Post   => N = Synthetic_Nonce (Link_Key (K_S, Ns, S), K_Prev);
 
    --  Open a link {from_epoch = S, nonce N, box Sealed} with k_s. Box_OK
-   --  means the tag verified and N is the synthetic nonce of the opened
-   --  key, which is K_Prev; otherwise K_Prev = Zero_Key and the status is
-   --  Not_Authentic (a link has no peer key to refuse).
+   --  means that the tag verified and N is the synthetic nonce of the
+   --  opened key. That key is K_Prev. If not, K_Prev = Zero_Key and the
+   --  status is Not_Authentic (a link has no peer key to refuse).
    procedure Open_Link
      (K_S    : Key256;
       Ns     : Id128;

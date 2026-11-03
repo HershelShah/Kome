@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Build and run one module's test main (its dependency closure only), then
-# prove the module with gnatprove. Exit non-zero on any failure.
+# Build and run the test main of one module (only its dependency closure),
+# then prove the module with gnatprove. If a step fails, exit non-zero.
 #   spark/check.sh <module>        # builds tests/test_<module>.adb
 #   spark/check.sh all             # every tests/test_*.adb
 #   PROVE=0 spark/check.sh ...     # skip the proof step
-# Toolchain: gnat, gprbuild and gnatprove on PATH; otherwise they are taken
-# from the pinned nixpkgs (../nixpkgs.pin), the same set CI uses.
+# Toolchain: gnat, gprbuild and gnatprove on PATH. If they are not on PATH,
+# the script gets them from the pinned nixpkgs (../nixpkgs.pin). CI uses the
+# same set.
 set -euo pipefail
-# Absolute path to this script: it re-runs itself (inside nix, and once per
-# module for "all") after the cd below, where a relative path would not resolve.
+# Absolute path to this script. The script runs itself again after the cd
+# below: inside nix, and once for each module for "all". A relative path
+# would not resolve there.
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")"
 
 if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>&1; then
   if [ -z "${KOME_IN_NIX:-}" ]; then
-    # The nixpkgs revision is pinned (../nixpkgs.pin) so the provers do
+    # The nixpkgs revision is pinned (../nixpkgs.pin), so the provers do
     # not change under the proofs.
     P="$(cat ../nixpkgs.pin)"
     exec env KOME_IN_NIX=1 nix --extra-experimental-features 'nix-command flakes' \
@@ -23,12 +25,13 @@ if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>
   fi
 fi
 
-# gnatwhy3 hangs if TMPDIR names a missing directory, and concurrent runs that
-# share the default why3server socket in /tmp crash; give each run its own,
-# existing directory. The why3server socket and gnatprove's semaphore live
-# there, and a long path fails ("failed to open semaphore": sockets are
-# limited to about 100 bytes of path), so an inherited TMPDIR that is
-# missing, not writable or longer than 40 bytes is replaced by /tmp.
+# gnatwhy3 hangs if TMPDIR names a missing directory. Concurrent runs that
+# share the default why3server socket in /tmp crash. Thus give each run its
+# own existing directory. The why3server socket and the gnatprove semaphore
+# are in that directory. A long path fails ("failed to open semaphore"),
+# because a socket path is limited to about 100 bytes. Thus if an inherited
+# TMPDIR is missing, is not writable or is longer than 40 bytes, the script
+# uses /tmp in its place.
 if [ -z "${KOME_TMPDIR_SET:-}" ]; then
   export KOME_TMPDIR_SET=1
   base="${TMPDIR:-/tmp}"
@@ -40,9 +43,9 @@ if [ -z "${KOME_TMPDIR_SET:-}" ]; then
   trap 'rm -rf -- "$TMPDIR"' EXIT
 fi
 
-# PROOF_WIP lists modules whose unproved checks are not fatal. Unset means
-# the default list, which is empty (every module proves completely); set and
-# empty means none.
+# PROOF_WIP lists the modules whose unproved checks are not fatal. If it is
+# unset, the default list applies, and that list is empty (every module
+# proves completely). If it is set and empty, no module is in the list.
 PROOF_WIP_LIST="${PROOF_WIP-}"
 
 run_one() {
@@ -61,17 +64,18 @@ run_one() {
     fi
     echo "== $m: prove"
     # gnatprove 14 names its job semaphore without regard to TMPDIR
-    # (/dev/shm/sem.why3server<hash>), so two runs at once still crash with
-    # "failed to open semaphore" and leave gnatwhy3 orphans spinning. A
-    # private TMPDIR is not enough: serialize the prove step.
+    # (/dev/shm/sem.why3server<hash>). Thus two runs at the same time still
+    # crash with "failed to open semaphore", and orphan gnatwhy3 processes
+    # continue to spin. A private TMPDIR is not sufficient, so serialize
+    # the prove step.
     mkdir -p obj
     exec 9>obj/.prove.lock
     if command -v flock >/dev/null 2>&1; then flock 9; fi
     gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -u "kome-$m.adb" \
       --level=3 --mode=all --report=fail --warnings=continue
     exec 9>&-
-    # gnatprove exits 0 even with unproved checks; read the summary and fail
-    # unless the module is listed in PROOF_WIP (proof known incomplete).
+    # gnatprove exits 0 even with unproved checks. Thus read the summary,
+    # and fail unless PROOF_WIP lists the module (proof known incomplete).
     local total unproved
     total=$(grep -E '^Total ' "obj/$m/gnatprove/gnatprove.out" | head -1)
     unproved=$(echo "$total" | awk '{ if ($NF == ".") print 0; else print $(NF-1) }')

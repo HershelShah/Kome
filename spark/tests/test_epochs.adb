@@ -1,20 +1,26 @@
---  Test main for Kome.Epochs (DESIGN.md §6). (a) Known answers from
---  vectors/epochs.txt: the chain (Python hashlib, including the full
---  2**16 - 1 step walk) and the box and link constructions
---  (an independent Python reference over libsodium, pyca/cryptography and
---  hashlib; no monocypher), each checked through Box_Key, Unbox_Key,
---  Seal_Link, Open_Link, Synthetic_Nonce and Link_Key, with the wrap key
---  recomputed here from Kome.Crypto primitives and literal labels.
---  (b) The chain algebra: the ghost lemmas executed under -gnata on real
---  keys. (c) Boxes: round trip, the member derives older keys, the nonce is
---  synthetic and checked on open (a box that passes the AEAD under a
---  non-synthetic nonce is refused), refusals (wrong member secret, sign_pk,
---  box_pk, nonce, epoch, collection, tampered bytes, low-order and
---  non-reduced peers) each leave zeros. (d) Regressions: the k5-to-k6
---  keystream reuse (reproduced against a construction with a caller nonce
---  and no ns or epoch in the wrap key, refuted against the current one),
---  a reused ephemeral secret.
---  (e) Links: walking back across a segment boundary, refusals.
+--  Test main for Kome.Epochs (DESIGN.md §6).
+--  (a) Known answers from vectors/epochs.txt:
+--      - the chain (Python hashlib, with the full 2**16 - 1 step walk);
+--      - the box and link constructions (an independent Python reference
+--        over libsodium, pyca/cryptography and hashlib; no monocypher).
+--      The test checks each answer through Box_Key, Unbox_Key, Seal_Link,
+--      Open_Link, Synthetic_Nonce and Link_Key. It computes the wrap key
+--      again here from Kome.Crypto primitives and literal labels.
+--  (b) The chain algebra: the ghost lemmas run under -gnata on real keys.
+--  (c) Boxes:
+--      - round trip;
+--      - the member derives older keys;
+--      - the nonce is synthetic and open checks it (a box that passes the
+--        AEAD under a nonce that is not synthetic is refused);
+--      - each refusal gives zeros (wrong member secret, sign_pk, box_pk,
+--        nonce, epoch, collection, tampered bytes, low-order and
+--        non-reduced peers).
+--  (d) Regressions:
+--      - the k5-to-k6 keystream reuse. The test shows it on a construction
+--        with a caller nonce and no ns or epoch in the wrap key. The test
+--        shows that it does not occur with the current construction;
+--      - a reused ephemeral secret.
+--  (e) Links: a walk back across a segment boundary, refusals.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -82,9 +88,10 @@ procedure Test_Epochs with SPARK_Mode => Off is
    end Find;
 
    ---------------------------------------------------------------------------
-   --  Independent recomputations from Kome.Crypto primitives and literal
-   --  labels (not the package's constants), used to check the vectors'
-   --  intermediate values and to forge boxes for the refusal tests.
+   --  Independent computations from Kome.Crypto primitives and literal
+   --  labels (not the constants of the package). The tests use them to
+   --  check the intermediate values of the vectors and to forge boxes for
+   --  the refusal tests.
    ---------------------------------------------------------------------------
 
    function Ascii (S : String) return Byte_Array is
@@ -118,8 +125,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
      (Kome.Crypto.Blake2b_256
         (Ascii ("kome/nonce") & Key & Kome.Keys.To_Bytes (K)) (0 .. Nonce_Len - 1));
 
-   --  An AEAD box of K under Key, nonce N and AD ns ‖ u16 (e): what Box_Key
-   --  or Seal_Link would produce if N were the synthetic nonce.
+   --  An AEAD box of K under Key, nonce N and AD ns ‖ u16 (e). Box_Key or
+   --  Seal_Link makes this box if N is the synthetic nonce.
    function Lock_Ref
      (Key : Byte_Array; N : Nonce; Ns : Id128; E : Epoch; K : Key256)
       return Kome.Box
@@ -324,7 +331,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Ok : Boolean := True;
    begin
       --  The lemmas run under -gnata: each Post is evaluated with real
-      --  BLAKE2b; a false law would raise Assertion_Error.
+      --  BLAKE2b. A false law raises Assertion_Error.
       Lemma_Derive_Identity (Top_Key, 0);
       Lemma_Derive_Identity (Top_Key, 777);
       Lemma_Derive_Identity (Other_Key, Epoch'Last);
@@ -348,8 +355,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Lemma_Iter_Add (Other_Key, 5, 0);
       Check ("lemma_iter_add (run)", True);
 
-      --  The same laws checked directly over longer walks, where running
-      --  the ghost model would be slow.
+      --  The same laws, checked directly over longer walks. For these
+      --  walks, the ghost model is too slow to run.
       Ok := Derive (Derive (Other_Key, Epoch'Last, 30_000), 30_000, 0)
               = Derive (Other_Key, Epoch'Last, 0)
             and then Derive (Derive (Top_Key, 5_000, 4_999), 4_999, 0)
@@ -412,8 +419,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Check ("box_hides_key",
              Cipher_Of (Sealed) /= Kome.Keys.To_Bytes (K_E));
 
-      --  The nonce is the synthetic one, recomputed independently, and the
-      --  box is the AEAD under it (the construction of DESIGN.md §6).
+      --  The nonce is the synthetic nonce, computed again independently.
+      --  The box is the AEAD under it (the construction of DESIGN.md §6).
       declare
          WK : constant Hash256 :=
            Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, E);
@@ -421,9 +428,10 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Check ("box_nonce_is_synthetic",
                 N = Nonce_Ref (WK, K_E)
                 and then N = Synthetic_Nonce (Kome.Keys.To_Key256 (WK), K_E));
-         --  The ghost model the Posts of Box_Key and Unbox_Key name
-         --  (Wrap_Key_Of over X25519_Shared) is the independent reference's
-         --  wrap key, from either side of the exchange; ghost, so asserted.
+         --  The Posts of Box_Key and Unbox_Key name a ghost model
+         --  (Wrap_Key_Of over X25519_Shared). It is equal to the wrap key of
+         --  the independent reference, from each side of the exchange. It
+         --  is ghost, so the test uses an assertion.
          pragma Assert
            (Kome.Keys.To_Key256 (WK)
             = Wrap_Key_Of (Kome.Crypto.X25519_Shared (Eph_SK, Member_PK),
@@ -443,9 +451,9 @@ procedure Test_Epochs with SPARK_Mode => Off is
                 WK = Wrap_Ref (Member_SK, Box_PK, Box_PK, Member_PK, Member_Sig,
                                NS1, E));
 
-         --  A box that passes the AEAD under the right wrap key but carries
-         --  a nonce that is not the synthetic one is refused (the member's
-         --  nonce check, D6). Without the check it would open.
+         --  This box passes the AEAD under the correct wrap key, but its
+         --  nonce is not the synthetic nonce. The nonce check of the member
+         --  refuses it (D6). Without the check, the box opens.
          declare
             Forged_N : constant Nonce := Pattern (Nonce_Len, 5, 1);
             Forged   : constant Kome.Box := Lock_Ref (WK, Forged_N, NS1, E, K_E);
@@ -461,12 +469,12 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, N, Sealed, Got, St);
       Check ("unbox_round_trip", St = Box_OK and then Got = K_E);
 
-      --  The member derives every older key from its one box (§6).
+      --  The member derives each older key from its one box (§6).
       Check ("member_derives_history",
              Derive (Got, E, 0) = Derive (K_Top, Top, 0)
              and then Derive (Got, E, 17) = Derive (K_Top, Top, 17));
 
-      --  Deterministic (no RNG in SPARK code); a fresh ephemeral secret
+      --  Deterministic (no RNG in SPARK code). A fresh ephemeral secret
       --  gives a fresh box_pk, nonce and box.
       Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, E, K_E, N2, Sealed2, St2);
       Check ("box_deterministic",
@@ -481,20 +489,21 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Check ("unbox_wrong_box_pk_fails",
              St = Not_Authentic and then Got = Zero_Key);
 
-      --  A box to another member differs and opens only for that member.
+      --  A box to a different member is different. It opens only for
+      --  that member.
       Box_Key (Eph_SK, Other_PK, Other_Sig, NS1, E, K_E, N2, Sealed2, St2);
       Check ("box_per_member",
              St2 = Box_OK and then Sealed2 /= Sealed and then N2 /= N);
       Unbox_Key (Other_SK, Other_Sig, Box_PK, NS1, E, N2, Sealed2, Got, St);
       Check ("unbox_other_member", St = Box_OK and then Got = K_E);
 
-      --  sign_pk is bound into the wrap key: the same dh_pk listed with
-      --  another sign_pk gets a different box.
+      --  The wrap key binds sign_pk: the same dh_pk with a different
+      --  sign_pk gets a different box.
       Box_Key (Eph_SK, Member_PK, Other_Sig, NS1, E, K_E, N2, Sealed2, St2);
       Check ("box_binds_sign_pk",
              St2 = Box_OK and then Sealed2 /= Sealed and then N2 /= N);
 
-      --  Wrong inputs fail and leave the zero key.
+      --  Wrong inputs fail and give the zero key.
       Unbox_Key (Other_SK, Member_Sig, Box_PK, NS1, E, N, Sealed, Got, St);
       Check ("unbox_wrong_member_fails",
              St = Not_Authentic and then Got = Zero_Key);
@@ -528,9 +537,9 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Check ("unbox_tamper_every_byte_fails", Ok);
       end;
 
-      --  Low-order peers, all reduced encodings (so the refusal is the
-      --  low-order one, not the encoding's): u = 0, u = 1, the two points
-      --  of order 8 and u = p - 1 (order 2).
+      --  Low-order peers, all with reduced encodings (thus the refusal is
+      --  for the low order, not for the encoding): u = 0, u = 1, the two
+      --  points of order 8 and u = p - 1 (order 2).
       declare
          type Pk_List is array (Positive range <>) of Pubkey;
          Low : constant Pk_List :=
@@ -562,9 +571,9 @@ procedure Test_Epochs with SPARK_Mode => Off is
       end;
 
       --  Non-reduced encodings. Member_PK with bit 255 set is the same
-      --  point (X25519 ignores the bit) and gives the same shared secret,
-      --  but the wrap key hashes the bytes, so a box sealed to it would
-      --  never open for the member. It is refused, as is any u >= p.
+      --  point (X25519 ignores the bit) and gives the same shared secret.
+      --  But the wrap key hashes the bytes. Thus a box sealed to it never
+      --  opens for the member. It is refused. Each u >= p is also refused.
       declare
          Hi_Member : Pubkey := Member_PK;
          Hi_Box    : Pubkey := Box_PK;
@@ -605,8 +614,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Unbox_Key (Member_SK, Member_Sig, P2_Enc, NS1, E, N, Sealed, Got, St);
          Check ("unbox_box_pk_u_ge_p_refused",
                 St = Non_Canonical_Peer and then Got = Zero_Key);
-         --  What Box_Key accepts is what Unbox_Key hashes: the member's own
-         --  public key and box_pk are reduced encodings.
+         --  Box_Key accepts what Unbox_Key hashes: the public key of the
+         --  member and box_pk are reduced encodings.
          Check ("x25519_public_is_reduced",
                 Kome.Epochs.Is_Reduced_U (X25519_Public (Member_SK))
                 and then Kome.Epochs.Is_Reduced_U (X25519_Public (Other_SK))
@@ -657,12 +666,12 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Got        : Key256;
       St         : Box_Status;
    begin
-      --  The attack, reproduced on a construction whose wrap key binds
-      --  neither ns nor the epoch
+      --  The attack, on a construction with a wrap key that does not bind
+      --  ns or the epoch
       --  (wrap_key = BLAKE2b (X25519 (root_sk, dh_pk) ‖ root_pk ‖ dh_pk),
-      --  one caller nonce reused for the member across epochs): a removed
-      --  member who holds k5 XORs the two ciphertexts with k5 and gets k6.
-      --  This shows the test below detects the leak when it exists.
+      --  one caller nonce reused for the member across epochs). A removed
+      --  member that holds k5 XORs the two ciphertexts with k5 and gets k6.
+      --  This shows that the test below finds the leak if it exists.
       declare
          Shared : Shared_Secret;
          Contr  : Boolean;
@@ -680,9 +689,9 @@ procedure Test_Epochs with SPARK_Mode => Off is
                   = Kome.Keys.To_Bytes (K6));
       end;
 
-      --  The same two rosters under the current construction, even with the
-      --  ephemeral secret reused (the worst case): different wrap keys and
-      --  nonces, and the XOR with k5 is not k6.
+      --  The same two rosters under the current construction, also with a
+      --  reused ephemeral secret (the worst case). The wrap keys and nonces
+      --  are different, and the XOR with k5 is not k6.
       Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 5, K5, N5, B5, St5);
       Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 6, K6, N6, B6, St6);
       Box_Key (Eph2_SK, Member_PK, Member_Sig, NS1, 6, K6, N6b, B6b, St6b);
@@ -697,7 +706,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
              and then Xor_Bytes (Xor_Bytes (Cipher_Of (B5), Cipher_Of (B6b)),
                                  Kome.Keys.To_Bytes (K5))
                         /= Kome.Keys.To_Bytes (K6));
-      --  The wrap keys of the two epochs differ (ns and epoch are hashed).
+      --  The wrap keys of the two epochs are different (ns and epoch are
+      --  hashed).
       Check ("wrap_key_covers_epoch",
              Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 5)
              /= Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 6));
@@ -705,16 +715,17 @@ procedure Test_Epochs with SPARK_Mode => Off is
              Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 5)
              /= Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig,
                           (16#6B6F6D65#, 1, 2, 4), 5));
-      --  The epoch-5 box does not open as an epoch-6 box and vice versa.
+      --  The epoch-5 box does not open as an epoch-6 box. The epoch-6 box
+      --  does not open as an epoch-5 box.
       Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, 6, N5, B5, Got, St);
       Check ("box_epoch5_not_open_at_6", St = Not_Authentic and then Got = Zero_Key);
       Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, 6, N6, B6, Got, St);
       Check ("box_epoch6_opens", St = Box_OK and then Got = K6);
 
       --  A reused ephemeral secret (same box_pk) with the same epoch key
-      --  gives identical boxes (the synthetic nonce makes a repeated
-      --  (key, nonce) imply a repeated plaintext), and with a different
-      --  epoch key different nonces.
+      --  gives identical boxes. (With the synthetic nonce, a repeated
+      --  (key, nonce) means a repeated plaintext.) With a different epoch
+      --  key, it gives different nonces.
       declare
          Na, Nb, Nc : Nonce;
          Ba, Bb, Bc : Kome.Box;
@@ -751,7 +762,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
    begin
       Seal_Link (K_S, NS1, S, K_Last_A, N, Sealed);
       --  The Post (N = Synthetic_Nonce (Link_Key (...), K_Prev)) ran under
-      --  -gnata; check it again against the independent recomputation.
+      --  -gnata. Check it again against the independent computation.
       Check ("link_nonce_is_synthetic",
              N = Synthetic_Nonce (Link_Key (K_S, NS1, S), K_Last_A)
              and then N = Nonce_Ref (Kome.Keys.To_Bytes (Link_Key (K_S, NS1, S)),
@@ -760,8 +771,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
              Sealed = Lock_Ref (Kome.Keys.To_Bytes (Link_Key (K_S, NS1, S)), N,
                                 NS1, S, K_Last_A));
 
-      --  A member that holds only k_15 (segment B) reads all history: walk
-      --  down to k_s, open the link, continue in segment A.
+      --  A member that holds only k_15 (segment B) reads all history. It
+      --  walks down to k_s, opens the link and continues in segment A.
       declare
          K15 : constant Key256 := Derive (Other_Key, Top_B, 15);
       begin
@@ -796,8 +807,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Check ("open_link_tamper_every_byte_fails", Ok);
       end;
 
-      --  A link that passes the AEAD under the right link key but carries a
-      --  non-synthetic nonce is refused.
+      --  This link passes the AEAD under the correct link key, but its
+      --  nonce is not synthetic. It is refused.
       declare
          Forged_N : constant Nonce := Pattern (Nonce_Len, 9, 4);
          Forged   : constant Kome.Box :=
@@ -817,7 +828,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Seal_Link (Other_Key, NS1, 1, Zero_Key, N, Sealed);
       Open_Link (Other_Key, NS1, 1, N, Sealed, Got, St);
       Check ("link_round_trip_s_1_zero_key", St = Box_OK and then Got = Zero_Key);
-      --  Deterministic, and the link key differs per segment start.
+      --  Deterministic. Each segment start has a different link key.
       declare
          N2 : Nonce;
          S2 : Kome.Box;

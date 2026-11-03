@@ -1,19 +1,21 @@
-# Kome.Epochs known-answer vectors. Read by tests/test_epochs.adb.
+# Kome.Epochs known-answer vectors. tests/test_epochs.adb reads them.
 # DESIGN.md §6 epoch chain: k_e = BLAKE2b-256 (k_{e+1} || "prev"), so
 # Derive (k, from, to) applies that step (from - to) times.
-# Computed independently of monocypher with Python's hashlib:
+# Python's hashlib computed them, independently of monocypher:
 #   step = lambda k: hashlib.blake2b(k + b'prev', digest_size=32).digest()
 # Format: chain <key at From, 32-byte hex> <From> <To> <key at To, hex>
 #
 # Box and link known answers (DESIGN.md §6 "Boxes (D5, D6)").
-# Generated 2026-11-02 by the independent Python reference reproduced
-# below (Python 3.13.17; hashlib for BLAKE2b; PyNaCl 1.6.2 = libsodium for
-# X25519 and crypto_aead_xchacha20poly1305_ietf; pyca/cryptography 50.0.1
-# over OpenSSL 4.0.2 for X25519 and ChaCha20-Poly1305, under an HChaCha20
-# subkey written from draft-irtf-cfrg-xchacha-03). Each primitive is
-# computed twice by different libraries and the script asserts that they
-# agree. No monocypher code is involved. Labels are ASCII with no
-# terminator, u16 is big-endian:
+# The independent Python reference below made them on 2026-11-02:
+#   Python 3.13.17; hashlib for BLAKE2b;
+#   PyNaCl 1.6.2 = libsodium for X25519 and
+#     crypto_aead_xchacha20poly1305_ietf;
+#   pyca/cryptography 50.0.1 over OpenSSL 4.0.2 for X25519 and
+#     ChaCha20-Poly1305, under an HChaCha20 subkey written from
+#     draft-irtf-cfrg-xchacha-03.
+# Two different libraries compute each primitive, and the script asserts
+# that the two results agree. No monocypher code is used. Labels are ASCII
+# with no terminator, u16 is big-endian:
 #   wrap_key = BLAKE2b-256("kome/wrap" || X25519(eph_sk, dh_pk) || box_pk
 #                          || dh_pk || sign_pk || ns[16] || u16(e))   (155 bytes)
 #   nonce    = BLAKE2b-256("kome/nonce" || wrap_key || k_e)[0:24]
@@ -21,15 +23,16 @@
 #   link_key = BLAKE2b-256("kome/link" || k_s || ns || u16(s))
 #   nonce    = BLAKE2b-256("kome/nonce" || link_key || k_{s-1})[0:24]
 #   link box = XChaCha20-Poly1305(link_key, nonce, AD = ns || u16(s), k_{s-1})
-# The first three box lines are the reviewer's k5/k6 case: the same member
-# at epochs 5 and 6 under one reused eph_sk, then epoch 6 under a fresh one.
+# The first three box lines are the k5/k6 case of the reviewer: the same
+# member at epochs 5 and 6 under one reused eph_sk, then epoch 6 under a
+# fresh eph_sk.
 # Format:
 #   box  <eph_sk> <member_dh_sk> <member_sign_pk> <ns> <e> <k_e> <box_pk>
 #        <member_dh_pk> <wrap_key> <nonce> <box>
 #   link <k_s> <ns> <s> <k_prev> <link_key> <nonce> <box>
 # Reference script (gen_epochs.py, SHA-256
-# bb197e12955a9013f85d550de3f6887415b04d7ad2a97dbb1eac2e28760b45eb), run as
-# `python3 -I gen_epochs.py`; it prints the box and link lines below:
+# bb197e12955a9013f85d550de3f6887415b04d7ad2a97dbb1eac2e28760b45eb). Run it
+# as `python3 -I gen_epochs.py`. It prints the box and link lines below:
 #| # Independent reference for the DESIGN.md §6 box and link constructions.
 #| # BLAKE2b: hashlib. X25519: libsodium (PyNaCl) and pyca/cryptography, which
 #| # must agree. XChaCha20-Poly1305: libsodium (PyNaCl,

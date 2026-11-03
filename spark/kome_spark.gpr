@@ -1,7 +1,8 @@
---  Kome SPARK mirror. Build one test main's closure with
+--  Kome SPARK mirror. To build the closure of one test main, use
 --    gprbuild -p -P kome_spark.gpr tests/test_<module>.adb -XKOME_OBJ=<module>
---  (check.sh does this). KOME_OBJ keeps per-module object dirs apart so
---  several modules can build concurrently without racing on .ali files.
+--  (check.sh does this). KOME_OBJ gives each module its own object
+--  directory. Thus several modules can build at the same time, and they do
+--  not race on .ali files.
 project Kome_Spark is
    for Languages use ("Ada", "C");
    for Source_Dirs use ("src", "tests", "../third_party/monocypher");

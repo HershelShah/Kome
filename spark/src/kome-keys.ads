@@ -1,41 +1,41 @@
---  Kome.Keys: the boundary between wire bytes and the lattice's word
---  records (DESIGN.md §2, CONVENTIONS.md "keys are records of words").
+--  Kome.Keys: the boundary between wire bytes and the word records of the
+--  lattice (DESIGN.md §2, CONVENTIONS.md "keys are records of words").
 --
 --  A 32-byte key or hash (author, h, field hash) and a 16-byte identifier
---  (ns, ent) arrive as bytes; inside the lattice they are Key256 / Id128,
---  records of 32-bit words, big-endian: byte 0 is the most significant
---  byte of W0 and byte 31 the least significant byte of W7. This package
---  is the only place the two views meet, and its contracts say that they
---  are the same value:
+--  (ns, ent) come in as bytes. In the lattice, they are Key256 / Id128:
+--  records of 32-bit words, big-endian. Byte 0 is the most significant
+--  byte of W0, and byte 31 is the least significant byte of W7. This
+--  package is the only place where the two views meet. Its contracts say
+--  that the two views are the same value:
 --
---    * To_Key256 / To_Id128 decode, To_Bytes encodes; each direction's
---      Post states the round trip (bytes -> words -> bytes is the identity
---      elementwise, words -> bytes -> words is the identity).
---    * Lemma_Lt_Is_Lexicographic: Kome.Lt on Key256 is exactly unsigned
---      big-endian byte-lexicographic order on the 32 bytes, the order
---      DESIGN.md §2 gives for `author` and `h` ("compared ... as unsigned
---      256-bit integers"). This is what lets T1 (Version.lt is a strict
---      total order, Frontier.lean) be proved on words while the design
---      states it on bytes. Lemma_Lt_First_Difference states the same thing
+--    * To_Key256 / To_Id128 decode, and To_Bytes encodes. The Post of each
+--      direction states the round trip (bytes -> words -> bytes is the
+--      identity elementwise, words -> bytes -> words is the identity).
+--    * Lemma_Lt_Is_Lexicographic: Kome.Lt on Key256 is exactly the
+--      unsigned big-endian byte-lexicographic order on the 32 bytes.
+--      DESIGN.md §2 gives this order for `author` and `h` ("compared ... as
+--      unsigned 256-bit integers"). Thus gnatprove can prove T1 (Version.lt
+--      is a strict total order, Frontier.lean) on words, while the design
+--      states it on bytes. Lemma_Lt_First_Difference states the same fact
 --      as "the first differing byte decides".
---    * Id_Lt is the same order on Id128, and Lemma_Id_Eq_Is_Bytewise /
+--    * Id_Lt is the same order on Id128. Lemma_Id_Eq_Is_Bytewise /
 --      Lemma_Id_Lt_Is_Lexicographic / Lemma_Id_Lt_First_Difference are the
 --      Id128 versions of the Key256 laws. Lemma_Key_Slide / Lemma_Id_Slide
 --      let a caller apply the laws to a field that is a slice of a larger
 --      buffer.
 --
---  Everything is integer arithmetic on the range type Word (multiply and
---  divide by the constant 256), never shifts on modular words, so the
---  proofs stay in linear integer arithmetic. Every view used in a contract
---  is quantifier-free (CONVENTIONS.md, rule 2): Byte_At and Lex_Lt are
---  expression functions; Word_Of and Byte_Of_Word are functions whose Post
---  is their definition (see the note at their declaration).
---  No state: everything is Global => null.
+--  All code is integer arithmetic on the range type Word (multiply and
+--  divide by the constant 256), never shifts on modular words. Thus the
+--  proofs stay in linear integer arithmetic. Each view in a contract has
+--  no quantifier (CONVENTIONS.md, rule 2). Byte_At and Lex_Lt are
+--  expression functions. Word_Of and Byte_Of_Word are functions whose Post
+--  is their definition (refer to the note at their declaration).
+--  There is no state: all subprograms are Global => null.
 pragma Ada_2022;
 package Kome.Keys with SPARK_Mode, Pure is
 
-   --  Wire widths. DESIGN.md §2: author / sign_pk / h are 32 bytes
-   --  (Pubkey_Len = Hash_Len in Kome), ns / ent are 16 bytes
+   --  Wire widths. DESIGN.md §2: author / sign_pk / h have 32 bytes
+   --  (Pubkey_Len = Hash_Len in Kome), and ns / ent have 16 bytes
    --  (NS_Len = Ent_Len in Kome).
    Key_Len : constant := 32;
    Id_Len  : constant := 16;
@@ -46,24 +46,24 @@ package Kome.Keys with SPARK_Mode, Pure is
    subtype Key_Bytes is Byte_Array (Key_Index);
    subtype Id_Bytes  is Byte_Array (Id_Index);
 
-   --  Byte position inside one big-endian word: 0 is the most significant.
+   --  Byte position in one big-endian word: 0 is the most significant.
    subtype Lane is Natural range 0 .. 3;
 
    ----------------------------------------------------------------------
-   --  One word. Word_Of packs four bytes big-endian; Byte_Of_Word takes
-   --  lane J back out. The divisions are written as repeated division by
-   --  256 (W / 256 / 256 is (W / 256) / 256) so that every step is a
-   --  division by the same constant and the round-trip proofs need no
-   --  fact about nested quotients.
+   --  One word. Word_Of packs four bytes big-endian. Byte_Of_Word extracts
+   --  lane J. The divisions are written as repeated division by 256
+   --  (W / 256 / 256 is (W / 256) / 256). Thus each step is a division by
+   --  the same constant, and the round-trip proofs need no fact about
+   --  nested quotients.
    --
-   --  These two are ordinary functions whose Post is their definition,
-   --  not expression functions, on purpose: an expression function this
-   --  small is inlined into every VC that mentions it, which put 32
-   --  byte <-> integer conversions (int2bv / bv2nat) of nested quotients
-   --  into the ground problem of each conversion's VC and made the
-   --  provers time out on what is pure congruence. As functions with a
-   --  Post the definition is a quantified axiom, used only where the
-   --  arithmetic is the point (the lane lemmas below).
+   --  These two are intentionally ordinary functions whose Post is their
+   --  definition, not expression functions. The prover inlines an
+   --  expression function this small into each VC that mentions it. This
+   --  put 32 byte <-> integer conversions (int2bv / bv2nat) of nested
+   --  quotients into the ground problem of the VC of each conversion. The
+   --  provers then timed out on what is pure congruence. As functions with
+   --  a Post, the definition is a quantified axiom. The prover uses it only
+   --  where the arithmetic is necessary (the lane lemmas below).
    ----------------------------------------------------------------------
 
    function Word_Of (B0, B1, B2, B3 : Byte) return Word
@@ -83,8 +83,8 @@ package Kome.Keys with SPARK_Mode, Pure is
 
    ----------------------------------------------------------------------
    --  Byte I of the big-endian encoding of a key / identifier: lane I mod 4
-   --  of word I / 4, written as a case so that it is quantifier-free and
-   --  free of division on the index.
+   --  of word I / 4. It is written as a case, so that it has no quantifier
+   --  and no division on the index.
    ----------------------------------------------------------------------
 
    function Byte_At (K : Key256; I : Key_Index) return Byte is
@@ -144,12 +144,12 @@ package Kome.Keys with SPARK_Mode, Pure is
      with Global => null;
 
    ----------------------------------------------------------------------
-   --  Conversions. B may have any 'First (a slice of a record buffer);
+   --  Conversions. B can have any 'First (a slice of a record buffer).
    --  B (B'First) is the most significant byte of W0.
-   --  The first conjunct of each decoder's Post is its definition, so a
-   --  caller can compute with it; the second is the round trip
-   --  bytes -> words -> bytes. The encoder's Post gives every byte and the
-   --  round trip words -> bytes -> words.
+   --  The first conjunct of the Post of each decoder is its definition, so
+   --  a caller can compute with it. The second conjunct is the round trip
+   --  bytes -> words -> bytes. The Post of the encoder gives each byte and
+   --  the round trip words -> bytes -> words.
    ----------------------------------------------------------------------
 
    function To_Key256 (B : Byte_Array) return Key256
@@ -191,9 +191,10 @@ package Kome.Keys with SPARK_Mode, Pure is
                   and then To_Id128 (To_Bytes'Result) = K;
 
    ----------------------------------------------------------------------
-   --  Unsigned big-endian byte-lexicographic "A < B" on 32 bytes, spelt
-   --  out byte by byte: the first byte where A and B differ decides, and
-   --  equal arrays are not less. Quantifier-free on purpose.
+   --  Unsigned big-endian byte-lexicographic "A < B" on 32 bytes, written
+   --  out byte by byte. The first byte where A and B differ decides, and
+   --  equal arrays are not less. The function intentionally has no
+   --  quantifier.
    ----------------------------------------------------------------------
 
    function Lex_Lt (A, B : Key_Bytes) return Boolean is
@@ -234,13 +235,15 @@ package Kome.Keys with SPARK_Mode, Pure is
    ----------------------------------------------------------------------
    --  The same two views for 16-byte identifiers (ns, ent).
    --
-   --  Id_Lt is the unsigned big-endian order on Id128, the chain of word
+   --  Id_Lt is the unsigned big-endian order on Id128: the chain of word
    --  comparisons (W0 most significant), exactly as Kome.Lt is on Key256.
-   --  DESIGN.md §8 orders element keys kind ‖ ent ‖ fh ‖ h bytewise;
+   --  DESIGN.md §8 orders element keys kind ‖ ent ‖ fh ‖ h bytewise.
    --  Kome.Reconcile compares the ent part with this function.
-   --  Id_Lex_Lt is the byte-lexicographic order on the 16 bytes, spelt out
-   --  byte by byte (a different name from Lex_Lt because Id_Bytes and
-   --  Key_Bytes are subtypes of one type). Both are quantifier-free.
+   --
+   --  Id_Lex_Lt is the byte-lexicographic order on the 16 bytes, written
+   --  out byte by byte. It has a different name from Lex_Lt because
+   --  Id_Bytes and Key_Bytes are subtypes of one type. The two functions
+   --  have no quantifier.
    ----------------------------------------------------------------------
 
    function Id_Lt (A, B : Id128) return Boolean is
@@ -270,7 +273,7 @@ package Kome.Keys with SPARK_Mode, Pure is
      with Global => null;
 
    ----------------------------------------------------------------------
-   --  Laws (ghost). Each states its law as Post.
+   --  Laws (ghost). Each lemma states its law as its Post.
    ----------------------------------------------------------------------
 
    --  One word: decode (encode W) = W and encode (decode B) = B.
@@ -318,38 +321,39 @@ package Kome.Keys with SPARK_Mode, Pure is
           Post => (for all I in Id_Index =>
                      To_Bytes (To_Id128 (B)) (I) = B (B'First + I));
 
-   --  Decoding is injective: equal keys iff equal bytes.
+   --  The decoder is injective: equal keys iff equal bytes.
    procedure Lemma_Key_Eq_Is_Bytewise (A, B : Key_Bytes)
      with Ghost, Global => null,
           Post => (To_Key256 (A) = To_Key256 (B)) = (A = B);
 
-   --  Kome.Lt on keys is unsigned big-endian byte-lexicographic order on
-   --  their bytes (DESIGN.md §2 "as unsigned 256-bit integers"; the order
-   --  T1 is about, Frontier.lean Version.lt). Quantifier-free form.
+   --  Kome.Lt on keys is the unsigned big-endian byte-lexicographic order
+   --  on their bytes (DESIGN.md §2 "as unsigned 256-bit integers"; this is
+   --  the order of T1, Frontier.lean Version.lt). This is the form without
+   --  quantifiers.
    procedure Lemma_Lt_Is_Lexicographic (A, B : Key_Bytes)
      with Ghost, Global => null,
           Post => Lt (To_Key256 (A), To_Key256 (B)) = Lex_Lt (A, B);
 
-   --  The same law read from the key side: comparing two keys is comparing
-   --  their encodings.
+   --  The same law, read from the key side: a comparison of two keys is a
+   --  comparison of their encodings.
    procedure Lemma_Lex_Of_Encoding (K1, K2 : Key256)
      with Ghost, Global => null,
           Post => Lt (K1, K2) = Lex_Lt (To_Bytes (K1), To_Bytes (K2));
 
    --  The first differing byte decides (the usual statement of
-   --  lexicographic order): if A and B agree before I and differ at I,
-   --  then To_Key256 (A) < To_Key256 (B) exactly when A (I) < B (I).
+   --  lexicographic order). If A and B agree before I and differ at I, then
+   --  To_Key256 (A) < To_Key256 (B) exactly when A (I) < B (I).
    procedure Lemma_Lt_First_Difference (A, B : Key_Bytes; I : Key_Index)
      with Ghost, Global => null,
           Pre  => (for all J in 0 .. I - 1 => A (J) = B (J))
                   and then A (I) /= B (I),
           Post => Lt (To_Key256 (A), To_Key256 (B)) = (A (I) < B (I));
 
-   --  Identifiers: the same three laws. Decoding is injective, Id_Lt is
-   --  byte-lexicographic order on the 16 bytes (read from either side),
+   --  Identifiers: the same three laws. The decoder is injective, Id_Lt is
+   --  the byte-lexicographic order on the 16 bytes (read from either side),
    --  and the first differing byte decides. Kome.Reconcile combines these
-   --  with the Key256 laws above to prove that its element-key order is
-   --  bytewise order on the wire key (§8).
+   --  with the Key256 laws above. Thus it proves that its element-key order
+   --  is the bytewise order on the wire key (§8).
    procedure Lemma_Id_Eq_Is_Bytewise (A, B : Id_Bytes)
      with Ghost, Global => null,
           Post => (To_Id128 (A) = To_Id128 (B)) = (A = B);
@@ -369,9 +373,9 @@ package Kome.Keys with SPARK_Mode, Pure is
           Post => Id_Lt (To_Id128 (A), To_Id128 (B)) = (A (I) < B (I));
 
    --  Slice sliding. A field of a record buffer is a slice B with an
-   --  arbitrary 'First; converting it to Key_Bytes / Id_Bytes slides it to
-   --  'First = 0 without changing a byte, and decodes to the same key. With
-   --  this a caller can apply the laws above (stated on Key_Bytes /
+   --  arbitrary 'First. A conversion of B to Key_Bytes / Id_Bytes slides it
+   --  to 'First = 0, does not change a byte, and decodes to the same key.
+   --  With this, a caller can apply the laws above (stated on Key_Bytes /
    --  Id_Bytes) to To_Key256 / To_Id128 of a slice.
    procedure Lemma_Key_Slide (B : Byte_Array)
      with Ghost, Global => null,

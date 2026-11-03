@@ -1,38 +1,47 @@
---  Test main for Kome.Digest (DESIGN.md §8, D7, D15, T6). (a) Known
---  answers: acc(e) and fp(R) against vectors/digest.txt, computed with
---  Python's hashlib independently of monocypher and of the SPARK code.
---  (b) The empty set, one record, two and three records. (c) Order
---  independence: the same records added in every order give the same
---  state and fingerprint; Lemma_Add_Commute and Lemma_Sum_Swap run on
---  them. (d) Add then remove restores the state; removing from the empty
---  state is refused and changes nothing. (e) Two states holding the same
---  records, reached by different paths (orders, interleaved removals),
---  have the same fingerprint, and Lemma_Fingerprint_Congruent runs on
---  them; the documented contract: removing a non-member or adding twice
---  returns D_OK and yields the state of no set. (f) The digest of a
---  Kome.Frontier state is fp of its held records (data row and
---  authorization rows), and two replicas that applied the same records in
---  different orders, and so hold them in different array orders
---  (checked), have the same digest; Lemma_Frontier_Digest_Perm runs on
---  them with a computed witness. (g) Prefix sums (D15): for lists of 150,
---  127, 64, 40, 1 and 0 elements, every stored block prefix and the total
---  P_end, Range_Sum against the directly computed sum on ranges that
---  cross, end on and span 64-element blocks and end in the tail (r > 32,
---  a one-element range at 127, [1 .. 96] walking back from P_end), the
---  Add and Sub calls Range_Sum reports making on each sampled range
---  against an independently computed cost (1 for [127 .. 127] of 127,
---  31 for [1 .. 96] of 127, 64 for [33 .. 96] of 150; one Sub), and the
---  bound Range_Cost <= 64 on every range of each list. The reported
---  counts are out values: these checks test the body's counters and the
---  formula, not the Add calls actually made (a body that ignored P and
---  set the counts from Range_Cost would pass them; see the spec header,
---  which records that limit). (h) Models: a running state carried
---  through adds, removals and a permutation with the Models lemmas,
---  Is_Perm's intro and elim lemmas, and Lemma_Sum_Perm on a reversed
---  list. (i) Capacity: D_No_Space at |R| = Elem_Max
---  (= Kome.Frontier.Held_Max), with the state unchanged.
---  Every Result is checked. Under -gnata every Pre, Post and lemma Post
---  also runs on these data.
+--  Test main for Kome.Digest (DESIGN.md §8, D7, D15, T6). The test has
+--  these parts:
+--    (a) Known answers: acc(e) and fp(R) against vectors/digest.txt.
+--        Python hashlib computed these, independently of monocypher and of
+--        the SPARK code.
+--    (b) The empty set, one record, two records and three records.
+--    (c) Order independence: the same records, added in each order, give
+--        the same state and fingerprint. Lemma_Add_Commute and
+--        Lemma_Sum_Swap run on them.
+--    (d) Add then remove restores the state. A removal from the empty
+--        state is refused and changes nothing.
+--    (e) Two states that hold the same records, reached through different
+--        paths (orders, interleaved removals), have the same fingerprint.
+--        Lemma_Fingerprint_Congruent runs on them. Also the documented
+--        contract: the removal of a non-member, or a second add, returns
+--        D_OK and gives a state that is not the state of any set.
+--    (f) The digest of a Kome.Frontier state is fp of its held records
+--        (data row and authorization rows). Two replicas that applied the
+--        same records in different orders hold them in different array
+--        orders (checked), and they have the same digest.
+--        Lemma_Frontier_Digest_Perm runs on them with a computed witness.
+--    (g) Prefix sums (D15), for lists of 150, 127, 64, 40, 1 and 0
+--        elements:
+--          * each stored block prefix and the total P_end;
+--          * Range_Sum against the directly computed sum, on ranges that
+--            cross, end on and span 64-element blocks and end in the tail
+--            (r > 32, a one-element range at 127, [1 .. 96] that walks
+--            back from P_end);
+--          * the Add and Sub calls that Range_Sum reports on each sampled
+--            range, against an independently computed cost (1 for
+--            [127 .. 127] of 127, 31 for [1 .. 96] of 127, 64 for
+--            [33 .. 96] of 150; one Sub);
+--          * the bound Range_Cost <= 64 on each range of each list.
+--        The reported counts are out values. Thus these checks test the
+--        counters of the body and the formula, not the Add calls actually
+--        made. A body that ignored P and set the counts from Range_Cost
+--        would pass them (the spec header records this limit).
+--    (h) Models: a running state carried through adds, removals and a
+--        permutation with the Models lemmas, the intro and elim lemmas of
+--        Is_Perm, and Lemma_Sum_Perm on a reversed list.
+--    (i) Capacity: D_No_Space at |R| = Elem_Max
+--        (= Kome.Frontier.Held_Max), and the state does not change.
+--  The test checks each Result. Under -gnata, each Pre, Post and lemma
+--  Post also runs on these data.
 pragma Ada_2022;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line;  use Ada.Command_Line;
@@ -99,7 +108,7 @@ procedure Test_Digest with SPARK_Mode => Off is
      (Count (A) = Count (B) and then Sum (A) = Sum (B)
       and then Fingerprint (A) = Fingerprint (B));
 
-   --  Distinct, unstructured element hashes.
+   --  Different, unstructured element hashes.
    function H (N : Natural) return Key256 is
       X : Word :=
         Word ((Long_Long_Integer (N) * 2_654_435_761 + 12_345) mod 2**32);
@@ -291,12 +300,12 @@ procedure Test_Digest with SPARK_Mode => Off is
          Check ("three_records_sum_is_sum_of_accs",
                 Sum (Ref) = Add (Add (Elem_Acc (A), Elem_Acc (B)),
                                  Elem_Acc (C)));
-         --  Every adjacent swap, through the lemma.
+         --  Each adjacent swap, through the lemma.
          Lemma_Sum_Swap (Orders (1), Orders (3), 1);
          Lemma_Sum_Swap (Orders (1), Orders (2), 2);
          Lemma_Sum_Swap (Orders (4), Orders (6), 1);
          Check ("lemma_sum_swap_runs", True);
-         --  Split: ACC (A, B, C) = ACC (A) + ACC (B, C), and every split.
+         --  Split: ACC (A, B, C) = ACC (A) + ACC (B, C), and each split.
          for Mid in 0 .. 3 loop
             Lemma_Sum_Split (Orders (1), 1, Mid, 3);
          end loop;
@@ -346,7 +355,7 @@ procedure Test_Digest with SPARK_Mode => Off is
                       Fold ([A])));
       end;
 
-      --  (e) Same records by different paths.
+      --  (e) The same records through different paths.
       declare
          P1 : Digest_State := Fold ([A, B, C]);
          P2 : Digest_State := Fold ([C, H (99), A]);
@@ -366,10 +375,11 @@ procedure Test_Digest with SPARK_Mode => Off is
                 and then Fingerprint (P1) /= Fingerprint (P2));
       end;
 
-      --  The documented contract (header): the state does not hold R, so
-      --  removing a non-member, or adding a member twice, returns D_OK and
-      --  applies the arithmetic; the result is the state of no set. Only
-      --  the caller's Models discipline guards against it.
+      --  The documented contract (header): the state does not hold R. Thus
+      --  the removal of a non-member, or a second add of a member, returns
+      --  D_OK and applies the arithmetic. The result is not the state of
+      --  any set. Only the Models discipline of the caller guards against
+      --  this.
       declare
          P3 : Digest_State := Fold ([A]);
       begin
@@ -406,8 +416,8 @@ procedure Test_Digest with SPARK_Mode => Off is
          V => (T => T, Author => K (A), Seq => 1, H => H (Hh)),
          Issuer => Zero_Key, Del_TTL => 0);
 
-      --  The founding key's roster (V = (ceiling_t, signer, gen, h)) and
-      --  its GRANTs (V = (0, subject, 0, h)) to the two writers.
+      --  The roster of the founding key (V = (ceiling_t, signer, gen, h))
+      --  and its GRANTs (V = (0, subject, 0, h)) to the two writers.
       Roster : constant Header :=
         (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
          V => (T => 100, Author => K (Fnd), Seq => 1, H => H (500)),
@@ -431,11 +441,11 @@ procedure Test_Digest with SPARK_Mode => Off is
    begin
       Check ("frontier_empty_digest_is_empty_fp",
              Frontier_Digest (Z) = Fingerprint (Kome.Digest.Empty));
-      --  Both replicas take the roster and the grants first (so the
-      --  records are admissible), then the same four records: X in order,
-      --  Y in reverse. In Y, Recs (1) arrives after Recs (3), which beats
-      --  it on cell (1, 1), so it is Dominated; in X it is held and then
-      --  dropped.
+      --  The two replicas first take the roster and the grants (so that
+      --  the records are admissible). Then they take the same four records:
+      --  X in order, Y in reverse order. In Y, Recs (1) comes after
+      --  Recs (3), which beats it on cell (1, 1), so it is Dominated. In X,
+      --  it is held and then dropped.
       for I in Auth'Range loop
          Apply (X, Auth (I), St);
          Check ("frontier_x_auth" & I'Image & "_ok", St = OK);
@@ -471,7 +481,7 @@ procedure Test_Digest with SPARK_Mode => Off is
          Lemma_State_Of_Models (X, L);
          Check ("frontier_lemmas_run", True);
       end;
-      --  The witness: M (I) is where Y holds X's I-th hash.
+      --  The witness: M (I) is where Y holds the I-th hash of X.
       declare
          N  : constant Natural := Kome.Frontier.Count (X);
          M  : Index_Map (1 .. N) := [others => 1];
@@ -514,10 +524,11 @@ procedure Test_Digest with SPARK_Mode => Off is
    function Direct (L : Hash_Array; Lo, Hi : Natural) return Acc is
      (if Hi < Lo then Zero else Sum (Digest_Of (L (Lo .. Hi))));
 
-   --  The Add calls an end X of an N-element list should cost, computed
-   --  here independently of the spec's formula: X's distance to the block
-   --  boundary below it, or to the stored point above it (the next block
-   --  boundary, or N where P_end is stored), whichever is nearer.
+   --  The expected number of Add calls for an end X of an N-element list,
+   --  computed here independently of the formula of the spec. It is the
+   --  distance from X to the block boundary below it, or to the stored
+   --  point above it (the next block boundary, or N where P_end is
+   --  stored). The nearer of the two applies.
    function End_Cost (X, N : Natural) return Natural is
       R  : constant Natural := X mod 64;
       Up : constant Natural :=
@@ -537,12 +548,12 @@ procedure Test_Digest with SPARK_Mode => Off is
       Adds := A;
    end Run_Range;
 
-   --  Build the prefix array of an N-element list (the tail after the
-   --  last full block included), check every stored entry and the total,
-   --  and check Range_Sum against the direct sum on each range, and the
-   --  Add and Sub calls it reports making on each range against the
-   --  independently computed cost (End_Cost at both ends, one Sub); and
-   --  the formula Range_Cost on every range of the list.
+   --  Build the prefix array of an N-element list (with the tail after the
+   --  last full block), and check each stored entry and the total. Check
+   --  Range_Sum against the direct sum on each range. Check the Add and
+   --  Sub calls that it reports on each range against the independently
+   --  computed cost (End_Cost at both ends, one Sub). Check the formula
+   --  Range_Cost on each range of the list.
    procedure Prefix_List (N : Natural; Ranges : Pair_Array; Tag : String) is
       L  : Hash_Array (1 .. N);
       P  : Acc_Array (1 .. N / Block_Elems + 1);
@@ -589,8 +600,8 @@ procedure Test_Digest with SPARK_Mode => Off is
              & " ranges)", Ok);
       Check (Tag & "_range_sum_counted_adds_and_one_sub (" &
              Ranges'Length'Image & " ranges)", Cost_Ok);
-      --  The bound holds for every range, not only the sampled ones, and
-      --  each end walks at most 32 terms.
+      --  The bound is true for each range, not only for the sampled
+      --  ranges, and each end walks at most 32 terms.
       Ok := True;
       for A in 0 .. N loop
          Ok := Ok and then Walk_Len (A, N) <= 32
@@ -609,11 +620,11 @@ procedure Test_Digest with SPARK_Mode => Off is
       R150 : constant Pair_Array :=
         [(1, 0), (1, 150), (5, 5), (60, 70), (64, 64), (65, 128), (1, 64),
          (100, 150), (130, 150), (129, 128), (2, 127), (151, 150),
-         --  Ends with r > 32 below a stored block: walk back.
+         --  Ends with r > 32 below a stored block: they walk back.
          (40, 120), (97, 127), (34, 96), (33, 33), (35, 100), (98, 99),
          --  Ends in the tail: back from P_end, forward from P (2).
          (140, 150), (150, 150), (129, 140), (1, 141), (141, 149)];
-      --  127 elements: one full block and a 63-element tail, so every end
+      --  127 elements: one full block and a 63-element tail, so each end
       --  above 64 is in the tail.
       R127 : constant Pair_Array :=
         [(127, 127),   --  one element at the end
@@ -650,9 +661,10 @@ procedure Test_Digest with SPARK_Mode => Off is
              and then Walk_Len (110, 127) = 17);
       Check ("n150_worst_case_64",
              Range_Cost (32, 96, 150) = 64);
-      --  The counts Range_Sum reports making (not only the formula):
+      --  The counts that Range_Sum reports (not only the formula):
       --  [127 .. 127] of 127 costs 1 Add, [1 .. 96] of 127 walks back 31
-      --  from P_end, [33 .. 96] of 150 is the worst case 64; one Sub each.
+      --  terms from P_end, and [33 .. 96] of 150 is the worst case, 64.
+      --  Each range costs one Sub.
       declare
          L127 : Hash_Array (1 .. 127);
          P127 : Acc_Array (1 .. 2);
@@ -681,7 +693,7 @@ procedure Test_Digest with SPARK_Mode => Off is
          Check ("n150_33_96_counted_64_adds_1_sub",
                 Adds = 64 and then Subs = 1
                 and then Got = Direct (L, 33, 96));
-         --  A range's fingerprint is fp of its records.
+         --  The fingerprint of a range is fp of its records.
          Run_Range (L, P, 61, 100, Got, Adds, Subs);
          Check ("range_fp_is_fp_of_records",
                 Fp (40, Got) = Fingerprint (Digest_Of (L (61 .. 100)))
@@ -717,7 +729,7 @@ procedure Test_Digest with SPARK_Mode => Off is
       Check ("models_after_adds", Count (S) = 5
              and then Same (S, Digest_Of (L (1 .. 5))));
       Lemma_Digest_Of_Models (L (1 .. 5));
-      --  Remove the member at index 2, shifting the rest down.
+      --  Remove the member at index 2, and shift the rest down.
       L0 := L;
       for I in 2 .. 4 loop
          L (I) := L0 (I + 1);
@@ -739,7 +751,8 @@ procedure Test_Digest with SPARK_Mode => Off is
          end loop;
          Lemma_Is_Perm_Intro (L, P, M, 4);
          Lemma_Is_Perm_Elim (L, P, M, 4);
-         --  Is_Perm is ghost: asserted (a failure is reported by Runner).
+         --  Is_Perm is ghost, so the test asserts it (Runner reports a
+         --  failure).
          pragma Assert (Is_Perm (L, P, M, 4));
          pragma Assert (not Is_Perm (L, P, [1, 1, 3, 4, 5, 6, 7, 8], 4));
          Check ("is_perm_reverse_and_rejects_non_injective", True);
@@ -765,7 +778,8 @@ procedure Test_Digest with SPARK_Mode => Off is
       Check ("perm_reverse_same_digest",
              Same (Digest_Of (Fwd), Digest_Of (Rev)));
       Check ("delete_lemmas_run", True);
-      --  Wire form of the fp input, and Kome.Accumulator's congruences.
+      --  Wire form of the fp input, and the congruences of
+      --  Kome.Accumulator.
       Lemma_Fp_Input_Acc (3, Sum (Digest_Of (Fwd)));
       Lemma_Add_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));
       Lemma_Sub_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));
@@ -778,9 +792,9 @@ procedure Test_Digest with SPARK_Mode => Off is
    --  (i) Capacity: D_No_Space at |R| = Elem_Max
    ---------------------------------------------------------------------------
 
-   --  Reaching |R| = Elem_Max (2^20) by adds would take over an hour
-   --  under -gnata (about 5 ms per Add_Record, measured), so the full
-   --  state is restored from its count and sum.
+   --  To get to |R| = Elem_Max (2^20) by adds would take more than an
+   --  hour under -gnata (about 5 ms for each Add_Record, measured). Thus
+   --  the test restores the full state from its count and sum.
    procedure Capacity is
       A    : constant Key256 := H (1);
       B    : constant Key256 := H (2);
@@ -808,7 +822,7 @@ procedure Test_Digest with SPARK_Mode => Off is
       Add_Record (S, B, R);
       Check ("add_past_elem_max_again_no_space",
              R = D_No_Space and then Same (S, Full));
-      --  Just below the bound one more fits.
+      --  Just below the bound, one more record fits.
       S := Restore (Elem_Max - 1, Zero);
       Add_Record (S, A, R);
       Check ("add_at_elem_max_minus_1_ok",
@@ -832,10 +846,10 @@ procedure Test_Digest with SPARK_Mode => Off is
    end Run_All;
 
 begin
-   --  A Kome.Frontier.State carries a register file of Writers_Max keys,
-   --  and under -gnata every Post evaluation copies states, so the checks
-   --  run in a task with a large stack (as in test_frontier). The block
-   --  waits for the task.
+   --  A Kome.Frontier.State carries a register file of Writers_Max keys.
+   --  Under -gnata, each Post evaluation copies states. Thus the checks run
+   --  in a task with a large stack (as in test_frontier). The block waits
+   --  for the task.
    declare
       task Runner with Storage_Size => 512 * 1024 * 1024;
 
