@@ -4,10 +4,10 @@
 --  2**48 - 1); truncated, oversized, mistagged and out-of-bound frames are
 --  refused with the record unchanged; a tampered signature, content byte
 --  or ns is refused by Well_Formed. The signer block (D1): an outsider-
---  signed ROSTER, REVOKE or GRANT is Malformed (the review blocker,
---  reproduced), a certified root's records are well-formed and its roster
---  above cert_cap is not, a certificate for another ns or cap is refused,
---  a nonzero block for the founding key is refused, and a REVOKE of
+--  signed ROSTER, REVOKE or GRANT is Malformed, a certified root's records
+--  are well-formed and its roster above cert_cap is not, a certificate for
+--  another ns or cap is refused, a nonzero block for the founding key is
+--  refused, and a REVOKE of
 --  root_pk is refused. E5: del_ttl outside the clamp and a dh_pk or box_pk
 --  that is p or low order are Malformed. D12: vlen 40 960 decodes and
 --  40 961 is refused. The header fields are as DESIGN.md §3 /
@@ -410,9 +410,7 @@ begin
    end;
 
    --  D12: vlen 40 960 is a value; 40 961 is refused even when the length
-   --  agrees (a 1-byte field leaves room in Put_Frame_Max for it). Before
-   --  the vlen bound, Is_Put_Frame accepted this frame and Parse_Put's
-   --  Value_Len conversion failed.
+   --  agrees (a 1-byte field leaves room in Put_Frame_Max for it).
    declare
       V  : Put_Record := Make_Put (NS_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
       R2 : Put_Record;
@@ -552,12 +550,12 @@ begin
             Check ("DEL tampered author: Decode_Verified refuses, record unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (0) := 2;   --  the old DEL tag, now GRANT
+            Bad (0) := 2;   --  Tag_Grant on a DEL frame
             Decode (Bad, Back, St);
             Check ("DEL frame with the old DEL tag 2 refused",
                    St = Malformed and then Back = Keep);
          end;
-         --  A DEL frame is not a PUT frame and vice versa.
+         --  A DEL frame is not a PUT frame.
          declare
             P  : Put_Record;
             P0 : Put_Record;
@@ -742,7 +740,7 @@ begin
    end;
 
    ---------------------------------------------------------------------------
-   --  ROSTER signer admission (D1): the review blocker, reproduced.
+   --  ROSTER signer admission (D1).
    ---------------------------------------------------------------------------
    declare
       Mem  : constant Byte_Array := Members_Of (2, 33);
@@ -772,7 +770,7 @@ begin
       X : Roster_Record;
    begin
       --  An outsider signs a roster raising the ceiling to 2^48 - 1 and
-      --  names itself as signer: it used to pass Decode_Verified.
+      --  names itself as signer, with a zero signer block.
       X := R (Author_PK, 0, Zero_Sig, Max_U48);
       St := Verdict (X, Author_SK);
       Check ("ROSTER outsider-signed (zero cert), ceiling 2^48-1: Malformed",

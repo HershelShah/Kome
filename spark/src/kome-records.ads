@@ -79,8 +79,8 @@
 --  and Decode, the Make_* constructors and Sign only ever produce canonical
 --  records. (The record types stay public so that tests can build
 --  malformed records; Hash and To_Header read only the used bytes.)
---  Canonical is quantified, so it is opaque here (CONVENTIONS.md rule 2);
---  clients get it from Parse_*, Make_* and Sign Posts.
+--  Canonical is quantified, so it is completed in the private part
+--  (CONVENTIONS.md rule 2); clients use the Parse_*, Make_* and Sign Posts.
 pragma Ada_2022;
 with Kome.Headers;  use Kome.Headers;
 with Kome.Keys;     use Kome.Keys;
@@ -304,7 +304,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       else R.Signature (J - Content_Len (R.C)))
      with Pre => J < Frame_Len (R);
 
-   --  Unused field and value bytes are zero. Opaque (quantified).
+   --  Unused field and value bytes are zero. Quantified, so completed in
+   --  the private part.
    function Canonical (R : Put_Record) return Boolean with Global => null;
 
    --  A canonical PUT with a zero signature (sign it with Sign).
@@ -749,9 +750,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      with Pre => J < Frame_Len (R);
 
    --  Link I's parts (E3: link {from_epoch, nonce, box}) and member I's
-   --  parts. The nonce, box and key accessors are opaque (each is a
-   --  quantified aggregate, CONVENTIONS.md rule 2); their bytes are
-   --  Lemma_Link_Bytes and Lemma_Member_Bytes.
+   --  parts. The nonce, box and key accessors are completed in the private
+   --  part (each is a quantified aggregate, CONVENTIONS.md rule 2); their
+   --  bytes are Lemma_Link_Bytes and Lemma_Member_Bytes.
    function Link_From_Epoch (C : Roster_Content; I : Link_Index) return Epoch is
      (Epoch (U16_Of (C.Links (Link_Len * (I - 1)), C.Links (Link_Len * (I - 1) + 1))))
      with Pre => I <= C.N_Links;
@@ -806,9 +807,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    --  E5 (DESIGN.md §2 item 3): box_pk and every member dh_pk is a reduced
    --  X25519 encoding and not low order (Kome.Crypto.Is_Good_DH_Key), so
-   --  every listed member can open its box. Opaque (quantified); its
-   --  meaning is Lemma_DH_Keys_OK_Def, and Lemma_DH_Box_OK /
-   --  Lemma_DH_Keys_OK give it one key at a time.
+   --  every listed member can open its box. Quantified, so completed in
+   --  the private part; its meaning is Lemma_DH_Keys_OK_Def, and
+   --  Lemma_DH_Box_OK / Lemma_DH_Keys_OK give it one key at a time.
    function DH_Keys_OK (C : Roster_Content) return Boolean with Global => null;
 
    procedure Lemma_DH_Keys_OK_Def (C : Roster_Content) with
@@ -828,7 +829,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      Pre  => DH_Keys_OK (C) and then I <= C.N_Members,
      Post => Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I));
 
-   --  Unused link and member bytes are zero. Opaque (quantified).
+   --  Unused link and member bytes are zero. Quantified, so completed in
+   --  the private part.
    function Canonical (R : Roster_Record) return Boolean with Global => null;
 
    --  A canonical ROSTER with ns derived from (root_pk, salt) and a zero
@@ -1416,8 +1418,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                                    To_Key256 (Parse_Grant (Frame).C.Root_PK));
 
    --  Some member of the ROSTER frame has dh_pk = DH (the credential HELLO
-   --  of DESIGN.md §8 must list the sender's Noise key). Opaque
-   --  (quantified); its meaning is Lemma_Roster_Lists_DH.
+   --  of DESIGN.md §8 must list the sender's Noise key). Quantified, so
+   --  completed in the private part; its meaning is Lemma_Roster_Lists_DH.
    function Roster_Lists_DH (Frame : Byte_Array; DH : Pubkey) return Boolean
      with Global => null, Pre => Is_Roster_Frame (Frame);
 

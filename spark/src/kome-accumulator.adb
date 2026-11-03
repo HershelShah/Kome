@@ -246,8 +246,10 @@ package body Kome.Accumulator with SPARK_Mode is
    begin
       for I in Limb_Index loop
          declare
-            S     : constant Wide :=
-              Wide (A (I)) + Limb_Base - Wide (B (I)) - C;
+            --  Two steps, each obviously in range: D in 1 .. Limb_Base,
+            --  then S in 0 .. 2 * Limb_Base - 1.
+            D     : constant Wide := Limb_Base - Wide (B (I));
+            S     : constant Wide := Wide (A (I)) + D - C;
             V     : U64;
             C_Old : constant Bit := C with Ghost;
          begin

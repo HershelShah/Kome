@@ -1,5 +1,5 @@
 --  Test main for Kome.Versions: the order is lexicographic on
---  (t, author, seq, h) with byte strings as unsigned big-endian integers;
+--  (t, author, seq, h) with keys as unsigned big-endian integers;
 --  the ghost lemmas are evaluated at run time (-gnata) on a grid of values.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;

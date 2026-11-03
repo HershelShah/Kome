@@ -545,9 +545,6 @@ package body Kome.Digest with SPARK_Mode is
       else Add (Frontier_Sum (F, K - 1),
                 Elem_Acc (Kome.Frontier.Held (F, K).V.H)));
 
-   procedure Lemma_Frontier_Sum_Step (F : Kome.Frontier.State; K : Elem_Count)
-   is null;
-
    function State_Of (F : Kome.Frontier.State) return Digest_State is
       --  Proved; at run time only the Post is evaluated (see Digest_Of).
       pragma Assertion_Policy

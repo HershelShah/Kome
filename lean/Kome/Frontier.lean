@@ -43,7 +43,18 @@ theorem uses only decidable equality and, for versions, a total order.
 
 Theorem numbers refer to DESIGN.md §9.
 -/
-import Kome.LWW
+namespace Kome
+
+/-- A strict total order with a decidable comparison (T1 instantiates it for
+versions). -/
+class StrictTotal (α : Type) where
+  lt : α → α → Prop
+  dec : ∀ a b, Decidable (lt a b)
+  irrefl : ∀ a, ¬ lt a a
+  trans : ∀ {a b c}, lt a b → lt b c → lt a c
+  trichotomy : ∀ a b, lt a b ∨ a = b ∨ lt b a
+
+end Kome
 
 namespace Kome.Frontier
 

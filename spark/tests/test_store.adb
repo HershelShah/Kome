@@ -18,11 +18,12 @@
 --  on its own (index = F); and replay (T18): after a roster refresh, a
 --  dominated-on-arrival roster and a stale incomparable roster, a member
 --  revoke, a GRANT that arrives after a PUT it admits, a clock stepped back
---  and a stale PUT, and the former "wedge", reopening from the log gives
---  the same held set (Holds both ways), the same index entries up to order,
---  the same Kome.Digest.Frontier_Digest and a horizon at most the live one,
---  and its log is the input byte for byte. Reopening with smaller
---  capacities is refused (No_Space); a corrupt log is Malformed.
+--  and a stale PUT, and a data row full of DELs that expire, reopening
+--  from the log gives the same held set (Holds both ways), the same index
+--  entries up to order, the same Kome.Digest.Frontier_Digest and a horizon
+--  at most the live one, and its log is the input byte for byte.
+--  Reopening with smaller capacities is refused (No_Space); a corrupt log
+--  is Malformed.
 --  Compiled with -gnata, so every Pre / Post (Valid included) and every
 --  ghost lemma is also executed on these stores.
 pragma Ada_2022;
@@ -760,9 +761,13 @@ procedure Test_Store with SPARK_Mode => Off is
          Check ("a horizon below 0 is none, logged as 2**48 - 1",
                 St = OK and then Horizon (S) = No_Horizon
                 and then Code_At (S, Log_Length (S) - 6) = No_Horizon_Code);
-         Exp (S, SL, 40 * Day);
-         Check ("and raised again (33 d) without removing anything: not logged",
-                Horizon (S) = Time64 (33 * Day) and then Log_Entries (S) > 0);
+         declare
+            L1 : constant Log_Size := Log_Length (S);
+         begin
+            Exp (S, SL, 40 * Day);
+            Check ("and raised again (33 d) without removing anything: not logged",
+                   Horizon (S) = Time64 (33 * Day) and then Log_Length (S) = L1);
+         end;
       end;
 
       --  Expire's No_Space: a full log refuses an EXPIRE it must write.
@@ -911,8 +916,8 @@ procedure Test_Store with SPARK_Mode => Off is
          Open_From_Log (Img (0 .. Header_Len - 1), RL, R, St);
          Check ("a log that is only the HEADER: OK, empty",
                 St = OK and then Kome.Frontier.Count (RL) = 0 and then Entries (R) = 0);
-         --  The completeness clause of Open_From_Log's Post (a reviewer's
-         --  mutant that refused every log still proved before it).
+         --  The completeness clause of Open_From_Log's Post (without it, a
+         --  replay that refused every log would meet the contract).
          Open_From_Log (Img (0 .. Header_Len - 1), RLb, Rb, St);
          Check ("only the HEADER, larger capacities: OK, empty, the new capacities logged",
                 St = OK and then Kome.Frontier.Count (RLb) = 0 and then Entries (Rb) = 0
@@ -1071,7 +1076,8 @@ procedure Test_Store with SPARK_Mode => Off is
    end;
 
    ---------------------------------------------------------------------------
-   --  The former wedge: expired DELs leave F, so the frontier does not fill.
+   --  A data row full of DELs (the "wedge"): expired DELs leave F, so the
+   --  frontier does not stay full.
    ---------------------------------------------------------------------------
    declare
       W   : Store_T (4 + Signers_Max * Slice, LCap);
@@ -1105,10 +1111,10 @@ procedure Test_Store with SPARK_Mode => Off is
       end;
    end;
 
-   --  T18 with raised capacities (review round 1, probe P1): a log of
-   --  data_cap 4 reopened with data_cap 8, then given more data records
-   --  than 4. Its HEADER records 8, so it is refused at 4 (No_Space, not a
-   --  silent loss) and replays at 8, uncompacted and compacted.
+   --  T18 with raised capacities: a log of data_cap 4 reopened with
+   --  data_cap 8, then given more data records than 4. Its HEADER records
+   --  8, so it is refused at 4 (No_Space, not a silent loss) and replays
+   --  at 8, uncompacted and compacted.
    declare
       S4  : Store_T (4 + Signers_Max * Slice, LCap);
       L4  : Lattice (4, Slice);
@@ -1148,7 +1154,7 @@ procedure Test_Store with SPARK_Mode => Off is
 
    --  Expire lowering the horizon on a full log: No_Space, nothing
    --  changed; Compact with no room for the EXPIRE keeps the horizon in
-   --  memory only, and the reopened horizon is none (probes P2, P3).
+   --  memory only, and the reopened horizon is none.
    declare
       R1   : constant Byte_Array := Founding_Roster (1, 100 * Day);
       G1   : constant Byte_Array := Founding_Grant (Author_PK);
@@ -1191,7 +1197,7 @@ procedure Test_Store with SPARK_Mode => Off is
    end;
 
    --  Compact, then more operations (an APPLY_EXPIRED, a lowered EXPIRE, a
-   --  re-held DEL), then reopen (probe P4).
+   --  re-held DEL), then reopen.
    declare
       S   : Store_T (ICap, LCap);
       SL  : Lattice (Cap, Slice);

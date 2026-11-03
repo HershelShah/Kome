@@ -57,9 +57,8 @@
 --  nothing changes, so OK and Shadowed imply the emitted record is admitted
 --  (DESIGN.md §4). Tgt.NS must be the state's collection (Pre).
 --
---  t_emit is DESIGN.md §5's formula exactly (Lemma_T_Emit_Formula). An
---  earlier brief refused at floor.t + 1 = 2^48; DESIGN.md §5 is the
---  specification and has no such refusal: when floor.t >= maxceil the
+--  t_emit is DESIGN.md §5's formula exactly (Lemma_T_Emit_Formula), and
+--  there is no refusal at floor.t + 1 = 2^48: when floor.t >= maxceil the
 --  result is maxceil and floor.t + 1 is never formed, so floor.t = 2^48 - 1
 --  is an ordinary write at the ceiling (Shadowed unless it wins the tie on
 --  author/seq). No wrap anywhere (T13): a seq that would pass 2^48 - 1
@@ -71,12 +70,13 @@
 --  real-time clock: every write then chases), the device key and the
 --  persisted seq_self(ns).
 --
---  The floor is computed by scanning the held records through
---  Kome.Frontier's public view (Count, Held); only data records can be In_Floor,
---  so it reads only data records, and it is a function of F (T5). It needs
---  no Is_Frontier hypothesis: on any held array it is the maximum of the
---  relevant versions. On a frontier it is admitted, so it is never above
---  the ceiling (Lemma_Floor_Admitted).
+--  Floor scans every held record through Kome.Frontier's public view
+--  (Count, Held) and keeps the largest version among those In_Floor. Only
+--  data records satisfy In_Floor, so only their versions count, and the
+--  result is a function of F (T5). It needs no Is_Frontier hypothesis: on
+--  any held array it is the maximum of the In_Floor versions. On a frontier
+--  the record it comes from is admitted, so the floor is never above the
+--  ceiling (Lemma_Floor_Admitted).
 --
 --  The loops that only carry proofs live in ghost lemmas, so they are not
 --  executed outside -gnata.
@@ -91,10 +91,8 @@ with Kome.Registers; use Kome.Registers;
 with Kome.Frontier;  use Kome.Frontier;
 package Kome.Emit with SPARK_Mode is
 
-   --  The all-zero version: what an absent floor carries. A function with a
-   --  name of its own (not No_Version), so it neither clashes with
-   --  Kome.Views.No_Version under `use` nor needs a shared constant in
-   --  Kome.Versions.
+   --  The all-zero version: what an absent floor carries. A function, not a
+   --  constant named No_Version (see the header).
    function Zero_Version return Version is
      ((T => 0, Author => (others => 0), Seq => 0, H => (others => 0)));
 

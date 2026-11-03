@@ -19,8 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
       - name: Build every theorem
         run: ./lean/build.sh
 
@@ -50,7 +48,5 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
       - name: Build, run the tests, prove
         run: ./spark/check.sh ${{ matrix.module }}

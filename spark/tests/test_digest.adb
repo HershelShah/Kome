@@ -26,11 +26,11 @@
 --  counts are out values: these checks test the body's counters and the
 --  formula, not the Add calls actually made (a body that ignored P and
 --  set the counts from Range_Cost would pass them; see the spec header,
---  which records that limit). (h)
---  Models: a running state carried through adds, removals and a
---  permutation with the Models lemmas, Is_Perm's intro and elim lemmas,
---  and Lemma_Sum_Perm on a reversed list. (i) Capacity: D_No_Space at
---  |R| = Elem_Max (= Kome.Frontier.Held_Max), with the state unchanged.
+--  which records that limit). (h) Models: a running state carried
+--  through adds, removals and a permutation with the Models lemmas,
+--  Is_Perm's intro and elim lemmas, and Lemma_Sum_Perm on a reversed
+--  list. (i) Capacity: D_No_Space at |R| = Elem_Max
+--  (= Kome.Frontier.Held_Max), with the state unchanged.
 --  Every Result is checked. Under -gnata every Pre, Post and lemma Post
 --  also runs on these data.
 pragma Ada_2022;
@@ -616,7 +616,7 @@ procedure Test_Digest with SPARK_Mode => Off is
       --  127 elements: one full block and a 63-element tail, so every end
       --  above 64 is in the tail.
       R127 : constant Pair_Array :=
-        [(127, 127),   --  the reported case: one element at the end
+        [(127, 127),   --  one element at the end
          (1, 96),      --  b = 96 walks back 31 terms from P_end
          (1, 127), (1, 0), (128, 127), (65, 127), (100, 127), (98, 126),
          (66, 96), (97, 97), (96, 98), (70, 110), (2, 63), (33, 64),
@@ -635,9 +635,9 @@ procedure Test_Digest with SPARK_Mode => Off is
       Prefix_List (40, R40, "n40");
       Prefix_List (1, R1, "n1");
       Prefix_List (0, R0, "n0");
-      --  The reported failure: a one-element range at the end of a
-      --  127-element list cost 125 additions; it now walks 1 term (a =
-      --  126, back from P_end) plus 0 (b = 127 is P_end).
+      --  A one-element range at the end of a 127-element list walks 1
+      --  term (a = 126, back from P_end) plus 0 (b = 127 is P_end), not
+      --  the 125 terms of two forward walks from the block boundary at 64.
       Check ("n127_one_element_at_end_costs_1",
              Range_Cost (126, 127, 127) = 1
              and then Walks_Back (126, 127) and then Start_Pos (127, 127) = 127);
@@ -650,9 +650,9 @@ procedure Test_Digest with SPARK_Mode => Off is
              and then Walk_Len (110, 127) = 17);
       Check ("n150_worst_case_64",
              Range_Cost (32, 96, 150) = 64);
-      --  The counts Range_Sum reports making (not only the formula): the
-      --  reported case costs 1 Add, [1 .. 96] of 127 walks back 31 from
-      --  P_end, [33 .. 96] of 150 is the worst case 64; one Sub each.
+      --  The counts Range_Sum reports making (not only the formula):
+      --  [127 .. 127] of 127 costs 1 Add, [1 .. 96] of 127 walks back 31
+      --  from P_end, [33 .. 96] of 150 is the worst case 64; one Sub each.
       declare
          L127 : Hash_Array (1 .. 127);
          P127 : Acc_Array (1 .. 2);
@@ -765,8 +765,7 @@ procedure Test_Digest with SPARK_Mode => Off is
       Check ("perm_reverse_same_digest",
              Same (Digest_Of (Fwd), Digest_Of (Rev)));
       Check ("delete_lemmas_run", True);
-      --  Wire form of the fp input, and Kome.Accumulator's congruences
-      --  (which Kome.Digest now uses instead of its own copies).
+      --  Wire form of the fp input, and Kome.Accumulator's congruences.
       Lemma_Fp_Input_Acc (3, Sum (Digest_Of (Fwd)));
       Lemma_Add_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));
       Lemma_Sub_Congruent (Sum (S), Sum (S), Elem_Acc (H (1)), Elem_Acc (H (1)));

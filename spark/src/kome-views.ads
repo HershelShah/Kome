@@ -149,7 +149,7 @@ package Kome.Views with SPARK_Mode is
      (P.V.T > Slack and then P.V.T - Slack > Now);
 
    ---------------------------------------------------------------------------
-   --  Ghost predicates on states (quantified, so opaque: see private part).
+   --  Ghost predicates on states (quantified; defined in the private part).
    ---------------------------------------------------------------------------
 
    --  A2 on the held set (DESIGN.md §9 assumption A2; Frontier.lean `hinj`):
@@ -402,11 +402,6 @@ package Kome.Views with SPARK_Mode is
      Ghost, Global => null,
      Post => not Roster_Lt (A, A);
 
-   procedure Lemma_Roster_Lt_Trans (A, B, C : Header) with
-     Ghost, Global => null,
-     Pre  => Roster_Lt (A, B) and then Roster_Lt (B, C),
-     Post => Roster_Lt (A, C);
-
    --  T5, Frontier.lean `cell_unique`: two held PUTs on one cell of a
    --  frontier are the same record at the same index (else the newer
    --  dominates the older, and equal versions of canonical PUTs on one cell
@@ -634,8 +629,10 @@ package Kome.Views with SPARK_Mode is
 
 private
 
-   --  Quantified, so private: other units reason about them only through
-   --  the lemmas above (CONVENTIONS.md, "keep the prover's view small").
+   --  The three ghost predicates. Unlike the views (completed in the body),
+   --  these are completed here, and gnatprove 14 shows private-part
+   --  expression functions to clients (CONVENTIONS.md, "Proof hygiene"), so
+   --  a client's prover can unfold them.
 
    function Unique_Versions (S : State) return Boolean is
      (for all I in 1 .. Count (S) =>

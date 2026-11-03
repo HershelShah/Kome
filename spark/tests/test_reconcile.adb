@@ -14,9 +14,9 @@
 --  first, a repeated root, a data root while something is open and any g =
 --  0 at the initiator are refused and change nothing; equal digests end
 --  the session after the HELLOs; Admit-then-receive and receive-then-Admit
---  both work; Next_Phase; the review's mutants (Receive's M, Open, Peer
---  and status are the wire's and Status_Of; Admit keeps the budgets;
---  Same_Snapshot). (g) Two snapshots with differing authorization
+--  both work; Next_Phase; mutants of Receive and Admit (Receive's M,
+--  Open, Peer and status are the wire's and Status_Of; Admit keeps the
+--  budgets; Same_Snapshot). (g) Two snapshots with differing authorization
 --  and data records, one frame of 41 136 bytes, converge to the union in a
 --  two-phase session; a second session ends at the HELLOs.
 --  Under -gnata every Pre, Post and lemma runs on these data.
@@ -844,8 +844,8 @@ begin
              O.N = 16 and then Tiles (O, Min_Key, Max_Key) and then Plans_Fit (Small, O)
              and then All_Kind (O, P_Range) and then Exact_Plans (Small, O)
              and then Answers_T (Small, M, O));
-      --  The mutant the old contract allowed: an empty HAVE for every
-      --  mismatched RANGE. It violates the reply contract.
+      --  A mutant: an empty HAVE for every mismatched RANGE. It violates
+      --  the reply contract.
       Mut := O;
       Mut.N := 1;
       Mut.P (1) := Confirm_Plan (Min_Key, Max_Key);
@@ -1234,8 +1234,8 @@ begin
       Recv (Sess, Small, Auth_Root, O, Res);
       Check ("equal digests: a root after Done refused", Res = S_Unexpected);
 
-      --  The review's mutants (round 2), reproduced: Receive's out
-      --  parameters are the wire's, and its status is exactly Status_Of.
+      --  Mutants: Receive's out parameters are the wire's, and its status
+      --  is exactly Status_Of.
       declare
          V2   : Rv_Array := [others => Zero_Rv];
          Tiny : Snapshot (Cap => 4, Pool_Cap => 100);
@@ -1317,9 +1317,9 @@ begin
                    Res = S_OK and then Status_Of (Saved, Small, Big) = S_OK
                    and then Sess.P = Data and then O.N = 6
                    and then Sess.Ranges = Range_Budget (Small));
-            --  Round-2 review blocker: the accounting functions are the
-            --  reply's true counts, so the 6-way split raises Pending by six
-            --  obligations and the responder is not Done.
+            --  The accounting functions are the reply's true counts, so the
+            --  6-way split raises Pending by six obligations and the
+            --  responder is not Done.
             pragma Assert (Ranges_Upto (O, O.N) = 6
                            and then Obligations_Upto (O, O.N) = 6
                            and then Items_Upto (Small, O, O.N) = 0);
@@ -1404,7 +1404,8 @@ begin
       Check ("the 41 136-byte frame reached B intact",
              Frame_Of_Key (B, Huge) = Frame_Of (41_136, 16#AB#));
       --  Rounds: OPEN, HELLO, then per phase at most 2s + 3 one-way
-      --  batches, s = ⌈log₁₆ 48⌉ + ⌈log₁₆ 40⌉ = 4 splits.
+      --  batches; in the larger (data) phase A holds 44 records and B 30,
+      --  so s = ⌈log₁₆ 44⌉ + ⌈log₁₆ 30⌉ = 4 splits.
       Check ("bounded number of rounds (" & Rounds'Image (2 .. Rounds'Image'Last)
              & " one-way rounds," & Delivered'Image & " frames delivered)",
              Rounds <= 3 + 2 * (2 * 4 + 3) and then Delivered >= 38);

@@ -543,14 +543,6 @@ package Kome.Digest with SPARK_Mode is
           Pre => K <= Kome.Frontier.Count (F),
           Subprogram_Variant => (Decreases => K);
 
-   procedure Lemma_Frontier_Sum_Step (F : Kome.Frontier.State; K : Elem_Count)
-     with Ghost, Global => null,
-          Pre  => K <= Kome.Frontier.Count (F),
-          Post => (if K = 0 then Frontier_Sum (F, K) = Zero
-                   else Frontier_Sum (F, K)
-                          = Add (Frontier_Sum (F, K - 1),
-                                 Elem_Acc (Kome.Frontier.Held (F, K).V.H)));
-
    function State_Of (F : Kome.Frontier.State) return Digest_State
      with Global => null,
           Post => Count (State_Of'Result) = Kome.Frontier.Count (F)
@@ -604,8 +596,8 @@ package Kome.Digest with SPARK_Mode is
    --  K = 1 .. ⌊n/64⌋, and P (⌊n/64⌋ + 1) = P_end = ACC of L (1 .. n).
    ----------------------------------------------------------------------
 
-   --  One stored prefix per full block of Elem_Max elements, plus the
-   --  total.
+   --  One stored prefix per full block of Block_Elems elements of a list
+   --  of at most Elem_Max, plus the total.
    subtype Block_Index is Positive range 1 .. Elem_Max / Block_Elems + 1;
    type Acc_Array is array (Block_Index range <>) of Acc;
 

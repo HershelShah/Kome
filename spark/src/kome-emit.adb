@@ -2,8 +2,8 @@ pragma Ada_2022;
 package body Kome.Emit with SPARK_Mode is
 
    ---------------------------------------------------------------------------
-   --  Proof-only helpers. Ghost, so neither they nor their loops run outside
-   --  -gnata (the Known gap "proof-only loops run as executable code").
+   --  Proof-only helpers. Ghost, so neither they nor their loops run
+   --  outside -gnata.
    ---------------------------------------------------------------------------
 
    --  A version at or below B is, on the prefix, below anything whose

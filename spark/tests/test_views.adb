@@ -366,7 +366,7 @@ procedure Test_Views with SPARK_Mode => Off is
              Deleted_At (S, NS, Ent (1)) = (Present => False, V => No_Version));
       Check ("T5: unique on every PUT/roster pair", Unique_Checked (S) = 4);
 
-      --  T12 converse with every data refusal (Known gap): Dominated,
+      --  T12 converse with every data refusal: Dominated,
       --  Inadmissible (author not in W; t above maxceil).
       Apply_Data (S, P1, "a dominated PUT", Void_Probes, Expect => Dominated);
       Apply_Data (S, Put (1, 'q', V (100, 30, 1, 70)), "a PUT by a key not in W",
@@ -452,10 +452,9 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
       Def_Lemmas (S, Void_Probes);
 
-      --  Design change (D2): a certified root cannot root-void anyone and
-      --  the founding key is never root_void, so with a founding roster held
-      --  ROSTER_eff is always present (it used to become None when every
-      --  signing root was revoked by anyone).
+      --  D2: a certified root cannot root-void anyone and the founding key
+      --  is never root_void, so with a founding roster held ROSTER_eff is
+      --  always present.
       declare
          T : State := S;
       begin

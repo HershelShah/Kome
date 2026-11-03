@@ -26,9 +26,9 @@
 --  and to hash R ‖ A ‖ M into the challenge (RFC 8032 §5.1.5-5.1.7).
 --  Nothing Kome derives uses SHA-512: BLAKE2b-256 stays the hash for h, ns,
 --  certificates, the accumulator and every key derivation. monocypher's
---  core crypto_eddsa_* (EdDSA with BLAKE2b-512, the scheme of the previous
---  C++ engine and of Nano) is no longer bound; its signatures do not verify
---  here, and the test main checks that (regression vectors).
+--  core crypto_eddsa_* (EdDSA with BLAKE2b-512, the scheme of Nano) is not
+--  bound; its signatures do not verify here, and the test main checks that
+--  (regression vectors).
 --
 --  STRICT VERIFICATION (DESIGN.md §2 "strict: S < L"). Verify accepts a
 --  signature only if (a) S < L, (b) R is the canonical RFC 8032 §5.1.2
@@ -48,8 +48,7 @@
 --  calls C through Interfaces.C. The Posts of the subprograms completed in
 --  the body are therefore ASSUMED by gnatprove, not proved: they are
 --  checked only by executing them (-gnata) against the known-answer vectors
---  and properties of tests/test_crypto.adb. That is inherent to binding C
---  and is the residual of the review finding "bodies are SPARK_Mode Off".
+--  and properties of tests/test_crypto.adb. That is inherent to binding C.
 --  What the contracts state:
 --    * input bounds, output lengths and layouts;
 --    * the incremental context's state machine and byte count;
@@ -119,8 +118,8 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  The largest single buffer handed to monocypher, 1 MiB. It is declared
    --  here rather than in Kome (root), because this package owns only its
-   --  own files. It is no longer tied to Value_Max (40_960 since D12). What
-   --  the design feeds this package:
+   --  own files. It is not derived from Value_Max. What the design feeds
+   --  this package:
    --    * DESIGN.md §2: the largest hashed or signed input is a frame, at
    --      most 41_136 bytes (a PUT with a 32-byte field and a 40_960-byte
    --      value); a signature covers only the 32 bytes of h;
@@ -168,8 +167,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  every other one here, so the Post is an AXIOM (assumed, like the
    --  binding's other Posts); the test main checks it under -gnata on
    --  slices with different bounds. Clients use it to carry a hash across
-   --  a copy or a re-slice (Kome.Records.Lemma_Header_Congruent,
-   --  Kome.Epochs's wrap key).
+   --  a copy or a re-slice (Kome.Epochs's wrap key).
    procedure Lemma_Blake2b_Congruent (A, B : Byte_Array)
      with Ghost, Global => null, Always_Terminates,
           Pre  => A'Length = B'Length
@@ -464,8 +462,8 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  clear (Is_Canonical_U) and u < p = 2**255 - 19, i.e. not one of the
    --  19 encodings 16#7FFF...FFED# .. 16#7FFF...FFFF#. These are exactly
    --  the outputs of X25519_Public (monocypher fully reduces), so an honest
-   --  dh_pk or box_pk always passes. Quantifier-free, so public. (Moved
-   --  here from Kome.Epochs, same body: DESIGN.md §2 rule 3, E5.)
+   --  dh_pk or box_pk always passes. Quantifier-free, so public.
+   --  DESIGN.md §2 rule 3, E5.
    function Is_Reduced_U (U : Pubkey) return Boolean is
      (U (31) < 16#7F#
       or else (U (31) = 16#7F#
@@ -535,8 +533,9 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  The X25519 keys Kome accepts at decode (DESIGN.md §2 rule 3, E5): a
    --  ROSTER's box_pk and every member dh_pk is reduced and not low order,
-   --  so every listed member can open its box. Kome.Records (decode) and
-   --  Kome.Epochs (box and unbox) are both to use this one definition.
+   --  so every listed member can open its box. Kome.Records checks it at
+   --  decode; Kome.Epochs checks its two conjuncts (Is_Reduced_U, then
+   --  Is_Low_Order_U) before boxing and unboxing.
    function Is_Good_DH_Key (U : Pubkey) return Boolean is
      (Is_Reduced_U (U) and then not Is_Low_Order_U (U))
      with Global => null;

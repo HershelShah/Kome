@@ -1,12 +1,12 @@
 --  Test main for Kome.Byteorder: (a) contract corner cases, (b) the ghost
 --  lemmas evaluated at run time (-gnata) on corner values and on every
 --  vector, (c) byte-for-byte comparison against vectors/byteorder.txt,
---  produced from the C++ helpers by vectors/gen/byteorder_gen.cpp.
+--  generated from the C++ engine's src/byteorder.h (see the file header).
 --  Every GET/RD/ST vector is also replayed on a copy with a non-zero
 --  'First so that cursor and offset arithmetic is pinned relative to
 --  the buffer origin, as the C++ pointer arithmetic is.
 --  (d) Regressions: the shift-based functional views (Byte_Of_*, Read_*)
---  agree with the arithmetic (divide / sum) formulation they replaced,
+--  agree with the arithmetic (divide / sum) formulation,
 --  With_LE_* agrees with Store_*, and the get(put(x)) = x law is checked
 --  in its stated form on every vector, not only via the lemma's Post.
 pragma Ada_2022;
@@ -363,8 +363,8 @@ procedure Test_Byteorder with SPARK_Mode => Off is
       --  Index arithmetic at the top of Natural. The C++ puts no bound on
       --  where a 4/8-byte store or read may sit; a Byte_Array may end at
       --  Natural'Last, and a store or read whose last byte is that index
-      --  must still work (an earlier contract wrote Pos + N - 1, which
-      --  overflowed Integer here). A Get that succeeds at the very end
+      --  must still work (Pos + N - 1, unparenthesized, would overflow
+      --  Integer here). A Get that succeeds at the very end
       --  leaves Pos = Buf'Last + 1, so Get requires Buf'Last < Natural'Last
       --  and is exercised one slot below the top.
       declare

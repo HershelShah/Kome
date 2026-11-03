@@ -1,12 +1,12 @@
 pragma Ada_2022;
 package body Kome.Frontier with SPARK_Mode is
 
-   --  Proof style, learned the hard way (CONVENTIONS.md): every quantified
-   --  definition lives in this body, out of the clients' view; each state
-   --  change is followed by "bridge" assertions relating the new state to
-   --  the old one; and every "some record" in an invariant is a named index
-   --  held in a ghost witness array (Src: where a kept record came from;
-   --  Dst: where an old record went, 0 if it was dropped).
+   --  Proof style (CONVENTIONS.md): every quantified definition lives in
+   --  this body, out of the clients' view; each state change is followed by
+   --  "bridge" assertions relating the new state to the old one; and every
+   --  "some record" in an invariant is a named index held in a ghost witness
+   --  array (Src: where a kept record came from; Dst: where an old record
+   --  went, 0 if it was dropped).
 
    Null_Header : constant Header := (others => <>);
 
@@ -993,8 +993,6 @@ package body Kome.Frontier with SPARK_Mode is
 
    procedure Lemma_Unchanged_Refl (S : State) is null;
 
-   --  Every quantifier is bounded by Count (Old) or a slot count, so the
-   --  lemma also runs under -gnata (Kome.Store calls it on every refusal).
    procedure Lemma_Unchanged (Old, Upd : State) is
    begin
       Lemma_Eq (Old.RG, Upd.RG);
@@ -1203,7 +1201,6 @@ package body Kome.Frontier with SPARK_Mode is
       Result := OK;
    end Apply_Data;
 
-   --  Apply to the signer's slot (R an authorization record).
    --  Commit an authorization record to slot K0 (Fresh: a newly assigned
    --  slot): drop what R beats in its own row, hold R, move the offsets,
    --  derive the registers. Every refusal has been decided by the caller.
@@ -1381,6 +1378,7 @@ package body Kome.Frontier with SPARK_Mode is
            Holds (S, Held (Old_S, I)) or else Dominates (R, Held (Old_S, I)));
    end Commit_Auth;
 
+   --  Apply to the signer's slot (R an authorization record).
    procedure Apply_Auth (S : in out State; R : Header; Result : out Status) with
      Global => null,
      Pre  => Is_Frontier (S) and then Canonical (R) and then R.NS = S.NS

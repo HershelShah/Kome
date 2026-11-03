@@ -450,13 +450,6 @@ package body Kome.Views with SPARK_Mode is
       pragma Assert (not Lt (A.V.Author, A.V.Author));
    end Lemma_Roster_Lt_Irrefl;
 
-   procedure Lemma_Roster_Lt_Trans (A, B, C : Header) is
-   begin
-      if Gen_Lt (A, B) and then Gen_Lt (B, C) then
-         Lemma_Gen_Lt_Trans (A, B, C);
-      end if;
-   end Lemma_Roster_Lt_Trans;
-
    procedure Lemma_Cell_Unique (S : State; I, J : Held_Index) is
    begin
       Lemma_Frontier_Held (S, I);

@@ -93,12 +93,6 @@ package Kome.Registers with SPARK_Mode is
      Pre  => In_W (R, A),
      Post => Added (R, R, A);
 
-   procedure Lemma_Added_Extends (Old, Upd : Register_File; A : Key256) with
-     Ghost, Global => null,
-     Pre  => Added (Old, Upd, A),
-     Post => Extends (Old, Upd)
-             and then Count (Upd) = Count (Old) + (if In_W (Old, A) then 0 else 1);
-
    --  Distinct counting: two indices name two different keys.
    procedure Lemma_Distinct (R : Register_File; I, J : Writer_Index) with
      Ghost, Global => null,
@@ -120,11 +114,6 @@ package Kome.Registers with SPARK_Mode is
    procedure Lemma_Extends_Refl (A : Register_File) with
      Ghost, Global => null,
      Post => Extends (A, A);
-
-   procedure Lemma_Extends_Trans (A, B, C : Register_File) with
-     Ghost, Global => null,
-     Pre  => Extends (A, B) and then Extends (B, C),
-     Post => Extends (A, C);
 
    procedure Lemma_Extends_In_W (A, B : Register_File; X : Key256) with
      Ghost, Global => null,

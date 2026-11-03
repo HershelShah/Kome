@@ -1,6 +1,6 @@
 --  Test main for Kome.Epochs (DESIGN.md §6). (a) Known answers from
 --  vectors/epochs.txt: the chain (Python hashlib, including the full
---  2**16 - 1 step walk) and the round-three box and link constructions
+--  2**16 - 1 step walk) and the box and link constructions
 --  (an independent Python reference over libsodium, pyca/cryptography and
 --  hashlib; no monocypher), each checked through Box_Key, Unbox_Key,
 --  Seal_Link, Open_Link, Synthetic_Nonce and Link_Key, with the wrap key
@@ -10,14 +10,11 @@
 --  synthetic and checked on open (a box that passes the AEAD under a
 --  non-synthetic nonce is refused), refusals (wrong member secret, sign_pk,
 --  box_pk, nonce, epoch, collection, tampered bytes, low-order and
---  non-reduced peers) each leave zeros. (d) Regressions for the closed
---  review gaps: the k5-to-k6 keystream reuse (reproduced against the old
---  construction, refuted against the new), a reused ephemeral secret.
+--  non-reduced peers) each leave zeros. (d) Regressions: the k5-to-k6
+--  keystream reuse (reproduced against a construction with a caller nonce
+--  and no ns or epoch in the wrap key, refuted against the current one),
+--  a reused ephemeral secret.
 --  (e) Links: walking back across a segment boundary, refusals.
---  Design change (round three, D5/D6): the caller no longer supplies the
---  nonce and there is no root X25519 key; Box_Key takes the ephemeral
---  secret and returns the synthetic nonce, Unbox_Key takes box_pk and the
---  member's sign_pk. The old caller-nonce tests are replaced accordingly.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -630,8 +627,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
    end Boxes;
 
    ---------------------------------------------------------------------------
-   --  (d) Regressions for the review gaps (IMPLEMENTATION_PLAN.md "Known
-   --  gaps", Kome.Epochs)
+   --  (d) Regressions: keystream reuse across epochs, reused ephemeral
+   --  secret
    ---------------------------------------------------------------------------
 
    function Xor_Bytes (A, B : Byte_Array) return Byte_Array is
@@ -660,7 +657,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Got        : Key256;
       St         : Box_Status;
    begin
-      --  The reviewer's attack, reproduced on the OLD construction
+      --  The attack, reproduced on a construction whose wrap key binds
+      --  neither ns nor the epoch
       --  (wrap_key = BLAKE2b (X25519 (root_sk, dh_pk) ‖ root_pk ‖ dh_pk),
       --  one caller nonce reused for the member across epochs): a removed
       --  member who holds k5 XORs the two ciphertexts with k5 and gets k6.
@@ -682,7 +680,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
                   = Kome.Keys.To_Bytes (K6));
       end;
 
-      --  The same two rosters under the new construction, even with the
+      --  The same two rosters under the current construction, even with the
       --  ephemeral secret reused (the worst case): different wrap keys and
       --  nonces, and the XOR with k5 is not k6.
       Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 5, K5, N5, B5, St5);
