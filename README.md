@@ -5,10 +5,7 @@ notes, inventories, settings, small shared lists. Each person's devices sync
 directly with each other and with explicitly trusted contacts, with no central
 server, end-to-end encryption, and membership that can change.
 
-This repository is the ground-up rebuild. The previous C++ engine was
-removed after a formal review found convergence bugs that were structural
-rather than local; the old engine, its model and the analysis are in git
-history. The rebuild is design-first and proof-first:
+The work is design-first and proof-first:
 
 | Layer | Where | State |
 |---|---|---|
@@ -78,7 +75,7 @@ cvc5 and z3): @TOTALS@. "Checks" is gnatprove's total. No package uses
 
 | SPARK package | Lean counterpart | What gnatprove proves | Tests | Checks | Unproved |
 |---|---|---|---|---|---|
-| `Kome.Byteorder` | — | Little-endian u32/u64 store, read and bounded-buffer put/get round-trip | 74 PASS | 322 | 0 |
+| `Kome.Byteorder` | — | Little-endian u64 encoding (D7): `To_LE_U64` and `Read_U64LE` are inverse bijections | 6 PASS | 47 | 0 |
 | `Kome.Versions` | `Version`, `Version.lt`, T1 | The order is a strict total order | 11 PASS | 13 | 0 |
 | `Kome.Headers` | `Record`, `dominates`, T2' | Domination: product order on rosters, GRANT keyed by (issuer, subject). It is irreflexive and transitive, and REVOKE is never dominated. `Canonical` is a property of a header | 18 PASS | 31 | 0 |
 | `Kome.Registers` | `maxCeil`, `isWriter`, T4' | Both registers only grow, and writer membership is preserved | 6 PASS | 93 | 0 |

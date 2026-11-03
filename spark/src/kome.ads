@@ -9,12 +9,10 @@ package Kome with SPARK_Mode, Pure is
    type Byte is mod 2**8 with Size => 8;
    type Byte_Array is array (Natural range <>) of Byte;
 
-   --  Modular types for wire encoding and hashing only (Kome.Byteorder,
-   --  Kome.Accumulator, Kome.Digest). Semantic quantities use the range
-   --  types below, so that every overflow is a proof obligation and no value
-   --  is reserved (H6).
-   type U16 is mod 2**16 with Size => 16;
-   type U32 is mod 2**32 with Size => 32;
+   --  The one modular type, for the accumulator's limbs and their byte
+   --  encoding only (Kome.Byteorder, Kome.Accumulator, Kome.Digest).
+   --  Semantic quantities use the range types below, so that every overflow
+   --  is a proof obligation and no value is reserved (H6).
    type U64 is mod 2**64 with Size => 64;
 
    --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl, from_t, rev_seq are
