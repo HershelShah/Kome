@@ -1,6 +1,88 @@
 pragma Ada_2022;
 package body Kome.Emit with SPARK_Mode is
 
+   ---------------------------------------------------------------------------
+   --  Proof-only helpers. Ghost, so neither they nor their loops run outside
+   --  -gnata (the Known gap "proof-only loops run as executable code").
+   ---------------------------------------------------------------------------
+
+   --  A version at or below B is, on the prefix, below anything whose
+   --  prefix is above B's.
+   procedure Lemma_Le_Prefix_Lt (A, B, C : Version) with
+     Ghost, Global => null,
+     Pre  => (A = B or else Lt (A, B)) and then Prefix_Lt (B, C),
+     Post => Prefix_Lt (A, C);
+
+   procedure Lemma_Le_Prefix_Lt (A, B, C : Version) is null;
+
+   --  Two different prefixes are strictly ordered one way (T1 on the
+   --  prefix).
+   procedure Lemma_Prefix_Total (A, B : Version) with
+     Ghost, Global => null,
+     Pre  => not Same_Prefix (A, B),
+     Post => Prefix_Lt (A, B) = not Prefix_Lt (B, A);
+
+   procedure Lemma_Prefix_Total (A, B : Version) is null;
+
+   --  Floor's step: when the running maximum Old_V is replaced by a greater
+   --  New_V, every earlier candidate (at or below Old_V) is below New_V.
+   procedure Lemma_Raise_Max
+     (S : State; Tgt : Target; I : Held_Index; Old_V, New_V : Version)
+   with
+     Ghost, Global => null,
+     Pre  => I <= Count (S)
+             and then Lt (Old_V, New_V)
+             and then (for all J in 1 .. I - 1 =>
+                         (if In_Floor (Held (S, J), Tgt)
+                          then Held (S, J).V = Old_V
+                               or else Lt (Held (S, J).V, Old_V))),
+     Post => (for all J in 1 .. I - 1 =>
+                (if In_Floor (Held (S, J), Tgt)
+                 then Lt (Held (S, J).V, New_V)));
+
+   procedure Lemma_Raise_Max
+     (S : State; Tgt : Target; I : Held_Index; Old_V, New_V : Version) is
+   begin
+      for J in 1 .. I - 1 loop
+         if In_Floor (Held (S, J), Tgt) and then Held (S, J).V /= Old_V then
+            Lemma_Lt_Trans (Held (S, J).V, Old_V, New_V);
+         end if;
+         pragma Loop_Invariant
+           (for all K in 1 .. J =>
+              (if In_Floor (Held (S, K), Tgt)
+               then Lt (Held (S, K).V, New_V)));
+      end loop;
+   end Lemma_Raise_Max;
+
+   --  Choose's OK case: every floor record is at or below the floor FV,
+   --  whose prefix is below P, so every floor record's prefix is below P.
+   procedure Lemma_Below_Prefix
+     (S : State; Tgt : Target; FV, P : Version)
+   with
+     Ghost, Global => null,
+     Pre  => Prefix_Lt (FV, P)
+             and then (for all I in 1 .. Count (S) =>
+                         (if In_Floor (Held (S, I), Tgt)
+                          then Held (S, I).V = FV
+                               or else Lt (Held (S, I).V, FV))),
+     Post => (for all I in 1 .. Count (S) =>
+                (if In_Floor (Held (S, I), Tgt)
+                 then Prefix_Lt (Held (S, I).V, P)));
+
+   procedure Lemma_Below_Prefix
+     (S : State; Tgt : Target; FV, P : Version) is
+   begin
+      for I in 1 .. Count (S) loop
+         if In_Floor (Held (S, I), Tgt) then
+            Lemma_Le_Prefix_Lt (Held (S, I).V, FV, P);
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              (if In_Floor (Held (S, J), Tgt)
+               then Prefix_Lt (Held (S, J).V, P)));
+      end loop;
+   end Lemma_Below_Prefix;
+
    -----------
    -- Floor --
    -----------
@@ -14,19 +96,7 @@ package body Kome.Emit with SPARK_Mode is
                R := (Present => True, V => Held (S, I).V);
             elsif Lt (R.V, Held (S, I).V) then
                --  Every earlier candidate is <= R.V < Held (S, I).V.
-               pragma Assert
-                 (for all J in 1 .. I - 1 =>
-                    (if In_Floor (Held (S, J), Tgt)
-                     then Held (S, J).V = R.V or else Lt (Held (S, J).V, R.V)));
-               for J in 1 .. I - 1 loop
-                  if In_Floor (Held (S, J), Tgt) and then Held (S, J).V /= R.V then
-                     Lemma_Lt_Trans (Held (S, J).V, R.V, Held (S, I).V);
-                  end if;
-                  pragma Loop_Invariant
-                    (for all K in 1 .. J =>
-                       (if In_Floor (Held (S, K), Tgt)
-                        then Lt (Held (S, K).V, Held (S, I).V)));
-               end loop;
+               Lemma_Raise_Max (S, Tgt, I, R.V, Held (S, I).V);
                R := (Present => True, V => Held (S, I).V);
             else
                --  Not above R.V, so at or below it (T1, trichotomy).
@@ -77,18 +147,18 @@ package body Kome.Emit with SPARK_Mode is
       return R;
    end Max_Own_Seq;
 
-   ------------------
-   -- Emit_Version --
-   ------------------
+   ------------
+   -- Choose --
+   ------------
 
-   procedure Emit_Version
+   procedure Choose
      (S               : in     State;
       Tgt             : in     Target;
       Now             : in     U48;
       Self            : in     Key256;
-      H               : in     Key256;
       Seq_Self        : in out U48;
-      V               :    out Version;
+      T               :    out U48;
+      Seq             :    out U48;
       Result          :    out Status;
       Clone_Suspected :    out Boolean)
    is
@@ -100,83 +170,119 @@ package body Kome.Emit with SPARK_Mode is
       Clone_Suspected := Clone_Detected (Seq_Self, O);
 
       if not In_W (Regs (S), Self) then
-         V := Zero_Version;
+         T := 0;
+         Seq := 0;
          Result := Inadmissible;
          return;
       end if;
 
       if B = U48'Last then
-         V := Zero_Version;
+         T := 0;
+         Seq := 0;
          Result := Seq_Exhausted;
          return;
       end if;
 
       Seq_Self := B + 1;
-      V := V_Emit (Now, F, C, Self, Seq_Self, H);
+      Seq := Seq_Self;
+      T := T_Emit (Now, F.Present, F.V.T, C);
       Lemma_Emit_Bounded (Now, F.Present, F.V.T, C);
 
-      --  H8: every own held record has seq <= O.Seq <= B < V.Seq.
+      --  H8: every own held record has seq <= O.Seq <= B < Seq.
       pragma Assert
         (for all I in 1 .. Count (S) =>
-           (if Own (Held (S, I), Self) then Held (S, I).V.Seq < V.Seq));
+           (if Own (Held (S, I), Self) then Held (S, I).V.Seq < Seq));
 
-      --  So V equals no held floor version: a floor record with version V
-      --  would be a data record by Self with seq V.Seq.
       if F.Present then
+         Lemma_Floor_Admitted (S, Tgt);
+         pragma Assert (F.V.T <= C);
+         --  The floor is a held data record: by another author, or by
+         --  Self with a smaller seq. Either way its prefix differs (D8).
          pragma Assert
            (for all I in 1 .. Count (S) =>
-              (if In_Floor (Held (S, I), Tgt) then Held (S, I).V /= V));
-         pragma Assert (F.V /= V);
-         Lemma_Trichotomy (F.V, V);
-         pragma Assert (Lt (F.V, V) or else Lt (V, F.V));
-         if Lt (V, F.V) then
-            Lemma_Lt_Asym (V, F.V);
-         else
-            Lemma_Lt_Asym (F.V, V);
-         end if;
+              (if In_Floor (Held (S, I), Tgt)
+               then not Same_Prefix (Held (S, I).V,
+                                     Stamp (T, Self, Seq, Zero_Key))));
+         pragma Assert (not Same_Prefix (F.V, Stamp (T, Self, Seq, Zero_Key)));
+         Lemma_Prefix_Total (F.V, Stamp (T, Self, Seq, Zero_Key));
       end if;
 
-      if F.Present and then Lt (V, F.V) then
-         Lemma_Shadow_At_Ceiling (Now, C, F.V, V);
+      if F.Present and then Prefix_Lt (Stamp (T, Self, Seq, Zero_Key), F.V) then
+         --  Only at the ceiling: below it t_emit > floor.t.
+         pragma Assert (T <= F.V.T);
+         pragma Assert (F.V.T >= C);
          Result := Shadowed;
       else
          Result := OK;
          if F.Present then
-            --  T8: every floor record is <= F.V < V.
-            for I in 1 .. Count (S) loop
-               if In_Floor (Held (S, I), Tgt) and then Held (S, I).V /= F.V then
-                  Lemma_Lt_Trans (Held (S, I).V, F.V, V);
-               end if;
-               pragma Loop_Invariant
-                 (for all J in 1 .. I =>
-                    (if In_Floor (Held (S, J), Tgt) then Lt (Held (S, J).V, V)));
-            end loop;
+            --  T8: every floor record is <= F.V, whose prefix is below.
+            Lemma_Below_Prefix (S, Tgt, F.V, Stamp (T, Self, Seq, Zero_Key));
          end if;
-         pragma Assert
-           (for all I in 1 .. Count (S) =>
-              (if In_Floor (Held (S, I), Tgt) then Lt (Held (S, I).V, V)));
-         --  A dominator of the emitted record is In_Floor and above V,
-         --  contradicting the line above (T1, asymmetry).
-         for I in 1 .. Count (S) loop
-            if In_Floor (Held (S, I), Tgt) then
-               Lemma_Lt_Asym (Held (S, I).V, V);
-            end if;
-            pragma Assert (not Dominates (Held (S, I), To_Header (Tgt, V)));
-            pragma Loop_Invariant
-              (for all J in 1 .. I =>
-                 not Dominates (Held (S, J), To_Header (Tgt, V)));
-         end loop;
-         pragma Assert (not Dom (S, To_Header (Tgt, V)));
-         pragma Assert (Admitted (S, To_Header (Tgt, V)));
       end if;
 
       if F.Present and then F.V.T < C then
-         Lemma_Chase (Now, C, F.V, V);
+         Lemma_Chase (Now, C, F.V, Stamp (T, Self, Seq, Zero_Key));
       end if;
       if Now <= C then
          Lemma_Respects_Clock (Now, F.Present, F.V.T, C);
       end if;
-   end Emit_Version;
+   end Choose;
+
+   ------------------------------------
+   -- Lemma_Outcome_Independent_Of_H --
+   ------------------------------------
+
+   procedure Lemma_Outcome_Independent_Of_H
+     (S : State; Tgt : Target; T : U48; Self : Key256; Seq : U48; H : Key256)
+   is
+      X : constant Version := Stamp (T, Self, Seq, H);
+   begin
+      for I in 1 .. Count (S) loop
+         if In_Floor (Held (S, I), Tgt) then
+            --  A floor record is data: by another author, or Own with a
+            --  smaller seq, so its prefix is not X's.
+            pragma Assert (Is_Data (Held (S, I)));
+            pragma Assert (not Same_Prefix (Held (S, I).V, X));
+            Lemma_Prefix_Decides (Held (S, I).V, X);
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              (if In_Floor (Held (S, J), Tgt)
+               then Lt (Held (S, J).V, X) = Prefix_Lt (Held (S, J).V, X)
+                    and then Lt (X, Held (S, J).V) = Prefix_Lt (X, Held (S, J).V)));
+      end loop;
+      pragma Assert (Admitted (S, To_Header (Tgt, X)));
+   end Lemma_Outcome_Independent_Of_H;
+
+   --------------------------
+   -- Lemma_OK_Undominated --
+   --------------------------
+
+   procedure Lemma_OK_Undominated
+     (S : State; Tgt : Target; T : U48; Self : Key256; Seq : U48; H : Key256)
+   is
+      X : constant Version := Stamp (T, Self, Seq, H);
+      P : constant Header  := To_Header (Tgt, X);
+   begin
+      Lemma_Outcome_Independent_Of_H (S, Tgt, T, Self, Seq, H);
+      for I in 1 .. Count (S) loop
+         if In_Floor (Held (S, I), Tgt) then
+            --  Prefix_Lt ignores h.
+            pragma Assert (Prefix_Lt (Held (S, I).V, X));
+            pragma Assert (Lt (Held (S, I).V, X));
+            Lemma_Lt_Asym (Held (S, I).V, X);
+         end if;
+         --  A dominator of P is In_Floor and above X, contradicting the
+         --  line above (T1, asymmetry).
+         pragma Assert (not Dominates (Held (S, I), P));
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              (if In_Floor (Held (S, J), Tgt) then Lt (Held (S, J).V, X)));
+         pragma Loop_Invariant
+           (for all J in 1 .. I => not Dominates (Held (S, J), P));
+      end loop;
+      pragma Assert (not Dom (S, P));
+   end Lemma_OK_Undominated;
 
    ------------
    -- Lemmas --
@@ -209,6 +315,7 @@ package body Kome.Emit with SPARK_Mode is
          --  Every In_Floor held record is a data record, admitted, hence
          --  at or below the ceiling; the floor is one of them.
          for I in 1 .. Count (S) loop
+            Lemma_Frontier_Held (S, I);
             pragma Assert (Admitted (S, Held (S, I)));
             pragma Loop_Invariant
               (for all J in 1 .. I =>
@@ -233,6 +340,7 @@ package body Kome.Emit with SPARK_Mode is
                pragma Assert (Is_Data (Held (S2, I)));
                pragma Assert (Holds (S1, Held (S2, I)));
                for J in 1 .. Count (S1) loop
+                  Lemma_Frontier_Held (S1, J);
                   pragma Assert (Admitted (S1, Held (S1, J)));
                   pragma Loop_Invariant
                     (for all K in 1 .. J =>

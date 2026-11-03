@@ -8,7 +8,9 @@
 --  whose bodies (and every Post, Loop_Invariant and Assert, including the
 --  Big_Integer model) run under -gnata. (d) The byte order as an integer:
 --  Value (From_Bytes (B)) = Σ B (I) · 256^I on the vectors and on hand
---  cases (bytes 0, 8 and 511).
+--  cases (bytes 0, 8 and 511). (e) The acc(e) construction of DESIGN.md
+--  §8 (D7): sixteen 32-byte blocks, B_0 least significant. (f) Chaining
+--  the laws through Lemma_Eq_Iff_Value and the congruence lemmas.
 pragma Ada_2022;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line;  use Ada.Command_Line;
@@ -272,6 +274,112 @@ begin
       Lemma_Value_To_Bytes (Pseudo (9));
       Check ("byte order: Value (From_Bytes (B)) = sum B (I) * 256^I "
              & "(bytes 0, 8, 9, 511; 2^4096 - 1)", True);
+   end;
+
+   ----------------------------------------------------------------------
+   --  (e) DESIGN.md §8 (D7): acc(e) := Σ_{i=0..15} LE(B_i) · 2^(256·i),
+   --  LE(B) := Σ_j B[j] · 256^j. The sixteen 32-byte blocks concatenated
+   --  in counter order and read by From_Bytes denote exactly that sum,
+   --  computed here block by block with Big_Integers, independently of the
+   --  package's byte-level model.
+   ----------------------------------------------------------------------
+   declare
+      subtype Block is Byte_Array (0 .. 31);
+      type Blocks is array (0 .. 15) of Block;
+      Bs   : Blocks;
+      Cat  : Acc_Byte_Array;
+      X    : U64 := 16#0123_4567_89AB_CDEF#;
+      Sum  : Big_Integer := 0;
+      Two  : constant Big_Integer := To_Big_Integer (2);
+
+      function LE (B : Block) return Big_Integer is
+         R : Big_Integer := 0;
+      begin
+         for J in reverse B'Range loop
+            R := R * 256 + To_Big_Integer (Integer (B (J)));
+         end loop;
+         return R;
+      end LE;
+   begin
+      for I in Blocks'Range loop
+         for J in Block'Range loop
+            X := X xor Shift_Right (X, 12);
+            X := X xor Shift_Left (X, 25);
+            X := X xor Shift_Right (X, 27);
+            Bs (I) (J) := Byte (Shift_Right (X * 16#2545_F491_4F6C_DD1D#, 56));
+         end loop;
+         Cat (32 * I .. 32 * I + 31) := Bs (I);
+         Sum := Sum + LE (Bs (I)) * Two ** (256 * I);
+      end loop;
+      pragma Assert (Sum < Modulus);
+      pragma Assert (Value (From_Bytes (Cat)) = Sum);
+      pragma Assert (Bytes_Value (Cat) = Sum);
+      Check ("D7: B_0 .. B_15 concatenated read little-endian = "
+             & "sum LE(B_i) * 2^(256 i)", True);
+      --  B_0 is the least significant block: a 1 in byte 0 of B_15 is
+      --  2^(256*15), not 1.
+      declare
+         Top : constant Acc_Byte_Array := [32 * 15 => 1, others => 0];
+      begin
+         pragma Assert (Value (From_Bytes (Top)) = Two ** (256 * 15));
+         Check ("D7: B_15 is the most significant block",
+                From_Bytes (Top) = Acc'[60 => 1, others => 0]);
+      end;
+   end;
+
+   ----------------------------------------------------------------------
+   --  (f) Chaining the laws: Lemma_Eq_Iff_Value, Lemma_Add_Congruent and
+   --  Lemma_Sub_Congruent (moved here from Kome.Digest). Each lemma's Post
+   --  runs under -gnata on pairs that are equal but computed differently,
+   --  and on pairs that are not equal.
+   ----------------------------------------------------------------------
+   declare
+      P5   : constant Acc := Pseudo (5);
+      P6   : constant Acc := Pseudo (6);
+      P7   : constant Acc := Pseudo (7);
+      L    : constant Acc := Add (P5, P6);
+      R    : constant Acc := Add (P6, P5);
+      Top  : constant Acc := [63 => 1, others => 0];
+   begin
+      --  Equal, computed two ways.
+      Lemma_Eq_Iff_Value (L, R);
+      pragma Assert (Value (L) = Value (R));
+      --  Not equal: the lemma's Post is (False) = (False).
+      Lemma_Eq_Iff_Value (P5, P6);
+      pragma Assert (Value (P5) /= Value (P6));
+      --  Differ only in the top limb.
+      Lemma_Eq_Iff_Value (Zero, Top);
+      pragma Assert (Value (Zero) /= Value (Top));
+      Lemma_Eq_Iff_Value (Sub (Add (P7, All_Ones), All_Ones), P7);
+      Check ("Lemma_Eq_Iff_Value: equal and unequal pairs",
+             L = R and then P5 /= P6 and then Zero /= Top);
+
+      --  Congruence: substitute L for R inside Add and Sub.
+      Lemma_Add_Congruent (L, R, P7, P7);
+      Lemma_Sub_Congruent (L, R, P7, P7);
+      Lemma_Add_Congruent (P7, P7, L, R);
+      Lemma_Sub_Congruent (P7, P7, L, R);
+      Check ("Lemma_Add_Congruent / Lemma_Sub_Congruent",
+             Add (L, P7) = Add (R, P7) and then Sub (L, P7) = Sub (R, P7)
+             and then Add (P7, L) = Add (P7, R)
+             and then Sub (P7, L) = Sub (P7, R));
+
+      --  The recipe in the spec: Add (Add (A, B), C) = Add (Add (B, A), C)
+      --  from Lemma_Add_Comm, and transitivity through three
+      --  Lemma_Eq_Iff_Value calls.
+      Lemma_Add_Comm (P5, P6);
+      Lemma_Add_Congruent (Add (P5, P6), Add (P6, P5), P7, P7);
+      Lemma_Add_Assoc (P6, P5, P7);
+      declare
+         X : constant Acc := Add (Add (P5, P6), P7);
+         Y : constant Acc := Add (Add (P6, P5), P7);
+         Z : constant Acc := Add (P6, Add (P5, P7));
+      begin
+         Lemma_Eq_Iff_Value (X, Y);
+         Lemma_Eq_Iff_Value (Y, Z);
+         Lemma_Eq_Iff_Value (X, Z);
+         Check ("chained laws: (A + B) + C = B + (A + C)", X = Z);
+      end;
    end;
 
    if Failed then

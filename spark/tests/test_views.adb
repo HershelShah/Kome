@@ -1,19 +1,26 @@
 --  Test main for Kome.Views: the views of DESIGN.md §3 and §6 over states
 --  built with Kome.Frontier.Apply. Contracts and ghost lemmas run on the
---  test data (-gnata): (a) cell / deleted_at / exists through a PUT, a newer
---  PUT, a DEL and a re-creating PUT; (b) void at, below and above from_t, for
---  another author and another collection; (c) ROSTER_eff across signers and
---  under a root revocation; (d) T5: Lemma_Cell_Unique on every pair of held
---  PUTs, and the same views from two arrival orders; (e) T12: around every
---  REVOKE and ROSTER applied (held, dominated or refused for space),
---  Lemma_Apply_Auth_Local then Lemma_Views_Local; around every PUT and DEL,
---  Lemma_Apply_Data_Local then the authorization-view lemmas; void only
---  grows; (f) ROSTER_eff with every root revoked and with equal generations;
---  (g) the hypothesis boundary: non-canonical PUTs and A2-violating rosters
---  keep the versions of the views order-independent, not their payload.
+--  test data (-gnata). Covered:
+--  (a) cell / deleted_at / exists through a PUT, a newer PUT, a DEL and a
+--      re-creating PUT;
+--  (b) void at, below and above from_t and for another author;
+--  (c) ROSTER_eff across signers and under a founding root revocation;
+--  (d) T5: Lemma_Cell_Unique / Lemma_Del_Unique / Lemma_Roster_Unique on
+--      every pair they apply to, and every view from two arrival orders;
+--  (e) T12: around every ROSTER, REVOKE and GRANT applied (held, dominated,
+--      or refused with Auth_Full), Lemma_Apply_Auth_Local then
+--      Lemma_Views_Local; around every PUT and DEL (held, Dominated,
+--      Inadmissible or No_Space), Lemma_Apply_Data_Local then every
+--      authorization-view locality lemma; root_void only grows;
+--  (f) root revocation as decided (D2): a compromised certified root, its
+--      root-void by the founding key, W_eff (R1), re-signed revocations,
+--      del_ttl_eff, a stale same-signer roster;
+--  (g) the hypothesis boundary: rosters equal in V that differ in del_ttl
+--      (A2 fails) still give one ROSTER_eff in every order (full tie-break).
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
+with Ada.Exceptions;   use Ada.Exceptions;
 with Kome;             use Kome;
 with Kome.Versions;    use Kome.Versions;
 with Kome.Headers;     use Kome.Headers;
@@ -32,40 +39,47 @@ procedure Test_Views with SPARK_Mode => Off is
       end if;
    end Check;
 
-   NS    : constant Id128 := (others => 7);
-   Other : constant Id128 := (others => 8);
+   NS  : constant Id128 := (others => 7);
+   Fnd : constant Byte := 9;                 --  the founding key
 
    function Key (B : Byte) return Key256 is (others => Word (B));
-   function Hsh (B : Byte) return Key256 is (others => Word (B));
+   function Hsh (B : Natural) return Key256 is (W0 => Word (B), others => 5);
    function Ent (B : Byte) return Id128 is (others => Word (B));
    function Fld (C : Character) return Key256 is
      (others => Word (Character'Pos (C)));
 
-   function V (T : U48; A : Byte; Seq : U48; H : Byte) return Version is
+   function V (T : U48; A : Byte; Seq : U48; H : Natural) return Version is
      (T => T, Author => Key (A), Seq => Seq, H => Hsh (H));
 
    function Put (E : Byte; F : Character; Ver : Version) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => Ver,
-      Ceiling => 0);
+      Issuer => Zero_Key, Del_TTL => 0);
 
    function Del (E : Byte; Ver : Version) return Header is
-     (K => K_Del, NS => NS, Ent => Ent (E), FH => Hsh (0), V => Ver,
-      Ceiling => 0);
+     (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => Ver,
+      Issuer => Zero_Key, Del_TTL => 0);
 
-   --  V = (0, signer, gen, h).
-   function Roster (Signer : Byte; Gen, Ceiling : U48; H : Byte) return Header is
-     (K => K_Roster, NS => NS, Ent => Ent (0), FH => Hsh (0),
-      V => (T => 0, Author => Key (Signer), Seq => Gen, H => Hsh (H)),
-      Ceiling => Ceiling);
+   --  V = (ceiling_t, signer, gen, h), Issuer = signer.
+   function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural;
+                    TTL : U48 := Del_TTL_Default) return Header is
+     (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => Ceiling, Author => Key (Signer), Seq => Gen, H => Hsh (H)),
+      Issuer => Key (Signer), Del_TTL => TTL);
 
-   --  V = (from_t, subject, rev_seq, h).
-   function Revoke (A : Byte; From_T : U48) return Header is
-     (K => K_Revoke, NS => NS, Ent => Ent (0), FH => Hsh (0),
-      V => (T => From_T, Author => Key (A), Seq => 1, H => Hsh (200 + A)),
-      Ceiling => 0);
+   --  V = (0, subject, 0, h), Issuer = signer.
+   function Grant (Issuer, Subject : Byte; H : Natural) return Header is
+     (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => 0, Author => Key (Subject), Seq => 0, H => Hsh (H)),
+      Issuer => Key (Issuer), Del_TTL => 0);
 
-   None : constant Member_Keys (1 .. 0) := [];
-   AB   : constant Member_Keys (1 .. 2) := [Key (1), Key (2)];
+   --  V = (from_t, subject, rev_seq, h), Issuer = signer.
+   function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
+     (K => K_Revoke, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => From_T, Author => Key (Subject), Seq => 1, H => Hsh (H)),
+      Issuer => Key (Issuer), Del_TTL => 0);
+
+   function New_State (Cap : Data_Size := 64; Slice : Slice_Count := 16) return State is
+     (Empty (NS, Key (Fnd), Cap, Slice));
 
    function All_Canonical (S : State) return Boolean is
      (for all I in 1 .. Kome.Frontier.Count (S) => Canonical (Held (S, I)));
@@ -84,13 +98,29 @@ procedure Test_Views with SPARK_Mode => Off is
       return R;
    end A2;
 
-   --  The fields and entities the views are compared on.
+   function Index_In (S : State; X : Header) return Natural is
+   begin
+      for I in 1 .. Kome.Frontier.Count (S) loop
+         if Held (S, I) = X then
+            return I;
+         end if;
+      end loop;
+      return 0;
+   end Index_In;
+
+   --  The fields and entities the data views are compared on.
    type Probe is record
       E : Byte;
       F : Character;
    end record;
    Probes : constant array (1 .. 6) of Probe :=
      [(1, 'n'), (1, 'a'), (1, 'z'), (2, 'n'), (3, 'n'), (0, 'n')];
+
+   --  The keys and records the authorization views are compared on.
+   type Key_List is array (Positive range <>) of Byte;
+   Keys : constant Key_List := [1, 2, 4, 6, 8, 9, 20, 21, 30];
+
+   type Header_List is array (Positive range <>) of Header;
 
    function Same_Views (A, B : State) return Boolean is
    begin
@@ -105,7 +135,8 @@ procedure Test_Views with SPARK_Mode => Off is
       return True;
    end Same_Views;
 
-   --  T5: Lemma_Cell_Unique / Lemma_Del_Unique on every pair they apply to.
+   --  T5: Lemma_Cell_Unique / Lemma_Del_Unique / Lemma_Roster_Unique on
+   --  every pair they apply to; returns how many pairs were checked.
    function Unique_Checked (S : State) return Natural is
       N : Natural := 0;
    begin
@@ -121,9 +152,8 @@ procedure Test_Views with SPARK_Mode => Off is
                   Lemma_Del_Unique (S, I, J);
                   N := N + 1;
                elsif X.K = K_Roster and then Held (S, J).K = K_Roster
-                 and then Versions_Unique (S)
-                 and then not Gen_Lt (X, Held (S, J))
-                 and then not Gen_Lt (Held (S, J), X)
+                 and then not Roster_Lt (X, Held (S, J))
+                 and then not Roster_Lt (Held (S, J), X)
                then
                   Lemma_Roster_Unique (S, I, J);
                   N := N + 1;
@@ -134,333 +164,590 @@ procedure Test_Views with SPARK_Mode => Off is
       return N;
    end Unique_Checked;
 
-   S  : State := Empty (NS, 64);
+   --  Every definition lemma on the probes (their Posts run under -gnata).
+   procedure Def_Lemmas (S : State; Void_Probes : Header_List) is
+   begin
+      for P of Probes loop
+         Lemma_Cell_Def (S, NS, Ent (P.E), Fld (P.F));
+         Lemma_Deleted_At_Def (S, NS, Ent (P.E));
+         Lemma_Exists_Def (S, NS, Ent (P.E));
+         Lemma_Exists_Cell (S, NS, Ent (P.E), Fld (P.F));
+      end loop;
+      for K of Keys loop
+         Lemma_Root_Void_Def (S, Key (K));
+         Lemma_Root_Void_Slot (S, Key (K));
+         Lemma_W_Eff_Def (S, Key (K));
+      end loop;
+      for P of Void_Probes loop
+         Lemma_Is_Void_Def (S, P);
+      end loop;
+      Lemma_Roster_Eff_Def (S);
+      Lemma_Del_TTL_Eff_Def (S);
+   end Def_Lemmas;
+
+   function Same_Auth_Views (A, B : State; Void_Probes : Header_List) return Boolean is
+   begin
+      if Roster_Eff (A) /= Roster_Eff (B) or else Del_TTL_Eff (A) /= Del_TTL_Eff (B) then
+         return False;
+      end if;
+      for K of Keys loop
+         if Root_Void (A, Key (K)) /= Root_Void (B, Key (K))
+           or else W_Eff (A, Key (K)) /= W_Eff (B, Key (K))
+         then
+            return False;
+         end if;
+      end loop;
+      for P of Void_Probes loop
+         if Is_Void (A, P) /= Is_Void (B, P) or else Revoke_Void (A, P) /= Revoke_Void (B, P) then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Same_Auth_Views;
+
    St : Status;
 
-   --  Records whose void verdict the T12 checks compare.
-   Void_Probes : array (1 .. 4) of Header;
-
-   function Same_Auth_Views (A, B : State) return Boolean is
-     (Roster_Eff (A, NS) = Roster_Eff (B, NS)
-      and then Root_Void (A, NS, Key (8)) = Root_Void (B, NS, Key (8))
-      and then Root_Void (A, NS, Key (9)) = Root_Void (B, NS, Key (9))
-      and then (for all P of Void_Probes => Is_Void (A, P) = Is_Void (B, P)));
-
    --  Apply an authorization record and check T12 around it: the lemma
-   --  chain runs (and its contracts are evaluated), and the data views on
-   --  every probe are unchanged, whatever the Status.
+   --  chain runs (and its contracts are evaluated), the data views on every
+   --  probe are unchanged whatever the Status, and root_void only grows.
    procedure Apply_Auth
-     (T : in out State; R : Header; Members : Member_Keys; Name : String;
+     (T : in out State; R : Header; Name : String; Expect : Status := OK)
+   is
+      Old : constant State := T;
+   begin
+      Apply (T, R, St);
+      Lemma_Apply_Auth_Local (Old, T, R);
+      Lemma_Apply_Keeps_Revokes (Old, T, R);
+      for P of Probes loop
+         Lemma_Views_Local (Old, T, NS, Ent (P.E), Fld (P.F));
+      end loop;
+      for K of Keys loop
+         Lemma_Root_Void_Monotone (Old, T, Key (K));
+      end loop;
+      Check ("T12: data views unchanged by " & Name & " (" & Status'Image (St) & ")",
+             St = Expect and then Same_Views (Old, T));
+   end Apply_Auth;
+
+   --  Apply a data record and check the converse: root_void, W_eff, void,
+   --  ROSTER_eff and del_ttl_eff are unchanged, through
+   --  Lemma_Apply_Data_Local and the authorization-view locality lemmas.
+   procedure Apply_Data
+     (T : in out State; R : Header; Name : String; Void_Probes : Header_List;
       Expect : Status := OK)
    is
       Old : constant State := T;
    begin
-      Apply (T, R, Members, St);
-      Lemma_Apply_Auth_Local (Old, T, R);
-      Lemma_Apply_Keeps_Revokes (Old, T);
-      for P of Probes loop
-         Lemma_Views_Local (Old, T, NS, Ent (P.E), Fld (P.F));
-         Lemma_Exists_Cell (T, NS, Ent (P.E), Fld (P.F));
+      Apply (T, R, St);
+      Lemma_Apply_Data_Local (Old, T, R);
+      Lemma_Roster_Local (Old, T);
+      Lemma_Del_TTL_Local (Old, T);
+      for K of Keys loop
+         Lemma_Root_Void_Local (Old, T, Key (K));
+         Lemma_W_Eff_Local (Old, T, Key (K));
       end loop;
-      Check ("T12: views unchanged by " & Name & " (" & Status'Image (St) & ")",
-             St = Expect and then Same_Views (Old, T));
-   end Apply_Auth;
-
-   procedure Apply_Auth (R : Header; Members : Member_Keys; Name : String;
-                         Expect : Status := OK) is
-   begin
-      Apply_Auth (S, R, Members, Name, Expect);
-   end Apply_Auth;
-
-   --  Apply a data record and check the converse: void, root_void and
-   --  ROSTER_eff are unchanged, through Lemma_Apply_Data_Local and the
-   --  authorization-view locality lemmas.
-   procedure Apply_Data (R : Header; Name : String; Expect : Status := OK) is
-      Old : constant State := S;
-   begin
-      Apply (S, R, None, St);
-      Lemma_Apply_Data_Local (Old, S, R);
-      Lemma_Roster_Local (Old, S, NS);
-      Lemma_Root_Void_Local (Old, S, NS, Key (8));
-      Lemma_Root_Void_Local (Old, S, NS, Key (9));
       for P of Void_Probes loop
-         Lemma_Void_Local (Old, S, P);
+         Lemma_Void_Local (Old, T, P);
       end loop;
-      Check ("T12: authorization views unchanged by " & Name,
-             St = Expect and then Same_Auth_Views (Old, S));
+      Check ("T12: authorization views unchanged by " & Name
+             & " (" & Status'Image (St) & ")",
+             St = Expect and then Same_Auth_Views (Old, T, Void_Probes));
    end Apply_Data;
 
-   R1  : constant Header := Roster (9, 1, 5000, 1);
-   P1  : constant Header := Put (1, 'n', V (100, 1, 1, 10));
-   P2  : constant Header := Put (1, 'n', V (200, 2, 1, 11));   --  beats P1
-   P3  : constant Header := Put (1, 'a', V (150, 1, 2, 12));   --  other field
-   P5  : constant Header := Put (2, 'n', V (120, 1, 3, 15));   --  other entity
-   D1  : constant Header := Del (1, V (300, 2, 2, 13));        --  beats P1..P3
-   D0  : constant Header := Del (1, V (50, 1, 4, 16));         --  older DEL
-   P4  : constant Header := Put (1, 'n', V (400, 1, 5, 14));   --  re-creates
-   X2  : constant Header := Revoke (2, 250);
-   P6  : constant Header := Put (3, 'n', V (260, 2, 3, 17));   --  void
-   P7  : constant Header := Put (3, 'a', V (250, 2, 4, 18));   --  void, t = from_t
-   P8  : constant Header := Put (3, 'b', V (249, 2, 5, 19));   --  not void
-   RS8 : constant Header := Roster (8, 3, 6000, 3);           --  second root
-   R2  : constant Header := Roster (9, 2, 7000, 2);           --  beats R1
-   X8  : constant Header := Revoke (8, 0);                    --  root revoked
+   --  A complete reconciliation of a list: a refused record is re-offered
+   --  (DESIGN.md §4), so apply in passes until nothing new is held.
+   function Run (L : Header_List) return State is
+      S        : State := New_State;
+      Progress : Boolean := True;
+      Dummy    : Status;
+   begin
+      while Progress loop
+         Progress := False;
+         for R of L loop
+            declare
+               Was : constant Boolean := Holds (S, R);
+            begin
+               Apply (S, R, Dummy);
+               if not Was and then Holds (S, R) then
+                  Progress := True;
+               end if;
+            end;
+         end loop;
+      end loop;
+      return S;
+   end Run;
+
+   procedure Run_All;
+
+   --  A State carries a Register_File of Writers_Max keys (256 KiB), and
+   --  under -gnata every Post evaluation copies states, so the checks run
+   --  in a task with a large stack.
+   task Runner with Storage_Size => 512 * 1024 * 1024;
+
+   task body Runner is
+   begin
+      Run_All;
+   exception
+      when E : others =>
+         Put_Line ("FAIL unexpected exception: " & Exception_Information (E));
+         Set_Exit_Status (Failure);
+   end Runner;
+
+   procedure Run_All is
+
+      RF  : constant Header := Roster (Fnd, 1, 5000, 1);
+      GF1 : constant Header := Grant (Fnd, 1, 31);
+      GF2 : constant Header := Grant (Fnd, 2, 32);
+      P1  : constant Header := Put (1, 'n', V (100, 1, 1, 10));
+      P2  : constant Header := Put (1, 'n', V (200, 2, 1, 11));   --  beats P1
+      P3  : constant Header := Put (1, 'a', V (150, 1, 2, 12));   --  other field
+      P5  : constant Header := Put (2, 'n', V (120, 1, 3, 15));   --  other entity
+      D1  : constant Header := Del (1, V (300, 2, 2, 13));        --  beats P1..P3
+      D0  : constant Header := Del (1, V (50, 1, 4, 16));         --  older DEL
+      P4  : constant Header := Put (1, 'n', V (400, 1, 5, 14));   --  re-creates
+      X2  : constant Header := Revoke (Fnd, 2, 250, 60);
+      P6  : constant Header := Put (3, 'n', V (260, 2, 3, 17));   --  void
+      P7  : constant Header := Put (3, 'a', V (250, 2, 4, 18));   --  void, t = from_t
+      P8  : constant Header := Put (3, 'b', V (249, 2, 5, 19));   --  not void
+      RS8 : constant Header := Roster (8, 3, 6000, 3);           --  second root
+      R2  : constant Header := Roster (Fnd, 2, 7000, 2);         --  beats RF
+      X8  : constant Header := Revoke (Fnd, 8, 0, 61);           --  root-voids 8
+
+      Void_Probes : constant Header_List := [P6, P7, P8, P2, P4];
+
+      S : State := New_State;
+
+   begin
+      Lemma_No_Header_Not_Canonical;
+      Check ("No_Header is not canonical", not Canonical (No_Header));
+      Check ("empty state: no cell, no DEL, nothing exists, no roster, default del_ttl",
+             not Cell (S, NS, Ent (1), Fld ('n')).Present
+             and Cell (S, NS, Ent (1), Fld ('n')).Hdr = No_Header
+             and not Deleted_At (S, NS, Ent (1)).Present
+             and not Exists (S, NS, Ent (1))
+             and not Roster_Eff (S).Present
+             and Del_TTL_Eff (S) = Del_TTL_Default
+             and Max_Ceil (S) = 0
+             and not Is_Writer (S, Key (1)));
+      Check ("empty state: a record with no grant is void, nothing root-void",
+             Is_Void (S, P1) and not Revoke_Void (S, P1)
+             and not Root_Void (S, Key (8)) and not Root_Void (S, Key (Fnd)));
+      Def_Lemmas (S, Void_Probes);
+
+      Apply_Auth (S, RF, "first roster");
+      Check ("roster held", St = OK and Holds (S, RF));
+      Check ("ROSTER_eff is the only roster", Roster_Eff (S) = (Present => True, Hdr => RF));
+      Apply_Auth (S, GF1, "GRANT of writer 1");
+      Apply_Auth (S, GF2, "GRANT of writer 2");
+      Check ("named views: maxceil and W",
+             Max_Ceil (S) = 5000 and Is_Writer (S, Key (1)) and Is_Writer (S, Key (2))
+             and W_Eff (S, Key (1)) and W_Eff (S, Key (2)) and not W_Eff (S, Key (3)));
+
+      --  (a) cell, exists, deleted_at.
+      Apply_Data (S, P1, "P1", Void_Probes);
+      Apply_Data (S, P3, "P3", Void_Probes);
+      Apply_Data (S, P5, "P5", Void_Probes);
+      Check ("cell is the held PUT",
+             Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P1)
+             and Cell (S, NS, Ent (1), Fld ('a')) = (Present => True, Hdr => P3)
+             and Cell (S, NS, Ent (2), Fld ('n')) = (Present => True, Hdr => P5));
+      Check ("absent field has no cell",
+             Cell (S, NS, Ent (1), Fld ('z')) = (Present => False, Hdr => No_Header));
+      Check ("another collection has no cell",
+             not Cell (S, (others => 8), Ent (1), Fld ('n')).Present
+             and not Exists (S, (others => 8), Ent (1)));
+      Check ("entity with a live PUT exists",
+             Exists (S, NS, Ent (1)) and Exists (S, NS, Ent (2))
+             and not Exists (S, NS, Ent (3)));
+      Check ("no held record equals No_Header", not Holds (S, No_Header));
+      Apply_Data (S, P2, "P2", Void_Probes);
+      Check ("newer PUT is the cell",
+             St = OK and Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P2));
+      Check ("no DEL yet",
+             Deleted_At (S, NS, Ent (1)) = (Present => False, V => No_Version));
+      Check ("T5: unique on every PUT/roster pair", Unique_Checked (S) = 4);
+
+      --  T12 converse with every data refusal (Known gap): Dominated,
+      --  Inadmissible (author not in W; t above maxceil).
+      Apply_Data (S, P1, "a dominated PUT", Void_Probes, Expect => Dominated);
+      Apply_Data (S, Put (1, 'q', V (100, 30, 1, 70)), "a PUT by a key not in W",
+                  Void_Probes, Expect => Inadmissible);
+      Apply_Data (S, Put (1, 'q', V (9000, 1, 9, 71)), "a PUT above maxceil",
+                  Void_Probes, Expect => Inadmissible);
+
+      Apply_Data (S, D0, "D0", Void_Probes);
+      Check ("older DEL held beside newer PUTs",
+             St = OK and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D0.V)
+             and Exists (S, NS, Ent (1)));
+      Apply_Data (S, D1, "D1", Void_Probes);
+      Check ("deleted_at is the newest DEL",
+             St = OK and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D1.V));
+      Check ("DEL removes every cell of the entity",
+             not Cell (S, NS, Ent (1), Fld ('n')).Present
+             and not Cell (S, NS, Ent (1), Fld ('a')).Present
+             and not Exists (S, NS, Ent (1)));
+      Check ("other entity untouched",
+             Cell (S, NS, Ent (2), Fld ('n')) = (Present => True, Hdr => P5)
+             and not Deleted_At (S, NS, Ent (2)).Present);
+      Apply_Data (S, D0, "a dominated DEL", Void_Probes, Expect => Dominated);
+      Apply_Data (S, P4, "P4", Void_Probes);
+      Check ("later PUT re-creates the entity",
+             Exists (S, NS, Ent (1))
+             and Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P4)
+             and not Cell (S, NS, Ent (1), Fld ('a')).Present
+             and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D1.V));
+
+      --  (b) void.
+      Check ("nothing void before any REVOKE",
+             not Is_Void (S, P2) and not Is_Void (S, P6) and not Is_Void (S, P4));
+      Apply_Auth (S, X2, "REVOKE of a writer");
+      Check ("REVOKE held", St = OK and Holds (S, X2));
+      Check ("void at t > from_t", Is_Void (S, P6) and Revoke_Void (S, P6));
+      Check ("void at t = from_t", Is_Void (S, P7));
+      Check ("not void at t < from_t", not Is_Void (S, P8) and not Is_Void (S, P2));
+      Check ("not void for another author", not Is_Void (S, P4));
+      Apply_Data (S, P6, "P6", Void_Probes);
+      Apply_Data (S, P7, "P7", Void_Probes);
+      Apply_Data (S, P8, "P8", Void_Probes);
+      Check ("void records stay held and visible as cells",
+             Cell (S, NS, Ent (3), Fld ('n')) = (Present => True, Hdr => P6)
+             and Is_Void (S, Cell (S, NS, Ent (3), Fld ('n')).Hdr)
+             and Exists (S, NS, Ent (3)));
+      Def_Lemmas (S, Void_Probes);
+
+      --  (c) ROSTER_eff and root revocation.
+      Apply_Auth (S, RS8, "roster of a second root");
+      Check ("ROSTER_eff is the greater generation across signers",
+             Roster_Eff (S) = (Present => True, Hdr => RS8) and Holds (S, RF));
+      Apply_Auth (S, R2, "newer founding roster");
+      Check ("per-signer domination: R2 replaces RF, RS8 still effective",
+             Holds (S, R2) and not Holds (S, RF)
+             and Roster_Eff (S) = (Present => True, Hdr => RS8));
+      Check ("root not void before its REVOKE", not Root_Void (S, Key (8)));
+      declare
+         Before : constant State := S;
+      begin
+         Apply_Auth (S, X8, "founding REVOKE of a root");
+         Check ("root void after the founding key's REVOKE",
+                Root_Void (S, Key (8)) and not Root_Void (S, Key (Fnd)));
+         Check ("ROSTER_eff skips the root-voided root's roster",
+                Holds (S, RS8) and Roster_Eff (S) = (Present => True, Hdr => R2));
+         for P of Void_Probes loop
+            Lemma_Void_Monotone (Before, S, P);
+         end loop;
+         Check ("REVOKE clause of void only grows",
+                Is_Void (S, P6) and Is_Void (S, P7) and not Is_Void (S, P8));
+      end;
+      Apply_Auth (S, RF, "dominated roster", Expect => Dominated);
+      Check ("dominated roster not held, ROSTER_eff unchanged",
+             not Holds (S, RF) and Roster_Eff (S) = (Present => True, Hdr => R2));
+      Apply_Auth (S, GF1, "duplicate GRANT");
+      Check ("all held records canonical and A2 holds", All_Canonical (S) and A2 (S));
+      Check ("T5: unique on every PUT/DEL/roster pair (late)", Unique_Checked (S) = 8);
+      declare
+         I : constant Natural := Index_In (S, R2);
+      begin
+         Lemma_Roster_Eff_Unique (S, I);
+         Lemma_Roster_Eff_Present (S);
+         Check ("T5: the maximal eligible roster is ROSTER_eff", I /= 0);
+      end;
+      Def_Lemmas (S, Void_Probes);
+
+      --  Design change (D2): a certified root cannot root-void anyone and
+      --  the founding key is never root_void, so with a founding roster held
+      --  ROSTER_eff is always present (it used to become None when every
+      --  signing root was revoked by anyone).
+      declare
+         T : State := S;
+      begin
+         Apply_Auth (T, Revoke (8, Fnd, 0, 62), "a certified root's REVOKE of the founding key");
+         Apply_Auth (T, Revoke (Fnd, Fnd, 1_000_000, 63), "a REVOKE of the founding key by itself");
+         Check ("the founding key is never root_void; ROSTER_eff stays the founding roster",
+                not Root_Void (T, Key (Fnd))
+                and Roster_Eff (T) = (Present => True, Hdr => R2));
+         Lemma_Roster_Eff_Present (T);
+         Def_Lemmas (T, Void_Probes);
+      end;
+
+      --  Data and authorization refusals for space (T12 both ways).
+      declare
+         T : State := New_State (Cap => 2, Slice => 2);
+         VP : constant Header_List := [P1, P5];
+      begin
+         Apply_Auth (T, RF, "roster into a small state");
+         Apply_Auth (T, GF1, "GRANT into a small state");
+         Apply_Data (T, P1, "P1 into a small state", VP);
+         Apply_Data (T, P5, "P5 into a small state", VP);
+         Check ("small state: data row and founding slice full",
+                Data_Count (T) = 2 and Slot_Count (T, 1) = 2);
+         Apply_Data (T, P3, "a PUT into a full data row", VP, Expect => No_Space);
+         Apply_Auth (T, GF2, "a GRANT into a full slice", Expect => Auth_Full);
+         Apply_Auth (T, X2, "a REVOKE into a full slice", Expect => Auth_Full);
+         Apply_Auth (T, Roster (Fnd, 2, 5000, 4), "a roster that frees its predecessor");
+         Check ("a roster that frees its predecessor fits in a full slice",
+                St = OK and not Holds (T, RF) and Holds (T, P1));
+         Apply_Data (T, Put (1, 'n', V (200, 1, 6, 72)), "a PUT that frees what it dominates", VP);
+         Check ("a PUT that frees what it dominates fits in a full row",
+                St = OK and Holds (T, Put (1, 'n', V (200, 1, 6, 72))) and not Holds (T, P1));
+         Def_Lemmas (T, VP);
+      end;
+
+      --  Equal generations across two signers are decided by h, in any order.
+      declare
+         RA : constant Header := Roster (5, 7, 100, 40);
+         RB : constant Header := Roster (6, 7, 200, 30);
+         A  : constant State := Run ([RA, RB]);
+         B  : constant State := Run ([RB, RA]);
+      begin
+         Check ("equal gen, two signers: both held, greater h is ROSTER_eff",
+                Holds (A, RA) and Holds (A, RB)
+                and Roster_Eff (A) = (Present => True, Hdr => RA)
+                and Roster_Eff (B) = (Present => True, Hdr => RA));
+         Lemma_Roster_Local (A, B);
+         Check ("T5: Lemma_Roster_Local on equal generations", A2 (A));
+      end;
+
+      --  (d) T5 across arrival orders: two states built from the same
+      --  records in different orders hold the same records, and every view
+      --  agrees.
+      declare
+         A : constant State :=
+           Run ([RF, GF1, GF2, P1, P3, P5, P2, D0, D1, P4, X2, P6, P7, P8, RS8, R2, X8]);
+         B : constant State :=
+           Run ([X8, R2, RS8, P8, P7, P6, X2, P4, D1, D0, P2, P5, P3, P1, GF2, GF1, RF]);
+      begin
+         Check ("T5: same data views from two arrival orders", Same_Views (A, B));
+         for P of Probes loop
+            Lemma_Views_Local (A, B, NS, Ent (P.E), Fld (P.F));
+         end loop;
+         Lemma_Roster_Local (A, B);
+         Lemma_Del_TTL_Local (A, B);
+         for P of Void_Probes loop
+            Lemma_Void_Local (A, B, P);
+         end loop;
+         for K of Keys loop
+            Lemma_Root_Void_Local (A, B, Key (K));
+            Lemma_W_Eff_Local (A, B, Key (K));
+         end loop;
+         Check ("T5: same authorization views from two orders",
+                Same_Auth_Views (A, B, Void_Probes)
+                and Roster_Eff (A) = (Present => True, Hdr => R2));
+      end;
+
+      --  (f) A compromised certified root (DESIGN.md §6, D2, R1, R2).
+      declare
+         M1  : constant Byte := 1;    --  granted by the founding key and by R
+         M2  : constant Byte := 2;    --  granted by H; revoked by R and re-revoked by F
+         M4  : constant Byte := 4;    --  granted by H; revoked by R
+         H   : constant Byte := 6;    --  an honest certified root
+         R   : constant Byte := 8;    --  the compromised certified root
+         K2  : constant Byte := 20;   --  granted by R only
+         K3  : constant Byte := 21;   --  granted by R after its root-void
+         Day : constant U48 := 86_400_000;
+
+         CRF : constant Header := Roster (Fnd, 1, 10_000, 11);
+         CRH : constant Header := Roster (H, 2, 9_000, 12, TTL => 200 * Day);
+         CRR : constant Header := Roster (R, U48'Last, 12_000, 13, TTL => Del_TTL_Max);
+         GFM1 : constant Header := Grant (Fnd, M1, 21);
+         GRM1 : constant Header := Grant (R, M1, 22);
+         GHM2 : constant Header := Grant (H, M2, 23);
+         GHM4 : constant Header := Grant (H, M4, 24);
+         GRK2 : constant Header := Grant (R, K2, 25);
+         GRK3 : constant Header := Grant (R, K3, 26);
+         PM1 : constant Header := Put (11, 'n', V (100, M1, 1, 41));
+         PM2 : constant Header := Put (12, 'n', V (110, M2, 1, 42));
+         PM4 : constant Header := Put (14, 'n', V (120, M4, 1, 43));
+         PK2 : constant Header := Put (15, 'n', V (130, K2, 1, 44));
+         PK3 : constant Header := Put (16, 'n', V (140, K3, 1, 45));
+         XRH : constant Header := Revoke (R, H, 0, 51);     --  R revokes the other root
+         XRF : constant Header := Revoke (R, Fnd, 0, 52);   --  ... and the founding key
+         XR1 : constant Header := Revoke (R, M1, 0, 53);    --  ... and every member
+         XR2 : constant Header := Revoke (R, M2, 0, 54);
+         XR4 : constant Header := Revoke (R, M4, 0, 55);
+         XFR : constant Header := Revoke (Fnd, R, 5_000, 56);   --  from_t ignored
+         XF2 : constant Header := Revoke (Fnd, M2, 0, 57);      --  re-signed
+
+         VP : constant Header_List := [PM1, PM2, PM4, PK2, PK3];
+         C  : State := New_State;
+      begin
+         for X of Header_List'[CRF, CRH, GFM1, GHM2, GHM4, GRM1] loop
+            Apply_Auth (C, X, "honest setup");
+         end loop;
+         for X of Header_List'[PM1, PM2, PM4] loop
+            Apply_Data (C, X, "member data", VP);
+         end loop;
+         Check ("honest: ROSTER_eff is the best roster, del_ttl_eff the max",
+                Roster_Eff (C) = (Present => True, Hdr => CRH)
+                and Del_TTL_Eff (C) = 200 * Day);
+         Check ("honest: no member void",
+                not Is_Void (C, PM1) and not Is_Void (C, PM2) and not Is_Void (C, PM4));
+
+         --  R is compromised.
+         for X of Header_List'[XRH, XRF, XR1, XR2, XR4, GRK2] loop
+            Apply_Auth (C, X, "compromised root's record");
+         end loop;
+         Apply_Data (C, PK2, "data of R's grantee", VP);
+         Apply_Auth (C, CRR, "compromised root's gen 2^48-1 roster");
+         Check ("before root-void: ROSTER_eff is R's roster, del_ttl_eff R's",
+                Roster_Eff (C) = (Present => True, Hdr => CRR)
+                and Del_TTL_Eff (C) = Del_TTL_Max);
+         Check ("before root-void: every member R revoked is void",
+                Is_Void (C, PM1) and Is_Void (C, PM2) and Is_Void (C, PM4)
+                and Revoke_Void (C, PM1));
+         Check ("before root-void: R's grantee is not void",
+                W_Eff (C, Key (K2)) and not Is_Void (C, PK2));
+         Check ("a certified root root-voids no one",
+                not Root_Void (C, Key (H)) and not Root_Void (C, Key (Fnd))
+                and not Root_Void (C, Key (R)));
+         Def_Lemmas (C, VP);
+
+         --  The founding key root-voids R.
+         declare
+            Before : constant State := C;
+         begin
+            Apply_Auth (C, XFR, "founding REVOKE of R (from_t 5000)");
+            for K of Keys loop
+               Lemma_Root_Void_Monotone (Before, C, Key (K));
+            end loop;
+         end;
+         Check ("after root-void: R is root_void whatever from_t",
+                Root_Void (C, Key (R)) and not Root_Void (C, Key (H)));
+         Check ("after root-void: ROSTER_eff is the best honest roster",
+                Holds (C, CRR) and Roster_Eff (C) = (Present => True, Hdr => CRH));
+         Check ("after root-void: del_ttl_eff ignores R's larger del_ttl",
+                Del_TTL_Eff (C) = 200 * Day);
+         Check ("after root-void: members R revoked are un-voided",
+                not Is_Void (C, PM1) and not Is_Void (C, PM2) and not Is_Void (C, PM4));
+         Check ("a member granted by the founding key and by R stays non-void",
+                W_Eff (C, Key (M1)) and not Is_Void (C, PM1));
+         Check ("after root-void: R's grantee is void through W_eff",
+                Is_Void (C, PK2) and not Revoke_Void (C, PK2) and not W_Eff (C, Key (K2))
+                and Is_Writer (C, Key (K2)));
+
+         --  Recovery step 3: the founding key re-signs R's revocation of M2.
+         declare
+            Before : constant State := C;
+         begin
+            Apply_Auth (C, XF2, "founding re-signed REVOKE of M2");
+            for P of VP loop
+               Lemma_Void_Monotone (Before, C, P);
+            end loop;
+         end;
+         Check ("a revocation the founding key re-signed still voids",
+                Is_Void (C, PM2) and Revoke_Void (C, PM2)
+                and not Is_Void (C, PM1) and not Is_Void (C, PM4));
+
+         --  R keeps granting; admission takes it (W only grows), the views
+         --  do not (W_eff).
+         declare
+            Before : constant State := C;
+         begin
+            Apply_Auth (C, GRK3, "root-voided root's new GRANT");
+            for K of Keys loop
+               Lemma_W_Eff_Monotone (Before, C, Key (K));
+            end loop;
+         end;
+         Apply_Data (C, PK3, "data of a key R granted after its root-void", VP);
+         Check ("a key R grants after its root-void is admitted and void",
+                St = OK and Holds (C, PK3) and Is_Writer (C, Key (K3))
+                and Is_Void (C, PK3) and not W_Eff (C, Key (K3)));
+         Check ("R's earlier grantee stays void", Is_Void (C, PK2));
+         Check ("all held records canonical, A2", All_Canonical (C) and A2 (C));
+         Check ("T5: unique pairs in the compromised state", Unique_Checked (C) = 8);
+         Lemma_Roster_Eff_Unique (C, Index_In (C, CRH));
+         Def_Lemmas (C, VP);
+
+         --  T5: the same records in reverse order give the same views.
+         declare
+            D : constant State :=
+              Run ([GRK3, XF2, XFR, CRR, PK3, PK2, GRK2, XR4, XR2, XR1, XRF, XRH,
+                    PM4, PM2, PM1, GRM1, GHM4, GHM2, GFM1, CRH, CRF]);
+         begin
+            Lemma_Roster_Local (C, D);
+            Lemma_Del_TTL_Local (C, D);
+            for K of Keys loop
+               Lemma_Root_Void_Local (C, D, Key (K));
+               Lemma_W_Eff_Local (C, D, Key (K));
+            end loop;
+            for P of VP loop
+               Lemma_Void_Local (C, D, P);
+            end loop;
+            Check ("T5: compromised-root views agree in reverse order",
+                   Same_Auth_Views (C, D, VP) and Kome.Frontier.Count (C) = Kome.Frontier.Count (D));
+         end;
+
+         --  Only a root-voided roster: del_ttl_eff is the default and
+         --  ROSTER_eff is absent.
+         declare
+            E : constant State := Run ([CRR, XFR]);
+         begin
+            Check ("only a root-voided roster: del_ttl_eff default, ROSTER_eff absent",
+                   Holds (E, CRR) and Del_TTL_Eff (E) = Del_TTL_Default
+                   and Roster_Eff (E) = (Present => False, Hdr => No_Header));
+            Def_Lemmas (E, VP);
+         end;
+      end;
+
+      --  A stale same-signer roster (lower gen, higher ceiling) stays held
+      --  under the product order (R4) and never becomes ROSTER_eff.
+      declare
+         RH2 : constant Header := Roster (6, 3, 9_000, 80);
+         RHS : constant Header := Roster (6, 2, 15_000, 81);
+         T   : State := New_State;
+      begin
+         Apply_Auth (T, Roster (Fnd, 1, 1000, 82), "founding roster");
+         Apply_Auth (T, RH2, "newer roster of H");
+         Apply_Auth (T, RHS, "stale roster of H, higher ceiling");
+         Check ("stale same-signer roster held beside the newer one",
+                St = OK and Holds (T, RH2) and Holds (T, RHS) and Max_Ceil (T) = 15_000);
+         Check ("stale same-signer roster does not become ROSTER_eff",
+                Roster_Eff (T) = (Present => True, Hdr => RH2));
+         Lemma_Roster_Eff_Unique (T, Index_In (T, RH2));
+         Check ("T5: unique roster pairs with an antichain", Unique_Checked (T) = 3);
+      end;
+
+      --  (g) Hypothesis boundary. Two canonical rosters with the same V and
+      --  different del_ttl violate A2; neither dominates the other, so both
+      --  are held. The full tie-break still picks one header in every order.
+      declare
+         RA : constant Header := Roster (5, 3, 1000, 50);
+         RB : constant Header := (RA with delta Del_TTL => Del_TTL_Max);
+         Q0 : constant Header := Put (4, 'n', V (10, 1, 1, 90));
+         A  : constant State := Run ([RF, GF1, Q0, RA, RB]);
+         B  : constant State := Run ([RB, RA, Q0, GF1, RF]);
+         T  : State := A;
+      begin
+         Check ("boundary: equal-V rosters are both held, A2 fails",
+                Holds (A, RA) and Holds (A, RB) and Canonical (RA) and Canonical (RB)
+                and not A2 (A) and not A2 (B));
+         Lemma_Roster_Local (A, B);
+         Lemma_Del_TTL_Local (A, B);
+         Check ("boundary: ROSTER_eff is the same header in both orders",
+                Roster_Eff (A) = (Present => True, Hdr => RB)
+                and Roster_Eff (B) = (Present => True, Hdr => RB)
+                and Del_TTL_Eff (A) = Del_TTL_Max and Del_TTL_Eff (B) = Del_TTL_Max);
+         Apply_Data (T, Q0, "an equal canonical PUT (a duplicate)", [Q0]);
+         Check ("boundary: equal-V canonical PUTs are one record",
+                St = OK and Unique_Checked (T) = 4);
+         Lemma_Cell_Local (A, B, NS, Ent (4), Fld ('n'));
+         Check ("boundary: cell is the same header in both orders",
+                Cell (A, NS, Ent (4), Fld ('n')) = (Present => True, Hdr => Q0)
+                and Cell (B, NS, Ent (4), Fld ('n')) = (Present => True, Hdr => Q0));
+      end;
+
+      --  far(p): advisory, with no overflow at the top of U48.
+      Check ("far: above now + slack",
+             Is_Far (P4, 300, 50) and not Is_Far (P4, 350, 50)
+             and not Is_Far (P4, 400, 0) and Is_Far (P4, 399, 0));
+      Check ("far: no overflow at the top of the range",
+             not Is_Far (P4, U48'Last, U48'Last)
+             and not Is_Far ((P4 with delta V => V (U48'Last, 1, 1, 1)), U48'Last, 0)
+             and Is_Far ((P4 with delta V => V (U48'Last, 1, 1, 1)), U48'Last - 1, 0));
+
+      if Failed then
+         Set_Exit_Status (Failure);
+      end if;
+   end Run_All;
 
 begin
-   Void_Probes := [P6, P7, P8, P2];
-   Check ("empty state: no cell, no DEL, nothing exists, no roster",
-          not Cell (S, NS, Ent (1), Fld ('n')).Present
-          and Cell (S, NS, Ent (1), Fld ('n')).Hdr = No_Header
-          and not Deleted_At (S, NS, Ent (1)).Present
-          and not Exists (S, NS, Ent (1))
-          and not Roster_Eff (S, NS).Present
-          and not Is_Void (S, P1));
-
-   Apply_Auth (R1, AB, "first roster");
-   Check ("roster held", St = OK and Holds (S, R1));
-   Check ("ROSTER_eff is the only roster",
-          Roster_Eff (S, NS) = (Present => True, Hdr => R1));
-   Check ("ROSTER_eff of another collection is absent",
-          not Roster_Eff (S, Other).Present);
-
-   --  (a) cell, exists, deleted_at.
-   Apply_Data (P1, "P1");
-   Apply_Data (P3, "P3");
-   Apply_Data (P5, "P5");
-   Check ("cell is the held PUT",
-          Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P1)
-          and Cell (S, NS, Ent (1), Fld ('a')) = (Present => True, Hdr => P3)
-          and Cell (S, NS, Ent (2), Fld ('n')) = (Present => True, Hdr => P5));
-   Check ("absent field has no cell",
-          Cell (S, NS, Ent (1), Fld ('z')) = (Present => False, Hdr => No_Header));
-   Check ("another collection has no cell",
-          not Cell (S, Other, Ent (1), Fld ('n')).Present
-          and not Exists (S, Other, Ent (1)));
-   Check ("entity with a live PUT exists",
-          Exists (S, NS, Ent (1)) and Exists (S, NS, Ent (2))
-          and not Exists (S, NS, Ent (3)));
-   Apply_Data (P2, "P2");
-   Check ("newer PUT is the cell",
-          St = OK and Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P2));
-   Check ("no DEL yet", Deleted_At (S, NS, Ent (1)) = (Present => False, V => No_Version));
-   Check ("T5: unique on every PUT/roster pair", Unique_Checked (S) = 4);
-
-   Apply_Data (D0, "D0");
-   Check ("older DEL held beside newer PUTs",
-          St = OK and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D0.V)
-          and Exists (S, NS, Ent (1)));
-   Apply_Data (D1, "D1");
-   Check ("deleted_at is the newest DEL",
-          St = OK and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D1.V));
-   Check ("DEL removes every cell of the entity",
-          not Cell (S, NS, Ent (1), Fld ('n')).Present
-          and not Cell (S, NS, Ent (1), Fld ('a')).Present
-          and not Exists (S, NS, Ent (1)));
-   Check ("other entity untouched",
-          Cell (S, NS, Ent (2), Fld ('n')) = (Present => True, Hdr => P5)
-          and not Deleted_At (S, NS, Ent (2)).Present);
-   Apply_Data (P4, "P4");
-   Check ("later PUT re-creates the entity",
-          Exists (S, NS, Ent (1))
-          and Cell (S, NS, Ent (1), Fld ('n')) = (Present => True, Hdr => P4)
-          and not Cell (S, NS, Ent (1), Fld ('a')).Present
-          and Deleted_At (S, NS, Ent (1)) = (Present => True, V => D1.V));
-
-   --  (b) void.
-   Check ("nothing void before any REVOKE",
-          not Is_Void (S, P2) and not Is_Void (S, P6) and not Is_Void (S, P4));
-   Apply_Auth (X2, None, "REVOKE of a writer");
-   Check ("REVOKE held", St = OK and Holds (S, X2));
-   Check ("void at t > from_t", Is_Void (S, P6));
-   Check ("void at t = from_t", Is_Void (S, P7));
-   Check ("not void at t < from_t", not Is_Void (S, P8) and not Is_Void (S, P2));
-   Check ("not void for another author", not Is_Void (S, P4));
-   Check ("not void in another collection",
-          not Is_Void (S, (P6 with delta NS => Other)));
-   Apply_Data (P6, "P6");
-   Apply_Data (P7, "P7");
-   Apply_Data (P8, "P8");
-   Check ("void records stay held and visible as cells",
-          Cell (S, NS, Ent (3), Fld ('n')) = (Present => True, Hdr => P6)
-          and Is_Void (S, Cell (S, NS, Ent (3), Fld ('n')).Hdr)
-          and Exists (S, NS, Ent (3)));
-
-   --  (c) ROSTER_eff and root revocation.
-   Apply_Auth (RS8, AB, "roster of a second root");
-   Check ("ROSTER_eff is the greater generation across signers",
-          Roster_Eff (S, NS) = (Present => True, Hdr => RS8)
-          and Holds (S, R1));
-   Apply_Auth (R2, AB, "newer roster of the first root");
-   Check ("per-signer domination: R2 replaces R1, RS8 still effective",
-          Holds (S, R2) and not Holds (S, R1)
-          and Roster_Eff (S, NS) = (Present => True, Hdr => RS8));
-   Check ("root not void before its REVOKE", not Root_Void (S, NS, Key (8)));
-   declare
-      Before : constant State := S;
-      type List is array (Positive range <>) of Header;
-      Ps : constant List := [P6, P7, P8, P2, P4];
-   begin
-      Apply_Auth (X8, None, "REVOKE of a root");
-      Check ("root void after its REVOKE",
-             Root_Void (S, NS, Key (8)) and not Root_Void (S, NS, Key (9)));
-      Check ("ROSTER_eff skips the revoked root's roster",
-             Holds (S, RS8) and Roster_Eff (S, NS) = (Present => True, Hdr => R2));
-      for P of Ps loop
-         if Is_Void (Before, P) then
-            Lemma_Void_Monotone (Before, S, P);
-         end if;
-      end loop;
-      Check ("void only grows", Is_Void (S, P6) and Is_Void (S, P7) and not Is_Void (S, P8));
-   end;
-   Apply_Auth (R1, AB, "dominated roster", Expect => Dominated);
-   Check ("dominated roster not held, ROSTER_eff unchanged",
-          not Holds (S, R1) and Roster_Eff (S, NS) = (Present => True, Hdr => R2));
-   Check ("all held records canonical and A2 holds", All_Canonical (S) and A2 (S));
-   Check ("T5: unique on every PUT/DEL/roster pair (late)", Unique_Checked (S) = 8);
-   declare
-      I : Natural := 0;
-   begin
-      for K in 1 .. Kome.Frontier.Count (S) loop
-         if Held (S, K) = R2 then
-            I := K;
-         end if;
-      end loop;
-      Lemma_Roster_Eff_Unique (S, NS, I);
-      Check ("T5: the maximal eligible roster is ROSTER_eff", I /= 0);
-   end;
-
-   --  (f) every root revoked: ROSTER_eff is None.
-   declare
-      T : State := S;
-   begin
-      Apply_Auth (T, Revoke (9, 1_000_000), None, "REVOKE of the last root");
-      Check ("every root revoked (even with a far from_t): ROSTER_eff absent",
-             Holds (T, R2) and Holds (T, RS8)
-             and Root_Void (T, NS, Key (9))
-             and Roster_Eff (T, NS) = (Present => False, Hdr => No_Header));
-   end;
-
-   --  No_Space: a full state refuses a REVOKE and every view is unchanged.
-   declare
-      T : State := Empty (NS, 2);
-   begin
-      Apply_Auth (T, R1, AB, "roster into a small state");
-      Apply (T, P1, None, St);
-      Check ("small state full", St = OK and Kome.Frontier.Count (T) = 2);
-      Apply_Auth (T, X2, None, "REVOKE into a full state", Expect => No_Space);
-      Apply_Auth (T, RS8, AB, "roster into a full state", Expect => No_Space);
-      Apply_Auth (T, R2, AB, "dominating roster into a full state");
-      Check ("a roster that frees its predecessor fits",
-             Holds (T, R2) and not Holds (T, R1) and Holds (T, P1));
-   end;
-
-   --  Equal generations across two signers are decided by h, in any order.
-   declare
-      RA : constant Header := Roster (5, 7, 100, 40);
-      RB : constant Header := Roster (6, 7, 200, 30);
-      A  : State := Empty (NS, 8);
-      B  : State := Empty (NS, 8);
-   begin
-      Apply (A, RA, AB, St);
-      Apply (A, RB, AB, St);
-      Apply (B, RB, AB, St);
-      Apply (B, RA, AB, St);
-      Check ("equal gen, two signers: both held, greater h is ROSTER_eff",
-             Holds (A, RA) and Holds (A, RB)
-             and Roster_Eff (A, NS) = (Present => True, Hdr => RA)
-             and Roster_Eff (B, NS) = (Present => True, Hdr => RA));
-      Lemma_Roster_Local (A, B, NS);
-      Check ("T5: Lemma_Roster_Local on equal generations", A2 (A));
-   end;
-
-   --  (d) T5 across arrival orders: two states built from the same records
-   --  in different orders hold the same data, and every view agrees.
-   declare
-      type List is array (Positive range <>) of Header;
-      procedure Build (T : in out State; L : List) is
-         Dummy : Status;
-      begin
-         for R of L loop
-            if R.K = K_Roster then
-               Apply (T, R, AB, Dummy);
-            else
-               Apply (T, R, None, Dummy);
-            end if;
-         end loop;
-      end Build;
-      A : State := Empty (NS, 64);
-      B : State := Empty (NS, 64);
-   begin
-      Build (A, [R1, P1, P3, P5, P2, D0, D1, P4, X2, P6, P7, P8, RS8, R2, X8]);
-      Build (B, [R2, RS8, X8, X2, P8, P7, P6, P4, D1, D0, P2, P5, P3, P1, R1]);
-      Check ("T5: same views from two arrival orders", Same_Views (A, B));
-      for P of Probes loop
-         Lemma_Views_Local (A, B, NS, Ent (P.E), Fld (P.F));
-      end loop;
-      Check ("T5: Lemma_Views_Local holds on the two orders", True);
-      Lemma_Roster_Local (A, B, NS);
-      Lemma_Void_Local (A, B, P6);
-      Lemma_Void_Local (A, B, P8);
-      Check ("T5: same ROSTER_eff and void from two orders",
-             A2 (A)
-             and Roster_Eff (A, NS) = Roster_Eff (B, NS)
-             and Roster_Eff (A, NS) = (Present => True, Hdr => R2)
-             and Is_Void (A, P6) = Is_Void (B, P6)
-             and Is_Void (A, P8) = Is_Void (B, P8));
-   end;
-
-   --  (g) Hypothesis boundary. Records that differ only outside V violate
-   --  A2; both are held (neither dominates the other). The views' presence
-   --  and version are still order-independent (the unconditional part of
-   --  Lemma_Cell_Local / Lemma_Roster_Local), which is all the lemmas claim.
-   declare
-      type List is array (Positive range <>) of Header;
-      procedure Build (T : in out State; L : List) is
-      begin
-         for R of L loop
-            Apply (T, R, (if R.K = K_Roster then AB else None), St);
-         end loop;
-      end Build;
-      Q0 : constant Header := Put (4, 'n', V (10, 1, 1, 90));
-      Q1 : constant Header := (Q0 with delta Ceiling => 77);   --  not canonical
-      RA : constant Header := Roster (5, 3, 1000, 50);
-      RB : constant Header := (RA with delta Ceiling => 2000);  --  canonical, same V
-      A  : State := Empty (NS, 8);
-      B  : State := Empty (NS, 8);
-   begin
-      Build (A, [R1, Q0, Q1, RA, RB]);
-      Build (B, [R1, Q1, Q0, RB, RA]);
-      Check ("boundary: equal-V records are all held",
-             Holds (A, Q0) and Holds (A, Q1) and Holds (A, RA) and Holds (A, RB)
-             and not Canonical (Q1) and Canonical (RA) and Canonical (RB));
-      Check ("boundary: A2 fails, PUTs not all canonical",
-             not A2 (A) and not A2 (B) and not All_Canonical (A));
-      Lemma_Cell_Local (A, B, NS, Ent (4), Fld ('n'));
-      Lemma_Data_Local (A, B, NS, Ent (4));
-      Lemma_Roster_Local (A, B, NS);
-      Check ("boundary: cell present with the same version in both orders",
-             Cell (A, NS, Ent (4), Fld ('n')).Present
-             and Cell (B, NS, Ent (4), Fld ('n')).Present
-             and Cell (A, NS, Ent (4), Fld ('n')).Hdr.V = Q0.V
-             and Cell (B, NS, Ent (4), Fld ('n')).Hdr.V = Q0.V);
-      Check ("boundary: ROSTER_eff has the same version in both orders",
-             Roster_Eff (A, NS).Present
-             and Roster_Eff (A, NS).Hdr.V = RA.V
-             and Roster_Eff (B, NS).Hdr.V = RA.V);
-      Check ("boundary: Lemma_Cell_Unique gives equal versions on the pair",
-             Unique_Checked (A) = 4);
-   end;
-
-   --  far(p): advisory, with no overflow at the top of U48.
-   Check ("far: above now + slack",
-          Is_Far (P4, 300, 50) and not Is_Far (P4, 350, 50)
-          and not Is_Far (P4, 400, 0) and Is_Far (P4, 399, 0));
-   Check ("far: no overflow at the top of the range",
-          not Is_Far (P4, U48'Last, U48'Last)
-          and not Is_Far ((P4 with delta V => V (U48'Last, 1, 1, 1)), U48'Last, 0)
-          and Is_Far ((P4 with delta V => V (U48'Last, 1, 1, 1)), U48'Last - 1, 0));
-
-   if Failed then
-      Set_Exit_Status (Failure);
-   end if;
+   null;
 end Test_Views;

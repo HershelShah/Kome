@@ -2,26 +2,12 @@ pragma Ada_2022;
 package body Kome.Digest with SPARK_Mode is
 
    ----------------------------------------------------------------------
-   --  Congruence of Add and Sub, and transitivity of "=" on Acc. Ada "="
-   --  on Acc is element-wise, so the prover neither substitutes equal
-   --  accumulators inside Add or Sub nor chains two equalities by itself;
-   --  these go through the integer model (Value is a function of the
-   --  limbs, and equal Values mean equal accumulators).
+   --  Transitivity of "=" on Acc. Ada "=" on Acc is element-wise, so the
+   --  prover does not always chain two equalities by itself; this goes
+   --  through the integer model (Value is a function of the limbs, and
+   --  equal Values mean equal accumulators). The congruences of Add and
+   --  Sub are Kome.Accumulator's.
    ----------------------------------------------------------------------
-
-   procedure Lemma_Add_Congruent (X1, X2, Y1, Y2 : Acc) is
-   begin
-      Lemma_Value_Congruent (X1, X2);
-      Lemma_Value_Congruent (Y1, Y2);
-      Lemma_Value_Injective (Add (X1, Y1), Add (X2, Y2));
-   end Lemma_Add_Congruent;
-
-   procedure Lemma_Sub_Congruent (X1, X2, Y1, Y2 : Acc) is
-   begin
-      Lemma_Value_Congruent (X1, X2);
-      Lemma_Value_Congruent (Y1, Y2);
-      Lemma_Value_Injective (Sub (X1, Y1), Sub (X2, Y2));
-   end Lemma_Sub_Congruent;
 
    procedure Lemma_Eq_Trans (A, B, C : Acc)
      with Ghost, Global => null,
@@ -410,6 +396,22 @@ package body Kome.Digest with SPARK_Mode is
                       Add (Sum_Of (L2, 1, N - 1), A));
    end Lemma_Sum_Delete;
 
+   function Is_Perm
+     (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count) return Boolean
+   is (L1'First = 1 and then L2'First = 1 and then M'First = 1
+       and then N <= L1'Last and then N <= L2'Last and then N <= M'Last
+       and then (for all I in 1 .. N =>
+                   M (I) <= N and then L2 (M (I)) = L1 (I))
+       and then (for all I in 1 .. N =>
+                   (for all K in 1 .. N =>
+                      (if I /= K then M (I) /= M (K)))));
+
+   procedure Lemma_Is_Perm_Intro
+     (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count) is null;
+
+   procedure Lemma_Is_Perm_Elim
+     (L1, L2 : Hash_Array; M : Index_Map; N : Elem_Count) is null;
+
    --  Induction on N: L1 (N) sits at J = M (N) in L2. Deleting it from L2
    --  (L3) and renumbering M past J (M3) leaves a permutation of
    --  L1 (1 .. N - 1); the recursive call sums that, Lemma_Sum_Delete puts
@@ -636,10 +638,14 @@ package body Kome.Digest with SPARK_Mode is
      with Ghost, Global => null,
           Pre => L'First = 1 and then K <= L'Length / Block_Elems;
 
+   --  Every full block's prefix, then the total (D15).
    function Prefix_Valid (L : Hash_Array; P : Acc_Array) return Boolean is
      (L'First = 1 and then P'First = 1
-      and then P'Length = L'Length / Block_Elems
-      and then (for all K in P'Range => P (K) = Block_Prefix (L, K)));
+      and then P'Length = L'Length / Block_Elems + 1
+      and then (for all K in 1 .. P'Last - 1 => P (K) = Block_Prefix (L, K))
+      and then P (P'Last) = Sum_Of (L, 1, L'Length));
+
+   procedure Lemma_Prefix_Total (L : Hash_Array; P : Acc_Array) is null;
 
    procedure Build_Prefix (L : Hash_Array; P : out Acc_Array) is
       --  Proved; at run time only the Pre and Post are evaluated.
@@ -659,12 +665,12 @@ package body Kome.Digest with SPARK_Mode is
          Lemma_Add_Congruent (X1, X2, Y, Y);
       end Step;
 
-      R : Acc := Zero;
+      NB : constant Natural := L'Length / Block_Elems;
+      R  : Acc := Zero;
    begin
       P := [others => Zero];
-      --  Block B covers L (64·(B - 1) + 1 .. 64·B). The elements after the
-      --  last full block have no stored prefix (Range_Sum adds them).
-      for B in 1 .. L'Length / Block_Elems loop
+      --  Block B covers L (64·(B - 1) + 1 .. 64·B).
+      for B in 1 .. NB loop
          pragma Assert (R = Block_Prefix (L, B - 1));
          for J in Block_Elems * (B - 1) + 1 .. Block_Elems * B loop
             Step (R, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
@@ -679,21 +685,74 @@ package body Kome.Digest with SPARK_Mode is
          pragma Loop_Invariant
            (for all K in 1 .. B => P (K) = Block_Prefix (L, K));
       end loop;
+      --  The tail after the last full block, then the total P_end.
+      pragma Assert (R = Sum_Of (L, 1, Block_Elems * NB));
+      for J in Block_Elems * NB + 1 .. L'Length loop
+         Step (R, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
+         R := Add (R, Elem_Acc (L (J)));
+         pragma Loop_Invariant (R = Sum_Of (L, 1, J));
+         pragma Loop_Invariant
+           (for all K in 1 .. NB => P (K) = Block_Prefix (L, K));
+      end loop;
+      pragma Assert (R = Sum_Of (L, 1, L'Length));
+      P (NB + 1) := R;
    end Build_Prefix;
 
-   function Range_Sum
-     (L : Hash_Array; P : Acc_Array; Lo : Lo_Bound; Hi : Elem_Count) return Acc
+   --  The two-accumulator identity of §8. With X0 = Pre (a), S the range
+   --  sum, Xb the terms end b walked backward and Ya those end a walked
+   --  backward: Plus = ((X0 + S) + Xb) + Ya and Minus = (X0 + Ya) + Xb, so
+   --  Plus - Minus = S.
+   procedure Lemma_Plus_Minus (X0, S, Xb, Ya : Acc)
+     with Ghost, Global => null,
+          Post => Sub (Add (Add (Add (X0, S), Xb), Ya),
+                       Add (Add (X0, Ya), Xb)) = S;
+
+   procedure Lemma_Plus_Minus (X0, S, Xb, Ya : Acc) is
+      Mi : constant Acc := Add (Add (X0, Ya), Xb);
+      Pl : constant Acc := Add (Add (Add (X0, S), Xb), Ya);
+   begin
+      --  Pl = ((X0 + S) + Ya) + Xb
+      Lemma_Add_Exchange (Add (X0, S), Xb, Ya);
+      --     = ((X0 + Ya) + S) + Xb
+      Lemma_Add_Exchange (X0, S, Ya);
+      Lemma_Add_Congruent
+        (Add (Add (X0, S), Ya), Add (Add (X0, Ya), S), Xb, Xb);
+      Lemma_Eq_Trans (Pl, Add (Add (Add (X0, S), Ya), Xb),
+                      Add (Add (Add (X0, Ya), S), Xb));
+      --     = ((X0 + Ya) + Xb) + S = Mi + S = S + Mi
+      Lemma_Add_Exchange (Add (X0, Ya), S, Xb);
+      Lemma_Eq_Trans (Pl, Add (Add (Add (X0, Ya), S), Xb), Add (Mi, S));
+      Lemma_Add_Comm (Mi, S);
+      Lemma_Eq_Trans (Pl, Add (Mi, S), Add (S, Mi));
+      --  Pl - Mi = (S + Mi) - Mi = S
+      Lemma_Sub_Congruent (Pl, Add (S, Mi), Mi, Mi);
+      Lemma_Sub_Add (S, Mi);
+      Lemma_Eq_Trans (Sub (Pl, Mi), Sub (Add (S, Mi), Mi), S);
+   end Lemma_Plus_Minus;
+
+   procedure Range_Sum
+     (L      : Hash_Array;
+      P      : Acc_Array;
+      Lo     : Lo_Bound;
+      Hi     : Elem_Count;
+      Result : out Acc;
+      Adds   : out Add_Count;
+      Subs   : out Natural)
    is
       --  Proved; at run time only Range_Sum's own Pre and Post (in the
-      --  spec) are evaluated: the ghost steps below, and Prefix_Upto's
-      --  contract, would each recompute sums over the whole list.
+      --  spec) are evaluated: the ghost steps below, and Start's contract,
+      --  would each recompute sums over the whole list. The counters are
+      --  not ghost: they run, and the test checks them (they are the
+      --  calls made by the routing discipline below, not by proof).
       pragma Assertion_Policy
         (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore,
          Pre => Ignore, Post => Ignore);
 
-      --  The congruence step, declared here so that the Ignore policy
-      --  above applies to it and its calls are not executed (the policy
-      --  of a ghost call is that of the called subprogram).
+      --  The ghost steps, declared here so that the Ignore policy above
+      --  applies to them and their calls are not executed (the policy of a
+      --  ghost call is that of the called subprogram).
+
+      --  One forward term: R = X gives R + Y = X + Y.
       procedure Step (X1, X2, Y : Acc)
         with Ghost, Global => null,
              Pre  => X1 = X2,
@@ -704,84 +763,254 @@ package body Kome.Digest with SPARK_Mode is
          Lemma_Add_Congruent (X1, X2, Y, Y);
       end Step;
 
-      --  Upper = X + Y, Lower = X, with X = Σ L (1 .. Lo - 1) and
-      --  Y = Σ L (Lo .. Hi); so Upper - Lower = (Y + X) - X = Y.
-      procedure Prove_Difference (Upper, Lower : Acc)
-        with Ghost,
-             Pre  => Lo <= Hi + 1 and then Hi <= L'Last and then L'First = 1
-                     and then Upper = Sum_Of (L, 1, Hi)
-                     and then Lower = Sum_Of (L, 1, Lo - 1),
-             Post => Sub (Upper, Lower) = Sum_Of (L, Lo, Hi);
-
-      procedure Prove_Difference (Upper, Lower : Acc) is
-      begin
-         Lemma_Sum_Split (L, 1, Lo - 1, Hi);
-         Lemma_Add_Comm (Sum_Of (L, 1, Lo - 1), Sum_Of (L, Lo, Hi));
-         Lemma_Sub_Add (Sum_Of (L, Lo, Hi), Sum_Of (L, 1, Lo - 1));
-         Lemma_Sub_Congruent
-           (Upper, Add (Sum_Of (L, Lo, Hi), Sum_Of (L, 1, Lo - 1)),
-            Lower, Sum_Of (L, 1, Lo - 1));
-      end Prove_Difference;
-
-      --  Undo one step of the sum: R = X + Y gives R - Y = X.
-      procedure Back_Step (R, X, Y : Acc)
+      --  A = B and B = C give A = C.
+      procedure Trans (A, B, C : Acc)
         with Ghost, Global => null,
-             Pre  => R = Add (X, Y),
-             Post => Sub (R, Y) = X;
+             Pre  => A = B and then B = C,
+             Post => A = C;
 
-      procedure Back_Step (R, X, Y : Acc) is
+      procedure Trans (A, B, C : Acc) is
       begin
-         Lemma_Sub_Add (X, Y);
-         Lemma_Sub_Congruent (R, Add (X, Y), Y, Y);
-         Lemma_Eq_Trans (Sub (R, Y), Sub (Add (X, Y), Y), X);
-      end Back_Step;
+         Lemma_Eq_Trans (A, B, C);
+      end Trans;
 
-      --  ACC of L (1 .. X), from the nearest stored block boundary: X =
-      --  64·q + r; when r > 32 and block q + 1 is stored, subtract the
-      --  64 - r < 32 elements above X from P (q + 1); otherwise add the
-      --  r <= 32 elements above 64·q to P (q) (r <= 63 in the tail after
-      --  the last full block, which has no stored prefix above it).
-      function Prefix_Upto (X : Elem_Count) return Acc
+      --  The only way this body adds: R := R + E, and one more Add call
+      --  counted in C. Review invariant (not provable, see the spec
+      --  header): no Add or Sub appears in Range_Sum outside Add_Term and
+      --  Sub_Term, and Adds and Subs are set only from their counters, so
+      --  the counts are the calls made.
+      procedure Add_Term (R : in out Acc; E : Acc; C : in out Natural)
+        with Global => null,
+             Pre  => C < Block_Elems,
+             Post => R = Add (R'Old, E) and then C = C'Old + 1;
+
+      procedure Add_Term (R : in out Acc; E : Acc; C : in out Natural) is
+      begin
+         R := Add (R, E);
+         C := C + 1;
+      end Add_Term;
+
+      --  The only way this body subtracts: R := X - Y, counted in C.
+      procedure Sub_Term (R : out Acc; X, Y : Acc; C : in out Natural)
+        with Global => null,
+             Pre  => C < Natural'Last,
+             Post => R = Sub (X, Y) and then C = C'Old + 1;
+
+      procedure Sub_Term (R : out Acc; X, Y : Acc; C : in out Natural) is
+      begin
+         R := Sub (X, Y);
+         C := C + 1;
+      end Sub_Term;
+
+      --  R = C gives R = C + 0 (an accumulator before its first term).
+      procedure Zero_Step (R, C : Acc)
+        with Ghost, Global => null,
+             Pre  => R = C,
+             Post => R = Add (C, Zero);
+
+      procedure Zero_Step (R, C : Acc) is
+      begin
+         Lemma_Add_Zero (C);
+         Lemma_Eq_Trans (R, C, Add (C, Zero));
+      end Zero_Step;
+
+      --  One term added to an accumulator C + S: (C + S) + E = C + (S + E).
+      procedure Assoc_Step (R, C, S, E : Acc)
+        with Ghost, Global => null,
+             Pre  => R = Add (C, S),
+             Post => Add (R, E) = Add (C, Add (S, E));
+
+      procedure Assoc_Step (R, C, S, E : Acc) is
+      begin
+         Lemma_Add_Congruent (R, Add (C, S), E, E);
+         Lemma_Add_Assoc (C, S, E);
+         Lemma_Eq_Trans (Add (R, E), Add (Add (C, S), E), Add (C, Add (S, E)));
+      end Assoc_Step;
+
+      --  The end of the computation: with Plus = Pre (HB) + Σ (A + 1 .. HA)
+      --  and Minus = Pre (HA) + Σ (B + 1 .. HB), Plus - Minus is the range
+      --  sum Σ (A + 1 .. B) (Lemma_Sum_Split three times, then
+      --  Lemma_Plus_Minus).
+      procedure Finish
+        (LL : Hash_Array; Plus, Minus : Acc; A, B, HA, HB : Elem_Count)
+        with Ghost, Global => null,
+             Pre  => LL'First = 1 and then A <= B and then B <= HB
+                     and then A <= HA and then HB <= LL'Last
+                     and then HA <= LL'Last
+                     and then Plus = Add (Sum_Of (LL, 1, HB),
+                                          Sum_Of (LL, A + 1, HA))
+                     and then Minus = Add (Sum_Of (LL, 1, HA),
+                                           Sum_Of (LL, B + 1, HB)),
+             Post => Sub (Plus, Minus) = Sum_Of (LL, A + 1, B);
+
+      procedure Finish
+        (LL : Hash_Array; Plus, Minus : Acc; A, B, HA, HB : Elem_Count)
+      is
+         PA : constant Acc := Sum_Of (LL, 1, A);
+         PB : constant Acc := Sum_Of (LL, 1, B);
+         S  : constant Acc := Sum_Of (LL, A + 1, B);
+         X  : constant Acc := Sum_Of (LL, B + 1, HB);
+         Y  : constant Acc := Sum_Of (LL, A + 1, HA);
+      begin
+         Lemma_Sum_Split (LL, 1, B, HB);
+         Lemma_Sum_Split (LL, 1, A, HA);
+         Lemma_Sum_Split (LL, 1, A, B);
+         --  Plus = ((PA + S) + X) + Y
+         Lemma_Add_Congruent (Sum_Of (LL, 1, HB), Add (PB, X), Y, Y);
+         Lemma_Eq_Trans (Plus, Add (Sum_Of (LL, 1, HB), Y), Add (Add (PB, X), Y));
+         Lemma_Add_Congruent (PB, Add (PA, S), X, X);
+         Lemma_Add_Congruent (Add (PB, X), Add (Add (PA, S), X), Y, Y);
+         Lemma_Eq_Trans (Plus, Add (Add (PB, X), Y),
+                         Add (Add (Add (PA, S), X), Y));
+         --  Minus = (PA + Y) + X
+         Lemma_Add_Congruent (Sum_Of (LL, 1, HA), Add (PA, Y), X, X);
+         Lemma_Eq_Trans (Minus, Add (Sum_Of (LL, 1, HA), X),
+                         Add (Add (PA, Y), X));
+         Lemma_Plus_Minus (PA, S, X, Y);
+         Lemma_Sub_Congruent (Plus, Add (Add (Add (PA, S), X), Y),
+                              Minus, Add (Add (PA, Y), X));
+         Lemma_Eq_Trans (Sub (Plus, Minus),
+                         Sub (Add (Add (Add (PA, S), X), Y),
+                              Add (Add (PA, Y), X)),
+                         S);
+      end Finish;
+
+      --  Pre (Start_Pos (X, n)), read from P: the block boundary below X
+      --  (Zero for 0), the one above it, or P_end for an end in the tail
+      --  that walks back.
+      function Start (X : Elem_Count) return Acc
         with Global => (Input => (L, P)),
              Pre  => L'First = 1 and then P'First = 1
-                     and then P'Length = L'Length / Block_Elems
+                     and then P'Length = L'Length / Block_Elems + 1
                      and then Prefix_Valid (L, P)
-                     and then X <= L'Last,
-             Post => Prefix_Upto'Result = Sum_Of (L, 1, X);
+                     and then X <= L'Length,
+             Post => Start'Result = Sum_Of (L, 1, Start_Pos (X, L'Length));
 
-      function Prefix_Upto (X : Elem_Count) return Acc is
+      function Start (X : Elem_Count) return Acc is
          Q : constant Natural := X / Block_Elems;
-         R : Acc := Zero;
       begin
-         if X mod Block_Elems > Block_Elems / 2 and then Q < P'Length then
-            R := P (Q + 1);
-            pragma Assert (R = Block_Prefix (L, Q + 1));
-            pragma Assert (R = Sum_Of (L, 1, Block_Elems * (Q + 1)));
-            for J in reverse X + 1 .. Block_Elems * (Q + 1) loop
-               Back_Step (R, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
-               R := Sub (R, Elem_Acc (L (J)));
-               pragma Loop_Invariant (R = Sum_Of (L, 1, J - 1));
-            end loop;
-         else
-            if Q > 0 then
-               R := P (Q);
+         if Walks_Back (X, L'Length) then
+            if Block_Elems * (Q + 1) <= L'Length then
+               pragma Assert (Q + 1 <= P'Last - 1);
+               pragma Assert (P (Q + 1) = Block_Prefix (L, Q + 1));
+               pragma Assert (Above (X, L'Length) = Block_Elems * (Q + 1));
+            else
+               pragma Assert (Q = L'Length / Block_Elems);
+               pragma Assert (Q + 1 = P'Last);
+               pragma Assert (P (Q + 1) = Sum_Of (L, 1, L'Length));
+               pragma Assert (Above (X, L'Length) = L'Length);
             end if;
-            pragma Assert (R = Block_Prefix (L, Q));
-            pragma Assert (R = Sum_Of (L, 1, Block_Elems * Q));
-            for J in Block_Elems * Q + 1 .. X loop
-               Step (R, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
-               R := Add (R, Elem_Acc (L (J)));
-               pragma Loop_Invariant (R = Sum_Of (L, 1, J));
-            end loop;
+            return P (Q + 1);
+         elsif Q = 0 then
+            pragma Assert (Start_Pos (X, L'Length) = 0);
+            return Zero;
+         else
+            pragma Assert (Q <= P'Last - 1);
+            pragma Assert (P (Q) = Block_Prefix (L, Q));
+            pragma Assert (Start_Pos (X, L'Length) = Block_Elems * Q);
+            return P (Q);
          end if;
-         return R;
-      end Prefix_Upto;
+      end Start;
 
-      Upper : constant Acc := Prefix_Upto (Hi);
-      Lower : constant Acc := Prefix_Upto (Lo - 1);
+      N  : constant Elem_Count := L'Length;
+      --  The range is L (A + 1 .. B): Pre (B) - Pre (A).
+      A  : constant Elem_Count := Lo - 1;
+      B  : constant Elem_Count := Hi;
+      --  Where each end starts, and the far end of its walk: an end that
+      --  walks forward covers SX + 1 .. X, one that walks back X + 1 .. SX,
+      --  and HX = max (SX, X).
+      SA : constant Elem_Count := Start_Pos (A, N);
+      SB : constant Elem_Count := Start_Pos (B, N);
+      HA : constant Elem_Count := (if SA > A then SA else A);
+      HB : constant Elem_Count := (if SB > B then SB else B);
+
+      Plus  : Acc := Start (B);      --  P(A(b))
+      Minus : Acc := Start (A);      --  P(A(a))
+      Count : Natural := 0;          --  Add calls so far
+      Subs_Made : Natural := 0;      --  Sub calls so far
+      Prev  : Acc with Ghost;        --  the accumulator before a term
    begin
-      Prove_Difference (Upper, Lower);
-      return Sub (Upper, Lower);
+      pragma Assert (Walk_Len (A, N) <= Block_Elems / 2);
+      pragma Assert (Walk_Len (B, N) <= Block_Elems / 2);
+
+      --  Plus := P(A(b)) + fwd(b): the terms SB + 1 .. B (none when b
+      --  walks back). Then Plus = Pre (HB).
+      for J in SB + 1 .. B loop
+         Prev := Plus;
+         Step (Plus, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
+         Add_Term (Plus, Elem_Acc (L (J)), Count);
+         Trans (Plus, Add (Prev, Elem_Acc (L (J))),
+                Add (Sum_Of (L, 1, J - 1), Elem_Acc (L (J))));
+         pragma Loop_Invariant (Plus = Sum_Of (L, 1, J));
+         pragma Loop_Invariant (Count = J - SB);
+      end loop;
+      pragma Assert (Plus = Sum_Of (L, 1, HB));
+      pragma Assert (Count = (if SB < B then B - SB else 0));
+
+      --  Plus := Plus + bwd(a): the terms A + 1 .. HA (none when a walks
+      --  forward). Then Plus = Pre (HB) + Σ (A + 1 .. HA).
+      Zero_Step (Plus, Sum_Of (L, 1, HB));
+      pragma Assert (Plus = Add (Sum_Of (L, 1, HB), Sum_Of (L, A + 1, A)));
+      for J in A + 1 .. HA loop
+         Prev := Plus;
+         Assoc_Step (Plus, Sum_Of (L, 1, HB), Sum_Of (L, A + 1, J - 1),
+                     Elem_Acc (L (J)));
+         Add_Term (Plus, Elem_Acc (L (J)), Count);
+         Trans (Plus, Add (Prev, Elem_Acc (L (J))),
+                Add (Sum_Of (L, 1, HB),
+                     Add (Sum_Of (L, A + 1, J - 1), Elem_Acc (L (J)))));
+         pragma Loop_Invariant
+           (Plus = Add (Sum_Of (L, 1, HB), Sum_Of (L, A + 1, J)));
+         pragma Loop_Invariant
+           (Count = (if SB < B then B - SB else 0) + (J - A));
+      end loop;
+      pragma Assert (Plus = Add (Sum_Of (L, 1, HB), Sum_Of (L, A + 1, HA)));
+      pragma Assert (Count = (if SB < B then B - SB else 0) + (HA - A));
+
+      --  Minus := P(A(a)) + fwd(a): the terms SA + 1 .. A. Then
+      --  Minus = Pre (HA).
+      for J in SA + 1 .. A loop
+         Prev := Minus;
+         Step (Minus, Sum_Of (L, 1, J - 1), Elem_Acc (L (J)));
+         Add_Term (Minus, Elem_Acc (L (J)), Count);
+         Trans (Minus, Add (Prev, Elem_Acc (L (J))),
+                Add (Sum_Of (L, 1, J - 1), Elem_Acc (L (J))));
+         pragma Loop_Invariant (Minus = Sum_Of (L, 1, J));
+         pragma Loop_Invariant
+           (Count = (if SB < B then B - SB else 0) + (HA - A) + (J - SA));
+      end loop;
+      pragma Assert (Minus = Sum_Of (L, 1, HA));
+      pragma Assert
+        (Count = (if SB < B then B - SB else 0) + (HA - A)
+                + (if SA < A then A - SA else 0));
+
+      --  Minus := Minus + bwd(b): the terms B + 1 .. HB. Then
+      --  Minus = Pre (HA) + Σ (B + 1 .. HB).
+      Zero_Step (Minus, Sum_Of (L, 1, HA));
+      pragma Assert (Minus = Add (Sum_Of (L, 1, HA), Sum_Of (L, B + 1, B)));
+      for J in B + 1 .. HB loop
+         Prev := Minus;
+         Assoc_Step (Minus, Sum_Of (L, 1, HA), Sum_Of (L, B + 1, J - 1),
+                     Elem_Acc (L (J)));
+         Add_Term (Minus, Elem_Acc (L (J)), Count);
+         Trans (Minus, Add (Prev, Elem_Acc (L (J))),
+                Add (Sum_Of (L, 1, HA),
+                     Add (Sum_Of (L, B + 1, J - 1), Elem_Acc (L (J)))));
+         pragma Loop_Invariant
+           (Minus = Add (Sum_Of (L, 1, HA), Sum_Of (L, B + 1, J)));
+         pragma Loop_Invariant
+           (Count = (if SB < B then B - SB else 0) + (HA - A)
+                   + (if SA < A then A - SA else 0) + (J - B));
+      end loop;
+      pragma Assert (Minus = Add (Sum_Of (L, 1, HA), Sum_Of (L, B + 1, HB)));
+
+      --  The cost: one Add per term walked, Range_Cost in all; and one Sub.
+      pragma Assert (Count = Range_Cost (A, B, N));
+      Finish (L, Plus, Minus, A, B, HA, HB);
+      Sub_Term (Result, Plus, Minus, Subs_Made);
+      Trans (Result, Sub (Plus, Minus), Sum_Of (L, A + 1, B));
+      Adds := Count;
+      Subs := Subs_Made;
    end Range_Sum;
 
 end Kome.Digest;

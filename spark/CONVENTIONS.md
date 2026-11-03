@@ -92,6 +92,41 @@ them).
 - `Global`/`Depends` on anything that touches a file or a clock, so flow
   analysis can prove "open never writes".
 
+## Proof hygiene learned in round three
+
+- "Private" in rule 2 means completed in the body. In gnatprove 14 an
+  expression function completed in the private part is visible to clients,
+  even with a private-part `Hide_Info`. Only a body completion, or
+  `Hide_Info "Expression_Function_Body"` in the visible part, hides it. The
+  probe is recorded in `kome-accumulator.ads`.
+- No `Dynamic_Predicate` on a state type such as `Kome.Frontier.State` or
+  `Kome.Store.Store`. gnatprove 14 crashed when such an object was
+  assigned. State the invariant as a named function (`Is_Frontier`,
+  `Valid`) in each `Pre`/`Post`.
+- Decide every refusal before the state changes. State each outcome as an
+  iff in the `Post`, with `Unchanged (S'Old, S)` or `S = S'Old` on refusal.
+  Do not restore the state after a failed step.
+- Every ghost lemma runs under `-gnata`. Bound its quantifiers by the
+  object's counts, never by a whole index type. To make a relation hold,
+  call a lemma (`Lemma_Unchanged_Refl`), not real code.
+  `Assertion_Policy (... => Ignore)` is only for proved steps that would
+  make a test quadratic. List each such region in `IMPLEMENTATION_PLAN.md`.
+- gnatprove has no extensionality for the array argument of a function.
+  For element-wise equal inputs to have equal results, an imported function
+  needs a congruence axiom (`Kome.Crypto.Lemma_Blake2b_Congruent`), and each
+  layer above it needs its own congruence lemma.
+- A `Post` conjunct about the pre-state alone triggers `-gnatw.t`. Move it
+  to the caller's `Pre` or into a ghost lemma (`Lemma_Ends_Below`).
+- A procedure that a function calls needs `Always_Terminates`. A value
+  derived from a secret and used only in contracts is a ghost function
+  (`X25519_Shared`), so that no executable temporary holds the secret.
+- Proof margin: every goal should prove well under the 20 s step limit,
+  by both cvc5 and z3 where possible. Split any goal that only one prover
+  proves, or that takes more than about 10 s: restate the invariant at the
+  operation's end, or use two witness invariants in place of one. Run one
+  gnatprove at a time. `check.sh` takes a lock because gnatprove 14's
+  `/dev/shm` semaphore ignores `TMPDIR`.
+
 ## Cryptography
 
 `Kome.Crypto` binds monocypher (Ed25519, X25519, BLAKE2b,

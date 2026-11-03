@@ -59,6 +59,41 @@ begin
    end loop;
    Check ("lemmas hold on the grid", True);
 
+   --  D8: two versions with different (t, author, seq) are ordered by that
+   --  prefix alone, whatever their h (Frontier.lean `lt_iff_prefix`).
+   Check ("same prefix is decided by h only",
+          Same_Prefix (V (5, 3, 9, 0), V (5, 3, 9, 200))
+          and then Lt (V (5, 3, 9, 0), V (5, 3, 9, 200))
+          and then not Prefix_Lt (V (5, 3, 9, 0), V (5, 3, 9, 200)));
+   Check ("a smaller prefix wins against any h",
+          Prefix_Lt (V (5, 3, 8, 255), V (5, 3, 9, 0))
+          and then Lt (V (5, 3, 8, 255), V (5, 3, 9, 0))
+          and then not Lt (V (5, 3, 9, 0), V (5, 3, 8, 255)));
+   declare
+      Ok : Boolean := True;
+   begin
+      for I in Grid'Range loop
+         for J in Grid'Range loop
+            if not Same_Prefix (Grid (I), Grid (J)) then
+               Lemma_Prefix_Decides (Grid (I), Grid (J));
+               --  Changing h on either side does not change the outcome.
+               for H in Byte'(0) .. 3 loop
+                  declare
+                     A : Version := Grid (I);
+                     B : Version := Grid (J);
+                  begin
+                     A.H := Hsh (H);
+                     B.H := Hsh (255 - H);
+                     Lemma_Prefix_Decides (A, B);
+                     Ok := Ok and then Lt (A, B) = Lt (Grid (I), Grid (J));
+                  end;
+               end loop;
+            end if;
+         end loop;
+      end loop;
+      Check ("the outcome does not depend on h when the prefixes differ", Ok);
+   end;
+
    if Failed then
       Set_Exit_Status (Failure);
    end if;

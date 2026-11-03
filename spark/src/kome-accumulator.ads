@@ -1,25 +1,30 @@
 --  Kome.Accumulator: the 4096-bit homomorphic set accumulator of DESIGN.md
---  §8, arithmetic only.
+--  §8 (decision D7 of §1.2), arithmetic only. DESIGN.md §8 defines
 --
---    acc(e) := BLAKE2b-256("kome/acc" ‖ h(e) ‖ i) for i in 0..15,
---              concatenated, as an integer mod 2^4096
---    ACC(R) := Σ acc(e) mod 2^4096
+--    B_i(e) := BLAKE2b-256("kome/acc" ‖ h(e) ‖ u8(i))   for i = 0..15
+--    acc(e) := Σ_{i=0..15} LE(B_i(e)) · 2^(256·i)  mod 2^4096,
+--              LE(B) := Σ_j B[j] · 256^j
+--    ACC(R) := Σ_{e ∈ R} acc(e)  mod 2^4096
 --
 --  This package is the "integer mod 2^4096" and its "+" (and "-", which
 --  removes an element when a record is dropped from F). Hashing an element
 --  to its acc(e) is Kome.Digest's job; so are the block prefix sums of §8
---  (one Acc per 64 elements), which are sums of Adds and need nothing more
---  from this package than Add, Sub and the laws below.
+--  (P(K) for every full block of 64 elements plus the total, D15), which
+--  are sums of Adds and need nothing more from this package than Add, Sub
+--  and the laws below.
 --
---  Byte order (a wire-format decision; DESIGN.md §8 leaves it implicit).
---  The 512-byte string is the LITTLE-ENDIAN encoding of the integer: byte 0
---  is the least significant, and the sixteen 32-byte BLAKE2b outputs of
---  acc(e) are concatenated in counter order, i = 0 lowest. This is the
---  order of the removed C++ engine ("a 256-bit little-endian integer",
---  src/reconcile.cpp), and fp hashes ACC(R) in this same order. It is not
---  only a comment: Lemma_Value_From_Bytes and Lemma_Value_To_Bytes below
---  prove Value (From_Bytes (B)) = Σ B (I) · 256^I, so Kome.Digest can state
---  acc(e) as an integer and get the order from a proved fact.
+--  Byte order (DESIGN.md §8, D7: "acc(e) is the 512-byte string
+--  B_0 ‖ … ‖ B_15 read as a little-endian integer, and ACC_le(R) is the
+--  512-byte little-endian form (byte k is ⌊ACC/256^k⌋ mod 256)"; the
+--  accumulator is the only little-endian quantity in Kome). The 512-byte
+--  string is the LITTLE-ENDIAN encoding of the integer: byte 0 is the
+--  least significant, and the sixteen 32-byte BLAKE2b outputs of acc(e)
+--  are concatenated in counter order, B_0 lowest, which is the
+--  Σ LE(B_i) · 2^(256·i) of §8. fp hashes ACC(R) in this same order
+--  (ACC_le). It is not only a comment: Lemma_Value_From_Bytes and
+--  Lemma_Value_To_Bytes below prove Value (From_Bytes (B)) =
+--  Σ B (I) · 256^I, so Kome.Digest can state acc(e) as an integer and get
+--  the order from a proved fact.
 --
 --  Representation: 64 limbs of 64 bits, limb 0 least significant; on the
 --  wire limb L is bytes 8L .. 8L+7, little-endian.
@@ -30,12 +35,34 @@
 --  and Bytes_Value are opaque to clients: they are declared here and
 --  completed in the package body, together with everything they are
 --  built from (the limb and byte Horner forms, the wide integer type the
---  carries are computed in). A private-part completion would not do: the
---  prover sees private-part expression functions from client units. Their
---  definitions are recursive over 64 limbs or 512 bytes, and a client's
---  prover should work from the Posts and lemmas below, not unfold them
---  (CONVENTIONS.md, rule 2). The model functions are recursive, bounded by
---  a Subprogram_Variant; the executable code has no recursion.
+--  carries are computed in). A private-part completion would not do (see
+--  "Visibility to clients" below). Their definitions are recursive over 64
+--  limbs or 512 bytes, and a client's prover should work from the Posts
+--  and lemmas below, not unfold them (CONVENTIONS.md, rule 2). The model
+--  functions are recursive, bounded by a Subprogram_Variant; the
+--  executable code has no recursion.
+--
+--  Visibility to clients (confirmed by a probe, not assumed). With
+--  gnatprove FSF 14 (nixpkgs gnatprove-fsf-14_2024-01-11, GNAT 14.4.0,
+--  Why3 1.6.0+git, cvc5 1.4.0, z3; the toolchain check.sh uses), a client
+--  unit that only "with"s a package was asked to prove F (42) for
+--  F (X) = (X = 42) completed five ways:
+--    * expression function completing, in the PRIVATE PART, a function
+--      declared in the visible part: PROVED in the client (the private
+--      part is visible to the client's prover);
+--    * the same, with pragma Annotate (GNATprove, Hide_Info,
+--      "Expression_Function_Body", F) after it in the private part:
+--      still PROVED (the annotation does not hide it);
+--    * pragma Annotate (GNATprove, Hide_Info, "Private_Part") at the start
+--      of the private part: still PROVED (no effect in this version);
+--    * public expression function with Hide_Info
+--      "Expression_Function_Body" in the VISIBLE part: NOT proved in the
+--      client (hidden; also hidden inside the package's own body);
+--    * completion in the package BODY (this package's choice): NOT proved
+--      in the client.
+--  So private-part expression functions are visible to clients, and only
+--  a visible-part Hide_Info or a body completion hides a definition. This
+--  package uses body completions and no annotations.
 --
 --  Run-time cost. The model is ghost code over
 --  Ada.Numerics.Big_Numbers.Big_Integers (mathematical integers for
@@ -162,6 +189,25 @@ package Kome.Accumulator with SPARK_Mode is
           Pre  => X = Y,
           Post => Value (X) = Value (Y);
 
+   --  Both directions at once: Ada "=" on Acc is equality of Values. This
+   --  is the bridge a client uses to chain the laws below. Ada "=" on an
+   --  array is element-wise, not the prover's logical equality, so the
+   --  prover does not substitute equal accumulators inside Add, Sub or
+   --  Value by itself: from X1 = X2 it does not get Add (X1, Y) =
+   --  Add (X2, Y), and Lemma_Add_Comm plus Lemma_Add_Assoc alone do not
+   --  give Add (Add (A, B), C) = Add (B, Add (A, C)) (both confirmed
+   --  unprovable in a client probe, gnatprove 14, level 3). Calling
+   --  Lemma_Eq_Iff_Value on each pair involved turns every such "=" into an
+   --  equality of Big_Integers, which the prover substitutes freely, and
+   --  turns the conclusion back. Lemma_Add_Congruent and
+   --  Lemma_Sub_Congruent below are the two substitutions most clients
+   --  need, ready-made. (Transitivity, A = B and B = C giving A = C, did
+   --  prove without help in that probe; in a large context it can still
+   --  need the three-call bridge shown before the laws.)
+   procedure Lemma_Eq_Iff_Value (A, B : Acc)
+     with Ghost, Global => null,
+          Post => (A = B) = (Value (A) = Value (B));
+
    --  The byte order, as an integer fact: the 512 bytes read as a
    --  little-endian number are the accumulator's value (DESIGN.md §8,
    --  "concatenated, as an integer").
@@ -180,7 +226,31 @@ package Kome.Accumulator with SPARK_Mode is
    --  a record is Sub, which undoes its Add. The homomorphism over a
    --  multiset itself is stated where multisets of elements exist
    --  (Kome.Digest), not here.
+   --
+   --  Chaining them. Each law's Post is an Ada "=" on Acc, which the
+   --  prover does not substitute inside Add or Sub (see
+   --  Lemma_Eq_Iff_Value). To get, say, Add (Add (A, B), C) =
+   --  Add (Add (B, A), C) from Lemma_Add_Comm (A, B), call
+   --  Lemma_Add_Congruent (Add (A, B), Add (B, A), C, C); to get X = Z from
+   --  X = Y and Y = Z, call Lemma_Eq_Iff_Value (X, Y),
+   --  Lemma_Eq_Iff_Value (Y, Z) and Lemma_Eq_Iff_Value (X, Z). Together:
+   --  Lemma_Add_Comm (A, B); Lemma_Add_Congruent (Add (A, B), Add (B, A),
+   --  C, C); Lemma_Add_Assoc (B, A, C); then the three-call bridge on
+   --  Add (Add (A, B), C), Add (Add (B, A), C), Add (B, Add (A, C)) proves
+   --  Add (Add (A, B), C) = Add (B, Add (A, C)) in a client (probe, as
+   --  above, and test_accumulator (f) at run time).
    ----------------------------------------------------------------------
+
+   --  Add and Sub respect Ada "=" on their arguments.
+   procedure Lemma_Add_Congruent (X1, X2, Y1, Y2 : Acc)
+     with Ghost, Global => null,
+          Pre  => X1 = X2 and then Y1 = Y2,
+          Post => Add (X1, Y1) = Add (X2, Y2);
+
+   procedure Lemma_Sub_Congruent (X1, X2, Y1, Y2 : Acc)
+     with Ghost, Global => null,
+          Pre  => X1 = X2 and then Y1 = Y2,
+          Post => Sub (X1, Y1) = Sub (X2, Y2);
 
    procedure Lemma_Add_Comm (A, B : Acc)
      with Ghost, Global => null,

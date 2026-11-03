@@ -48,4 +48,22 @@ package Kome.Versions with SPARK_Mode, Pure is
      Ghost, Global => null,
      Post => Lt (A, B) or else A = B or else Lt (B, A);
 
+   --  D8: the write path picks (t, seq) before it knows h (h hashes content
+   --  that includes t and seq). Two versions that differ in their prefix
+   --  (t, author, seq) are ordered by that prefix alone, whatever their h.
+   function Same_Prefix (A, B : Version) return Boolean is
+     (A.T = B.T and then A.Author = B.Author and then A.Seq = B.Seq);
+
+   function Prefix_Lt (A, B : Version) return Boolean is
+     (A.T < B.T
+      or else (A.T = B.T
+        and then (Lt (A.Author, B.Author)
+          or else (A.Author = B.Author and then A.Seq < B.Seq))));
+
+   --  Frontier.lean `lt_iff_prefix`.
+   procedure Lemma_Prefix_Decides (A, B : Version) with
+     Ghost, Global => null,
+     Pre  => not Same_Prefix (A, B),
+     Post => Lt (A, B) = Prefix_Lt (A, B) and then Lt (B, A) = Prefix_Lt (B, A);
+
 end Kome.Versions;

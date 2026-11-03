@@ -15,8 +15,8 @@ rather than local (the history is in git; the analysis is in
 | The problem and the constraints | `docs/design/REQUIREMENTS.md` | fixed |
 | The design search: eight candidates, two rounds, three adversarial judges | `docs/design/candidates/`, `docs/design/judges/` | done |
 | The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
-| Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T5, T8, T9, T12, T13 proved; T7 open |
-| The implementation, in SPARK, proved against the Lean model | `spark/` | 16 packages (DESIGN.md §10 phases 0–8, except `Kome.Roster`) built; all 14 test mains pass; 15 packages fully proved; `Kome.Store` has 1 of 1987 checks unproved; open design gaps listed in `docs/design/IMPLEMENTATION_PLAN.md` (Known gaps) |
+| Its mathematics, machine-checked in Lean 4 | `lean/` | round-three model: T1–T5, T8, T9, T11, T12, T13, T18 proved (136 theorems in `Frontier.lean`, no `sorry`); T7 open |
+| The implementation, in SPARK, proved against the Lean model | `spark/` | 16 packages (DESIGN.md §10 phases 0–8, except `Kome.Roster`) built; all 16 test mains pass (1 140 tests); every package fully proved (17 547 checks, 0 unproved); the remaining gaps are listed in `docs/design/IMPLEMENTATION_PLAN.md` (Known gaps) |
 
 ## The design in one paragraph
 
@@ -57,9 +57,9 @@ PROVE=0 ./spark/check.sh all   # tests only
 
 `spark/check.sh` uses GNAT 14, gprbuild, gnatprove 14 and the cvc5 and z3
 provers, and fails if a module has an unproved check, except modules listed
-in `PROOF_WIP` (today only `store`, which has 1 open check: the
-`St in OK | Dominated` assertion after `Frontier.Apply` in `Put_Frame`,
-`kome-store.adb:1253`). CI (`.github/workflows/ci.yml`)
+in `PROOF_WIP`. That list is empty by default, and today no module needs
+it: every module proves with 0 unproved checks. `PROOF_WIP=""` also
+means no list. CI (`.github/workflows/ci.yml`)
 runs both commands on every push.
 
 ## How the SPARK code relates to the Lean proofs
@@ -70,28 +70,30 @@ with any duplication, the frontier homomorphism, monotone admission). The
 SPARK contracts state that the bounded, in-place code implements exactly the
 functions those theorems are about, and gnatprove discharges them:
 
-State as of the last full run of `spark/check.sh all` (gnatprove 14,
-`--level=3`, cvc5 and z3). "Checks" is gnatprove's total; no package uses
-`pragma Assume`, `pragma Annotate` or justified checks.
+State as of the round-three gap pass, from a full run of
+`PROOF_WIP="" spark/check.sh all` (gnatprove 14, `--level=3`, cvc5 and z3).
+It ended with "all modules green": 1 140 tests passed, none failed, and
+17 547 of 17 547 checks were proved. "Checks" is gnatprove's total. No
+package uses `pragma Assume`, `pragma Annotate` or justified checks.
 
 | SPARK package | Lean counterpart | What gnatprove proves | Tests | Checks | Unproved |
 |---|---|---|---|---|---|
-| `Kome.Byteorder` | — | little-endian u32/u64 store, read and bounded-buffer put/get round-trip | 74 PASS | 322 | 0 |
-| `Kome.SHA256` | — | FIPS 180-4 padding and digest layout; counter bounds; incremental `Update`/`Finish` equals one-shot `Hash` (correctness of the compression function rests on known-answer vectors) | 45 PASS | 2084 | 0 |
-| `Kome.Versions` | `Version`, `Version.lt`, T1 | the order is a strict total order (irreflexive, asymmetric, transitive, trichotomous) | 8 PASS | 9 | 0 |
-| `Kome.Headers` | `Record`, `dominates`, T2' | domination is irreflexive and upward-closed; REVOKE is never dominated | proof only | 12 | 0 |
-| `Kome.Registers` | the `maxceil` max-register and `W`, T4' | both registers only grow; writer membership is preserved | proof only | 34 | 0 |
-| `Kome.Frontier` | `State`, `adm`, `keep`, `applyA` | `Apply` keeps exactly the undominated admitted records, registers only grow, the held set is always its own frontier, failures leave the state unchanged | 20 PASS | 283 | 0 |
-| `Kome.Keys` | — | 256-bit keys and 128-bit ids as word records: big-endian decode/encode round trips; `Lt` is byte-lexicographic order | 16 PASS | 679 | 0 |
-| `Kome.Crypto` | — | monocypher binding (bodies `SPARK_Mode Off`): spec-level run-time checks, data dependencies, refusal preconditions; the assumed Posts are checked by known-answer vectors | 47 PASS | 17 | 0 |
-| `Kome.Records` | T13 | canonical encoding: length and per-byte layout, total `Decode` that leaves the record unchanged on `Malformed`, both round trips, header shape | 94 PASS | 1869 | 0 |
-| `Kome.Store` | T11 (stated) | index/frontier correspondence, append-only log, refusals change nothing, `Expire`, `Compact` | 55 PASS | 1987 | **1** |
-| `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13 | the chase, `V.T <= maxceil`, no `seq` wrap (`Seq_Exhausted`), H8 jump, SHADOWED exactly per §5, an emitted header is admitted and undominated | 42 PASS | 236 | 0 |
-| `Kome.Views` | `cell_unique` T5, T12 | `cell`, `exists`, `deleted_at`, `void`, `far`, `ROSTER_eff` are deterministic functions of the frontier; one value per cell under `Canonical` | 70 PASS | 867 | 0 |
-| `Kome.Accumulator` | T6 (DESIGN.md §8) | 4096-bit `Add`/`Sub` modulo 2^4096 against an exact integer model; commutative, associative, `Add_Sub`, byte bijection | 25 PASS | 716 | 0 |
-| `Kome.Digest` | T6 (DESIGN.md §8) | `acc(e)` and `fp` byte layout; incremental add/remove; order independence (`Lemma_Sum_Perm`, `Lemma_Frontier_Digest_Perm`); `Range_Sum` over prefix sums | 58 PASS | 709 | 0 |
-| `Kome.Reconcile` | T7 (open in Lean) | message size bounds, well-founded range split, state machine with refusals that change nothing, HELLO register join; T7 itself is tested only | 83 PASS | 1805 | 0 |
-| `Kome.Epochs` | T14 (paper) | `Derive` = `Iter (K, From - To)` and the chain lemmas; fixed-length key boxes; non-canonical and low-order peers refused with a zero result | 37 PASS | 99 | 0 |
+| `Kome.Byteorder` | — | Little-endian u32/u64 store, read and bounded-buffer put/get round-trip | 74 PASS | 322 | 0 |
+| `Kome.SHA256` | — | FIPS 180-4 padding and digest layout; counter bounds; incremental `Update`/`Finish` equals one-shot `Hash`. The compression function's correctness rests on NIST CAVP known answers | 49 PASS | 2123 | 0 |
+| `Kome.Versions` | `Version`, `Version.lt`, T1 | The order is a strict total order | 11 PASS | 13 | 0 |
+| `Kome.Headers` | `Record`, `dominates`, T2' | Domination: product order on rosters, GRANT keyed by (issuer, subject). It is irreflexive and transitive, and REVOKE is never dominated. `Canonical` is a property of a header | 18 PASS | 31 | 0 |
+| `Kome.Registers` | `maxCeil`, `isWriter`, T4' | Both registers only grow, and writer membership is preserved | 6 PASS | 93 | 0 |
+| `Kome.Frontier` | `adm`, `applyD`, `expire`, `maxCeil_F`, `isWriter_F`, T4', T11 | `Apply` keeps exactly the undominated admitted records. Each outcome (OK, Dominated, Inadmissible, No_Space, Auth_Full) is stated as an iff, and a refusal leaves the state `Unchanged`. The register cache equals maxceil(F) and W(F) (`Coherent`). `Expire` removes exactly the expired DELs | 44 PASS | 1515 | 0 |
+| `Kome.Keys` | — | Key and id word records: big-endian round trips, injectivity, and `Lt`/`Id_Lt` as byte-lexicographic order | 32 PASS | 800 | 0 |
+| `Kome.Crypto` | — | Monocypher binding (RFC 8032 Ed25519, X25519, BLAKE2b, ChaCha20-Poly1305) with `SPARK_Mode Off` bodies: spec-level run-time checks, data dependencies and refusal preconditions. The Posts and the BLAKE2b congruence axiom are assumed, and are checked by RFC 8032, Wycheproof and other known-answer vectors | 64 PASS | 35 | 0 |
+| `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Signer certificates (`Cert_OK`) for ROSTER, REVOKE and GRANT. Decode yields only canonical headers. `Make_Put` and `Make_Del` state their headers | 172 PASS | 2622 | 0 |
+| `Kome.Store` | T11, T18 (`auth_first`, tested) | `Valid` relates the index, the journal log and F. Each `Put_Frame` outcome is an iff in D11 order, and refusals change nothing. `Expire` is at `Horizon_At` (T11 (a)). `Compact` writes authorization records first. `Open_From_Log` is proved for HEADER-only logs | 109 PASS | 4504 | 0 |
+| `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13, `lt_iff_prefix` | `Choose` picks (t, seq) without h, and the outcome is independent of h. Also: `V.T <= maxceil`, no `seq` wrap, the H8 jump, SHADOWED exactly as in §5, and an OK write is admitted and undominated | 55 PASS | 313 | 0 |
+| `Kome.Views` | T5 (`rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_F`), T12 | `cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `far`, `ROSTER_eff` and `del_ttl_eff` are functions of F. Each cell has one value on every frontier | 131 PASS | 1120 | 0 |
+| `Kome.Accumulator` | T6 (DESIGN.md §8) | 4096-bit `Add`/`Sub` modulo 2^4096 against an exact integer model. Commutative and associative, `Add_Sub`, the byte bijection and congruence | 30 PASS | 735 | 0 |
+| `Kome.Digest` | T6 (DESIGN.md §8) | The layouts of `acc(e)` and `fp`, incremental add/remove and order independence. `Range_Sum` over D15 prefix sums is exact, with the cost formula of at most 64 Adds | 134 PASS | 967 | 0 |
+| `Kome.Reconcile` | T7 (open in Lean) | Message size bounds and the OPEN/HELLO formats. The auth-then-data phases with exact root ranges. The reply kinds are pinned, the split is well founded, refusals change nothing, and `Key_Lt` is bytewise order. T7 itself is tested only | 142 PASS | 2134 | 0 |
+| `Kome.Epochs` | T14 (paper) | `Derive` and the chain lemmas. Fixed-length boxes whose wrap key covers ns and the epoch, with the synthetic nonce in the Post. Segment links. Non-canonical and low-order peers are refused | 69 PASS | 220 | 0 |
 
 What Lean proves about the functions, SPARK proves about the code; neither
 tool is asked to do the other's job. The remaining pieces of the design

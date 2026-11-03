@@ -4,7 +4,8 @@ package body Kome.Views with SPARK_Mode is
    --  Each view is a scan of the held array for a maximal (or any) witness.
    --  The scans return an index (0 for none) so that the lemmas below can
    --  name the witness; the public views are expression functions over the
-   --  index, so inside this body the prover sees their definitions.
+   --  index, so inside this body the prover sees their definitions, and
+   --  outside it they are opaque (Lemma_<View>_Def).
 
    ---------------------------------------------------------------------------
    --  Witness scans
@@ -120,45 +121,172 @@ package body Kome.Views with SPARK_Mode is
       return 0;
    end Find_Put_In;
 
+   --  A REVOKE of K issued by the founding key.
+   function Find_Root_Revoke (S : State; K : Key256) return Held_Count with
+     Global => null,
+     Post =>
+       Find_Root_Revoke'Result <= Count (S)
+       and then
+       (if Find_Root_Revoke'Result = 0 then
+          (for all I in 1 .. Count (S) =>
+             not Root_Revokes (Held (S, I), Founding (S), K))
+        else Root_Revokes (Held (S, Find_Root_Revoke'Result), Founding (S), K))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         if Root_Revokes (Held (S, I), Founding (S), K) then
+            return I;
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I => not Root_Revokes (Held (S, J), Founding (S), K));
+      end loop;
+      return 0;
+   end Find_Root_Revoke;
+
+   function Root_Void (S : State; K : Key256) return Boolean is
+     (K /= Founding (S) and then Find_Root_Revoke (S, K) /= 0);
+
+   --  A GRANT of K whose issuer is not root_void.
+   function Find_Grant (S : State; K : Key256) return Held_Count with
+     Global => null,
+     Post =>
+       Find_Grant'Result <= Count (S)
+       and then
+       (if Find_Grant'Result = 0 then
+          (for all I in 1 .. Count (S) =>
+             not (Grants (Held (S, I), K)
+                  and then not Root_Void (S, Held (S, I).Issuer)))
+        else Grants (Held (S, Find_Grant'Result), K)
+             and then not Root_Void (S, Held (S, Find_Grant'Result).Issuer))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         if Grants (Held (S, I), K) and then not Root_Void (S, Held (S, I).Issuer) then
+            return I;
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              not (Grants (Held (S, J), K)
+                   and then not Root_Void (S, Held (S, J).Issuer)));
+      end loop;
+      return 0;
+   end Find_Grant;
+
+   --  A REVOKE that voids P and whose issuer is not root_void.
    function Find_Void (S : State; P : Header) return Held_Count with
      Global => null,
      Post =>
        Find_Void'Result <= Count (S)
        and then
        (if Find_Void'Result = 0 then
-          (for all I in 1 .. Count (S) => not Voids (Held (S, I), P))
-        else Voids (Held (S, Find_Void'Result), P))
+          (for all I in 1 .. Count (S) =>
+             not (Voids (Held (S, I), P)
+                  and then not Root_Void (S, Held (S, I).Issuer)))
+        else Voids (Held (S, Find_Void'Result), P)
+             and then not Root_Void (S, Held (S, Find_Void'Result).Issuer))
    is
    begin
       for I in 1 .. Count (S) loop
-         if Voids (Held (S, I), P) then
+         if Voids (Held (S, I), P) and then not Root_Void (S, Held (S, I).Issuer) then
             return I;
          end if;
          pragma Loop_Invariant
-           (for all J in 1 .. I => not Voids (Held (S, J), P));
+           (for all J in 1 .. I =>
+              not (Voids (Held (S, J), P)
+                   and then not Root_Void (S, Held (S, J).Issuer)));
       end loop;
       return 0;
    end Find_Void;
 
-   function Find_Revoke (S : State; NS : Id128; K : Key256) return Held_Count with
+   --  The Roster_Lt-maximal eligible roster. The root_void scan runs only
+   --  for a roster that would improve on the best so far.
+   function Find_Roster (S : State) return Held_Count with
      Global => null,
      Post =>
-       Find_Revoke'Result <= Count (S)
+       Find_Roster'Result <= Count (S)
        and then
-       (if Find_Revoke'Result = 0 then
-          (for all I in 1 .. Count (S) => not Revokes (Held (S, I), NS, K))
-        else Revokes (Held (S, Find_Revoke'Result), NS, K))
+       (if Find_Roster'Result = 0 then
+          (for all I in 1 .. Count (S) => not Eligible (S, Held (S, I)))
+        else
+          Eligible (S, Held (S, Find_Roster'Result))
+          and then (for all I in 1 .. Count (S) =>
+                      (if Eligible (S, Held (S, I))
+                       then not Roster_Lt (Held (S, Find_Roster'Result), Held (S, I)))))
    is
+      Best : Held_Count := 0;
    begin
       for I in 1 .. Count (S) loop
-         if Revokes (Held (S, I), NS, K) then
-            return I;
+         if Held (S, I).K = K_Roster
+           and then (Best = 0 or else Roster_Lt (Held (S, Best), Held (S, I)))
+           and then not Root_Void (S, Held (S, I).Issuer)
+         then
+            if Best /= 0 then
+               pragma Assert
+                 (for all J in 1 .. I - 1 =>
+                    (if Eligible (S, Held (S, J))
+                     then not Roster_Lt (Held (S, Best), Held (S, J))));
+               pragma Assert
+                 (for all J in 1 .. I - 1 =>
+                    (if Roster_Lt (Held (S, I), Held (S, J))
+                     then Roster_Lt (Held (S, Best), Held (S, J))));
+            end if;
+            Lemma_Roster_Lt_Irrefl (Held (S, I));
+            Best := I;
          end if;
+         pragma Loop_Invariant (Best <= I);
          pragma Loop_Invariant
-           (for all J in 1 .. I => not Revokes (Held (S, J), NS, K));
+           (if Best = 0 then
+              (for all J in 1 .. I => not Eligible (S, Held (S, J)))
+            else
+              Eligible (S, Held (S, Best))
+              and then (for all J in 1 .. I =>
+                          (if Eligible (S, Held (S, J))
+                           then not Roster_Lt (Held (S, Best), Held (S, J)))));
       end loop;
-      return 0;
-   end Find_Revoke;
+      return Best;
+   end Find_Roster;
+
+   --  The eligible roster with the largest del_ttl. On a frontier its
+   --  del_ttl is in range (canonical rosters).
+   function Find_TTL (S : State) return Held_Count with
+     Global => null,
+     Pre  => Is_Frontier (S),
+     Post =>
+       Find_TTL'Result <= Count (S)
+       and then
+       (if Find_TTL'Result = 0 then
+          (for all I in 1 .. Count (S) => not Eligible (S, Held (S, I)))
+        else
+          Eligible (S, Held (S, Find_TTL'Result))
+          and then Held (S, Find_TTL'Result).Del_TTL in Del_TTL_Min .. Del_TTL_Max
+          and then (for all I in 1 .. Count (S) =>
+                      (if Eligible (S, Held (S, I))
+                       then Held (S, I).Del_TTL <= Held (S, Find_TTL'Result).Del_TTL)))
+   is
+      Best : Held_Count := 0;
+   begin
+      for I in 1 .. Count (S) loop
+         if Held (S, I).K = K_Roster
+           and then (Best = 0 or else Held (S, Best).Del_TTL < Held (S, I).Del_TTL)
+           and then not Root_Void (S, Held (S, I).Issuer)
+         then
+            Lemma_Frontier_Held (S, I);
+            pragma Assert (Canonical (Held (S, I)));
+            Best := I;
+         end if;
+         pragma Loop_Invariant (Best <= I);
+         pragma Loop_Invariant
+           (if Best = 0 then
+              (for all J in 1 .. I => not Eligible (S, Held (S, J)))
+            else
+              Eligible (S, Held (S, Best))
+              and then Held (S, Best).Del_TTL in Del_TTL_Min .. Del_TTL_Max
+              and then (for all J in 1 .. I =>
+                          (if Eligible (S, Held (S, J))
+                           then Held (S, J).Del_TTL <= Held (S, Best).Del_TTL)));
+      end loop;
+      return Best;
+   end Find_TTL;
 
    ---------------------------------------------------------------------------
    --  Views
@@ -182,58 +310,57 @@ package body Kome.Views with SPARK_Mode is
    function Exists (S : State; NS, Ent : Id128) return Boolean is
      (Find_Put_In (S, NS, Ent) /= 0);
 
-   function Is_Void (S : State; P : Header) return Boolean is
+   function W_Eff (S : State; K : Key256) return Boolean is
+     (Find_Grant (S, K) /= 0);
+
+   function Revoke_Void (S : State; P : Header) return Boolean is
      (Find_Void (S, P) /= 0);
 
-   function Root_Void (S : State; NS : Id128; K : Key256) return Boolean is
-     (Find_Revoke (S, NS, K) /= 0);
+   function Is_Void (S : State; P : Header) return Boolean is
+     (Revoke_Void (S, P) or else not W_Eff (S, P.V.Author));
 
-   --  A roster eligible for ROSTER_eff.
-   function Eligible (S : State; NS : Id128; X : Header) return Boolean is
-     (Roster_In (X, NS) and then not Root_Void (S, NS, X.V.Author))
-   with Global => null;
+   function Roster_Eff (S : State) return Header_View is
+     (declare
+        I : constant Held_Count := Find_Roster (S);
+      begin
+        (if I = 0 then (Present => False, Hdr => No_Header)
+         else (Present => True, Hdr => Held (S, I))));
 
-   --  One pass. The root_void scan runs only for a roster of ns that would
-   --  improve on the best so far, so at most once per roster of ns (on a
-   --  frontier, at most one per signer: older ones are dominated), not once
-   --  per held record.
-   function Roster_Eff (S : State; NS : Id128) return Header_View is
-      Best : Held_Count := 0;
+   function Del_TTL_Eff (S : State) return U48 is
+     (declare
+        I : constant Held_Count := Find_TTL (S);
+      begin
+        (if I = 0 then Del_TTL_Default else Held (S, I).Del_TTL));
+
+   ---------------------------------------------------------------------------
+   --  Definitions
+   ---------------------------------------------------------------------------
+
+   procedure Lemma_Cell_Def (S : State; NS, Ent : Id128; FH : Key256) is null;
+
+   procedure Lemma_Deleted_At_Def (S : State; NS, Ent : Id128) is null;
+
+   procedure Lemma_Exists_Def (S : State; NS, Ent : Id128) is null;
+
+   procedure Lemma_Root_Void_Def (S : State; K : Key256) is null;
+
+   procedure Lemma_W_Eff_Def (S : State; K : Key256) is null;
+
+   procedure Lemma_Is_Void_Def (S : State; P : Header) is null;
+
+   procedure Lemma_Roster_Eff_Def (S : State) is
+      I : constant Held_Count := Find_Roster (S);
    begin
-      for I in 1 .. Count (S) loop
-         if Roster_In (Held (S, I), NS)
-           and then (Best = 0 or else Gen_Lt (Held (S, Best), Held (S, I)))
-           and then not Root_Void (S, NS, Held (S, I).V.Author)
-         then
-            if Best /= 0 then
-               pragma Assert
-                 (for all J in 1 .. I - 1 =>
-                    (if Eligible (S, NS, Held (S, J))
-                     then not Gen_Lt (Held (S, Best), Held (S, J))));
-               pragma Assert
-                 (for all J in 1 .. I - 1 =>
-                    (if Gen_Lt (Held (S, I), Held (S, J))
-                     then Gen_Lt (Held (S, Best), Held (S, J))));
-            end if;
-            Lemma_Gen_Lt_Irrefl (Held (S, I));
-            Best := I;
-         end if;
-         pragma Loop_Invariant (Best <= I);
-         pragma Loop_Invariant
-           (if Best = 0 then
-              (for all J in 1 .. I => not Eligible (S, NS, Held (S, J)))
-            else
-              Eligible (S, NS, Held (S, Best))
-              and then (for all J in 1 .. I =>
-                          (if Eligible (S, NS, Held (S, J))
-                           then not Gen_Lt (Held (S, Best), Held (S, J)))));
-      end loop;
-      if Best = 0 then
-         return (Present => False, Hdr => No_Header);
-      else
-         return (Present => True, Hdr => Held (S, Best));
+      if I /= 0 then
+         --  Gen_Lt is the first disjunct of Roster_Lt.
+         pragma Assert
+           (for all J in 1 .. Count (S) =>
+              (if Gen_Lt (Held (S, I), Held (S, J))
+               then Roster_Lt (Held (S, I), Held (S, J))));
       end if;
-   end Roster_Eff;
+   end Lemma_Roster_Eff_Def;
+
+   procedure Lemma_Del_TTL_Eff_Def (S : State) is null;
 
    ---------------------------------------------------------------------------
    --  Laws
@@ -259,98 +386,155 @@ package body Kome.Views with SPARK_Mode is
       return R;
    end Index_Of;
 
-   --  Unique_Versions instantiated at two indices; kept separate so that the
-   --  quantifier is unfolded in a small context.
-   procedure Lemma_A2 (S : State; I, J : Held_Index) with
-     Ghost, Global => null,
-     Pre  => Unique_Versions (S)
-             and then I <= Count (S) and then J <= Count (S)
-             and then Held (S, I).V = Held (S, J).V,
-     Post => Held (S, I) = Held (S, J)
-   is
+   procedure Lemma_Root_Void_Slot (S : State; K : Key256) is
    begin
-      null;
-   end Lemma_A2;
+      Lemma_Frontier_Shape (S);
+      pragma Assert (Slot_Key (S, 1) = Founding (S));
+
+      --  Flat to slot: the founding REVOKE lies in the authorization rows
+      --  (it is not data), in the slot whose key is its issuer, which is
+      --  slot 1 because slot keys are distinct.
+      if Root_Void (S, K) then
+         declare
+            I : constant Held_Count := Find_Root_Revoke (S, K);
+         begin
+            pragma Assert (I /= 0);
+            Lemma_Held_Cases (S, I);
+            if I <= Data_Count (S) then
+               Lemma_Frontier_Data (S, I);
+               pragma Assert (False);
+            end if;
+            declare
+               Sl : constant Slot_Index := Slot_At (S, I);
+               J  : constant Held_Index := I - Data_Count (S) - Off (S, Sl);
+            begin
+               pragma Assert (Held (S, I) = Auth_Held (S, Sl, J));
+               Lemma_Frontier_Auth (S, Sl, J);
+               pragma Assert (Slot_Key (S, Sl) = Founding (S));
+               pragma Assert (Sl = 1);
+               pragma Assert (Auth_Held (S, 1, J).K = K_Revoke
+                              and then Auth_Held (S, 1, J).V.Author = K);
+            end;
+         end;
+      end if;
+
+      --  Slot to flat: a REVOKE of slot 1 is held, issued by Slot_Key (S, 1).
+      for J in 1 .. Slot_Count (S, 1) loop
+         Lemma_Held_Auth (S, 1, J);
+         Lemma_Frontier_Auth (S, 1, J);
+         if Auth_Held (S, 1, J).K = K_Revoke and then Auth_Held (S, 1, J).V.Author = K then
+            pragma Assert
+              (Root_Revokes (Held (S, Data_Count (S) + Off (S, 1) + J), Founding (S), K));
+            pragma Assert (Find_Root_Revoke (S, K) /= 0);
+         end if;
+         pragma Loop_Invariant
+           (for all J2 in 1 .. J =>
+              (if Auth_Held (S, 1, J2).K = K_Revoke
+                 and then Auth_Held (S, 1, J2).V.Author = K
+               then Find_Root_Revoke (S, K) /= 0));
+      end loop;
+   end Lemma_Root_Void_Slot;
+
+   procedure Lemma_No_Header_Not_Canonical is null;
+
+   procedure Lemma_Roster_Lt_Total (A, B : Header) is
+   begin
+      Lemma_Gen_Lt_Total (A, B);
+      pragma Assert (Lt (A.V.Author, B.V.Author) or else A.V.Author = B.V.Author
+                     or else Lt (B.V.Author, A.V.Author));
+   end Lemma_Roster_Lt_Total;
+
+   procedure Lemma_Roster_Lt_Irrefl (A : Header) is
+   begin
+      Lemma_Gen_Lt_Irrefl (A);
+      pragma Assert (not Lt (A.V.Author, A.V.Author));
+   end Lemma_Roster_Lt_Irrefl;
+
+   procedure Lemma_Roster_Lt_Trans (A, B, C : Header) is
+   begin
+      if Gen_Lt (A, B) and then Gen_Lt (B, C) then
+         Lemma_Gen_Lt_Trans (A, B, C);
+      end if;
+   end Lemma_Roster_Lt_Trans;
 
    procedure Lemma_Cell_Unique (S : State; I, J : Held_Index) is
    begin
-      --  Is_Frontier, instantiated at I and J.
-      pragma Assert (Admitted (S, Held (S, I)) and then Admitted (S, Held (S, J)));
-      pragma Assert (not Dom (S, Held (S, I)) and then not Dom (S, Held (S, J)));
+      Lemma_Frontier_Held (S, I);
+      Lemma_Frontier_Held (S, J);
+      --  Same cell, so a strictly newer version would dominate.
       pragma Assert (not Dominates (Held (S, J), Held (S, I)));
       pragma Assert (not Dominates (Held (S, I), Held (S, J)));
-      --  Same cell, so a strictly newer version would dominate.
       pragma Assert (not Lt (Held (S, I).V, Held (S, J).V));
       pragma Assert (not Lt (Held (S, J).V, Held (S, I).V));
       Lemma_Trichotomy (Held (S, I).V, Held (S, J).V);
       pragma Assert (Held (S, I).V = Held (S, J).V);
-      if Unique_Versions (S) then
-         pragma Assert (Held (S, I) = Held (S, J));
-         pragma Assert (I = J);
-      end if;
-      if Canonical (Held (S, I)) and then Canonical (Held (S, J)) then
-         pragma Assert (Held (S, I) = Held (S, J));
-         pragma Assert (I = J);
-      end if;
+      --  Canonical PUTs: Issuer and Del_TTL are zero.
+      pragma Assert (Canonical (Held (S, I)) and then Canonical (Held (S, J)));
+      pragma Assert (Held (S, I) = Held (S, J));
+      pragma Assert (I = J);
    end Lemma_Cell_Unique;
 
    procedure Lemma_Del_Unique (S : State; I, J : Held_Index) is
    begin
-      pragma Assert (Admitted (S, Held (S, I)) and then Admitted (S, Held (S, J)));
-      pragma Assert (not Dom (S, Held (S, I)) and then not Dom (S, Held (S, J)));
+      Lemma_Frontier_Held (S, I);
+      Lemma_Frontier_Held (S, J);
       pragma Assert (not Dominates (Held (S, J), Held (S, I)));
       pragma Assert (not Dominates (Held (S, I), Held (S, J)));
       pragma Assert (not Lt (Held (S, I).V, Held (S, J).V));
       pragma Assert (not Lt (Held (S, J).V, Held (S, I).V));
       Lemma_Trichotomy (Held (S, I).V, Held (S, J).V);
       pragma Assert (Held (S, I).V = Held (S, J).V);
-      if Unique_Versions (S) then
-         pragma Assert (Held (S, I) = Held (S, J));
-         pragma Assert (I = J);
-      end if;
-      if Canonical (Held (S, I)) and then Canonical (Held (S, J)) then
-         pragma Assert (Held (S, I) = Held (S, J));
-         pragma Assert (I = J);
-      end if;
+      --  Canonical DELs: FH, Issuer and Del_TTL are zero.
+      pragma Assert (Canonical (Held (S, I)) and then Canonical (Held (S, J)));
+      pragma Assert (Held (S, I) = Held (S, J));
+      pragma Assert (I = J);
    end Lemma_Del_Unique;
 
-   procedure Lemma_Gen_Lt_Total (A, B : Header) is
+   --  Two canonical rosters of one collection equal in (V, Del_TTL) are
+   --  one record: Ent and FH are zero and Issuer is V.Author.
+   procedure Lemma_Roster_Eq (X, Y : Header) with
+     Ghost, Global => null,
+     Pre  => X.K = K_Roster and then Y.K = K_Roster
+             and then Canonical (X) and then Canonical (Y)
+             and then X.NS = Y.NS
+             and then X.V = Y.V and then X.Del_TTL = Y.Del_TTL,
+     Post => X = Y
+   is
    begin
-      Lemma_Trichotomy (A.V, B.V);
-      pragma Assert (Lt (A.V.H, B.V.H) or else A.V.H = B.V.H or else Lt (B.V.H, A.V.H));
-   end Lemma_Gen_Lt_Total;
-
-   procedure Lemma_Gen_Lt_Irrefl (A : Header) is
-   begin
-      Lemma_Lt_Irrefl (A.V);
-      pragma Assert (not Lt (A.V.H, A.V.H));
-   end Lemma_Gen_Lt_Irrefl;
+      null;
+   end Lemma_Roster_Eq;
 
    procedure Lemma_Roster_Unique (S : State; I, J : Held_Index) is
    begin
-      Lemma_Gen_Lt_Total (Held (S, I), Held (S, J));
-      pragma Assert (Held (S, I).V = Held (S, J).V);
+      Lemma_Roster_Lt_Total (Held (S, I), Held (S, J));
+      Lemma_Frontier_Held (S, I);
+      Lemma_Frontier_Held (S, J);
+      Lemma_Roster_Eq (Held (S, I), Held (S, J));
       pragma Assert (Held (S, I) = Held (S, J));
-      --  Is_Frontier: no record is held twice.
       pragma Assert (I = J);
    end Lemma_Roster_Unique;
 
-   procedure Lemma_Roster_Eff_Unique (S : State; NS : Id128; I : Held_Index) is
-      E : constant Header_View := Roster_Eff (S, NS);
+   procedure Lemma_Roster_Eff_Unique (S : State; I : Held_Index) is
+      K : constant Held_Count := Find_Roster (S);
    begin
-      pragma Assert (E.Present);
-      declare
-         K : constant Held_Count := Index_Of (S, E.Hdr);
-      begin
-         pragma Assert (Roster_In (Held (S, K), NS)
-                        and then not Root_Void (S, NS, Held (S, K).V.Author));
-         pragma Assert (not Gen_Lt (Held (S, I), Held (S, K)));
-         pragma Assert (not Gen_Lt (Held (S, K), Held (S, I)));
-         Lemma_Gen_Lt_Total (Held (S, I), Held (S, K));
-         pragma Assert (Held (S, I).V = Held (S, K).V);
-         pragma Assert (Held (S, I) = Held (S, K));
-      end;
+      pragma Assert (K /= 0);
+      pragma Assert (not Roster_Lt (Held (S, I), Held (S, K)));
+      pragma Assert (not Roster_Lt (Held (S, K), Held (S, I)));
+      Lemma_Roster_Unique (S, I, K);
+      pragma Assert (Held (S, I) = Held (S, K));
    end Lemma_Roster_Eff_Unique;
+
+   procedure Lemma_Roster_Eff_Present (S : State) is
+   begin
+      --  The founding key is never root_void, so every founding roster is
+      --  eligible, and Find_Roster finds an eligible roster if there is one.
+      pragma Assert (not Root_Void (S, Founding (S)));
+      pragma Assert
+        (for all I in 1 .. Count (S) =>
+           (if Held (S, I).K = K_Roster and then Held (S, I).Issuer = Founding (S)
+            then Eligible (S, Held (S, I))));
+      pragma Assert (Find_Roster (S) /= 0);
+   end Lemma_Roster_Eff_Present;
 
    procedure Lemma_Exists_Cell (S : State; NS, Ent : Id128; FH : Key256) is
       W : constant Held_Count := Find_Put_In (S, NS, Ent);
@@ -435,6 +619,19 @@ package body Kome.Views with SPARK_Mode is
       end;
    end Lemma_Data_Local;
 
+   --  Unique_Versions instantiated at two indices; kept separate so that the
+   --  quantifier is unfolded in a small context.
+   procedure Lemma_A2 (S : State; I, J : Held_Index) with
+     Ghost, Global => null,
+     Pre  => Unique_Versions (S)
+             and then I <= Count (S) and then J <= Count (S)
+             and then Held (S, I).V = Held (S, J).V,
+     Post => Held (S, I) = Held (S, J)
+   is
+   begin
+      null;
+   end Lemma_A2;
+
    procedure Lemma_Cell_Local (S1, S2 : State; NS, Ent : Id128; FH : Key256) is
       I1 : constant Held_Count := Find_Put (S1, NS, Ent, FH);
       I2 : constant Held_Count := Find_Put (S2, NS, Ent, FH);
@@ -485,6 +682,12 @@ package body Kome.Views with SPARK_Mode is
                Lemma_A2 (S1, I1, J);
                pragma Assert (Held (S1, I1) = Held (S1, J));
             end if;
+            if Is_Frontier (S1) then
+               Lemma_Frontier_Held (S1, I1);
+               Lemma_Frontier_Held (S1, J);
+               pragma Assert (Canonical (Held (S1, I1)) and then Canonical (Held (S1, J)));
+               pragma Assert (Held (S1, I1) = Held (S1, J));
+            end if;
             if (for all I in 1 .. Count (S1) =>
                   (if Held (S1, I).K = K_Put then Canonical (Held (S1, I))))
             then
@@ -501,22 +704,23 @@ package body Kome.Views with SPARK_Mode is
       Lemma_Cell_Local (S1, S2, NS, Ent, FH);
    end Lemma_Views_Local;
 
-   procedure Lemma_Root_Void_Local (S1, S2 : State; NS : Id128; K : Key256) is
-      I1 : constant Held_Count := Find_Revoke (S1, NS, K);
-      I2 : constant Held_Count := Find_Revoke (S2, NS, K);
+   procedure Lemma_Root_Void_Local (S1, S2 : State; K : Key256) is
+      I1 : constant Held_Count := Find_Root_Revoke (S1, K);
+      I2 : constant Held_Count := Find_Root_Revoke (S2, K);
    begin
       --  Same_Auth, unfolded.
+      pragma Assert (Founding (S1) = Founding (S2));
       pragma Assert
         (for all I in 1 .. Count (S1) =>
-           (if not Is_Data (Held (S1, I)) then Holds (S2, Held (S1, I))));
+           (if Is_Auth (Held (S1, I)) then Holds (S2, Held (S1, I))));
       pragma Assert
         (for all I in 1 .. Count (S2) =>
-           (if not Is_Data (Held (S2, I)) then Holds (S1, Held (S2, I))));
+           (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
       if I1 /= 0 then
          declare
             J : constant Held_Count := Index_Of (S2, Held (S1, I1));
          begin
-            pragma Assert (Revokes (Held (S2, J), NS, K));
+            pragma Assert (Root_Revokes (Held (S2, J), Founding (S2), K));
             pragma Assert (I2 /= 0);
          end;
       end if;
@@ -524,11 +728,45 @@ package body Kome.Views with SPARK_Mode is
          declare
             J : constant Held_Count := Index_Of (S1, Held (S2, I2));
          begin
-            pragma Assert (Revokes (Held (S1, J), NS, K));
+            pragma Assert (Root_Revokes (Held (S1, J), Founding (S1), K));
             pragma Assert (I1 /= 0);
          end;
       end if;
    end Lemma_Root_Void_Local;
+
+   procedure Lemma_W_Eff_Local (S1, S2 : State; K : Key256) is
+      I1 : constant Held_Count := Find_Grant (S1, K);
+      I2 : constant Held_Count := Find_Grant (S2, K);
+   begin
+      pragma Assert
+        (for all I in 1 .. Count (S1) =>
+           (if Is_Auth (Held (S1, I)) then Holds (S2, Held (S1, I))));
+      pragma Assert
+        (for all I in 1 .. Count (S2) =>
+           (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
+      if I1 /= 0 then
+         declare
+            X : constant Header := Held (S1, I1);
+            J : constant Held_Count := Index_Of (S2, X);
+         begin
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Grants (Held (S2, J), K)
+                           and then not Root_Void (S2, Held (S2, J).Issuer));
+            pragma Assert (I2 /= 0);
+         end;
+      end if;
+      if I2 /= 0 then
+         declare
+            X : constant Header := Held (S2, I2);
+            J : constant Held_Count := Index_Of (S1, X);
+         begin
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Grants (Held (S1, J), K)
+                           and then not Root_Void (S1, Held (S1, J).Issuer));
+            pragma Assert (I1 /= 0);
+         end;
+      end if;
+   end Lemma_W_Eff_Local;
 
    procedure Lemma_Void_Local (S1, S2 : State; P : Header) is
       I1 : constant Held_Count := Find_Void (S1, P);
@@ -536,200 +774,209 @@ package body Kome.Views with SPARK_Mode is
    begin
       pragma Assert
         (for all I in 1 .. Count (S1) =>
-           (if not Is_Data (Held (S1, I)) then Holds (S2, Held (S1, I))));
+           (if Is_Auth (Held (S1, I)) then Holds (S2, Held (S1, I))));
       pragma Assert
         (for all I in 1 .. Count (S2) =>
-           (if not Is_Data (Held (S2, I)) then Holds (S1, Held (S2, I))));
+           (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
       if I1 /= 0 then
          declare
-            J : constant Held_Count := Index_Of (S2, Held (S1, I1));
+            X : constant Header := Held (S1, I1);
+            J : constant Held_Count := Index_Of (S2, X);
          begin
-            pragma Assert (Voids (Held (S2, J), P));
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Voids (Held (S2, J), P)
+                           and then not Root_Void (S2, Held (S2, J).Issuer));
             pragma Assert (I2 /= 0);
          end;
       end if;
       if I2 /= 0 then
          declare
-            J : constant Held_Count := Index_Of (S1, Held (S2, I2));
+            X : constant Header := Held (S2, I2);
+            J : constant Held_Count := Index_Of (S1, X);
          begin
-            pragma Assert (Voids (Held (S1, J), P));
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Voids (Held (S1, J), P)
+                           and then not Root_Void (S1, Held (S1, J).Issuer));
             pragma Assert (I1 /= 0);
          end;
       end if;
+      pragma Assert (Revoke_Void (S1, P) = Revoke_Void (S2, P));
+      Lemma_W_Eff_Local (S1, S2, P.V.Author);
    end Lemma_Void_Local;
 
-   procedure Lemma_Roster_Local (S1, S2 : State; NS : Id128) is
-      E1 : constant Header_View := Roster_Eff (S1, NS);
-      E2 : constant Header_View := Roster_Eff (S2, NS);
+   procedure Lemma_Roster_Local (S1, S2 : State) is
+      I1 : constant Held_Count := Find_Roster (S1);
+      I2 : constant Held_Count := Find_Roster (S2);
    begin
       pragma Assert
         (for all I in 1 .. Count (S1) =>
-           (if not Is_Data (Held (S1, I)) then Holds (S2, Held (S1, I))));
+           (if Is_Auth (Held (S1, I)) then Holds (S2, Held (S1, I))));
       pragma Assert
         (for all I in 1 .. Count (S2) =>
-           (if not Is_Data (Held (S2, I)) then Holds (S1, Held (S2, I))));
+           (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
 
       --  Each side's result is held and eligible on the other side, so it
       --  makes the other side present and is not beaten there.
-      if E1.Present then
+      if I1 /= 0 then
          declare
-            I1 : constant Held_Count := Index_Of (S1, E1.Hdr);
-            J  : constant Held_Count := Index_Of (S2, E1.Hdr);
+            X : constant Header := Held (S1, I1);
+            J : constant Held_Count := Index_Of (S2, X);
          begin
-            pragma Assert (not Is_Data (Held (S1, I1)));
-            Lemma_Root_Void_Local (S1, S2, NS, E1.Hdr.V.Author);
-            pragma Assert (Roster_In (Held (S2, J), NS)
-                           and then not Root_Void (S2, NS, Held (S2, J).V.Author));
-            pragma Assert (E2.Present);
-            pragma Assert (not Gen_Lt (E2.Hdr, E1.Hdr));
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Eligible (S2, Held (S2, J)));
+            pragma Assert (I2 /= 0);
+            pragma Assert (not Roster_Lt (Held (S2, I2), X));
          end;
       end if;
-      if E2.Present then
+      if I2 /= 0 then
          declare
-            I2 : constant Held_Count := Index_Of (S2, E2.Hdr);
-            J  : constant Held_Count := Index_Of (S1, E2.Hdr);
+            X : constant Header := Held (S2, I2);
+            J : constant Held_Count := Index_Of (S1, X);
          begin
-            pragma Assert (not Is_Data (Held (S2, I2)));
-            Lemma_Root_Void_Local (S1, S2, NS, E2.Hdr.V.Author);
-            pragma Assert (Roster_In (Held (S1, J), NS)
-                           and then not Root_Void (S1, NS, Held (S1, J).V.Author));
-            pragma Assert (E1.Present);
-            pragma Assert (not Gen_Lt (E1.Hdr, E2.Hdr));
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Eligible (S1, Held (S1, J)));
+            pragma Assert (I1 /= 0);
+            pragma Assert (not Roster_Lt (Held (S1, I1), X));
          end;
       end if;
-      pragma Assert (E1.Present = E2.Present);
+      pragma Assert ((I1 = 0) = (I2 = 0));
 
-      if E1.Present then
-         Lemma_Gen_Lt_Total (E1.Hdr, E2.Hdr);
-         pragma Assert (E1.Hdr.V = E2.Hdr.V);
+      if I1 /= 0 then
+         Lemma_Roster_Lt_Total (Held (S1, I1), Held (S2, I2));
+         pragma Assert (Held (S1, I1).V = Held (S2, I2).V);
+         pragma Assert (Held (S1, I1).Del_TTL = Held (S2, I2).Del_TTL);
          declare
-            I1 : constant Held_Count := Index_Of (S1, E1.Hdr);
-            J  : constant Held_Count := Index_Of (S1, E2.Hdr);
+            J : constant Held_Count := Index_Of (S1, Held (S2, I2));
          begin
             pragma Assert (Held (S1, I1).V = Held (S1, J).V);
             if Unique_Versions (S1) then
-               pragma Assert (Held (S1, I1) = Held (S1, J));
-               pragma Assert (E1 = E2);
+               Lemma_A2 (S1, I1, J);
+               pragma Assert (Held (S1, I1) = Held (S2, I2));
+            end if;
+            if Is_Frontier (S1) then
+               Lemma_Frontier_Held (S1, I1);
+               Lemma_Frontier_Held (S1, J);
+               Lemma_Roster_Eq (Held (S1, I1), Held (S1, J));
+               pragma Assert (Held (S1, I1) = Held (S2, I2));
             end if;
          end;
-      else
-         pragma Assert (E1 = E2);
       end if;
    end Lemma_Roster_Local;
 
+   procedure Lemma_Del_TTL_Local (S1, S2 : State) is
+      I1 : constant Held_Count := Find_TTL (S1);
+      I2 : constant Held_Count := Find_TTL (S2);
+   begin
+      pragma Assert
+        (for all I in 1 .. Count (S1) =>
+           (if Is_Auth (Held (S1, I)) then Holds (S2, Held (S1, I))));
+      pragma Assert
+        (for all I in 1 .. Count (S2) =>
+           (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I))));
+      if I1 /= 0 then
+         declare
+            X : constant Header := Held (S1, I1);
+            J : constant Held_Count := Index_Of (S2, X);
+         begin
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Eligible (S2, Held (S2, J)));
+            pragma Assert (I2 /= 0);
+            pragma Assert (X.Del_TTL <= Held (S2, I2).Del_TTL);
+         end;
+      end if;
+      if I2 /= 0 then
+         declare
+            X : constant Header := Held (S2, I2);
+            J : constant Held_Count := Index_Of (S1, X);
+         begin
+            Lemma_Root_Void_Local (S1, S2, X.Issuer);
+            pragma Assert (Eligible (S1, Held (S1, J)));
+            pragma Assert (I1 /= 0);
+            pragma Assert (X.Del_TTL <= Held (S1, I1).Del_TTL);
+         end;
+      end if;
+      pragma Assert ((I1 = 0) = (I2 = 0));
+   end Lemma_Del_TTL_Local;
+
    procedure Lemma_Apply_Auth_Local (Before, After : State; R : Header) is
    begin
-      --  Is_Frontier (Before), unfolded: no held record dominates another.
-      pragma Assert (for all K in 1 .. Count (Before) => Admitted (Before, Held (Before, K)));
+      --  After ⊆ Before ∪ {R}, and R is not data: every data record of After
+      --  is held in Before.
       pragma Assert
-        (for all K in 1 .. Count (Before) =>
-           (for all L in 1 .. Count (Before) =>
-              not Dominates (Held (Before, L), Held (Before, K))));
-
-      --  After ⊆ Before ∪ {R}, and R is not data: every data record of After is
-      --  held in Before.
-      for I in 1 .. Count (After) loop
-         pragma Assert (Holds (Before, Held (After, I)) or else Held (After, I) = R);
-         pragma Assert (if Is_Data (Held (After, I)) then Holds (Before, Held (After, I)));
-         pragma Loop_Invariant
-           (for all J in 1 .. I =>
-              (if Is_Data (Held (After, J)) then Holds (Before, Held (After, J))));
-      end loop;
-
-      --  Before ⊆ After for data: a data record of Before could be lost only by a
-      --  dominator in After, which is R (an authorization record, which
-      --  dominates no data) or a record of Before (which dominates nothing in
-      --  Before, Before being a frontier).
-      for I in 1 .. Count (Before) loop
-         if Is_Data (Held (Before, I)) and then not Holds (After, Held (Before, I)) then
-            pragma Assert (Dom (After, Held (Before, I)));
-            for K in 1 .. Count (After) loop
-               if Held (After, K) /= R then
-                  declare
-                     L : constant Held_Count := Index_Of (Before, Held (After, K));
-                  begin
-                     pragma Assert (not Dominates (Held (Before, L), Held (Before, I)));
-                  end;
-               end if;
-               pragma Assert (not Dominates (Held (After, K), Held (Before, I)));
-               pragma Loop_Invariant
-                 (for all J in 1 .. K => not Dominates (Held (After, J), Held (Before, I)));
-            end loop;
-            pragma Assert (not Dom (After, Held (Before, I)));
-         end if;
-         pragma Loop_Invariant
-           (for all J in 1 .. I =>
-              (if Is_Data (Held (Before, J)) then Holds (After, Held (Before, J))));
-      end loop;
+        (for all I in 1 .. Count (After) =>
+           (if Is_Data (Held (After, I)) then Holds (Before, Held (After, I))));
+      --  Before ⊆ After for data: a data record is dominated only by a data
+      --  record, and R is not one.
+      pragma Assert
+        (for all I in 1 .. Count (Before) =>
+           (if Is_Data (Held (Before, I)) then not Dominates (R, Held (Before, I))));
+      pragma Assert
+        (for all I in 1 .. Count (Before) =>
+           (if Is_Data (Held (Before, I)) then Holds (After, Held (Before, I))));
    end Lemma_Apply_Auth_Local;
 
    procedure Lemma_Apply_Data_Local (Before, After : State; R : Header) is
    begin
-      pragma Assert (for all K in 1 .. Count (Before) => Admitted (Before, Held (Before, K)));
       pragma Assert
-        (for all K in 1 .. Count (Before) =>
-           (for all L in 1 .. Count (Before) =>
-              not Dominates (Held (Before, L), Held (Before, K))));
-
-      --  After ⊆ Before ∪ {R}, and R is data: every authorization record of
-      --  After is held in Before.
-      for I in 1 .. Count (After) loop
-         pragma Assert (Holds (Before, Held (After, I)) or else Held (After, I) = R);
-         pragma Assert
-           (if not Is_Data (Held (After, I)) then Holds (Before, Held (After, I)));
-         pragma Loop_Invariant
-           (for all J in 1 .. I =>
-              (if not Is_Data (Held (After, J)) then Holds (Before, Held (After, J))));
-      end loop;
-
-      --  Before ⊆ After for authorization records: a ROSTER or REVOKE is
-      --  dominated only by a ROSTER, so neither R (data) nor a record of the
-      --  frontier Before can be the dominator.
-      for I in 1 .. Count (Before) loop
-         if not Is_Data (Held (Before, I)) and then not Holds (After, Held (Before, I)) then
-            pragma Assert (Dom (After, Held (Before, I)));
-            for K in 1 .. Count (After) loop
-               if Held (After, K) /= R then
-                  declare
-                     L : constant Held_Count := Index_Of (Before, Held (After, K));
-                  begin
-                     pragma Assert (not Dominates (Held (Before, L), Held (Before, I)));
-                  end;
-               end if;
-               pragma Assert (not Dominates (Held (After, K), Held (Before, I)));
-               pragma Loop_Invariant
-                 (for all J in 1 .. K => not Dominates (Held (After, J), Held (Before, I)));
-            end loop;
-            pragma Assert (not Dom (After, Held (Before, I)));
-         end if;
-         pragma Loop_Invariant
-           (for all J in 1 .. I =>
-              (if not Is_Data (Held (Before, J)) then Holds (After, Held (Before, J))));
-      end loop;
+        (for all I in 1 .. Count (After) =>
+           (if Is_Auth (Held (After, I)) then Holds (Before, Held (After, I))));
+      --  An authorization record is dominated only by one of its own kind
+      --  (a REVOKE by nothing), and R is data.
+      pragma Assert
+        (for all I in 1 .. Count (Before) =>
+           (if Is_Auth (Held (Before, I)) then not Dominates (R, Held (Before, I))));
+      pragma Assert
+        (for all I in 1 .. Count (Before) =>
+           (if Is_Auth (Held (Before, I)) then Holds (After, Held (Before, I))));
    end Lemma_Apply_Data_Local;
 
-   procedure Lemma_Void_Monotone (S1, S2 : State; P : Header) is
-      I : constant Held_Count := Find_Void (S1, P);
-      J : constant Held_Count := Index_Of (S2, Held (S1, I));
+   procedure Lemma_Root_Void_Monotone (S1, S2 : State; K : Key256) is
    begin
-      pragma Assert (Voids (Held (S2, J), P));
+      if Root_Void (S1, K) then
+         declare
+            I : constant Held_Count := Find_Root_Revoke (S1, K);
+            J : constant Held_Count := Index_Of (S2, Held (S1, I));
+         begin
+            pragma Assert (Root_Revokes (Held (S2, J), Founding (S2), K));
+            pragma Assert (Find_Root_Revoke (S2, K) /= 0);
+         end;
+      end if;
+   end Lemma_Root_Void_Monotone;
+
+   procedure Lemma_W_Eff_Monotone (S1, S2 : State; K : Key256) is
+   begin
+      if W_Eff (S1, K) then
+         declare
+            I : constant Held_Count := Find_Grant (S1, K);
+            J : constant Held_Count := Index_Of (S2, Held (S1, I));
+         begin
+            pragma Assert (Grants (Held (S2, J), K)
+                           and then not Root_Void (S2, Held (S2, J).Issuer));
+            pragma Assert (Find_Grant (S2, K) /= 0);
+         end;
+      end if;
+   end Lemma_W_Eff_Monotone;
+
+   procedure Lemma_Void_Monotone (S1, S2 : State; P : Header) is
+   begin
+      if Revoke_Void (S1, P) then
+         declare
+            I : constant Held_Count := Find_Void (S1, P);
+            J : constant Held_Count := Index_Of (S2, Held (S1, I));
+         begin
+            pragma Assert (Voids (Held (S2, J), P)
+                           and then not Root_Void (S2, Held (S2, J).Issuer));
+            pragma Assert (Find_Void (S2, P) /= 0);
+         end;
+      end if;
    end Lemma_Void_Monotone;
 
-   procedure Lemma_Apply_Keeps_Revokes (Before, After : State) is
+   procedure Lemma_Apply_Keeps_Revokes (Before, After : State; R : Header) is
    begin
-      for I in 1 .. Count (Before) loop
-         if Held (Before, I).K = K_Revoke then
-            --  Nothing dominates a REVOKE, so Dom (After, it) is false.
-            pragma Assert
-              (for all K in 1 .. Count (After) =>
-                 not Dominates (Held (After, K), Held (Before, I)));
-            pragma Assert (not Dom (After, Held (Before, I)));
-            pragma Assert (Holds (After, Held (Before, I)));
-         end if;
-         pragma Loop_Invariant
-           (for all J in 1 .. I =>
-              (if Held (Before, J).K = K_Revoke then Holds (After, Held (Before, J))));
-      end loop;
+      --  Nothing dominates a REVOKE.
+      pragma Assert
+        (for all I in 1 .. Count (Before) =>
+           (if Held (Before, I).K = K_Revoke then not Dominates (R, Held (Before, I))));
    end Lemma_Apply_Keeps_Revokes;
 
 end Kome.Views;

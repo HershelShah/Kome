@@ -7,191 +7,246 @@ proves it, and its contracts name the Lean theorems they refine.
 
 ## Phases
 
-State as of the last full `spark/check.sh all` run (gnatprove 14,
-`--level=3`, cvc5 and z3). Counts are gnatprove's checks per package; no
-package uses `pragma Assume`, `pragma Annotate` or justified checks.
-"Proved" means 0 unproved checks; it does not mean the package has no open
-review findings (see Known gaps below).
+State as of the round-three gap pass, from a full run of
+`PROOF_WIP="" spark/check.sh all` (gnatprove 14, `--level=3`, cvc5 and z3):
+1 140 tests pass, 0 fail, 17 547 checks, 0 unproved, "all modules green".
+`PROOF_WIP` is empty by default. Counts are gnatprove's checks per package.
+No package uses `pragma Assume`, `pragma Annotate` or justified checks.
+"Proved" means 0 unproved checks. It does not mean the package has no
+open review findings; see Known gaps below.
 
 | Phase | Packages | DESIGN.md | Lean | State |
 |---|---|---|---|---|
-| 0 | `Kome` (bounds, status), `Kome.Byteorder`, `Kome.SHA256` | §2 bounds | — | done. Byteorder: 74 tests pass, 322 checks, 0 unproved. SHA256: 45 tests pass, 2084 checks, 0 unproved |
-| 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` | §2, §3, §4 | T1, T2', T4', `applyA`/`keep` refinement | done. Versions: 8 tests, 9 checks, 0 unproved. Headers (proof only): 12 checks, 0 unproved. Registers (proof only): 34 checks, 0 unproved. Frontier: 20 tests, 283 checks, 0 unproved |
-| 2 | `Kome.Keys` (added: key and id encoding), `Kome.Crypto` (monocypher binding), `Kome.Records` (canonical encoding, hashing, signing, well-formedness) | §2 | T13 | built. Keys: 16 tests, 679 checks, 0 unproved. Crypto: 47 tests, 17 checks (spec only; bodies `SPARK_Mode Off`), 0 unproved. Records: 94 tests, 1869 checks, 0 unproved; review blocker open (signer admission, see gaps) |
-| 3 | `Kome.Store` (append-only log, index `cell → (offset, v)`, compaction = rewrite `F`), tombstone expiry | §7 | T11 (liveness, stated) | built, not accepted. 55 tests pass, 1987 checks, **1 unproved** (listed in `PROOF_WIP`); two review blockers open |
-| 4 | `Kome.Emit` (chase, `seq_self`, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | built. 42 tests, 236 checks, 0 unproved; review major open (H-independence) |
-| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `void`, `far`, `ROSTER_eff`) | §3, §6 | T5, T12 | built. 70 tests, 867 checks, 0 unproved; review major open (root_void) |
-| 6 | `Kome.Accumulator` (4096-bit homomorphic sum, prefix sums), `Kome.Digest` | §8 | T6 | built. Accumulator: 25 tests, 716 checks, 0 unproved. Digest: 58 tests, 709 checks, 0 unproved |
-| 7 | `Kome.Reconcile` (range split, HAVE round, module I sketch, register join in HELLO) | §8, §4 | T7 (open in Lean) | built. 83 tests, 1805 checks, 0 unproved; T7 tested only; review majors open |
-| 8 | `Kome.Epochs` (hash-chained keys), `Kome.Roster` (members, roots, revocation) | §6 | T14 (paper) | Epochs built: 37 tests, 99 checks, 0 unproved; review major open (nonce reuse). `Kome.Roster` not started |
+| 0 | `Kome` (bounds, status), `Kome.Byteorder`, `Kome.SHA256` | §2 bounds | — | done. Byteorder: 74 tests pass, 322 checks, 0 unproved. SHA256: 49 tests, 2123 checks, 0 unproved |
+| 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` (per-signer authorization slices, `Expire`) | §2, §3, §4, §7 | T1, T2', T4', T11, `applyD`/`expire` refinement | done. Versions: 11 tests, 13 checks, 0 unproved. Headers: 18 tests, 31 checks, 0 unproved. Registers: 6 tests, 93 checks, 0 unproved. Frontier: 44 tests, 1515 checks, 0 unproved |
+| 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding, RFC 8032 Ed25519), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 64 tests, 35 checks (spec only; the bodies are `SPARK_Mode Off`), 0 unproved. Records: 172 tests, 2622 checks, 0 unproved |
+| 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first, expiry at `Horizon_At`) | §7 | T11, T18 (Lean `auth_first`) | done. 109 tests, 4504 checks, 0 unproved. Replay completeness and frame-to-header are tested, not proved (see gaps) |
+| 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 55 tests, 313 checks, 0 unproved |
+| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `far`, `ROSTER_eff`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 131 tests, 1120 checks, 0 unproved |
+| 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 735 checks, 0 unproved. Digest: 134 tests, 967 checks, 0 unproved |
+| 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range, module I sketch) | §8 | T7 (open in Lean) | done. 142 tests, 2134 checks, 0 unproved. T7 is tested only. Content checks are the phase-9 caller's |
+| 8 | `Kome.Epochs` (hash-chained keys, synthetic-nonce boxes, segment links), `Kome.Roster` (certification, segments, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 69 tests, 220 checks, 0 unproved. `Kome.Roster` not started |
 | 9 | Transports (Noise XX, sealed bundles), C ABI | §8, §10.7 | — | not started |
 | 10 | Extension F (typed fields) | §4 | F's T15–T17 | after T7 |
 
 ## Known gaps
 
-Every unproved check and every deviation or open finding reported by the
-package authors and reviewers. "Major" and "blocker" are the reviewers'
-grades.
+These are the gaps left after round three. Each has a place in the code and
+a reason. No package has an unproved check (see Phases). A gap here is a
+property that is tested or reviewed but not proved, a duty that belongs to
+a layer not yet built, an open decision, or a known test or documentation
+gap. Line numbers are as of the round-three gap pass.
 
-### Unproved checks
+### Proved in part, the rest tested
 
-- `Kome.Store`, 1 check, `kome-store.adb:1253`, `pragma Assert (St in OK |
-  Dominated)` in `Put_Frame` after `Frontier.Apply`. `Put_Frame` refuses
-  beforehand every case `Apply` would refuse, but `Frontier.Apply`'s Post
-  says only `No_Space => Count (S) = Count (S'Old)`: not when `No_Space`
-  happens. Needs `Apply`'s Post to state its room rule (not
-  `S = S'Old`, which is false: `Apply` raises a roster's registers before
-  its room check). Checked at run time by the test main under `-gnata`.
+- **Store: an entry's frame decoding to its header.**
+  `Frame_OK` (`kome-store.ads:1072-1082`) checks only the op byte, the
+  length word and the tag. It does not check `Header_Of (frame) = E.H`, so
+  `Valid` (`:1180-1199`) does not carry that fact. It holds only at
+  `Put_Frame`'s Pre (`:616`). The Crypto axiom it needs now exists
+  (`Lemma_Blake2b_Congruent`, `kome-crypto.ads:173`). Still missing:
+  `Kome.Records.Lemma_Header_Congruent` (one per kind), and per-entry
+  congruence loops in `Lemma_Framed_Grow/Sub/Push` and in `Compact`'s copy.
+  Both are cross-package and risky for a 4 504-check proof. Tested by
+  `Every_Frame_Matches` (`test_store.adb:240`, `:531`, `:823`). The comment
+  at `kome-store.ads:137-149` still calls the Crypto lemma "(requested)".
+- **Store: replay completeness (T18, D9).** `Open_From_Log` proves replay
+  only for a log that holds just a HEADER (`kome-store.ads:111-121`). A
+  replay that refused every log with entries would still meet the contract.
+  T18 is proved over sets in Lean (`auth_first`, `Frontier.lean:797`). For
+  the implementation it is tested only (`test_store.adb:802`, `:834`,
+  `:845`, `:986`, `:996`, `:1029`, `:1068`, `:1103`, `:1139`, `:1145`,
+  `:1188`, `:1222`, `:1231`).
+- **Frontier: `Auth_Full` case (c), W full (R5, E2).** It is documented as
+  unreachable on a frontier, because |W| is at most the number of held
+  GRANTs, which is at most `Writers_Max`. The counting argument is not
+  proved (`kome-frontier.ads:208-212`). `Coherent` proves that every writer
+  has a held grant, but not the cardinality bound.
+- **Digest: the D15 call bound.** `Range_Sum`'s Post proves the cost
+  formula: at most 64 Adds and 1 Sub. That the out counts equal the calls
+  actually made rests on review of the body (`kome-digest.ads:84-98`). A
+  body that set `Adds` without counting would still prove. One fix is an
+  Accumulator call counter, either a test-only instrumented build or a
+  ghost counter. A ghost counter makes `Add` stateful, so it is a design
+  decision.
+- **Reconcile: tested, not proved** (`kome-reconcile.ads:186-198`):
+  - T7, termination and convergence; T7 is open in Lean too.
+  - That `Decode` accepts every ELEMENTS/HAVE carrying items.
+  - The item and frame bytes inside an encoded ELEMENTS/HAVE.
+  - Split balance.
+  - The honest-session derivations behind `Msg_Budget`, `Range_Budget`
+    and `Ship_Budget`.
+- **Crypto: assumed Posts.** The bodies are `SPARK_Mode Off`, so their
+  Posts are assumed (`kome-crypto.ads:46-70`). Round three adds one axiom to
+  that set, `Lemma_Blake2b_Congruent` (`:173`). The Posts are checked by
+  known answers: RFC 8032 §7.1 and a Wycheproof subset
+  (`vectors/crypto.txt:7-37`).
+- **SHA256: no reference model of `Compress_Words`.** Correctness rests on
+  NIST CAVP known answers (ShortMsg, LongMsg and Monte Carlo;
+  `kome-sha256.ads:14-28`). The public ghost lemmas run under `-gnata` only
+  up to about 64 KiB (`:159-172`). The proof is unaffected.
+- **Proved but not executed under `-gnata`.** These `Assertion_Policy
+  (... => Ignore)` regions are proved, but the test mains do not run them.
+  This is the CONVENTIONS tension that was removed from Store.
+  - `kome-accumulator.adb:136`, `:169`, `:305`, `:465`
+  - `kome-digest.adb:457`, `:553`, `:652`, `:747`
+  - `kome-epochs.adb:48`, the `Derive` invariant
+  - `kome-sha256.adb:917`, the `Absorb` invariant
+  - `kome-sha256.ads:527`, a private-part Post
 
-### Design decisions needed (cross-package)
+### Duties of layers not yet built
 
-- **Signer admission for ROSTER and REVOKE** (`Kome.Records`, blocker;
-  touches `Kome.Frontier`, `Kome.Headers`, DESIGN.md §6 module J).
-  `Well_Formed` checks authenticity under a signer named in the record, not
-  the brief's root_pk, and `Signer_Listed` is self-certifying. An
-  outsider-signed roster and revoke pass `Decode_Verified`; `Frontier` then
-  raises maxceil to 2^48-1, adds the outsider to W and holds a permanent
-  forged REVOKE. The REVOKE header has no issuer field, so `Frontier` cannot
-  check signer ∈ roots_ever. Either decide module J and add signer
-  admission, or restore the root_pk-only rule.
-- **root_void reading** (`Kome.Views`, major). With from_t and issuer
-  ignored, one compromised root can make ROSTER_eff None permanently,
-  breaking module J's recovery promise for n_roots >= 2.
-- **Non-canonical rosters** (`Kome.Views`). A roster with V.T > 0 lets
-  `Frontier` keep a lower generation than `Gen_Lt` would choose. Needs
-  `Canonical` enforced at decode and a lemma that `Gen_Lt` and `Dominates`
-  agree.
-- **BLAKE2b-EdDSA vs Ed25519** (`Kome.Crypto`, major). The binding signs
-  with monocypher's BLAKE2b-EdDSA; DESIGN.md says Ed25519 and the brief
-  asked for an RFC 8032 known answer.
-- **Root X25519 key** (`Kome.Epochs`, major). DESIGN.md does not say where
-  the root's X25519 key comes from.
-- **Accumulator byte order** (`Kome.Accumulator`, major, DESIGN.md owner).
-  §8 does not record the little-endian byte order the package uses.
+The message formats and the checks for these exist. The steps that enforce
+them belong to the caller, which does not exist yet. D13, R2, E3 and part of
+the round-three minors are therefore closed only as far as their formats
+and checks go.
 
-### Kome.Store (not accepted)
+- **Transport (phase 9)** (`kome-reconcile.ads:39-52`):
+  - Verify and apply OPEN's founding REVOKEs (`Is_Founding_Revoke`)
+    before the gate.
+  - Check the HELLO credential (`Roster_Lists_DH`) and evaluate the gate.
+  - Verify ELEMENTS/HAVE items, check each item's key and apply the items
+    in key order.
+  - Seal bundles with synthetic nonces.
+- **`Kome.Roster` (phase 8):**
+  - Segment opening by the founding key only, and choosing and delivering
+    segment tops (E3, `kome-epochs.ads:76-77`).
+  - The honest-issuer gen rule (R2, DESIGN.md §10.3).
+  - Wiping the caller's ephemeral `eph_sk` (D5, `kome-epochs.ads:56-61`).
+  - A "largest certified cap" view. Today only a per-record `cert_cap`
+    check exists (`kome-records.ads:975`).
+- **Reconcile does not use D15 yet.** `Range_Fp` computes `Digest_Of` over
+  the slice for every range (`kome-reconcile.ads:1665-1668`), and there is
+  no `Build_Prefix` or `Range_Sum` in Reconcile. Using them needs a prefix
+  array in `Snapshot`, kept valid by `Add` and `Clear`, and a lemma tying
+  `Range_Sum` to `Fingerprint (Digest_Of (slice))`. This is a cost item,
+  not a correctness one.
 
-- Blocker: reopening from the log does not replay to the same frontier.
-  Registers are not saved and `Compact` keeps index order, so after a roster
-  refresh plus `Compact`, a dominated-on-arrival roster that raised
-  maxceil, or a roster that drops a member, replay refuses held PUTs as
-  Inadmissible and loses them. The test main uses only one roster.
-- Blocker: expired DELs stay held in F, so the frontier can fill and wedge,
-  and its digest diverges from a reopened replica.
-- Dominated records are refused with `No_Space` on a full log or index.
-- No proof that an entry's frame decodes to its header.
-- `Del_TTL` is caller-supplied, with one monotone horizon.
-- Assigning a `Frontier.State` crashes gnatprove, so `F` cannot be restored
-  after a failed `Apply`; Store's own `Dynamic_Predicate` passes the same
-  crash on to clients.
+### Open decisions
 
-### Kome.Emit
+- **Small-order Ed25519 public keys.** `Verify` accepts them (Wycheproof
+  tcIds 152-180), as RFC 8032 permits. Nobody has decided whether decode
+  should refuse them (`kome-crypto.ads:22-44`).
 
-- Major: DESIGN.md §2 makes h the hash of content that includes t and seq,
-  so the caller cannot supply H before `Emit_Version` picks them. The
-  outcome is independent of H, but no contract says so. Needs that lemma or
-  an API split.
-- Deviation: the brief's refusal at floor.t + 1 is replaced by DESIGN.md's
-  t_emit formula (reviewer agrees).
-- `Tgt.NS` is unchecked (waits on a `Kome.Frontier` NS accessor).
-- A comment says `Apply` will hold an OK write; `Apply` can still return
-  `No_Space`.
-- Proof-only loops in `Floor` and `Emit_Version` run as executable code.
-- `Clone_Suspected` is an out Boolean, not a `Status` literal.
-- With a compromised key, the H8 jump can exhaust the device-global
-  seq_self in every collection.
-- Two small test gaps.
+### Tests
 
-### Kome.Reconcile
+- **Emit:**
+  - No Shadowed DEL case: a DEL target at the ceiling over a PUT or a DEL
+    by a higher key.
+  - No H8 detection from the device's own DEL. The mutant `Own => X.K =
+    K_Put and ...` passes all 55 tests and is caught only by the proof
+    (`kome-emit.adb:204`, `:245`).
+  - The `Floor` comment (`kome-emit.ads:74-76`) still says Floor "reads
+    only data records". It scans every held record and filters with
+    `In_Floor`.
 
-- Contract gap: the Posts of `Respond` and `Receive` do not constrain the
-  plan kinds of a non-confirm reply. A mutant that answers every mismatched
-  RANGE with an empty HAVE proves completely.
-- The responder can be driven to Complete by a g = 0 HAVE or by a root
-  RANGE over only part of the key space.
-- Major: frames over 48 902 bytes cannot be reconciled.
-- Major: HELLO register values are unauthenticated (`Join_Regs = False`
-  skips the join).
-- Major: the exact W' = W ∪ H.W depends on `Kome.Registers` stating
-  distinct counting and a tighter `Add_Writer` bound.
-- Tested, not proved: T7 (termination and convergence); that `Decode`
-  accepts every ELEMENTS/HAVE carrying items; item and frame bytes inside
-  an encoded ELEMENTS/HAVE; `Key_Lt` equals bytewise order on the 81-byte
-  wire key; the honest-session derivations behind `Msg_Budget`,
-  `Range_Budget` and `Ship_Budget`.
+### Proof margin
 
-### Kome.Epochs
+- **Store: `Compact`'s Post** (`kome-store.ads:696`). Its slowest
+  sub-goal is proved by z3 alone in 12.63 s; cvc5 fails at 15.1 s. The
+  worst time by any prover is 17.81 s (z3, another sub-goal, which cvc5
+  proves in 6.1 s). The limit is 20 s, so the margin is about 1.6x. These
+  times come from reused why3 sessions. No from-scratch run has followed
+  the last Store edits (`Lemma_Ends_Below` and the Post changes), so the
+  4 504 / 4 504 result has not been reproduced independently.
 
-- Major: one nonce may be reused for the same member across epochs, and the
-  wrap key does not cover ns or epoch, so the boxes share a keystream; a
-  removed member holding k5 recovers k6 from two ROSTER boxes. Fix: hash ns
-  and epoch into the wrap key.
-- No known-answer vector in the repository for the box construction (an
-  independent Python reference matched it).
+### Documentation
 
-### Kome.Views
+- DESIGN.md §7 (about line 676) and `kome-store.ads:30-31` say the
+  HEADER's capacities are those the store "was created with". In fact
+  `Open_From_Log` rewrites them on reopen (`kome-store.ads:91-102`).
+- DESIGN.md §10 records neither that rewrite nor the `Compact` deviation:
+  no EXPIRE is written when fewer than 7 bytes remain.
+- DESIGN.md §10.1 does not list T11 and T18 (`auth_first`) among the
+  proved theorems. It does not mention `convergence` or
+  `convergence_empty`, or the `Frontier S` / `Admitted S` hypotheses that
+  `convergence` takes.
 
-- Deviation: `Lemma_Cell_Unique` and T12 for the Cell payload are
-  conditional on `Canonical` / A2 (the unconditional form is false for the
-  current `Frontier`); `Is_Void` also requires the REVOKE's ns to match.
-- Test gap: no Dominated, Inadmissible or No_Space data in the T12
-  converse. The Option payload looks like a real PUT header.
+## Closed in round three
 
-### Kome.Digest
-
-- Removing a non-member (or adding twice) returns `D_OK`; only the caller's
-  `Models` discipline catches it (inherent in keeping just (|R|, ACC)).
-- `Range_Sum` on a one-element range at the end of a 127-element list costs
-  125 additions against §8's "at most 64"; the header's "63 terms per tail
-  end" understates it. Fix: store the total ACC as one more prefix entry.
-  DESIGN.md §10 does not record the tail exception.
-- `D_No_Space` is never exercised; the tail branch with r > 32 never runs
-  under `-gnata`; some `Result` values in the test are unchecked.
-- `Is_Perm` is a public quantified expression function (CONVENTIONS rule 2).
-- The Accumulator congruence lemmas live in `Kome.Digest`.
-
-### Kome.Accumulator
-
-- Usability: the laws do not chain under Ada array `=`; clients need
-  `Lemma_Value_Congruent` then `Lemma_Value_Injective`.
-- Unconfirmed author claim: private-part expression functions and
-  `Hide_Info` are visible to clients in gnatprove 14. Confirm before
-  changing CONVENTIONS rule 2.
-
-### Kome.Crypto
-
-- Bodies are `SPARK_Mode Off`: the Posts are assumed and checked only by
-  known-answer vectors.
-- Minor: no `Default_Initial_Condition` contracts (`not Is_Valid` on a
-  default key does not prove); a function returns the secret seed; the
-  `Max_Data_Len` justification for store-and-forward bundles; a
-  by-reference wording claim.
-
-### Kome.SHA256
-
-- The public ghost lemmas fail at run time under `-gnata` on large inputs:
-  `Lemma_Updated_Eq` overflows the stack at 4 MiB, `Lemma_Update_Concat`
-  at 1 MiB and runs over 300 s at 64 KiB. The proof is unaffected.
-- Digest correctness against FIPS 180-4 rests on known-answer vectors;
-  there is no reference model of `Compress_Words`.
-
-### Kome.Keys
-
-- `Id128` has no injectivity or order lemma (§8 will need the order).
-- The test main does not exercise the length-precondition failure path.
-- A comment in `kome.ads` still says `Kome.Records` does the conversion.
-- Optional: a lemma converting a slice to `Key_Bytes`.
-
-### Tooling
-
-- `check.sh all` stops at the first failing module (`set -e`), so the
-  modules after it are not run; `PROOF_WIP=""` falls back to the default
-  list because of `${PROOF_WIP:-...}`.
-- gnatwhy3 spins forever if `TMPDIR` names a missing directory, and two
-  gnatprove runs sharing the default `/tmp` why3server socket crash with
-  "failed to open semaphore". Use a private, existing `TMPDIR`.
-- Several `Kome.Store` goals are close to the 20 s prover limit on a loaded
-  machine.
+- **Store:**
+  - The unproved `St in OK | Dominated` assert (`kome-store.adb:1253`) is
+    gone. `Frontier.Apply`'s Post now states every outcome as an iff
+    (`kome-frontier.ads:213-252`).
+  - Replay to the same frontier: the registers are functions of F
+    (`Coherent`), and `Compact` writes authorization records first.
+  - Expired DELs are dropped by `Frontier.Expire`; the T11 (a) Post shows
+    the frontier no longer wedges.
+  - A dominated record is refused as `Dominated`, never `No_Space` (D11).
+  - The horizon is computed from `Del_TTL_Eff` (D10).
+  - No `Dynamic_Predicate`, no `Touch`, no `Assertion_Policy`
+    (`Lemma_Unchanged_Refl`).
+  - The `-gnatw.t` warning is gone.
+- **Signer admission (D1, D1′):** Cert_OK and a founding-key certificate
+  for every ROSTER, REVOKE and GRANT (`kome-records.ads:227-230`), and
+  `Foreign_Root` at Store step 0.
+- **Views:**
+  - Only the founding key root-voids, and it is never revoked (D2).
+  - Canonical headers come from decode, and roster domination is the
+    product order (D3, R4).
+  - `Lemma_Cell_Unique` needs only `Is_Frontier`.
+  - The T12 converse tests are complete.
+- **Crypto:**
+  - RFC 8032 Ed25519 from monocypher-ed25519, with RFC 8032 and Wycheproof
+    vectors (D4).
+  - `Default_Initial_Condition`.
+  - A ghost `Seed_Of`.
+  - `X25519_Shared`.
+  - `Always_Terminates` on `Blake2b_256` and `Wipe`.
+- **Epochs:**
+  - No root X25519 key (D5).
+  - The wrap key covers ns and epoch, and the nonce is synthetic and in
+    the Post (D6).
+  - Known-answer vectors from an independent reference
+    (`vectors/epochs.txt`).
+  - `Step` wipes its buffers.
+- **Accumulator and Digest:**
+  - The byte order is recorded (D7).
+  - The congruence lemmas live in Accumulator, with `Lemma_Eq_Iff_Value`.
+  - The Hide_Info probe is recorded.
+  - D15's extra prefix entry; any range costs at most 64 Adds and 1 Sub.
+  - `Is_Perm` is opaque.
+  - `D_No_Space` and the r > 32 tail are tested.
+- **Emit:**
+  - `Choose` takes no h, with `Lemma_Outcome_Independent_Of_H` (D8).
+  - `Make_Put` and `Make_Del` state their headers.
+  - `seq_self` is kept per collection.
+  - `Tgt.NS` is checked.
+  - The proof loops are moved into ghost lemmas.
+  - The `No_Space` comment is fixed.
+  - The tests for `Seq_Exhausted` after an H8 jump and for the same
+    outcome under different hashes are added.
+  - Superseded: the floor.t + 1 refusal, because DESIGN §5 is the spec;
+    and `Clone_Suspected` stays an out flag by design.
+- **Reconcile:**
+  - The reply plan kinds are pinned (`Answers`).
+  - `Root_OK` refuses a g = 0 HAVE and partial root RANGEs (D14).
+  - `Value_Max = 40 960`, so every frame ships (D12).
+  - No register crosses the wire (D13). The W′ join is superseded.
+  - `Key_Lt` is proved to be bytewise order.
+- **Keys:**
+  - `Id128` round-trip, injectivity and order lemmas.
+  - Slice lemmas.
+  - A test of the length-precondition failure path.
+  - The `kome.ads` comment is fixed.
+- **Frontier:**
+  - One data row plus a slice per signer (E1, R6).
+  - `Auth_Full` on a full slice changes nothing (E2).
+  - `Expire`.
+  - `NS` accessor.
+  - `Lemma_Unchanged_Refl`, and `Lemma_Unchanged` now runs under `-gnata`.
+- **Tooling:**
+  - `check.sh all` runs every module and reports all failures.
+  - `PROOF_WIP=""` means no list.
+  - Each run gets a private `TMPDIR`.
+  - The prove step is serialized with `flock`.
+  - Store's slowest goal fell from 19.18 s to 12.63 s (see Proof margin).
+- **Lean:**
+  - Round-three model: five record kinds, the product order, `maxceil`
+    and W as functions of F, and the discard model.
+  - T4 as `auth_first` / `convergence_two_pass` / `convergence`.
+  - T11 (`expire_*`), T18 (`auth_first`).
+  - The views `rootVoid`, `wEff`, `voided` and `rosterEff`.
 
 ## Phase 1 in detail (the lattice core)
 
@@ -254,3 +309,10 @@ all of the second day was spent finding these four rules, now in
 Result: `Kome.Frontier.Apply` proves with 110 run-time checks, 76
 assertions and 88 contract checks discharged by cvc5 and z3, no
 justifications, no unproved goals, in under three minutes.
+
+Round three added eight more rules. They are in `spark/CONVENTIONS.md`
+under "Proof hygiene learned in round three": what `Hide_Info` and the
+private part hide, no `Dynamic_Predicate` on state types, refusals decided
+before the state changes, executable ghost lemmas, congruence axioms,
+pre-state-only Posts, `Always_Terminates` and ghost secrets, and the proof
+margin.

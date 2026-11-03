@@ -1,13 +1,23 @@
---  Test main for Kome.Epochs (DESIGN.md §6). (a) The chain: Derive against
---  vectors/epochs.txt, computed independently with Python's hashlib.blake2b
---  (digest_size=32), including the full 2**16 - 1 step walk; Step is one
---  link. (b) The chain algebra: the ghost lemmas executed under -gnata on
---  real keys (identity, one step, composition, shift, Iter_Add). (c) Boxes
---  through Kome.Crypto: round trip, the member derives older keys from the
---  boxed one, and refusals (wrong member, wrong root key, wrong nonce, wrong
---  epoch, wrong collection, tampered cipher or tag, low-order peers u = 0,
---  u = 1, both order-8 points and u = p - 1, non-reduced peer encodings:
---  bit 255 set and u >= p) each leave zeros.
+--  Test main for Kome.Epochs (DESIGN.md §6). (a) Known answers from
+--  vectors/epochs.txt: the chain (Python hashlib, including the full
+--  2**16 - 1 step walk) and the round-three box and link constructions
+--  (an independent Python reference over libsodium, pyca/cryptography and
+--  hashlib; no monocypher), each checked through Box_Key, Unbox_Key,
+--  Seal_Link, Open_Link, Synthetic_Nonce and Link_Key, with the wrap key
+--  recomputed here from Kome.Crypto primitives and literal labels.
+--  (b) The chain algebra: the ghost lemmas executed under -gnata on real
+--  keys. (c) Boxes: round trip, the member derives older keys, the nonce is
+--  synthetic and checked on open (a box that passes the AEAD under a
+--  non-synthetic nonce is refused), refusals (wrong member secret, sign_pk,
+--  box_pk, nonce, epoch, collection, tampered bytes, low-order and
+--  non-reduced peers) each leave zeros. (d) Regressions for the closed
+--  review gaps: the k5-to-k6 keystream reuse (reproduced against the old
+--  construction, refuted against the new), a reused ephemeral secret.
+--  (e) Links: walking back across a segment boundary, refusals.
+--  Design change (round three, D5/D6): the caller no longer supplies the
+--  nonce and there is no root X25519 key; Box_Key takes the ephemeral
+--  secret and returns the synthetic nonce, Unbox_Key takes box_pk and the
+--  member's sign_pk. The old caller-nonce tests are replaced accordingly.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -75,22 +85,73 @@ procedure Test_Epochs with SPARK_Mode => Off is
    end Find;
 
    ---------------------------------------------------------------------------
-   --  (a) Chain against the hashlib reference
+   --  Independent recomputations from Kome.Crypto primitives and literal
+   --  labels (not the package's constants), used to check the vectors'
+   --  intermediate values and to forge boxes for the refusal tests.
    ---------------------------------------------------------------------------
 
-   procedure Chain_Vectors is
+   function Ascii (S : String) return Byte_Array is
+   begin
+      return R : Byte_Array (0 .. S'Length - 1) do
+         for I in R'Range loop
+            R (I) := Character'Pos (S (S'First + I));
+         end loop;
+      end return;
+   end Ascii;
+
+   function U16 (E : Epoch) return Byte_Array is
+     ([Byte (Natural (E) / 256), Byte (Natural (E) mod 256)]);
+
+   --  BLAKE2b-256 ("kome/wrap" ‖ X25519 (Secret, Peer) ‖ box_pk ‖ dh_pk ‖
+   --  sign_pk ‖ ns ‖ u16 (e)).
+   function Wrap_Ref
+     (Secret : Kome.Crypto.DH_Secret; Peer, Box_PK, DH_PK, Sign_PK : Pubkey;
+      Ns : Id128; E : Epoch) return Hash256
+   is
+      Shared : Kome.Crypto.Shared_Secret;
+      Contr  : Boolean;
+   begin
+      Kome.Crypto.X25519 (Secret, Peer, Shared, Contr);
+      return Kome.Crypto.Blake2b_256
+        (Ascii ("kome/wrap") & Shared & Box_PK & DH_PK & Sign_PK
+         & Kome.Keys.To_Bytes (Ns) & U16 (E));
+   end Wrap_Ref;
+
+   function Nonce_Ref (Key : Byte_Array; K : Key256) return Nonce is
+     (Kome.Crypto.Blake2b_256
+        (Ascii ("kome/nonce") & Key & Kome.Keys.To_Bytes (K)) (0 .. Nonce_Len - 1));
+
+   --  An AEAD box of K under Key, nonce N and AD ns ‖ u16 (e): what Box_Key
+   --  or Seal_Link would produce if N were the synthetic nonce.
+   function Lock_Ref
+     (Key : Byte_Array; N : Nonce; Ns : Id128; E : Epoch; K : Key256)
+      return Kome.Box
+   is
+      Cipher : Kome.Crypto.AEAD_Key;
+      Mac    : Kome.Crypto.Tag;
+   begin
+      Kome.Crypto.Lock (Key, N, Kome.Keys.To_Bytes (Ns) & U16 (E),
+                        Kome.Keys.To_Bytes (K), Cipher, Mac);
+      return Cipher & Mac;
+   end Lock_Ref;
+
+   ---------------------------------------------------------------------------
+   --  (a) Known answers: chain (hashlib), box and link (Python reference)
+   ---------------------------------------------------------------------------
+
+   procedure Vectors is
       Path : constant String := Find ("vectors/epochs.txt");
       F    : File_Type;
-      Line : String (1 .. 512);
+      Line : String (1 .. 1024);
       Last : Natural;
 
       type Bounds is record
          First, Last : Natural;
       end record;
-      Fields   : array (1 .. 6) of Bounds;
+      Fields   : array (1 .. 12) of Bounds;
       N_Fields : Natural;
-      N_Chain  : Natural := 0;
-      Ok       : Boolean := True;
+      N_Chain, N_Box, N_Link : Natural := 0;
+      Ok, Ok_Box, Ok_Link : Boolean := True;
       Full     : Boolean := False;
 
       procedure Tokenize (S : String) is
@@ -113,6 +174,12 @@ procedure Test_Epochs with SPARK_Mode => Off is
 
       function Field (K : Positive) return String is
         (Line (Fields (K).First .. Fields (K).Last));
+
+      procedure Bad (What : String) is
+      begin
+         Put_Line ("  mismatch: " & What & " (" & Field (1) & " line, field 6 = "
+                   & Field (6) & ")");
+      end Bad;
    begin
       if not Ada.Directories.Exists (Path) then
          Check ("vectors_present (" & Path & ")", False);
@@ -144,6 +211,94 @@ procedure Test_Epochs with SPARK_Mode => Off is
                      Full := True;
                   end if;
                end;
+            elsif Field (1) = "box" and then N_Fields = 12 then
+               declare
+                  Eph     : constant Kome.Crypto.DH_Secret := From_Hex (Field (2));
+                  DH_SK   : constant Kome.Crypto.DH_Secret := From_Hex (Field (3));
+                  Sign_PK : constant Pubkey := From_Hex (Field (4));
+                  Ns      : constant Id128 := Kome.Keys.To_Id128 (From_Hex (Field (5)));
+                  E       : constant Epoch := Epoch'Value (Field (6));
+                  K_E     : constant Key256 := Key_Of (Field (7));
+                  Box_PK  : constant Pubkey := From_Hex (Field (8));
+                  DH_PK   : constant Pubkey := From_Hex (Field (9));
+                  Wrap    : constant Hash256 := From_Hex (Field (10));
+                  Want_N  : constant Nonce := From_Hex (Field (11));
+                  Want_B  : constant Kome.Box := From_Hex (Field (12));
+                  N       : Nonce;
+                  Sealed  : Kome.Box;
+                  St      : Box_Status;
+                  Got     : Key256;
+               begin
+                  N_Box := N_Box + 1;
+                  if Kome.Crypto.X25519_Public (Eph) /= Box_PK
+                    or else Kome.Crypto.X25519_Public (DH_SK) /= DH_PK
+                  then
+                     Ok_Box := False;
+                     Bad ("box_pk/dh_pk");
+                  end if;
+                  if Wrap_Ref (Eph, DH_PK, Box_PK, DH_PK, Sign_PK, Ns, E) /= Wrap
+                    or else Wrap_Ref (DH_SK, Box_PK, Box_PK, DH_PK, Sign_PK, Ns, E)
+                              /= Wrap
+                  then
+                     Ok_Box := False;
+                     Bad ("wrap_key");
+                  end if;
+                  if Synthetic_Nonce (Kome.Keys.To_Key256 (Wrap), K_E) /= Want_N
+                    or else Nonce_Ref (Wrap, K_E) /= Want_N
+                  then
+                     Ok_Box := False;
+                     Bad ("synthetic nonce");
+                  end if;
+                  Box_Key (Eph, DH_PK, Sign_PK, Ns, E, K_E, N, Sealed, St);
+                  if St /= Box_OK or else N /= Want_N or else Sealed /= Want_B then
+                     Ok_Box := False;
+                     Bad ("Box_Key");
+                  end if;
+                  Unbox_Key (DH_SK, Sign_PK, Box_PK, Ns, E, Want_N, Want_B, Got, St);
+                  if St /= Box_OK or else Got /= K_E then
+                     Ok_Box := False;
+                     Bad ("Unbox_Key");
+                  end if;
+               end;
+            elsif Field (1) = "link" and then N_Fields = 8 then
+               declare
+                  K_S    : constant Key256 := Key_Of (Field (2));
+                  Ns     : constant Id128 := Kome.Keys.To_Id128 (From_Hex (Field (3)));
+                  S      : constant Epoch := Epoch'Value (Field (4));
+                  K_Prev : constant Key256 := Key_Of (Field (5));
+                  LK     : constant Key256 := Key_Of (Field (6));
+                  Want_N : constant Nonce := From_Hex (Field (7));
+                  Want_B : constant Kome.Box := From_Hex (Field (8));
+                  N      : Nonce;
+                  Sealed : Kome.Box;
+                  St     : Box_Status;
+                  Got    : Key256;
+               begin
+                  N_Link := N_Link + 1;
+                  if Link_Key (K_S, Ns, S) /= LK
+                    or else Kome.Crypto.Blake2b_256
+                              (Ascii ("kome/link") & Kome.Keys.To_Bytes (K_S)
+                               & Kome.Keys.To_Bytes (Ns) & U16 (S))
+                            /= Kome.Keys.To_Bytes (LK)
+                  then
+                     Ok_Link := False;
+                     Bad ("link_key");
+                  end if;
+                  if Synthetic_Nonce (LK, K_Prev) /= Want_N then
+                     Ok_Link := False;
+                     Bad ("link nonce");
+                  end if;
+                  Seal_Link (K_S, Ns, S, K_Prev, N, Sealed);
+                  if N /= Want_N or else Sealed /= Want_B then
+                     Ok_Link := False;
+                     Bad ("Seal_Link");
+                  end if;
+                  Open_Link (K_S, Ns, S, Want_N, Want_B, Got, St);
+                  if St /= Box_OK or else Got /= K_Prev then
+                     Ok_Link := False;
+                     Bad ("Open_Link");
+                  end if;
+               end;
             else
                Check ("vector_line_parses (" & Field (1) & ")", False);
             end if;
@@ -153,7 +308,11 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Check ("chain_matches_hashlib (" & N_Chain'Image & " vectors)",
              Ok and then N_Chain >= 10);
       Check ("chain_full_walk_65535_to_0_present", Full);
-   end Chain_Vectors;
+      Check ("box_matches_python_reference (" & N_Box'Image & " vectors)",
+             Ok_Box and then N_Box >= 6);
+      Check ("link_matches_python_reference (" & N_Link'Image & " vectors)",
+             Ok_Link and then N_Link >= 4);
+   end Vectors;
 
    Top_Key : constant Key256 :=
      Key_Of ("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
@@ -214,30 +373,41 @@ procedure Test_Epochs with SPARK_Mode => Off is
    --  (c) Boxes
    ---------------------------------------------------------------------------
 
+   function Flip (B : Byte_Array; I : Natural) return Byte_Array is
+      R : Byte_Array := B;
+   begin
+      R (I) := R (I) xor 16#01#;
+      return R;
+   end Flip;
+
    procedure Boxes is
       use Kome.Crypto;
-      Root_SK   : constant DH_Secret := Pattern (DH_Key_Len, 7, 3);
-      Member_SK : constant DH_Secret := Pattern (DH_Key_Len, 13, 101);
-      Other_SK  : constant DH_Secret := Pattern (DH_Key_Len, 31, 9);
-      Root_PK   : constant Pubkey := X25519_Public (Root_SK);
-      Member_PK : constant Pubkey := X25519_Public (Member_SK);
-      Other_PK  : constant Pubkey := X25519_Public (Other_SK);
-      N1        : constant Nonce := Pattern (Nonce_Len, 5, 1);
-      N2        : constant Nonce := Pattern (Nonce_Len, 5, 2);
-      NS1       : constant Id128 := (16#6B6F6D65#, 1, 2, 3);
-      NS2       : constant Id128 := (16#6B6F6D65#, 1, 2, 4);
+      Eph_SK     : constant DH_Secret := Pattern (DH_Key_Len, 7, 3);
+      Eph2_SK    : constant DH_Secret := Pattern (DH_Key_Len, 11, 77);
+      Member_SK  : constant DH_Secret := Pattern (DH_Key_Len, 13, 101);
+      Other_SK   : constant DH_Secret := Pattern (DH_Key_Len, 31, 9);
+      Member_Sig : constant Pubkey := Pattern (Pubkey_Len, 17, 5);
+      Other_Sig  : constant Pubkey := Pattern (Pubkey_Len, 3, 200);
+      Box_PK     : constant Pubkey := X25519_Public (Eph_SK);
+      Box2_PK    : constant Pubkey := X25519_Public (Eph2_SK);
+      Member_PK  : constant Pubkey := X25519_Public (Member_SK);
+      Other_PK   : constant Pubkey := X25519_Public (Other_SK);
+      NS1        : constant Id128 := (16#6B6F6D65#, 1, 2, 3);
+      NS2        : constant Id128 := (16#6B6F6D65#, 1, 2, 4);
 
       Top   : constant Epoch := 50_000;
       E     : constant Epoch := 1_234;
       K_Top : constant Key256 := Other_Key;
       K_E   : constant Key256 := Derive (K_Top, Top, E);
 
+      N, N2         : Nonce;
       Sealed, Sealed2, Bad : Kome.Box;
-      St, St2              : Box_Status;
-      Got                  : Key256;
+      St, St2       : Box_Status;
+      Got           : Key256;
    begin
-      Box_Key (Root_SK, Member_PK, NS1, E, K_E, N1, Sealed, St);
-      Check ("box_ok", St = Box_OK and then not Is_Zero_Box (Sealed));
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, E, K_E, N, Sealed, St);
+      Check ("box_ok", St = Box_OK and then not Is_Zero_Box (Sealed)
+                       and then not Is_Zero_Nonce (N));
       Check ("box_layout_cipher_tag",
              Cipher_Of (Sealed) = Sealed (0 .. 31)
              and then Tag_Of (Sealed) = Sealed (32 .. 47)
@@ -245,7 +415,53 @@ procedure Test_Epochs with SPARK_Mode => Off is
       Check ("box_hides_key",
              Cipher_Of (Sealed) /= Kome.Keys.To_Bytes (K_E));
 
-      Unbox_Key (Member_SK, Root_PK, NS1, E, N1, Sealed, Got, St);
+      --  The nonce is the synthetic one, recomputed independently, and the
+      --  box is the AEAD under it (the construction of DESIGN.md §6).
+      declare
+         WK : constant Hash256 :=
+           Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, E);
+      begin
+         Check ("box_nonce_is_synthetic",
+                N = Nonce_Ref (WK, K_E)
+                and then N = Synthetic_Nonce (Kome.Keys.To_Key256 (WK), K_E));
+         --  The ghost model the Posts of Box_Key and Unbox_Key name
+         --  (Wrap_Key_Of over X25519_Shared) is the independent reference's
+         --  wrap key, from either side of the exchange; ghost, so asserted.
+         pragma Assert
+           (Kome.Keys.To_Key256 (WK)
+            = Wrap_Key_Of (Kome.Crypto.X25519_Shared (Eph_SK, Member_PK),
+                           Box_PK, Member_PK, Member_Sig, NS1, E));
+         pragma Assert
+           (Kome.Keys.To_Key256 (WK)
+            = Wrap_Key_Of (Kome.Crypto.X25519_Shared (Member_SK, Box_PK),
+                           Box_PK, Member_PK, Member_Sig, NS1, E));
+         pragma Assert
+           (N = Synthetic_Nonce
+                  (Wrap_Key_Of (Kome.Crypto.X25519_Shared (Eph_SK, Member_PK),
+                                Box_PK, Member_PK, Member_Sig, NS1, E), K_E));
+         Check ("wrap_key_model_is_reference_wrap_key", St = Box_OK);
+         Check ("box_is_aead_under_wrap_key",
+                Sealed = Lock_Ref (WK, N, NS1, E, K_E));
+         Check ("wrap_key_agrees_both_sides",
+                WK = Wrap_Ref (Member_SK, Box_PK, Box_PK, Member_PK, Member_Sig,
+                               NS1, E));
+
+         --  A box that passes the AEAD under the right wrap key but carries
+         --  a nonce that is not the synthetic one is refused (the member's
+         --  nonce check, D6). Without the check it would open.
+         declare
+            Forged_N : constant Nonce := Pattern (Nonce_Len, 5, 1);
+            Forged   : constant Kome.Box := Lock_Ref (WK, Forged_N, NS1, E, K_E);
+         begin
+            Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, Forged_N, Forged,
+                       Got, St);
+            Check ("unbox_non_synthetic_nonce_refused",
+                   Forged_N /= N and then St = Not_Authentic
+                   and then Got = Zero_Key);
+         end;
+      end;
+
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, N, Sealed, Got, St);
       Check ("unbox_round_trip", St = Box_OK and then Got = K_E);
 
       --  The member derives every older key from its one box (§6).
@@ -253,36 +469,52 @@ procedure Test_Epochs with SPARK_Mode => Off is
              Derive (Got, E, 0) = Derive (K_Top, Top, 0)
              and then Derive (Got, E, 17) = Derive (K_Top, Top, 17));
 
-      --  Deterministic given the nonce; a fresh nonce gives a fresh box.
-      Box_Key (Root_SK, Member_PK, NS1, E, K_E, N1, Sealed2, St2);
-      Check ("box_deterministic_in_nonce", St2 = Box_OK and then Sealed2 = Sealed);
-      Box_Key (Root_SK, Member_PK, NS1, E, K_E, N2, Sealed2, St2);
-      Check ("box_fresh_nonce_differs", St2 = Box_OK and then Sealed2 /= Sealed);
-      Unbox_Key (Member_SK, Root_PK, NS1, E, N2, Sealed2, Got, St);
-      Check ("unbox_round_trip_second_nonce", St = Box_OK and then Got = K_E);
+      --  Deterministic (no RNG in SPARK code); a fresh ephemeral secret
+      --  gives a fresh box_pk, nonce and box.
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, E, K_E, N2, Sealed2, St2);
+      Check ("box_deterministic",
+             St2 = Box_OK and then N2 = N and then Sealed2 = Sealed);
+      Box_Key (Eph2_SK, Member_PK, Member_Sig, NS1, E, K_E, N2, Sealed2, St2);
+      Check ("box_fresh_eph_differs",
+             St2 = Box_OK and then Box2_PK /= Box_PK
+             and then N2 /= N and then Sealed2 /= Sealed);
+      Unbox_Key (Member_SK, Member_Sig, Box2_PK, NS1, E, N2, Sealed2, Got, St);
+      Check ("unbox_round_trip_fresh_eph", St = Box_OK and then Got = K_E);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, N2, Sealed2, Got, St);
+      Check ("unbox_wrong_box_pk_fails",
+             St = Not_Authentic and then Got = Zero_Key);
 
       --  A box to another member differs and opens only for that member.
-      Box_Key (Root_SK, Other_PK, NS1, E, K_E, N1, Sealed2, St2);
-      Check ("box_per_member", St2 = Box_OK and then Sealed2 /= Sealed);
-      Unbox_Key (Other_SK, Root_PK, NS1, E, N1, Sealed2, Got, St);
+      Box_Key (Eph_SK, Other_PK, Other_Sig, NS1, E, K_E, N2, Sealed2, St2);
+      Check ("box_per_member",
+             St2 = Box_OK and then Sealed2 /= Sealed and then N2 /= N);
+      Unbox_Key (Other_SK, Other_Sig, Box_PK, NS1, E, N2, Sealed2, Got, St);
       Check ("unbox_other_member", St = Box_OK and then Got = K_E);
 
-      --  Wrong keys fail and leave the zero key.
-      Unbox_Key (Other_SK, Root_PK, NS1, E, N1, Sealed, Got, St);
+      --  sign_pk is bound into the wrap key: the same dh_pk listed with
+      --  another sign_pk gets a different box.
+      Box_Key (Eph_SK, Member_PK, Other_Sig, NS1, E, K_E, N2, Sealed2, St2);
+      Check ("box_binds_sign_pk",
+             St2 = Box_OK and then Sealed2 /= Sealed and then N2 /= N);
+
+      --  Wrong inputs fail and leave the zero key.
+      Unbox_Key (Other_SK, Member_Sig, Box_PK, NS1, E, N, Sealed, Got, St);
       Check ("unbox_wrong_member_fails",
              St = Not_Authentic and then Got = Zero_Key);
-      Unbox_Key (Member_SK, Other_PK, NS1, E, N1, Sealed, Got, St);
-      Check ("unbox_wrong_root_fails",
+      Unbox_Key (Member_SK, Other_Sig, Box_PK, NS1, E, N, Sealed, Got, St);
+      Check ("unbox_wrong_sign_pk_fails",
              St = Not_Authentic and then Got = Zero_Key);
-      Unbox_Key (Member_SK, Root_PK, NS1, E, N2, Sealed, Got, St);
+      Unbox_Key (Member_SK, Member_Sig, Other_PK, NS1, E, N, Sealed, Got, St);
+      Check ("unbox_wrong_box_pk_other_key_fails",
+             St = Not_Authentic and then Got = Zero_Key);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, Flip (N, 7), Sealed,
+                 Got, St);
       Check ("unbox_wrong_nonce_fails",
              St = Not_Authentic and then Got = Zero_Key);
-      Unbox_Key (Member_SK, Root_PK, NS1, E + 1, N1, Sealed, Got, St);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E + 1, N, Sealed, Got, St);
       Check ("unbox_wrong_epoch_fails",
              St = Not_Authentic and then Got = Zero_Key);
-      --  AD = ns ‖ epoch: the same root and member keys in another
-      --  collection do not open it.
-      Unbox_Key (Member_SK, Root_PK, NS2, E, N1, Sealed, Got, St);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS2, E, N, Sealed, Got, St);
       Check ("unbox_wrong_ns_fails",
              St = Not_Authentic and then Got = Zero_Key);
 
@@ -290,9 +522,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Ok : Boolean := True;
       begin
          for I in Sealed'Range loop
-            Bad := Sealed;
-            Bad (I) := Bad (I) xor 16#01#;
-            Unbox_Key (Member_SK, Root_PK, NS1, E, N1, Bad, Got, St);
+            Bad := Flip (Sealed, I);
+            Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, E, N, Bad, Got, St);
             if St /= Not_Authentic or else Got /= Zero_Key then
                Ok := False;
             end if;
@@ -301,10 +532,8 @@ procedure Test_Epochs with SPARK_Mode => Off is
       end;
 
       --  Low-order peers, all reduced encodings (so the refusal is the
-      --  exchange's, not the encoding's): u = 0, u = 1, the two points of
-      --  order 8 (libsodium's blocklist, cf. RFC 7748 §6.1) and u = p - 1
-      --  (order 2). Each makes every exchange all zeros (checked
-      --  independently with an RFC 7748 ladder in Python).
+      --  low-order one, not the encoding's): u = 0, u = 1, the two points
+      --  of order 8 and u = p - 1 (order 2).
       declare
          type Pk_List is array (Positive range <>) of Pubkey;
          Low : constant Pk_List :=
@@ -316,19 +545,22 @@ procedure Test_Epochs with SPARK_Mode => Off is
          Ok_Box, Ok_Unbox, Ok_Red : Boolean := True;
       begin
          for U of Low loop
-            Ok_Red := Ok_Red and then Is_Reduced_U (U);
-            Box_Key (Root_SK, U, NS1, E, K_E, N1, Bad, St);
-            if St /= Low_Order_Peer or else not Is_Zero_Box (Bad) then
+            Ok_Red := Ok_Red and then Kome.Epochs.Is_Reduced_U (U)
+                      and then not Is_Good_DH_Key (U);
+            Box_Key (Eph_SK, U, Member_Sig, NS1, E, K_E, N2, Bad, St);
+            if St /= Low_Order_Peer or else not Is_Zero_Box (Bad)
+              or else not Is_Zero_Nonce (N2)
+            then
                Ok_Box := False;
             end if;
-            Unbox_Key (Member_SK, U, NS1, E, N1, Sealed, Got, St);
+            Unbox_Key (Member_SK, Member_Sig, U, NS1, E, N, Sealed, Got, St);
             if St /= Low_Order_Peer or else Got /= Zero_Key then
                Ok_Unbox := False;
             end if;
          end loop;
-         Check ("low_order_points_are_reduced", Ok_Red);
+         Check ("low_order_points_are_reduced_and_not_good", Ok_Red);
          Check ("box_low_order_refused (u=0, u=1, order 8 x2, p-1)", Ok_Box);
-         Check ("unbox_low_order_root_refused (u=0, u=1, order 8 x2, p-1)",
+         Check ("unbox_low_order_box_pk_refused (u=0, u=1, order 8 x2, p-1)",
                 Ok_Unbox);
       end;
 
@@ -338,7 +570,7 @@ procedure Test_Epochs with SPARK_Mode => Off is
       --  never open for the member. It is refused, as is any u >= p.
       declare
          Hi_Member : Pubkey := Member_PK;
-         Hi_Root   : Pubkey := Root_PK;
+         Hi_Box    : Pubkey := Box_PK;
          P_Enc     : constant Pubkey := From_Hex
            ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
          P2_Enc    : constant Pubkey := From_Hex
@@ -350,53 +582,262 @@ procedure Test_Epochs with SPARK_Mode => Off is
            ("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffff7f");
       begin
          Hi_Member (31) := Hi_Member (31) or 16#80#;
-         Hi_Root (31) := Hi_Root (31) or 16#80#;
+         Hi_Box (31) := Hi_Box (31) or 16#80#;
          Check ("is_reduced_u_boundaries",
-                Is_Reduced_U (Member_PK) and then Is_Reduced_U (Root_PK)
-                and then Is_Reduced_U (P1_Enc) and then Is_Reduced_U (Mid_Enc)
-                and then not Is_Reduced_U (P_Enc)
-                and then not Is_Reduced_U (P2_Enc)
-                and then not Is_Reduced_U (Max_Enc)
-                and then not Is_Reduced_U (Hi_Member));
+                Kome.Epochs.Is_Reduced_U (Member_PK) and then Kome.Epochs.Is_Reduced_U (Box_PK)
+                and then Kome.Epochs.Is_Reduced_U (P1_Enc) and then Kome.Epochs.Is_Reduced_U (Mid_Enc)
+                and then not Kome.Epochs.Is_Reduced_U (P_Enc)
+                and then not Kome.Epochs.Is_Reduced_U (P2_Enc)
+                and then not Kome.Epochs.Is_Reduced_U (Max_Enc)
+                and then not Kome.Epochs.Is_Reduced_U (Hi_Member));
 
-         Box_Key (Root_SK, Hi_Member, NS1, E, K_E, N1, Bad, St);
+         Box_Key (Eph_SK, Hi_Member, Member_Sig, NS1, E, K_E, N2, Bad, St);
          Check ("box_member_bit255_refused",
-                St = Non_Canonical_Peer and then Is_Zero_Box (Bad));
-         Box_Key (Root_SK, P2_Enc, NS1, E, K_E, N1, Bad, St);
+                St = Non_Canonical_Peer and then Is_Zero_Box (Bad)
+                and then Is_Zero_Nonce (N2));
+         Box_Key (Eph_SK, P2_Enc, Member_Sig, NS1, E, K_E, N2, Bad, St);
          Check ("box_member_u_ge_p_refused",
-                St = Non_Canonical_Peer and then Is_Zero_Box (Bad));
-         Box_Key (Root_SK, P_Enc, NS1, E, K_E, N1, Bad, St);
+                St = Non_Canonical_Peer and then Is_Zero_Box (Bad)
+                and then Is_Zero_Nonce (N2));
+         Box_Key (Eph_SK, P_Enc, Member_Sig, NS1, E, K_E, N2, Bad, St);
          Check ("box_member_u_eq_p_refused_as_non_canonical",
                 St = Non_Canonical_Peer and then Is_Zero_Box (Bad));
-         Unbox_Key (Member_SK, Hi_Root, NS1, E, N1, Sealed, Got, St);
-         Check ("unbox_root_bit255_refused",
+         Unbox_Key (Member_SK, Member_Sig, Hi_Box, NS1, E, N, Sealed, Got, St);
+         Check ("unbox_box_pk_bit255_refused",
                 St = Non_Canonical_Peer and then Got = Zero_Key);
-         Unbox_Key (Member_SK, P2_Enc, NS1, E, N1, Sealed, Got, St);
-         Check ("unbox_root_u_ge_p_refused",
+         Unbox_Key (Member_SK, Member_Sig, P2_Enc, NS1, E, N, Sealed, Got, St);
+         Check ("unbox_box_pk_u_ge_p_refused",
                 St = Non_Canonical_Peer and then Got = Zero_Key);
          --  What Box_Key accepts is what Unbox_Key hashes: the member's own
-         --  public key is the reduced encoding.
+         --  public key and box_pk are reduced encodings.
          Check ("x25519_public_is_reduced",
-                Is_Reduced_U (X25519_Public (Member_SK))
-                and then Is_Reduced_U (X25519_Public (Other_SK))
-                and then Is_Reduced_U (X25519_Public (Root_SK)));
+                Kome.Epochs.Is_Reduced_U (X25519_Public (Member_SK))
+                and then Kome.Epochs.Is_Reduced_U (X25519_Public (Other_SK))
+                and then Kome.Epochs.Is_Reduced_U (X25519_Public (Eph_SK)));
       end;
 
       --  Edge epochs.
-      Box_Key (Root_SK, Member_PK, NS1, Epoch'Last, K_Top, N1, Sealed2, St2);
-      Unbox_Key (Member_SK, Root_PK, NS1, Epoch'Last, N1, Sealed2, Got, St);
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, Epoch'Last, K_Top, N2,
+               Sealed2, St2);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, Epoch'Last, N2, Sealed2,
+                 Got, St);
       Check ("box_round_trip_top_epoch",
              St2 = Box_OK and then St = Box_OK and then Got = K_Top);
-      Box_Key (Root_SK, Member_PK, NS1, 0, Zero_Key, N1, Sealed2, St2);
-      Unbox_Key (Member_SK, Root_PK, NS1, 0, N1, Sealed2, Got, St);
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 0, Zero_Key, N2, Sealed2, St2);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, 0, N2, Sealed2, Got, St);
       Check ("box_round_trip_zero_key_epoch_0",
              St2 = Box_OK and then St = Box_OK and then Got = Zero_Key);
    end Boxes;
 
+   ---------------------------------------------------------------------------
+   --  (d) Regressions for the review gaps (IMPLEMENTATION_PLAN.md "Known
+   --  gaps", Kome.Epochs)
+   ---------------------------------------------------------------------------
+
+   function Xor_Bytes (A, B : Byte_Array) return Byte_Array is
+      R : Byte_Array (0 .. A'Length - 1);
+   begin
+      for I in R'Range loop
+         R (I) := A (A'First + I) xor B (B'First + I);
+      end loop;
+      return R;
+   end Xor_Bytes;
+
+   procedure Regressions is
+      use Kome.Crypto;
+      Eph_SK     : constant DH_Secret := Pattern (DH_Key_Len, 7, 3);
+      Eph2_SK    : constant DH_Secret := Pattern (DH_Key_Len, 11, 77);
+      Member_SK  : constant DH_Secret := Pattern (DH_Key_Len, 13, 101);
+      Member_Sig : constant Pubkey := Pattern (Pubkey_Len, 17, 5);
+      Member_PK  : constant Pubkey := X25519_Public (Member_SK);
+      Box_PK     : constant Pubkey := X25519_Public (Eph_SK);
+      NS1        : constant Id128 := (16#6B6F6D65#, 1, 2, 3);
+      K6         : constant Key256 := Other_Key;
+      K5         : constant Key256 := Derive (K6, 6, 5);
+      N5, N6, N6b : Nonce;
+      B5, B6, B6b : Kome.Box;
+      St5, St6, St6b : Box_Status;
+      Got        : Key256;
+      St         : Box_Status;
+   begin
+      --  The reviewer's attack, reproduced on the OLD construction
+      --  (wrap_key = BLAKE2b (X25519 (root_sk, dh_pk) ‖ root_pk ‖ dh_pk),
+      --  one caller nonce reused for the member across epochs): a removed
+      --  member who holds k5 XORs the two ciphertexts with k5 and gets k6.
+      --  This shows the test below detects the leak when it exists.
+      declare
+         Shared : Shared_Secret;
+         Contr  : Boolean;
+         Old_WK : Hash256;
+         Reused : constant Nonce := Pattern (Nonce_Len, 5, 1);
+         O5, O6 : Kome.Box;
+      begin
+         X25519 (Eph_SK, Member_PK, Shared, Contr);
+         Old_WK := Blake2b_256 (Shared & Box_PK & Member_PK);
+         O5 := Lock_Ref (Old_WK, Reused, NS1, 5, K5);
+         O6 := Lock_Ref (Old_WK, Reused, NS1, 6, K6);
+         Check ("old_construction_k5_recovers_k6 (reproduction)",
+                Xor_Bytes (Xor_Bytes (Cipher_Of (O5), Cipher_Of (O6)),
+                           Kome.Keys.To_Bytes (K5))
+                  = Kome.Keys.To_Bytes (K6));
+      end;
+
+      --  The same two rosters under the new construction, even with the
+      --  ephemeral secret reused (the worst case): different wrap keys and
+      --  nonces, and the XOR with k5 is not k6.
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 5, K5, N5, B5, St5);
+      Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 6, K6, N6, B6, St6);
+      Box_Key (Eph2_SK, Member_PK, Member_Sig, NS1, 6, K6, N6b, B6b, St6b);
+      Check ("k5_does_not_recover_k6_reused_eph",
+             St5 = Box_OK and then St6 = Box_OK
+             and then N5 /= N6
+             and then Xor_Bytes (Xor_Bytes (Cipher_Of (B5), Cipher_Of (B6)),
+                                 Kome.Keys.To_Bytes (K5))
+                        /= Kome.Keys.To_Bytes (K6));
+      Check ("k5_does_not_recover_k6_fresh_eph",
+             St6b = Box_OK and then N5 /= N6b
+             and then Xor_Bytes (Xor_Bytes (Cipher_Of (B5), Cipher_Of (B6b)),
+                                 Kome.Keys.To_Bytes (K5))
+                        /= Kome.Keys.To_Bytes (K6));
+      --  The wrap keys of the two epochs differ (ns and epoch are hashed).
+      Check ("wrap_key_covers_epoch",
+             Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 5)
+             /= Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 6));
+      Check ("wrap_key_covers_ns",
+             Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig, NS1, 5)
+             /= Wrap_Ref (Eph_SK, Member_PK, Box_PK, Member_PK, Member_Sig,
+                          (16#6B6F6D65#, 1, 2, 4), 5));
+      --  The epoch-5 box does not open as an epoch-6 box and vice versa.
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, 6, N5, B5, Got, St);
+      Check ("box_epoch5_not_open_at_6", St = Not_Authentic and then Got = Zero_Key);
+      Unbox_Key (Member_SK, Member_Sig, Box_PK, NS1, 6, N6, B6, Got, St);
+      Check ("box_epoch6_opens", St = Box_OK and then Got = K6);
+
+      --  A reused ephemeral secret (same box_pk) with the same epoch key
+      --  gives identical boxes (the synthetic nonce makes a repeated
+      --  (key, nonce) imply a repeated plaintext), and with a different
+      --  epoch key different nonces.
+      declare
+         Na, Nb, Nc : Nonce;
+         Ba, Bb, Bc : Kome.Box;
+         Sa, Sb, Sc : Box_Status;
+      begin
+         Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 6, K6, Na, Ba, Sa);
+         Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 6, K6, Nb, Bb, Sb);
+         Box_Key (Eph_SK, Member_PK, Member_Sig, NS1, 6, Top_Key, Nc, Bc, Sc);
+         Check ("reused_box_pk_same_key_identical_boxes",
+                Sa = Box_OK and then Sb = Box_OK and then Na = Nb and then Ba = Bb);
+         Check ("reused_box_pk_different_key_different_nonces",
+                Sc = Box_OK and then Nc /= Na and then Bc /= Ba);
+      end;
+   end Regressions;
+
+   ---------------------------------------------------------------------------
+   --  (e) Links across segments (DESIGN.md §6 "Epoch segments", E3)
+   ---------------------------------------------------------------------------
+
+   procedure Links is
+      NS1   : constant Id128 := (16#6B6F6D65#, 1, 2, 3);
+      NS2   : constant Id128 := (16#6B6F6D65#, 1, 2, 4);
+      --  Segment A: epochs 0 .. 9, top key Top_Key at 9. Segment B starts
+      --  at s = 10 with an unrelated top Other_Key at 20.
+      Top_A : constant Epoch := 9;
+      S     : constant Epoch := 10;
+      Top_B : constant Epoch := 20;
+      K_S   : constant Key256 := Derive (Other_Key, Top_B, S);
+      K_Last_A : constant Key256 := Derive (Top_Key, Top_A, S - 1);
+      N     : Nonce;
+      Sealed, Bad : Kome.Box;
+      Got   : Key256;
+      St    : Box_Status;
+   begin
+      Seal_Link (K_S, NS1, S, K_Last_A, N, Sealed);
+      --  The Post (N = Synthetic_Nonce (Link_Key (...), K_Prev)) ran under
+      --  -gnata; check it again against the independent recomputation.
+      Check ("link_nonce_is_synthetic",
+             N = Synthetic_Nonce (Link_Key (K_S, NS1, S), K_Last_A)
+             and then N = Nonce_Ref (Kome.Keys.To_Bytes (Link_Key (K_S, NS1, S)),
+                                     K_Last_A));
+      Check ("link_is_aead_under_link_key",
+             Sealed = Lock_Ref (Kome.Keys.To_Bytes (Link_Key (K_S, NS1, S)), N,
+                                NS1, S, K_Last_A));
+
+      --  A member that holds only k_15 (segment B) reads all history: walk
+      --  down to k_s, open the link, continue in segment A.
+      declare
+         K15 : constant Key256 := Derive (Other_Key, Top_B, 15);
+      begin
+         Open_Link (Derive (K15, 15, S), NS1, S, N, Sealed, Got, St);
+         Check ("link_walk_back_across_segment",
+                St = Box_OK and then Got = K_Last_A
+                and then Derive (Got, S - 1, 0) = Derive (Top_Key, Top_A, 0));
+      end;
+
+      Open_Link (Derive (K_S, S, S - 1), NS1, S, N, Sealed, Got, St);
+      Check ("open_link_wrong_k_s_fails",
+             St = Not_Authentic and then Got = Zero_Key);
+      Open_Link (K_S, NS2, S, N, Sealed, Got, St);
+      Check ("open_link_wrong_ns_fails",
+             St = Not_Authentic and then Got = Zero_Key);
+      Open_Link (K_S, NS1, S + 1, N, Sealed, Got, St);
+      Check ("open_link_wrong_s_fails",
+             St = Not_Authentic and then Got = Zero_Key);
+      Open_Link (K_S, NS1, S, Flip (N, 0), Sealed, Got, St);
+      Check ("open_link_wrong_nonce_fails",
+             St = Not_Authentic and then Got = Zero_Key);
+      declare
+         Ok : Boolean := True;
+      begin
+         for I in Sealed'Range loop
+            Bad := Flip (Sealed, I);
+            Open_Link (K_S, NS1, S, N, Bad, Got, St);
+            if St /= Not_Authentic or else Got /= Zero_Key then
+               Ok := False;
+            end if;
+         end loop;
+         Check ("open_link_tamper_every_byte_fails", Ok);
+      end;
+
+      --  A link that passes the AEAD under the right link key but carries a
+      --  non-synthetic nonce is refused.
+      declare
+         Forged_N : constant Nonce := Pattern (Nonce_Len, 9, 4);
+         Forged   : constant Kome.Box :=
+           Lock_Ref (Kome.Keys.To_Bytes (Link_Key (K_S, NS1, S)), Forged_N,
+                     NS1, S, K_Last_A);
+      begin
+         Open_Link (K_S, NS1, S, Forged_N, Forged, Got, St);
+         Check ("open_link_non_synthetic_nonce_refused",
+                Forged_N /= N and then St = Not_Authentic
+                and then Got = Zero_Key);
+      end;
+
+      --  Edge: the last possible segment start.
+      Seal_Link (Other_Key, NS1, Epoch'Last, Top_Key, N, Sealed);
+      Open_Link (Other_Key, NS1, Epoch'Last, N, Sealed, Got, St);
+      Check ("link_round_trip_s_65535", St = Box_OK and then Got = Top_Key);
+      Seal_Link (Other_Key, NS1, 1, Zero_Key, N, Sealed);
+      Open_Link (Other_Key, NS1, 1, N, Sealed, Got, St);
+      Check ("link_round_trip_s_1_zero_key", St = Box_OK and then Got = Zero_Key);
+      --  Deterministic, and the link key differs per segment start.
+      declare
+         N2 : Nonce;
+         S2 : Kome.Box;
+      begin
+         Seal_Link (Other_Key, NS1, 1, Zero_Key, N2, S2);
+         Check ("link_deterministic", N2 = N and then S2 = Sealed);
+         Check ("link_key_covers_s_and_ns",
+                Link_Key (K_S, NS1, S) /= Link_Key (K_S, NS1, S + 1)
+                and then Link_Key (K_S, NS1, S) /= Link_Key (K_S, NS2, S));
+      end;
+   end Links;
+
 begin
-   Chain_Vectors;
+   Vectors;
    Algebra;
    Boxes;
+   Regressions;
+   Links;
    if Failed then
       Set_Exit_Status (Failure);
    end if;

@@ -4,39 +4,77 @@
 # published test suite or from an implementation independent of monocypher:
 #   blake2b256      Python hashlib.blake2b(digest_size=32) (RFC 7693 BLAKE2b).
 #                   Lengths 127/128/129, 255/256/257 straddle the 128-byte block.
-#   eddsa           monocypher 4's crypto_eddsa_* is RFC 8032 Ed25519 with
-#                   BLAKE2b-512 in place of SHA-512 (monocypher.c
-#                   crypto_eddsa_sign; SHA-512 Ed25519 lives in the optional
-#                   monocypher-ed25519.c, which is not vendored). Seeds and
-#                   messages are RFC 8032 section 7.1 TESTs 1-3; the public
-#                   keys and signatures come from a pure-Python RFC 8032
-#                   reference with the hash swapped, which reproduces the
-#                   published SHA-512 TEST 1 answer (d75a9801..., e5564300...)
-#                   when given SHA-512.
-#                   The three vectors were also cross-checked by an
-#                   independent reviewer's own pure-Python RFC 8032
-#                   implementation with BLAKE2b-512 (all three match; with
-#                   SHA-512 it reproduces the RFC's TEST 1).
-#   eddsa_pk        Published Ed25519-BLAKE2b key pairs: nano-docs,
-#                   docs/integration-guides/key-management.md (Nano's
-#                   "ED25519 curve using Blake2b-512 as the hash function",
-#                   the same scheme as monocypher's crypto_eddsa). The five
-#                   "Derived Private Key" -> "Derived Public key" pairs of
-#                   its two BIP39 examples, verbatim. Monocypher's own EdDSA
-#                   vectors are generated at build time (ed25519-donna with
-#                   ED25519_CUSTOMHASH = BLAKE2b) and not committed, so these
-#                   are the published answers available for this variant.
-#   ed25519_sha512  RFC 8032 7.1 TEST 1 verbatim. Kome.Crypto.Verify must
-#                   REJECT it: it documents which EdDSA variant is bound.
+#   ed25519         RFC 8032 section 7.1 TEST 1, TEST 2 and TEST 3 verbatim
+#                   (https://www.rfc-editor.org/rfc/rfc8032.txt, fetched
+#                   2026-11-02, file SHA-256
+#                   ed63657ff389301282b169b0abde9b5dd2c7e4d524fdfa5da6ff3094fc93c4c3):
+#                   secret key (the 32-byte seed), public key, message,
+#                   signature.
+#                   Key_Pair, Derive_Public, Sign and Verify must reproduce
+#                   them (DESIGN.md §1.2 D4: RFC 8032 Ed25519).
+#   wycheproof      A subset of Wycheproof ed25519_test.json (C2SP/wycheproof,
+#                   https://raw.githubusercontent.com/C2SP/wycheproof/main/
+#                   testvectors_v1/ed25519_test.json, fetched 2026-11-02,
+#                   file SHA-256 ea80ffebac085e21cb9d3e903e7fa2b448d96702da5b31f061d0b83b430b74b3,
+#                   schema eddsa_verify_schema_v1.json, 210 tests, groups'
+#                   source google-wycheproof 0.9rc5). Fields are copied
+#                   verbatim: tcId, result, the group's public key, msg, sig.
+#                   Selected tcIds:
+#                     valid: 1 2 3 7 80 81 82 84 86 114 119 181
+#                     S >= L (s + L, 2L, 4L, 8L, 2^253, 2^254, 2^255, p;
+#                       S just above L): 63-70, 85
+#                     non-canonical R (y = 1 with the sign bit set): 151;
+#                       R sign flipped, R = 0, invalid R: 59 60 61
+#                     truncated or wrong length: 30 (empty), 31 (s missing),
+#                       32 (62 bytes), 33 (66 bytes), 38 (63 bytes)
+#                     mixed-order public key regression: 210
+#                   The test main requires Verify = (result = valid) for every
+#                   64-byte signature and, for the others, that the bytes
+#                   cannot be made a Sig at all (a length check).
+#                   All 210 tests were also run through the same strict
+#                   check in C (scratch harness, not committed): every
+#                   "valid" accepted, every "invalid" rejected. Plain
+#                   crypto_ed25519_check accepts tcId 151 (see
+#                   kome-crypto.ads, STRICT VERIFICATION).
+#   ed25519_strict  Non-canonical encodings that plain crypto_ed25519_check
+#                   accepts and Verify must reject, each paired with its
+#                   canonical control. Generated (Python, hashlib.sha512 and
+#                   integers) for the RFC 8032 TEST 1 key and message
+#                   "kome strict": R is a small-order point, so with
+#                   S = SHA-512(R ‖ A ‖ M) * a mod L the cofactored equation
+#                   [8][S]B = [8]R + [8][k]A holds. The controls verify under
+#                   both the plain and the strict check; the non-canonical
+#                   lines verify under the plain check only (checked with the
+#                   same C harness). The last two lines are a non-canonical
+#                   public key (the identity as y = p + 1, and as y = 1 with
+#                   the sign bit set), signature R = identity, S = 0.
+#   b2eddsa_old     REGRESSION: the BLAKE2b-512 EdDSA (monocypher crypto_eddsa)
+#                   answers the binding used before D4, for the RFC 8032
+#                   TEST 1-3 seeds and messages (from an independent Python
+#                   RFC 8032 reference with the hash swapped, and confirmed
+#                   with monocypher's crypto_eddsa_check). Key_Pair must no
+#                   longer derive that public key, and Verify must reject the
+#                   old signature under both the old and the new public key.
+#   b2eddsa_old_pk  REGRESSION: published Ed25519-BLAKE2b key pairs (nano-docs,
+#                   docs/integration-guides/key-management.md, "Derived
+#                   Private Key" -> "Derived Public key"). Derive_Public must
+#                   no longer produce them.
 #   x25519          RFC 7748 section 5.2 (cross-checked with pyca/cryptography).
 #   x25519dh        RFC 7748 section 6.1 Alice/Bob exchange.
 #   x25519_low      Low-order u-coordinates: 0, 1, the order-8 points
 #                   e0eb7a7c... and 5f9c95bc... (libsodium's low-order
-#                   blocklist; RFC 7748 §6.1 says to check for all zeros), p - 1, and the non-canonical encodings p and
-#                   p + 1. Any scalar gives an all-zero shared secret
-#                   (pyca/cryptography refuses every one with "Error
-#                   computing shared key"), so X25519 must report
-#                   Contributory = False.
+#                   blocklist; RFC 7748 §6.1 says to check for all zeros),
+#                   p - 1, and the non-canonical encodings p and p + 1. Any
+#                   scalar gives an all-zero shared secret (pyca/cryptography
+#                   refuses every one with "Error computing shared key"), so
+#                   X25519 must report Contributory = False.
+#   dh_key          Known answers for Is_Reduced_U and Is_Low_Order_U (and so
+#                   Is_Good_DH_Key = reduced and not low order), by
+#                   definition (DESIGN.md §2 rule 3, E5): the five reduced
+#                   low-order encodings are reduced and low order; p, p + 1,
+#                   2^255 - 1 and anything with bit 255 set are not reduced;
+#                   the RFC 7748 §6.1 public keys and the base point u = 9
+#                   are good keys.
 #   aead            XChaCha20-Poly1305, IETF construction (monocypher 4
 #                   crypto_aead_lock): the first line is
 #                   draft-irtf-cfrg-xchacha-03 appendix A.3.1; the rest are
@@ -45,12 +83,15 @@
 #
 # Formats:
 #   blake2b256     <msg> <digest32>
-#   eddsa          <seed32> <public32> <msg> <sig64>
-#   eddsa_pk       <seed32> <public32>
-#   ed25519_sha512 <public32> <msg> <sig64>
+#   ed25519        <seed32> <public32> <msg> <sig64>
+#   wycheproof     <tcId> <valid|invalid> <public32> <msg> <sig (any length)>
+#   ed25519_strict <valid|invalid> <public32> <msg> <sig64>
+#   b2eddsa_old    <seed32> <old_public32> <msg> <old_sig64>
+#   b2eddsa_old_pk <seed32> <old_public32>
 #   x25519         <scalar32> <u32> <out32>
 #   x25519dh       <alice_sk> <alice_pk> <bob_sk> <bob_pk> <shared>
 #   x25519_low     <u32>
+#   dh_key         <u32> <reduced 0|1> <low_order 0|1>
 #   aead           <key32> <nonce24> <ad> <plain> <cipher> <mac16>
 blake2b256 - 0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8
 blake2b256 616263 bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319
@@ -63,19 +104,75 @@ blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc d93ebb9c802f5630ab22516fd82b6c21bc8bd551d531349b715f046ed11ed871
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc03 4ce481b24d387422d2bc2baa03d1afd55a1327939ff537c71eb9b38709268649
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d54 d62b6c768ce1afc8367e0498ab2f8e3f7c178c35b1429f14c4604b545d200f52
-# H = BLAKE2b-512 in place of SHA-512; seeds and messages of RFC 8032 7.1 TESTs 1-3;
-# values from an independent Python RFC 8032 reference (hashlib.blake2b), which
-# reproduces the SHA-512 TEST 1 answer when given SHA-512.
-eddsa 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f - 99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805
-eddsa 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 5e71392d91e6a58fedeb0850364f56cd158a60447557d7890389c9b3d4576d4d 72 6da75e15b5707f4de5a153c48a5d839fb85074c38aeb6285977f03a13977597f976069fdb903f183474aaa5ed0cfe878ba8ef868c5e47ca3f96ccfb3a89b2a06
-eddsa c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7 8d53ca70f0eab23b9178345785fcdb69ed6723f8148f7e339e88653700b718da af82 7cc3c13852bd12abf3ce4ca8ca2836cbf86da96c4634c50df3fb80dc809e29db0e109c361353407c1236a904f636868aa33977a99d3f844598db1538b4295203
-# nano-docs key-management.md, "Derived Private Key" / "Derived Public key".
-eddsa_pk 3be4fc2ef3f3b7374e6fc4fb6e7bb153f8a2998b3b3dab50853eabe128024143 5b65b0e8173ee0802c2c3e6c9080d1a16b06de1176c938a924f58670904e82c4
-eddsa_pk ce7e429e683d652446261c17a96da9ed1897aea96c8046f2b8036f6b05cb1a83 d9f7762e9cd4e7ed632481308cdb8f54abf0241332c0a8641f61e92e2fb03c12
-eddsa_pk 1257df74609b9c6461a3f4e7fd6e3278f2ddcf2562694f2c3aa0515af4f09e38 a46da51986e25a14d82e32d765dcee69b9eeccd4405411430d91ddb61b717566
-eddsa_pk 6f73d61ca0b56fcdb79d69d437f102348ad75ca971433eb92b2b003f8c99b48d 134d938215f68bcaa3a0e574fde325fc4b1abad9bd3d698bfef95633b54ffb57
-eddsa_pk 7e104389811a0967ef574af1f3f423f23cbf7b614be17844f67fb6fd315f9a7e 71e6caac915affe836c3e822be6a5b3464f40c74bd2e5459d4e74205c6a7c0df
-ed25519_sha512 d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a - e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b
+# RFC 8032 section 7.1, TEST 1, TEST 2, TEST 3.
+ed25519 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a - e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b
+ed25519 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c 72 92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
+ed25519 c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7 fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025 af82 6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a
+# Wycheproof: valid signatures (tcIds 1, 2, 3, 7, 80, 81, 82, 84, 86, 114, 119, 181)
+wycheproof 1 valid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa - d4fbdb52bfa726b44d1786a8c0d171c3e62ca83c9e5bbe63de0bb2483f8fd6cc1429ab72cafc41ab56af02ff8fcc43b99bfe4c7ae940f60f38ebaa9d311c4007
+wycheproof 2 valid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 78 d80737358ede548acb173ef7e0399f83392fe8125b2ce877de7975d8b726ef5b1e76632280ee38afad12125ea44b961bf92f1178c9fa819d020869975bcbe109
+wycheproof 3 valid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b30d
+wycheproof 7 valid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161 879350045543bc14ed2c08939b68c30d22251d83e018cacbaf0c9d7a48db577e80bdf76ce99e5926762bc13b7b3483260a5ef63d07e34b58eb9c14621ac92f00
+wycheproof 80 valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a - e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b
+wycheproof 81 valid 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c 72 92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
+wycheproof 82 valid fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025 af82 6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a
+wycheproof 84 valid 100fdf47fb94f1536a4f7c3fda27383fa03375a8f527c537e6f1703c47f94f86 124e583f8b8eca58bb29c271b41d36986bbc45541f8e51f9cb0133eca447601e dac119d6ca87fc59ae611c157048f4d4fc932a149dbe20ec6effd1436abf83ea05c7df0fef06147241259113909bc71bd3c53ba4464ffcad3c0968f2ffffff0f
+wycheproof 86 valid 8fd659b77b558ed93882c1157438450ac86ec62d421d568e98ee236f3810295a b0729a713593a92e46b56eaa66b9e435f7a09a8e7de03b078f6f282285276635f301e7aaafe42187c45d6f5b13f9f16b11195cc125c05b90d24dfe4c 7db17557ac470c0eda4eedaabce99197ab62565653cf911f632ee8be0e5ffcfc88fb94276b42e0798fd3aa2f0318be7fc6a29fae75f70c3dcdc414a0ad866601
+wycheproof 114 valid 037b55b427dc8daa0f80fcebaf0846902309f8a6cf18b465c0ce9b6539629ac8 01234567 c964e100033ce8888b23466677da4f4aea29923f642ae508f9d0888d788150636ab9b2c3765e91bbb05153801114d9e52dc700df377212222bb766be4b8c020d
+wycheproof 119 valid 4abfb535313705a6570018440cdec1a3ae33e51f352112fa6acbd0c6bc3ea859 321b5f663c19e30ee7bbb85e48ecf44db9d3f512 f296715e855d8aecccba782b670163dedc4458fe4eb509a856bcac450920fd2e95a3a3eb212d2d9ccaf948c39ae46a2548af125f8e2ad9b77bd18f92d59f9200
+wycheproof 181 valid f2741795058d07954f8b3c5aebbf20f28d3ec3bb32e3b51aef97e4be6afb68b5 6d657373616765 854619fb2351b7a4f6ff982512e3be8c35bbb551991f42d241d44c7406dab4398188e758a19c325d24d683556dec79f7d72291a8e5c65f0ea440a95a28d4470d
+# Wycheproof: S >= L (malleability), rejected (tcIds 63, 64, 65, 66, 67, 68, 69, 70, 85)
+wycheproof 63 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab067654bce3832c2d76f8f6f5dafc08d9339d4eef676573336a5c51eb6f946b31d
+wycheproof 64 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab05439412b5395d42f462c67008eba6ca839d4eef676573336a5c51eb6f946b32d
+wycheproof 65 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab02ee12ce5875bf9dff26556464bae2ad239d4eef676573336a5c51eb6f946b34d
+wycheproof 66 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab0e2300459f1e742404cd934d2c595a6253ad4eef676573336a5c51eb6f946b38d
+wycheproof 67 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b32d
+wycheproof 68 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b34d
+wycheproof 69 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b38d
+wycheproof 70 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab0679155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b38d
+wycheproof 85 invalid 100fdf47fb94f1536a4f7c3fda27383fa03375a8f527c537e6f1703c47f94f86 6a0bc2b0057cedfc0fa2e3f7f7d39279b30f454a69dfd1117c758d86b19d85e0 0971f86d2c9c78582524a103cb9cf949522ae528f8054dc20107d999be673ff4e25ebf2f2928766b1248bec6e91697775f8446639ede46ad4df4053000000010
+# Wycheproof: non-canonical or invalid R, rejected (tcIds 151, 59, 60, 61)
+wycheproof 151 invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 313233343030 0100000000000000000000000000000000000000000000000000000000000080c803ee1f2342aa96ff698a393d1ab5e66f3eda101d6d120b394c3fd32c117d0a
+wycheproof 59 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 313233343030 657c1492402ab5ce03e2c3a7f0384d051b9cf3570f1207fc78c1bcc98c281cab227aedf259f910f0f3a759a335062665217925d019173b88917eae294f75d40f
+wycheproof 60 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 313233343030 0000000000000000000000000000000000000000000000000000000000000000e0b8e7770d51c7a36375d006c5bffd6af43ff54aaf47e4330dc118c71d61ec02
+wycheproof 61 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 313233343030 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff463a1908382e7eb7693acef9884f7cf931a215e0791876be22c631a59881fd0e
+# Wycheproof: truncated or wrong-length signature, rejected (tcIds 30, 31, 32, 33, 38)
+wycheproof 30 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 -
+wycheproof 31 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab0
+wycheproof 32 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946
+wycheproof 33 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 54657374 7c38e026f29e14aabd059a0f2db8b0cd783040609a8be684db12f82a27774ab07a9155711ecfaf7f99f277bad0c6ae7e39d4eef676573336a5c51eb6f946b30d2020
+wycheproof 38 invalid 7d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa 546573743137 93de3ca252426c95f735cb9edd92e83321ac62372d5aa5b379786bae111ab6b17251330e8f9a7c30d6993137c596007d7b001409287535ac4804e662bc58a3
+# Wycheproof: mixed-order public key regression, rejected (tcIds 210)
+wycheproof 210 invalid d1e06adf4e05e248e1e52beca14b6be4da0af01b41645d2849b407ec22f41d47 af82 6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a
+# Non-canonical encodings (see the header): control first, then the encoding plain crypto_ed25519_check accepts.
+# R = (sqrt(-1), 0), order 4, canonical
+ed25519_strict valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 0000000000000000000000000000000000000000000000000000000000000000ed0109af2225e449ccf54304f75cafce5fc7ac4f4f82aae07d8689253da0ce04
+# same R, y encoded as p (y >= p)
+ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f6843f296c622bd0386548631e2c2e3536563b01ab005cf73c6294e02f619eb06
+# R = identity, canonical
+ed25519_strict valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 0100000000000000000000000000000000000000000000000000000000000000cd6a88ae7f44983564ea4342a76af70e35b1d723fa9d836d0b92fa81b798200f
+# identity, y encoded as p + 1 (y >= p)
+ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f4ac1433f19d65aacb4408f4454740ad3ae8a8e03ce0c75c71c78d3a872ca100a
+# identity, x = 0 with the sign bit set
+ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000801ddd098dc1da76902c16ff206d9183044fc70d61c7e5cca3e6fe75132f9ce70c
+# R = (0, -1), order 2, canonical
+ed25519_strict valid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7ffcdd67b612d6f87e46ec29f13e3d5d945971646404b32692d0e7d6ffff71e505
+# (0, -1), x = 0 with the sign bit set
+ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a 6b6f6d6520737472696374 ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffef8dd9e5d3ab858091cae2ed690982349f18fc1d6ee491b7fcb404708357140b
+# public key = identity encoded as y = p + 1 (y >= p)
+ed25519_strict invalid eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+# public key = identity encoded as y = 1 with the sign bit set
+ed25519_strict invalid 0100000000000000000000000000000000000000000000000000000000000080 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+# REGRESSION: BLAKE2b-512 EdDSA (the pre-D4 binding) for RFC 8032 TEST 1-3; must be rejected now.
+b2eddsa_old 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f - 99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805
+b2eddsa_old 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 5e71392d91e6a58fedeb0850364f56cd158a60447557d7890389c9b3d4576d4d 72 6da75e15b5707f4de5a153c48a5d839fb85074c38aeb6285977f03a13977597f976069fdb903f183474aaa5ed0cfe878ba8ef868c5e47ca3f96ccfb3a89b2a06
+b2eddsa_old c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7 8d53ca70f0eab23b9178345785fcdb69ed6723f8148f7e339e88653700b718da af82 7cc3c13852bd12abf3ce4ca8ca2836cbf86da96c4634c50df3fb80dc809e29db0e109c361353407c1236a904f636868aa33977a99d3f844598db1538b4295203
+# REGRESSION: nano-docs key-management.md Ed25519-BLAKE2b pairs; Derive_Public must differ now.
+b2eddsa_old_pk 3be4fc2ef3f3b7374e6fc4fb6e7bb153f8a2998b3b3dab50853eabe128024143 5b65b0e8173ee0802c2c3e6c9080d1a16b06de1176c938a924f58670904e82c4
+b2eddsa_old_pk ce7e429e683d652446261c17a96da9ed1897aea96c8046f2b8036f6b05cb1a83 d9f7762e9cd4e7ed632481308cdb8f54abf0241332c0a8641f61e92e2fb03c12
+b2eddsa_old_pk 1257df74609b9c6461a3f4e7fd6e3278f2ddcf2562694f2c3aa0515af4f09e38 a46da51986e25a14d82e32d765dcee69b9eeccd4405411430d91ddb61b717566
+b2eddsa_old_pk 6f73d61ca0b56fcdb79d69d437f102348ad75ca971433eb92b2b003f8c99b48d 134d938215f68bcaa3a0e574fde325fc4b1abad9bd3d698bfef95633b54ffb57
+b2eddsa_old_pk 7e104389811a0967ef574af1f3f423f23cbf7b614be17844f67fb6fd315f9a7e 71e6caac915affe836c3e822be6a5b3464f40c74bd2e5459d4e74205c6a7c0df
 x25519 a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4 e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552
 x25519 4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493 95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957
 x25519dh 77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a 5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742
@@ -86,6 +183,22 @@ x25519_low 5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157
 x25519_low ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
 x25519_low edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
 x25519_low eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+# dh_key: the five reduced low-order encodings (reduced, low order)
+dh_key 0000000000000000000000000000000000000000000000000000000000000000 1 1
+dh_key 0100000000000000000000000000000000000000000000000000000000000000 1 1
+dh_key e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800 1 1
+dh_key 5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157 1 1
+dh_key ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 1 1
+# p, p + 1, 2^255 - 1, and u = 9 with bit 255 set: not reduced (and not in the low-order list)
+dh_key edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 0 0
+dh_key eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 0 0
+dh_key ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 0 0
+dh_key 0900000000000000000000000000000000000000000000000000000000000080 0 0
+# good keys: p - 2 (largest reduced), u = 9 (base point), RFC 7748 6.1 Alice and Bob public keys
+dh_key ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 1 0
+dh_key 0900000000000000000000000000000000000000000000000000000000000000 1 0
+dh_key 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a 1 0
+dh_key de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f 1 0
 # draft-irtf-cfrg-xchacha-03 A.3.1 first, then generated): HChaCha20 + python cryptography ChaCha20Poly1305
 aead 808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f 404142434445464748494a4b4c4d4e4f5051525354555657 50515253c0c1c2c3c4c5c6c7 4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b4522f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff921f9664c97637da9768812f615c68b13b52e c0875924c1c7987947deafd8780acf49
 aead 000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55 01060b10151a1f24292e33383d42474c51565b60656a6f74 - - - 9ba45b303d0a84d5716aa8ec74306b43

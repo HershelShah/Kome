@@ -1,10 +1,9 @@
 --  Kome.Epochs body. See the spec for what is proved and what is a crypto
---  oracle. In Box_Key and Unbox_Key every secret byte buffer is wiped before
---  the subprogram returns (Step cannot: see there);
+--  oracle. In Step, Box_Key, Unbox_Key, Seal_Link and Open_Link every named
+--  secret byte buffer is wiped before the subprogram returns;
 --  gnatprove's flow analysis reports those final Wipes as having no effect
 --  on the SPARK model, which is the point of them (Kome.Crypto.Wipe).
 pragma Ada_2022;
-with Kome.Keys;
 
 package body Kome.Epochs with SPARK_Mode is
 
@@ -18,17 +17,27 @@ package body Kome.Epochs with SPARK_Mode is
    --  Chain
    ---------------------------------------------------------------------------
 
-   --  The function form of BLAKE2b-256, not the procedure form that writes
-   --  into a buffer the caller then wipes: Step is a function (it has to
-   --  be, to appear in Iter and in the contracts), SPARK functions must
-   --  terminate, and Kome.Crypto's procedures (Blake2b_256 into a buffer,
-   --  Wipe) carry no Always_Terminates aspect, so calling them here would
-   --  leave the termination check open. The input buffer and the digest
-   --  are therefore not wiped in Step (reported for Kome.Crypto).
+   --  Erase secret buffers. gnatprove's flow analysis reports a final Wipe
+   --  as having no effect; that is the point of it (Kome.Crypto.Wipe).
+   pragma Warnings (GNATprove, Off, "statement has no effect",
+                    Reason => "erasing secrets is not a SPARK effect");
+   pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
+                    Reason => "erasing secrets is not a SPARK effect");
+
+   --  The procedure form of BLAKE2b-256 into a buffer, so the input (which
+   --  holds k_{e+1}) and the digest are wiped before returning. A function
+   --  may call both procedures because they are Always_Terminates.
    function Step (K : Key256) return Key256 is
+      Buf    : Byte_Array (0 .. Hash_Len + Prev_Label_Len - 1) :=
+        Kome.Keys.To_Bytes (K) & Prev_Label;
+      Digest : Hash256;
+      R      : Key256;
    begin
-      return Kome.Keys.To_Key256
-        (C.Blake2b_256 (Kome.Keys.To_Bytes (K) & Prev_Label));
+      C.Blake2b_256 (Buf, Digest);
+      R := Kome.Keys.To_Key256 (Digest);
+      C.Wipe (Buf);
+      C.Wipe (Digest);
+      return R;
    end Step;
 
    function Derive (K : Key256; From, To : Epoch) return Key256 is
@@ -84,140 +93,314 @@ package body Kome.Epochs with SPARK_Mode is
    end Lemma_Derive_Shift;
 
    ---------------------------------------------------------------------------
-   --  Boxes
+   --  Boxes and links
    ---------------------------------------------------------------------------
 
-   --  The AD: ns[16] ‖ epoch (2 bytes big-endian).
+   --  The AD: ns[16] ‖ u16 (epoch), big-endian.
    function Box_AD (Ns : Id128; E : Epoch) return Byte_Array is
      (Kome.Keys.To_Bytes (Ns)
       & Byte (Natural (E) / 256) & Byte (Natural (E) mod 256))
      with Global => null,
           Post => Box_AD'Result'Length = AD_Len;
 
-   --  wrap_key = BLAKE2b-256 (shared ‖ root_dh_pk ‖ member_dh_pk).
-   procedure Wrap_Key
-     (Shared        : C.Shared_Secret;
-      Root_Public   : Pubkey;
-      Member_Public : Pubkey;
-      Key           : out C.AEAD_Key)
-     with Global => null
+   --  Wrap_Byte's layout, written into Buf field by field.
+   procedure Fill_Wrap
+     (Shared  : C.Shared_Secret;
+      Box_PK  : Pubkey;
+      DH_PK   : Pubkey;
+      Sign_PK : Pubkey;
+      Ns      : Id128;
+      E       : Epoch;
+      Buf     : out Wrap_Input_Bytes)
+     with Global => null,
+          Post   => (for all J in 0 .. Wrap_Input_Len - 1 =>
+                       Buf (J) = Wrap_Byte (Shared, Box_PK, DH_PK, Sign_PK, Ns, E, J))
    is
-      Buf : Byte_Array (0 .. C.DH_Key_Len + 2 * Pubkey_Len - 1) :=
-        [others => 0];
+      NB : constant Kome.Keys.Id_Bytes := Kome.Keys.To_Bytes (Ns);
    begin
-      Buf (0 .. C.DH_Key_Len - 1) := Shared;
-      Buf (C.DH_Key_Len .. C.DH_Key_Len + Pubkey_Len - 1) := Root_Public;
-      Buf (C.DH_Key_Len + Pubkey_Len .. Buf'Last) := Member_Public;
+      Buf := [others => 0];
+      Buf (0 .. Wrap_O_Shared - 1)           := Wrap_Label;
+      Buf (Wrap_O_Shared .. Wrap_O_Box - 1)  := Shared;
+      Buf (Wrap_O_Box .. Wrap_O_DH - 1)      := Box_PK;
+      Buf (Wrap_O_DH .. Wrap_O_Sign - 1)     := DH_PK;
+      Buf (Wrap_O_Sign .. Wrap_O_Ns - 1)     := Sign_PK;
+      Buf (Wrap_O_Ns .. Wrap_O_E - 1)        := NB;
+      Buf (Wrap_O_E)                         := Byte (Natural (E) / 256);
+      Buf (Wrap_O_E + 1)                     := Byte (Natural (E) mod 256);
+      pragma Assert (for all J in 0 .. Wrap_O_Shared - 1 => Buf (J) = Wrap_Label (J));
+      pragma Assert (for all J in Wrap_O_Shared .. Wrap_O_Box - 1 =>
+                       Buf (J) = Shared (J - Wrap_O_Shared));
+      pragma Assert (for all J in Wrap_O_Box .. Wrap_O_DH - 1 =>
+                       Buf (J) = Box_PK (J - Wrap_O_Box));
+      pragma Assert (for all J in Wrap_O_DH .. Wrap_O_Sign - 1 =>
+                       Buf (J) = DH_PK (J - Wrap_O_DH));
+      pragma Assert (for all J in Wrap_O_Sign .. Wrap_O_Ns - 1 =>
+                       Buf (J) = Sign_PK (J - Wrap_O_Sign));
+      pragma Assert (for all J in Wrap_O_Ns .. Wrap_O_E - 1 =>
+                       Buf (J) = Kome.Keys.Byte_At (Ns, J - Wrap_O_Ns));
+   end Fill_Wrap;
+
+   function Wrap_Input
+     (Shared  : Kome.Crypto.Shared_Secret;
+      Box_PK  : Pubkey;
+      DH_PK   : Pubkey;
+      Sign_PK : Pubkey;
+      Ns      : Id128;
+      E       : Epoch) return Wrap_Input_Bytes
+   is
+      Buf : Wrap_Input_Bytes;
+   begin
+      Fill_Wrap (Shared, Box_PK, DH_PK, Sign_PK, Ns, E, Buf);
+      return Buf;
+   end Wrap_Input;
+
+   --  wrap_key = BLAKE2b-256 ("kome/wrap" ‖ shared ‖ box_pk ‖ dh_pk ‖ sign_pk
+   --  ‖ ns ‖ u16 (e)), into Key (a secret: the caller wipes it). The input
+   --  holds the shared secret and is wiped here. Buf has the bytes of the
+   --  ghost model Wrap_Input, so it has its digest (Kome.Crypto's
+   --  congruence axiom).
+   procedure Wrap_Key
+     (Shared  : C.Shared_Secret;
+      Box_PK  : Pubkey;
+      DH_PK   : Pubkey;
+      Sign_PK : Pubkey;
+      Ns      : Id128;
+      E       : Epoch;
+      Key     : out Hash256)
+     with Global => null,
+          Post   => Kome.Keys.To_Key256 (Key) = Wrap_Key_Of (Shared, Box_PK, DH_PK, Sign_PK, Ns, E)
+   is
+      Buf : Wrap_Input_Bytes;
+   begin
+      Fill_Wrap (Shared, Box_PK, DH_PK, Sign_PK, Ns, E, Buf);
+      C.Lemma_Blake2b_Congruent (Buf, Wrap_Input (Shared, Box_PK, DH_PK, Sign_PK, Ns, E));
       C.Blake2b_256 (Buf, Key);
-      pragma Warnings (GNATprove, Off, "statement has no effect",
-                       Reason => "erasing secrets is not a SPARK effect");
-      pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
-                       Reason => "erasing secrets is not a SPARK effect");
       C.Wipe (Buf);
-      pragma Warnings (GNATprove, On, "*is set by ""Wipe"" but not used*");
-      pragma Warnings (GNATprove, On, "statement has no effect");
    end Wrap_Key;
 
+   --  The wrap key depends on the shared secret's bytes only: Box_Key and
+   --  Unbox_Key hold the secret X25519 wrote, which equals (Ada "=", not
+   --  the same term) the ghost X25519_Shared their Posts name.
+   procedure Lemma_Wrap_Shared
+     (S1, S2  : C.Shared_Secret;
+      Box_PK  : Pubkey;
+      DH_PK   : Pubkey;
+      Sign_PK : Pubkey;
+      Ns      : Id128;
+      E       : Epoch)
+     with Ghost, Global => null,
+          Pre  => S1 = S2,
+          Post => Wrap_Key_Of (S1, Box_PK, DH_PK, Sign_PK, Ns, E)
+                  = Wrap_Key_Of (S2, Box_PK, DH_PK, Sign_PK, Ns, E)
+   is
+   begin
+      pragma Assert
+        (for all K in 0 .. Wrap_Input_Len - 1 =>
+           Wrap_Byte (S1, Box_PK, DH_PK, Sign_PK, Ns, E, K)
+           = Wrap_Byte (S2, Box_PK, DH_PK, Sign_PK, Ns, E, K));
+      C.Lemma_Blake2b_Congruent (Wrap_Input (S1, Box_PK, DH_PK, Sign_PK, Ns, E),
+                                 Wrap_Input (S2, Box_PK, DH_PK, Sign_PK, Ns, E));
+   end Lemma_Wrap_Shared;
+
+   --  The synthetic nonce of K under the key whose bytes are Key_Bytes,
+   --  computed through wiped buffers. Post: it is Synthetic_Nonce.
+   procedure Nonce_Of (Key_Bytes : Hash256; K : Key256; N : out Nonce)
+     with Global => null,
+          Post   => N = Synthetic_Nonce (Kome.Keys.To_Key256 (Key_Bytes), K)
+   is
+      Buf    : Nonce_Input_Bytes := Nonce_Input (Kome.Keys.To_Key256 (Key_Bytes), K);
+      Digest : Hash256;
+   begin
+      C.Blake2b_256 (Buf, Digest);
+      N := Digest (0 .. Nonce_Len - 1);
+      C.Wipe (Buf);
+      C.Wipe (Digest);
+   end Nonce_Of;
+
+   --  The link key bytes, through a wiped input buffer. Post: as a key, it
+   --  is Link_Key.
+   procedure Link_Key_Of (K_S : Key256; Ns : Id128; S : Epoch; Key : out Hash256)
+     with Global => null,
+          Post   => Kome.Keys.To_Key256 (Key) = Link_Key (K_S, Ns, S)
+   is
+      Buf : Link_Input_Bytes := Link_Input (K_S, Ns, S);
+   begin
+      C.Blake2b_256 (Buf, Key);
+      C.Wipe (Buf);
+   end Link_Key_Of;
+
    procedure Box_Key
-     (Root_Secret   : Kome.Crypto.DH_Secret;
-      Member_Public : Pubkey;
-      Ns            : Id128;
-      E             : Epoch;
-      Epoch_Key     : Key256;
-      N             : Nonce;
-      Sealed        : out Kome.Box;
-      Status        : out Box_Status)
+     (Eph_Secret     : Kome.Crypto.DH_Secret;
+      Member_DH_PK   : Pubkey;
+      Member_Sign_PK : Pubkey;
+      Ns             : Id128;
+      E              : Epoch;
+      Epoch_Key      : Key256;
+      N              : out Nonce;
+      Sealed         : out Kome.Box;
+      Status         : out Box_Status)
    is
       Shared       : C.Shared_Secret;
       Contributory : Boolean;
-      WK           : C.AEAD_Key;
+      WK           : Hash256;
       Plain        : C.AEAD_Key;
       Cipher       : C.AEAD_Key;
       Mac          : C.Tag;
-      Root_Public  : constant Pubkey := C.X25519_Public (Root_Secret);
    begin
       --  Refuse a non-reduced encoding before any exchange: it would seal a
       --  box its member's reduced key can never open (see the spec header).
-      if not Is_Reduced_U (Member_Public) then
+      if not Is_Reduced_U (Member_DH_PK) then
+         N := [others => 0];
          Sealed := [others => 0];
          Status := Non_Canonical_Peer;
          return;
       end if;
+      if C.Is_Low_Order_U (Member_DH_PK) then
+         N := [others => 0];
+         Sealed := [others => 0];
+         Status := Low_Order_Peer;
+         return;
+      end if;
 
-      C.X25519 (Root_Secret, Member_Public, Shared, Contributory);
+      C.X25519 (Eph_Secret, Member_DH_PK, Shared, Contributory);
       if not Contributory then
+         N := [others => 0];
          Sealed := [others => 0];
          Status := Low_Order_Peer;
          return;   --  Shared is all zeros already (Kome.Crypto.X25519 Post)
       end if;
 
-      Wrap_Key (Shared, Root_Public, Member_Public, WK);
+      Wrap_Key (Shared, C.X25519_Public (Eph_Secret), Member_DH_PK,
+                Member_Sign_PK, Ns, E, WK);
+      Lemma_Wrap_Shared (Shared, C.X25519_Shared (Eph_Secret, Member_DH_PK),
+                         C.X25519_Public (Eph_Secret), Member_DH_PK,
+                         Member_Sign_PK, Ns, E);
+      Nonce_Of (WK, Epoch_Key, N);
       Plain := Kome.Keys.To_Bytes (Epoch_Key);
       C.Lock (WK, N, Box_AD (Ns, E), Plain, Cipher, Mac);
       Sealed := Cipher & Mac;
       Status := Box_OK;
 
-      pragma Warnings (GNATprove, Off, "statement has no effect",
-                       Reason => "erasing secrets is not a SPARK effect");
-      pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
-                       Reason => "erasing secrets is not a SPARK effect");
       C.Wipe (Shared);
       C.Wipe (WK);
       C.Wipe (Plain);
-      pragma Warnings (GNATprove, On, "*is set by ""Wipe"" but not used*");
-      pragma Warnings (GNATprove, On, "statement has no effect");
    end Box_Key;
 
    procedure Unbox_Key
-     (Member_Secret : Kome.Crypto.DH_Secret;
-      Root_Public   : Pubkey;
-      Ns            : Id128;
-      E             : Epoch;
-      N             : Nonce;
-      Sealed        : Kome.Box;
-      Epoch_Key     : out Key256;
-      Status        : out Box_Status)
+     (Member_Secret  : Kome.Crypto.DH_Secret;
+      Member_Sign_PK : Pubkey;
+      Box_PK         : Pubkey;
+      Ns             : Id128;
+      E              : Epoch;
+      N              : Nonce;
+      Sealed         : Kome.Box;
+      Epoch_Key      : out Key256;
+      Status         : out Box_Status)
    is
-      Shared        : C.Shared_Secret;
-      Contributory  : Boolean;
-      WK            : C.AEAD_Key;
-      Plain         : C.AEAD_Key;
-      Authentic     : Boolean;
-      Member_Public : constant Pubkey := C.X25519_Public (Member_Secret);
+      Shared       : C.Shared_Secret;
+      Contributory : Boolean;
+      WK           : Hash256;
+      Plain        : C.AEAD_Key;
+      Authentic    : Boolean;
+      Expected     : Nonce;
    begin
-      if not Is_Reduced_U (Root_Public) then
+      if not Is_Reduced_U (Box_PK) then
          Epoch_Key := Zero_Key;
          Status := Non_Canonical_Peer;
          return;
       end if;
+      if C.Is_Low_Order_U (Box_PK) then
+         Epoch_Key := Zero_Key;
+         Status := Low_Order_Peer;
+         return;
+      end if;
 
-      C.X25519 (Member_Secret, Root_Public, Shared, Contributory);
+      C.X25519 (Member_Secret, Box_PK, Shared, Contributory);
       if not Contributory then
          Epoch_Key := Zero_Key;
          Status := Low_Order_Peer;
          return;   --  Shared is all zeros already (Kome.Crypto.X25519 Post)
       end if;
 
-      Wrap_Key (Shared, Root_Public, Member_Public, WK);
+      Wrap_Key (Shared, Box_PK, C.X25519_Public (Member_Secret),
+                Member_Sign_PK, Ns, E, WK);
+      Lemma_Wrap_Shared (Shared, C.X25519_Shared (Member_Secret, Box_PK),
+                         Box_PK, C.X25519_Public (Member_Secret),
+                         Member_Sign_PK, Ns, E);
       C.Unlock (WK, N, Box_AD (Ns, E), Cipher_Of (Sealed), Tag_Of (Sealed),
                 Plain, Authentic);
+      Epoch_Key := Zero_Key;
+      Status := Not_Authentic;
       if Authentic then
-         Epoch_Key := Kome.Keys.To_Key256 (Plain);
-         Status := Box_OK;
-      else
-         Epoch_Key := Zero_Key;
-         Status := Not_Authentic;
+         --  Recompute the synthetic nonce from the opened key and refuse a
+         --  mismatch: exactly one box per (wrap_key, k_e) opens (§6).
+         Nonce_Of (WK, Kome.Keys.To_Key256 (Plain), Expected);
+         if Expected = N then
+            Epoch_Key := Kome.Keys.To_Key256 (Plain);
+            Status := Box_OK;
+         end if;
       end if;
 
-      pragma Warnings (GNATprove, Off, "statement has no effect",
-                       Reason => "erasing secrets is not a SPARK effect");
-      pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
-                       Reason => "erasing secrets is not a SPARK effect");
       C.Wipe (Shared);
       C.Wipe (WK);
       C.Wipe (Plain);
-      pragma Warnings (GNATprove, On, "*is set by ""Wipe"" but not used*");
-      pragma Warnings (GNATprove, On, "statement has no effect");
    end Unbox_Key;
+
+   procedure Seal_Link
+     (K_S    : Key256;
+      Ns     : Id128;
+      S      : Epoch;
+      K_Prev : Key256;
+      N      : out Nonce;
+      Sealed : out Kome.Box)
+   is
+      LK     : Hash256;
+      Plain  : C.AEAD_Key;
+      Cipher : C.AEAD_Key;
+      Mac    : C.Tag;
+   begin
+      Link_Key_Of (K_S, Ns, S, LK);
+      Nonce_Of (LK, K_Prev, N);
+      Plain := Kome.Keys.To_Bytes (K_Prev);
+      C.Lock (LK, N, Box_AD (Ns, S), Plain, Cipher, Mac);
+      Sealed := Cipher & Mac;
+
+      C.Wipe (LK);
+      C.Wipe (Plain);
+   end Seal_Link;
+
+   procedure Open_Link
+     (K_S    : Key256;
+      Ns     : Id128;
+      S      : Epoch;
+      N      : Nonce;
+      Sealed : Kome.Box;
+      K_Prev : out Key256;
+      Status : out Box_Status)
+   is
+      LK        : Hash256;
+      Plain     : C.AEAD_Key;
+      Authentic : Boolean;
+      Expected  : Nonce;
+   begin
+      Link_Key_Of (K_S, Ns, S, LK);
+      C.Unlock (LK, N, Box_AD (Ns, S), Cipher_Of (Sealed), Tag_Of (Sealed),
+                Plain, Authentic);
+      K_Prev := Zero_Key;
+      Status := Not_Authentic;
+      if Authentic then
+         Nonce_Of (LK, Kome.Keys.To_Key256 (Plain), Expected);
+         if Expected = N then
+            K_Prev := Kome.Keys.To_Key256 (Plain);
+            Status := Box_OK;
+         end if;
+      end if;
+
+      C.Wipe (LK);
+      C.Wipe (Plain);
+   end Open_Link;
+
+   pragma Warnings (GNATprove, On, "*is set by ""Wipe"" but not used*");
+   pragma Warnings (GNATprove, On, "statement has no effect");
 
 end Kome.Epochs;

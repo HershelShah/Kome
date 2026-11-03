@@ -1,0 +1,3212 @@
+V "GNAT Lib v14"
+A -fno-omit-frame-pointer
+A -mno-omit-leaf-frame-pointer
+A -mtls-dialect=gnu2
+A -gnat2022
+A -gnata
+A -gnatc
+A -gnatf
+A -gnatwa
+A -mtune=generic
+A -march=x86-64
+P NO
+
+RN
+RV NO_DIRECT_BOOLEAN_OPERATORS
+RV NO_RECURSION
+RV NO_DYNAMIC_SIZED_OBJECTS
+RV NO_IMPLEMENTATION_ASPECT_SPECIFICATIONS
+RV NO_IMPLEMENTATION_ATTRIBUTES
+RV NO_IMPLEMENTATION_PRAGMAS
+RV NO_ELABORATION_CODE
+
+U kome.store%b		kome-store.adb		07941602 OO PK
+W kome%s		kome.ads		kome.ali
+
+U kome.store%s		kome-store.ads		4147b86e EE OO PK
+W kome%s		kome.ads		kome.ali
+W kome.frontier%s	kome-frontier.adb	kome-frontier.ali
+W kome.headers%s	kome-headers.adb	kome-headers.ali
+W kome.keys%s		kome-keys.adb		kome-keys.ali
+W kome.records%s	kome-records.adb	kome-records.ali
+W kome.registers%s	kome-registers.adb	kome-registers.ali
+W kome.views%s		kome-views.adb		kome-views.ali
+
+D kome.ads		20261102005331 e2e4a276 kome%s
+D kome-crypto.ads	20261102014421 0d4f7b2c kome.crypto%s
+D kome-frontier.ads	20261102022015 35ca3d96 kome.frontier%s
+D kome-headers.ads	20261102005408 18ad1a5c kome.headers%s
+D kome-keys.ads		20261102012747 3c65a50c kome.keys%s
+D kome-records.ads	20261102055403 5072f617 kome.records%s
+D kome-registers.ads	20261102010637 7be8c513 kome.registers%s
+D kome-store.ads	20261102125357 9c071f2a kome.store%s
+D kome-store.adb	20261102142544 9b930928 kome.store%b
+D kome-versions.ads	20261102005338 f342df91 kome.versions%s
+D kome-views.ads	20261102054431 053cb4f0 kome.views%s
+D system.ads		19700101000001 14286b0f system%s
+G a e
+G c Z s s [horizon_code kome__store 164 13 none]
+G c Z s s [horizon_of_code kome__store 167 13 none]
+G c Z s s [is_record_frame kome__store 175 13 none]
+G c Z s s [verified kome__store 186 13 none]
+G c Z s s [header_of kome__store 197 13 none]
+G c Z s b [lemma_header_of kome__store 201 14 none]
+G c Z s b [lemma_verified_canonical kome__store 215 14 none]
+G c Z s s [end_of kome__store 234 13 none]
+G c Z s s [collection kome__store 240 13 none]
+G c Z s s [founding kome__store 241 13 none]
+G c Z s s [root_key kome__store 242 13 none]
+G c Z s s [salt_of kome__store 243 13 none]
+G c Z s s [logged_cap kome__store 245 13 none]
+G c Z s s [logged_slice kome__store 246 13 none]
+G c Z s s [horizon kome__store 247 13 none]
+G c Z s s [entries kome__store 248 13 none]
+G c Z s s [entry_at kome__store 251 13 none]
+G c Z s s [log_length kome__store 254 13 none]
+G c Z s s [log_byte kome__store 257 13 none]
+G c Z s s [log_entries kome__store 263 13 none]
+G c Z s s [entry_start kome__store 266 13 none]
+G c Z s s [indexed kome__store 271 13 none]
+G c Z s b [position kome__store 275 13 none]
+G c Z s s [valid kome__store 282 13 none]
+G c Z s s [same_identity kome__store 286 13 none]
+G c Z s s [op_at kome__store 298 13 none]
+G c Z s s [len_at kome__store 302 13 none]
+G c Z s s [code_at kome__store 308 13 none]
+G c Z s s [has_frame kome__store 314 13 none]
+G c Z s s [has_log_entry kome__store 322 13 none]
+G c Z s s [entry_size kome__store 329 13 none]
+G c Z s s [next_offset kome__store 335 13 none]
+G c Z s b [read_frame kome__store 340 13 none]
+G c Z s b [log_bytes kome__store 349 13 none]
+G c Z s s [foreign_root kome__store 361 13 none]
+G c Z s s [data_full kome__store 367 13 none]
+G c Z s s [auth_rule kome__store 373 13 none]
+G c Z s s [log_short kome__store 384 13 none]
+G c Z s s [at_bound kome__store 392 13 none]
+G c Z s s [applied kome__store 403 13 none]
+G c Z s s [expired_applied kome__store 413 13 none]
+G c Z s s [expired_out kome__store 425 13 none]
+G c Z s s [expires_any kome__store 435 13 none]
+G c Z s s [horizon_at kome__store 440 13 none]
+G c Z s s [logs_expire kome__store 450 13 none]
+G c Z s s [log_extends kome__store 457 13 none]
+G c Z s s [grew_by kome__store 466 13 none]
+G c Z s s [frame_stored kome__store 474 13 none]
+G c Z s s [appended kome__store 483 13 none]
+G c Z s s [appended_expired kome__store 493 13 none]
+G c Z s s [appended_expire kome__store 501 13 none]
+G c Z s s [same_bytes kome__store 508 13 none]
+G c Z s s [body_end kome__store 515 13 none]
+G c Z s b [open kome__store 527 14 none]
+G c Z s b [put_frame kome__store 550 14 none]
+G c Z s b [expire kome__store 608 14 none]
+G c Z s b [compact kome__store 639 14 none]
+G c Z s b [open_from_log kome__store 696 14 none]
+G c Z s b [find_cell kome__store 719 14 none]
+G c Z s b [lemma_valid_facts kome__store 745 14 none]
+G c Z s b [lemma_log_header kome__store 760 14 none]
+G c Z s b [lemma_entry_held kome__store 782 14 none]
+G c Z s b [lemma_held_indexed kome__store 795 14 none]
+G c Z s b [lemma_no_expired kome__store 801 14 none]
+G c Z s b [lemma_indexed kome__store 807 14 none]
+G c Z s b [lemma_position kome__store 812 14 none]
+G c Z s b [lemma_scan kome__store 821 14 none]
+G c Z s b [lemma_cell_unique kome__store 835 14 none]
+G c Z s b [has_entry kome__store 907 13 none]
+G c Z s b [live kome__store 914 13 none]
+G c Z s b [covered kome__store 921 13 none]
+G c Z s b [fresh kome__store 928 13 none]
+G c Z s s [len_word kome__store 936 13 none]
+G c Z s b [frame_ok kome__store 944 13 none]
+G c Z s b [framed kome__store 956 13 none]
+G c Z s b [sorted kome__store 966 13 none]
+G c Z s b [entry_ok kome__store 977 13 none]
+G c Z s s [size_at kome__store 993 13 none]
+G c Z s b [chain kome__store 1003 13 none]
+G c Z s b [at_bounds kome__store 1020 13 none]
+G c Z s b [head_ok kome__store 1034 13 none]
+G r c none [is_record_frame kome__store 175 13 none] [has_kind kome__records 110 13 none]
+G r c none [is_record_frame kome__store 175 13 none] [kind_of kome__records 113 13 none]
+G r c none [verified kome__store 186 13 none] [has_kind kome__records 110 13 none]
+G r c none [verified kome__store 186 13 none] [kind_of kome__records 113 13 none]
+G r c none [header_of kome__store 197 13 none] [kind_of kome__records 113 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [kind_of kome__records 113 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [parse_put kome__records 378 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [lemma_header_canonical kome__records 457 14 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [parse_del kome__records 536 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [lemma_header_canonical kome__records 589 14 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [parse_roster kome__records 871 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [lemma_header_canonical kome__records 972 14 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [parse_revoke kome__records 1086 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [lemma_header_canonical kome__records 1162 14 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [parse_grant kome__records 1264 13 none]
+G r c none [lemma_verified_canonical kome__store 215 14 none] [lemma_header_canonical kome__records 1335 14 none]
+G r c none [valid kome__store 282 13 none] [u16_of kome__records 147 13 none]
+G r c none [valid kome__store 282 13 none] [word_of kome__keys 69 13 none]
+G r c none [valid kome__store 282 13 none] [collection_id kome__records 190 13 none]
+G r c none [valid kome__store 282 13 none] [to_id128 kome__keys 176 13 none]
+G r c none [valid kome__store 282 13 none] [to_key256 kome__keys 155 13 none]
+G r c none [valid kome__store 282 13 none] [founding kome__frontier 87 13 none]
+G r c none [valid kome__store 282 13 none] [collection kome__frontier 86 13 none]
+G r c none [valid kome__store 282 13 none] [is_frontier kome__frontier 171 13 none]
+G r c none [len_at kome__store 302 13 none] [word_of kome__keys 69 13 none]
+G r c none [code_at kome__store 308 13 none] [u48_of kome__records 141 13 none]
+G r c none [has_frame kome__store 314 13 none] [word_of kome__keys 69 13 none]
+G r c none [has_log_entry kome__store 322 13 none] [word_of kome__keys 69 13 none]
+G r c none [entry_size kome__store 329 13 none] [word_of kome__keys 69 13 none]
+G r c none [next_offset kome__store 335 13 none] [word_of kome__keys 69 13 none]
+G r c none [read_frame kome__store 340 13 none] [word_of kome__keys 69 13 none]
+G r c none [foreign_root kome__store 361 13 none] [is_auth_frame kome__records 1353 13 none]
+G r c none [foreign_root kome__store 361 13 none] [root_key_of kome__records 1360 13 none]
+G r c none [data_full kome__store 367 13 none] [is_data kome__headers 48 13 none]
+G r c none [data_full kome__store 367 13 none] [drops_any kome__frontier 162 13 none]
+G r c none [data_full kome__store 367 13 none] [data_count kome__frontier 91 13 none]
+G r c none [auth_rule kome__store 373 13 none] [is_auth kome__headers 51 13 none]
+G r c none [auth_rule kome__store 373 13 none] [slot_of kome__frontier 111 13 none]
+G r c none [auth_rule kome__store 373 13 none] [regs kome__frontier 88 13 none]
+G r c none [auth_rule kome__store 373 13 none] [count kome__registers 34 13 none]
+G r c none [auth_rule kome__store 373 13 none] [in_w kome__registers 41 13 none]
+G r c none [auth_rule kome__store 373 13 none] [slots_used kome__frontier 99 13 none]
+G r c none [auth_rule kome__store 373 13 none] [drops_any kome__frontier 162 13 none]
+G r c none [auth_rule kome__store 373 13 none] [slot_count kome__frontier 103 13 none]
+G r c none [at_bound kome__store 392 13 none] [holds kome__frontier 158 13 none]
+G r c none [at_bound kome__store 392 13 none] [expired kome__headers 113 13 none]
+G r c none [at_bound kome__store 392 13 none] [drops_any kome__frontier 162 13 none]
+G r c none [at_bound kome__store 392 13 none] [is_data kome__headers 48 13 none]
+G r c none [at_bound kome__store 392 13 none] [data_count kome__frontier 91 13 none]
+G r c none [at_bound kome__store 392 13 none] [is_auth kome__headers 51 13 none]
+G r c none [at_bound kome__store 392 13 none] [slot_of kome__frontier 111 13 none]
+G r c none [at_bound kome__store 392 13 none] [regs kome__frontier 88 13 none]
+G r c none [at_bound kome__store 392 13 none] [count kome__registers 34 13 none]
+G r c none [at_bound kome__store 392 13 none] [in_w kome__registers 41 13 none]
+G r c none [at_bound kome__store 392 13 none] [slots_used kome__frontier 99 13 none]
+G r c none [at_bound kome__store 392 13 none] [slot_count kome__frontier 103 13 none]
+G r c none [at_bound kome__store 392 13 none] [dom kome__frontier 154 13 none]
+G r c none [applied kome__store 403 13 none] [regs kome__frontier 88 13 none]
+G r c none [applied kome__store 403 13 none] [ceil kome__registers 33 13 none]
+G r c none [applied kome__store 403 13 none] [ceil_of kome__headers 87 13 none]
+G r c none [applied kome__store 403 13 none] [extends kome__registers 44 13 none]
+G r c none [expired_applied kome__store 413 13 none] [regs kome__frontier 88 13 none]
+G r c none [expired_applied kome__store 413 13 none] [ceil kome__registers 33 13 none]
+G r c none [expired_applied kome__store 413 13 none] [holds kome__frontier 158 13 none]
+G r c none [expired_applied kome__store 413 13 none] [extends kome__registers 44 13 none]
+G r c none [expired_out kome__store 425 13 none] [regs kome__frontier 88 13 none]
+G r c none [expired_out kome__store 425 13 none] [ceil kome__registers 33 13 none]
+G r c none [expired_out kome__store 425 13 none] [extends kome__registers 44 13 none]
+G r c none [horizon_at kome__store 440 13 none] [regs kome__frontier 88 13 none]
+G r c none [horizon_at kome__store 440 13 none] [ceil kome__registers 33 13 none]
+G r c none [horizon_at kome__store 440 13 none] [del_ttl_eff kome__views 271 13 none]
+G r c none [logs_expire kome__store 450 13 none] [regs kome__frontier 88 13 none]
+G r c none [logs_expire kome__store 450 13 none] [ceil kome__registers 33 13 none]
+G r c none [logs_expire kome__store 450 13 none] [del_ttl_eff kome__views 271 13 none]
+G r c none [frame_stored kome__store 474 13 none] [word_of kome__keys 69 13 none]
+G r c none [appended kome__store 483 13 none] [word_of kome__keys 69 13 none]
+G r c none [appended_expired kome__store 493 13 none] [word_of kome__keys 69 13 none]
+G r c none [appended_expire kome__store 501 13 none] [u48_of kome__records 141 13 none]
+G r c none [open kome__store 527 14 none] [collection_id kome__records 190 13 none]
+G r c none [open kome__store 527 14 none] [byte_of_word kome__keys 75 13 none]
+G r c none [open kome__store 527 14 none] [byte_of_u16 kome__records 144 13 none]
+G r c none [open kome__store 527 14 none] [to_id128 kome__keys 176 13 none]
+G r c none [open kome__store 527 14 none] [to_key256 kome__keys 155 13 none]
+G r c none [open kome__store 527 14 none] [lemma_word_round_trip kome__keys 277 14 none]
+G r c none [open kome__store 527 14 none] [lemma_u16_round_trip kome__records 175 14 none]
+G r c none [open kome__store 527 14 none] [u16_of kome__records 147 13 none]
+G r c none [open kome__store 527 14 none] [word_of kome__keys 69 13 none]
+G r c none [put_frame kome__store 550 14 none] [is_auth_frame kome__records 1353 13 none]
+G r c none [put_frame kome__store 550 14 none] [root_key_of kome__records 1360 13 none]
+G r c none [put_frame kome__store 550 14 none] [count kome__frontier 127 13 none]
+G r c none [put_frame kome__store 550 14 none] [lemma_frontier_held kome__frontier 400 14 none]
+G r c none [put_frame kome__store 550 14 none] [held kome__frontier 133 13 none]
+G r c none [put_frame kome__store 550 14 none] [holds kome__frontier 158 13 none]
+G r c none [put_frame kome__store 550 14 none] [apply kome__frontier 213 14 none]
+G r c none [put_frame kome__store 550 14 none] [regs kome__frontier 88 13 none]
+G r c none [put_frame kome__store 550 14 none] [ceil kome__registers 33 13 none]
+G r c none [put_frame kome__store 550 14 none] [lemma_ceil_witness kome__frontier 420 14 none]
+G r c none [put_frame kome__store 550 14 none] [collection kome__frontier 86 13 none]
+G r c none [put_frame kome__store 550 14 none] [canonical kome__headers 97 13 none]
+G r c none [put_frame kome__store 550 14 none] [admitted kome__frontier 148 13 none]
+G r c none [put_frame kome__store 550 14 none] [unchanged kome__frontier 175 13 none]
+G r c none [put_frame kome__store 550 14 none] [lemma_unchanged kome__frontier 445 14 none]
+G r c none [put_frame kome__store 550 14 none] [expired kome__headers 113 13 none]
+G r c none [put_frame kome__store 550 14 none] [is_auth kome__headers 51 13 none]
+G r c none [put_frame kome__store 550 14 none] [slot_of kome__frontier 111 13 none]
+G r c none [put_frame kome__store 550 14 none] [count kome__registers 34 13 none]
+G r c none [put_frame kome__store 550 14 none] [in_w kome__registers 41 13 none]
+G r c none [put_frame kome__store 550 14 none] [slots_used kome__frontier 99 13 none]
+G r c none [put_frame kome__store 550 14 none] [drops_any kome__frontier 162 13 none]
+G r c none [put_frame kome__store 550 14 none] [slot_count kome__frontier 103 13 none]
+G r c none [put_frame kome__store 550 14 none] [dom kome__frontier 154 13 none]
+G r c none [put_frame kome__store 550 14 none] [apply_expired kome__frontier 295 14 none]
+G r c none [put_frame kome__store 550 14 none] [extends kome__registers 44 13 none]
+G r c none [put_frame kome__store 550 14 none] [dominates kome__headers 71 13 none]
+G r c none [put_frame kome__store 550 14 none] [tag_of kome__records 101 13 none]
+G r c none [put_frame kome__store 550 14 none] [word_of kome__keys 69 13 none]
+G r c none [put_frame kome__store 550 14 none] [byte_of_word kome__keys 75 13 none]
+G r c none [put_frame kome__store 550 14 none] [lemma_word_round_trip kome__keys 277 14 none]
+G r c none [put_frame kome__store 550 14 none] [u16_of kome__records 147 13 none]
+G r c none [put_frame kome__store 550 14 none] [collection_id kome__records 190 13 none]
+G r c none [put_frame kome__store 550 14 none] [to_id128 kome__keys 176 13 none]
+G r c none [put_frame kome__store 550 14 none] [to_key256 kome__keys 155 13 none]
+G r c none [put_frame kome__store 550 14 none] [founding kome__frontier 87 13 none]
+G r c none [put_frame kome__store 550 14 none] [is_frontier kome__frontier 171 13 none]
+G r c none [put_frame kome__store 550 14 none] [is_data kome__headers 48 13 none]
+G r c none [put_frame kome__store 550 14 none] [data_count kome__frontier 91 13 none]
+G r c none [put_frame kome__store 550 14 none] [ceil_of kome__headers 87 13 none]
+G r c none [put_frame kome__store 550 14 none] [lemma_frontier_shape kome__frontier 361 14 none]
+G r c none [expire kome__store 608 14 none] [regs kome__frontier 88 13 none]
+G r c none [expire kome__store 608 14 none] [ceil kome__registers 33 13 none]
+G r c none [expire kome__store 608 14 none] [del_ttl_eff kome__views 271 13 none]
+G r c none [expire kome__store 608 14 none] [count kome__frontier 127 13 none]
+G r c none [expire kome__store 608 14 none] [lemma_frontier_held kome__frontier 400 14 none]
+G r c none [expire kome__store 608 14 none] [held kome__frontier 133 13 none]
+G r c none [expire kome__store 608 14 none] [holds kome__frontier 158 13 none]
+G r c none [expire kome__store 608 14 none] [apply kome__frontier 213 14 none]
+G r c none [expire kome__store 608 14 none] [lemma_ceil_witness kome__frontier 420 14 none]
+G r c none [expire kome__store 608 14 none] [collection kome__frontier 86 13 none]
+G r c none [expire kome__store 608 14 none] [canonical kome__headers 97 13 none]
+G r c none [expire kome__store 608 14 none] [admitted kome__frontier 148 13 none]
+G r c none [expire kome__store 608 14 none] [unchanged kome__frontier 175 13 none]
+G r c none [expire kome__store 608 14 none] [lemma_unchanged kome__frontier 445 14 none]
+G r c none [expire kome__store 608 14 none] [expire kome__frontier 264 14 none]
+G r c none [expire kome__store 608 14 none] [lemma_held_cases kome__frontier 348 14 none]
+G r c none [expire kome__store 608 14 none] [data_count kome__frontier 91 13 none]
+G r c none [expire kome__store 608 14 none] [data_held kome__frontier 94 13 none]
+G r c none [expire kome__store 608 14 none] [slot_at kome__frontier 138 13 none]
+G r c none [expire kome__store 608 14 none] [off kome__frontier 121 13 none]
+G r c none [expire kome__store 608 14 none] [auth_held kome__frontier 106 13 none]
+G r c none [expire kome__store 608 14 none] [lemma_held_auth kome__frontier 339 14 none]
+G r c none [expire kome__store 608 14 none] [lemma_frontier_auth kome__frontier 390 14 none]
+G r c none [expire kome__store 608 14 none] [expired kome__headers 113 13 none]
+G r c none [expire kome__store 608 14 none] [extends kome__registers 44 13 none]
+G r c none [expire kome__store 608 14 none] [dominates kome__headers 71 13 none]
+G r c none [expire kome__store 608 14 none] [tag_of kome__records 101 13 none]
+G r c none [expire kome__store 608 14 none] [word_of kome__keys 69 13 none]
+G r c none [expire kome__store 608 14 none] [lemma_extends_refl kome__registers 120 14 none]
+G r c none [expire kome__store 608 14 none] [lemma_u48_round_trip kome__records 160 14 none]
+G r c none [expire kome__store 608 14 none] [byte_of_u48 kome__records 132 13 none]
+G r c none [expire kome__store 608 14 none] [u16_of kome__records 147 13 none]
+G r c none [expire kome__store 608 14 none] [collection_id kome__records 190 13 none]
+G r c none [expire kome__store 608 14 none] [to_id128 kome__keys 176 13 none]
+G r c none [expire kome__store 608 14 none] [to_key256 kome__keys 155 13 none]
+G r c none [expire kome__store 608 14 none] [founding kome__frontier 87 13 none]
+G r c none [expire kome__store 608 14 none] [is_frontier kome__frontier 171 13 none]
+G r c none [expire kome__store 608 14 none] [u48_of kome__records 141 13 none]
+G r c none [compact kome__store 639 14 none] [is_auth kome__headers 51 13 none]
+G r c none [compact kome__store 639 14 none] [tag_of kome__records 101 13 none]
+G r c none [compact kome__store 639 14 none] [word_of kome__keys 69 13 none]
+G r c none [compact kome__store 639 14 none] [is_data kome__headers 48 13 none]
+G r c none [compact kome__store 639 14 none] [holds kome__frontier 158 13 none]
+G r c none [compact kome__store 639 14 none] [count kome__frontier 127 13 none]
+G r c none [compact kome__store 639 14 none] [held kome__frontier 133 13 none]
+G r c none [compact kome__store 639 14 none] [lemma_u48_round_trip kome__records 160 14 none]
+G r c none [compact kome__store 639 14 none] [byte_of_u48 kome__records 132 13 none]
+G r c none [compact kome__store 639 14 none] [u16_of kome__records 147 13 none]
+G r c none [compact kome__store 639 14 none] [collection_id kome__records 190 13 none]
+G r c none [compact kome__store 639 14 none] [to_id128 kome__keys 176 13 none]
+G r c none [compact kome__store 639 14 none] [to_key256 kome__keys 155 13 none]
+G r c none [compact kome__store 639 14 none] [founding kome__frontier 87 13 none]
+G r c none [compact kome__store 639 14 none] [collection kome__frontier 86 13 none]
+G r c none [compact kome__store 639 14 none] [is_frontier kome__frontier 171 13 none]
+G r c none [open_from_log kome__store 696 14 none] [empty kome__frontier 181 13 none]
+G r c none [open_from_log kome__store 696 14 none] [collection_id kome__records 190 13 none]
+G r c none [open_from_log kome__store 696 14 none] [word_of kome__keys 69 13 none]
+G r c none [open_from_log kome__store 696 14 none] [u16_of kome__records 147 13 none]
+G r c none [open_from_log kome__store 696 14 none] [to_id128 kome__keys 176 13 none]
+G r c none [open_from_log kome__store 696 14 none] [to_key256 kome__keys 155 13 none]
+G r c none [open_from_log kome__store 696 14 none] [byte_of_word kome__keys 75 13 none]
+G r c none [open_from_log kome__store 696 14 none] [byte_of_u16 kome__records 144 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_word_round_trip kome__keys 277 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_u16_round_trip kome__records 175 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_lanes_round_trip kome__keys 282 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_u16_bytes_round_trip kome__records 179 14 none]
+G r c none [open_from_log kome__store 696 14 none] [founding kome__frontier 87 13 none]
+G r c none [open_from_log kome__store 696 14 none] [collection kome__frontier 86 13 none]
+G r c none [open_from_log kome__store 696 14 none] [is_frontier kome__frontier 171 13 none]
+G r c none [open_from_log kome__store 696 14 none] [has_kind kome__records 110 13 none]
+G r c none [open_from_log kome__store 696 14 none] [kind_of kome__records 113 13 none]
+G r c none [open_from_log kome__store 696 14 none] [decode_verified kome__records 423 14 none]
+G r c none [open_from_log kome__store 696 14 none] [decode_verified kome__records 560 14 none]
+G r c none [open_from_log kome__store 696 14 none] [decode_verified kome__records 935 14 none]
+G r c none [open_from_log kome__store 696 14 none] [decode_verified kome__records 1130 14 none]
+G r c none [open_from_log kome__store 696 14 none] [decode_verified kome__records 1303 14 none]
+G r c none [open_from_log kome__store 696 14 none] [parse_put kome__records 378 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_header_canonical kome__records 457 14 none]
+G r c none [open_from_log kome__store 696 14 none] [parse_del kome__records 536 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_header_canonical kome__records 589 14 none]
+G r c none [open_from_log kome__store 696 14 none] [parse_roster kome__records 871 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_header_canonical kome__records 972 14 none]
+G r c none [open_from_log kome__store 696 14 none] [parse_revoke kome__records 1086 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_header_canonical kome__records 1162 14 none]
+G r c none [open_from_log kome__store 696 14 none] [parse_grant kome__records 1264 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_header_canonical kome__records 1335 14 none]
+G r c none [open_from_log kome__store 696 14 none] [is_auth_frame kome__records 1353 13 none]
+G r c none [open_from_log kome__store 696 14 none] [root_key_of kome__records 1360 13 none]
+G r c none [open_from_log kome__store 696 14 none] [admitted kome__frontier 148 13 none]
+G r c none [open_from_log kome__store 696 14 none] [expired kome__headers 113 13 none]
+G r c none [open_from_log kome__store 696 14 none] [dom kome__frontier 154 13 none]
+G r c none [open_from_log kome__store 696 14 none] [holds kome__frontier 158 13 none]
+G r c none [open_from_log kome__store 696 14 none] [count kome__frontier 127 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_frontier_held kome__frontier 400 14 none]
+G r c none [open_from_log kome__store 696 14 none] [held kome__frontier 133 13 none]
+G r c none [open_from_log kome__store 696 14 none] [apply kome__frontier 213 14 none]
+G r c none [open_from_log kome__store 696 14 none] [regs kome__frontier 88 13 none]
+G r c none [open_from_log kome__store 696 14 none] [ceil kome__registers 33 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_ceil_witness kome__frontier 420 14 none]
+G r c none [open_from_log kome__store 696 14 none] [canonical kome__headers 97 13 none]
+G r c none [open_from_log kome__store 696 14 none] [unchanged kome__frontier 175 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_unchanged kome__frontier 445 14 none]
+G r c none [open_from_log kome__store 696 14 none] [is_auth kome__headers 51 13 none]
+G r c none [open_from_log kome__store 696 14 none] [slot_of kome__frontier 111 13 none]
+G r c none [open_from_log kome__store 696 14 none] [count kome__registers 34 13 none]
+G r c none [open_from_log kome__store 696 14 none] [in_w kome__registers 41 13 none]
+G r c none [open_from_log kome__store 696 14 none] [slots_used kome__frontier 99 13 none]
+G r c none [open_from_log kome__store 696 14 none] [drops_any kome__frontier 162 13 none]
+G r c none [open_from_log kome__store 696 14 none] [slot_count kome__frontier 103 13 none]
+G r c none [open_from_log kome__store 696 14 none] [apply_expired kome__frontier 295 14 none]
+G r c none [open_from_log kome__store 696 14 none] [extends kome__registers 44 13 none]
+G r c none [open_from_log kome__store 696 14 none] [dominates kome__headers 71 13 none]
+G r c none [open_from_log kome__store 696 14 none] [tag_of kome__records 101 13 none]
+G r c none [open_from_log kome__store 696 14 none] [is_data kome__headers 48 13 none]
+G r c none [open_from_log kome__store 696 14 none] [data_count kome__frontier 91 13 none]
+G r c none [open_from_log kome__store 696 14 none] [ceil_of kome__headers 87 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_frontier_shape kome__frontier 361 14 none]
+G r c none [open_from_log kome__store 696 14 none] [u48_of kome__records 141 13 none]
+G r c none [open_from_log kome__store 696 14 none] [expire kome__frontier 264 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_held_cases kome__frontier 348 14 none]
+G r c none [open_from_log kome__store 696 14 none] [data_held kome__frontier 94 13 none]
+G r c none [open_from_log kome__store 696 14 none] [slot_at kome__frontier 138 13 none]
+G r c none [open_from_log kome__store 696 14 none] [off kome__frontier 121 13 none]
+G r c none [open_from_log kome__store 696 14 none] [auth_held kome__frontier 106 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_held_auth kome__frontier 339 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_frontier_auth kome__frontier 390 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_extends_refl kome__registers 120 14 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_u48_round_trip kome__records 160 14 none]
+G r c none [open_from_log kome__store 696 14 none] [byte_of_u48 kome__records 132 13 none]
+G r c none [open_from_log kome__store 696 14 none] [lemma_u48_bytes_round_trip kome__records 166 14 none]
+G r c none [find_cell kome__store 719 14 none] [put_on kome__views 97 13 none]
+G r c none [find_cell kome__store 719 14 none] [count kome__frontier 127 13 none]
+G r c none [find_cell kome__store 719 14 none] [held kome__frontier 133 13 none]
+G r c none [find_cell kome__store 719 14 none] [lemma_cell_unique kome__views 415 14 none]
+G r c none [lemma_valid_facts kome__store 745 14 none] [u16_of kome__records 147 13 none]
+G r c none [lemma_valid_facts kome__store 745 14 none] [word_of kome__keys 69 13 none]
+G r c none [lemma_log_header kome__store 760 14 none] [u16_of kome__records 147 13 none]
+G r c none [lemma_log_header kome__store 760 14 none] [word_of kome__keys 69 13 none]
+G r c none [lemma_entry_held kome__store 782 14 none] [tag_of kome__records 101 13 none]
+G r c none [lemma_entry_held kome__store 782 14 none] [word_of kome__keys 69 13 none]
+G r c none [lemma_scan kome__store 821 14 none] [word_of kome__keys 69 13 none]
+G r c none [lemma_cell_unique kome__store 835 14 none] [count kome__frontier 127 13 none]
+G r c none [lemma_cell_unique kome__store 835 14 none] [held kome__frontier 133 13 none]
+G r c none [lemma_cell_unique kome__store 835 14 none] [lemma_cell_unique kome__views 415 14 none]
+G r c none [len_word kome__store 936 13 none] [word_of kome__keys 69 13 none]
+G r c none [frame_ok kome__store 944 13 none] [tag_of kome__records 101 13 none]
+G r c none [frame_ok kome__store 944 13 none] [word_of kome__keys 69 13 none]
+G r c none [entry_ok kome__store 977 13 none] [word_of kome__keys 69 13 none]
+G r c none [size_at kome__store 993 13 none] [word_of kome__keys 69 13 none]
+G r c none [head_ok kome__store 1034 13 none] [u16_of kome__records 147 13 none]
+G r c none [head_ok kome__store 1034 13 none] [word_of kome__keys 69 13 none]
+X 1 kome.ads
+7K9*Kome 123e9 8|115r6 115r26 116r6 116r26 117r6 117r26 118r6 119r6 120r6
+. 121r9 157r46 176r7 177r22 178r36 179r36 180r36 181r36 182r36 188r22 189r36
+. 189r62 190r36 190r62 191r36 191r62 192r36 192r62 193r36 193r62 204r36 206r22
+. 207r36 207r60 208r36 208r60 209r36 209r60 210r36 210r60 211r36 211r60 219r45
+. 303r7 309r7 318r38 362r7 363r16 381r35 398r25 442r22 445r22 527r45 531r17
+. 531r37 532r17 563r17 732r29 734r36 738r36 751r32 753r19 753r39 769r22 774r17
+. 777r17 790r19 840r23 891r12 892r26 892r50 893r26 893r50 894r26 894r50 895r26
+. 895r50 896r26 896r50 938r12 954r47 988r59 997r34 1048r18 1050r18 1059r24
+. 1060r23 1061r24 1077r5 9|2r14 41r47 52r59 100r18 102r18 420r17 441r34 442r34
+. 443r34 444r34 448r7 449r22 486r17 506r7 508r22 509r22 510r22 511r22 512r22
+. 513r22 1387r17 1441r17 1487r52 1563r39 1890r31 1891r12 1900r21 1900r41
+. 1901r24 1902r25 1903r25 1904r25 1914r56 1919r31 1925r24 1927r24 1940r7
+. 1941r7 1943r39 1944r43 1945r43 1946r43 1947r41 1948r45 1964r25 1965r24
+. 1966r25 1983r45 2150r17 2170r44 2242r10 2243r18 3268r13 3270r30 3271r30
+. 3272r30 3273r30 3274r30 3275r30 3339r14 3343r12 3346r20 3348r16 3352r20
+. 3354r16 3358r20 3360r16 3364r20 3366r16 3370r20 3372r16 3381r14 3381r51
+. 3386r7 3387r7 3393r14 3394r16 3400r7 3401r7 3449r18 3450r27 3606r15 3608r36
+. 3648r15 3675r15 3682r54 3688r40 3691r25 3693r25 3698r15 3701r7 3703r7 3715r30
+. 3721r38 3723r38 3771r36 3773r12 3775r27 3776r12 3787r31 3787r57 3826r21
+. 3833r13 3838r19 3854r13 3861r41 3875r12 3876r27 3876r64 3877r27 3877r64
+. 3878r27 3878r64 3879r27 3879r64 3880r27 3880r64 3950r7 3957r5
+9M9*Byte 8|132r32 133r32 134r32 135r32 140r27 257r54 298r51 885r54 9|406r15
+. 433r15 441r26 442r26 443r26 444r26 1370r14 1407r14 1882r30 3379r65 3384r65
+. 3391r80 3398r80 3408r16 3430r16 3597r22
+10A9*Byte_Array(9M9)<integer> 8|138r27 175r38 186r31 197r32 201r39 215r48
+. 340r58 349r42 361r46 474r61 484r37 494r37 553r23 697r23 868r14 890r32 936r29
+. 944r29 956r27 977r29 993r28 1003r26 1035r13 9|34r29 44r29 57r27 70r26 90r13
+. 241r14 241r49 253r14 253r49 272r13 284r13 289r14 289r49 303r14 303r49 318r14
+. 318r49 338r14 338r49 365r29 365r62 373r29 373r62 379r40 379r73 389r40 389r73
+. 404r22 407r15 431r22 434r15 436r26 474r21 495r21 499r26 544r13 557r13 575r14
+. 575r49 588r14 588r49 1366r21 1370r28 1403r21 1407r28 1409r26 1423r21 1453r21
+. 1459r26 1472r13 1491r13 1500r70 1510r70 1522r72 1532r72 1555r15 1585r15
+. 1658r15 1683r15 1920r22 1993r58 1995r11 2005r42 2007r11 2040r60 2083r23
+. 2102r23 2140r23 2160r23 2207r23 2222r23 2236r23 2355r20 2355r51 2374r20
+. 2374r51 2475r13 2476r17 2507r13 2508r17 2532r26 2532r58 2547r26 2547r58
+. 2559r13 2560r17 2589r13 2590r17 2595r17 2601r24 2630r17 2636r24 2642r26
+. 2763r17 2769r24 2802r17 2808r24 2855r43 2865r43 2875r13 2900r13 2954r17
+. 2954r49 2976r17 2976r49 3235r26 3264r29 3332r36 3336r36 3409r16 3431r16
+. 3487r11 3487r41 3487r57 3501r11 3501r41 3501r57 3513r45 3523r45 3540r46
+. 3553r46 3573r16 3592r16 3615r33 3674r20 3697r20 3731r23 3871r39 3873r48
+22I9*U48<long_integer> 8|161r64 162r31 162r38 164r53 165r51 167r34 308r53
+. 404r29 440r51 450r63 611r23 9|476r14 497r14 1427r14 1457r14 2255r58 2280r58
+. 2287r58 2309r58 2316r58 2336r23 3265r29 3647r29
+26N4*NS_Len 8|146r37 767r36 1045r37 9|97r37 259r40 3687r36 3778r37 3793r43
+28N4*Salt_Len 8|148r39 772r36 1047r37 9|99r37 261r40 3690r36 3770r63
+29N4*Pubkey_Len 8|147r39 770r36 1046r37 9|98r37 260r40 3689r36 3769r65
+40I9*Word<long_integer> 8|302r52 477r34 776r19 936r61 953r42 1049r75 9|40r42
+. 101r75 419r42 421r74 440r26 440r34 1386r42 1388r74 1486r47 1528r41 1535r40
+. 1643r43 1717r43 1890r55 1940r40 1943r63 1944r67 1945r67 1946r67 2868r46
+. 3423r58 3605r27 3674r67 3680r26 3697r67 3704r22 3772r27 3782r21
+42R9*Id128 44e14 8|240r43 722r22 723r22 857r14 873r43 9|3847r22 3848r22
+46R9*Key256 48e14 8|241r41 724r22 859r14 874r41 9|3849r22
+61A12*NS_Id{10A9}<integer> 8|858r14 1035r46 9|90r46 242r14 254r14 1369r14
+. 1406r14 1426r14 1456r14 1881r40 1919r22 3771r27
+63A12*Salt{10A9}<integer> 8|243r40 527r50 861r14 876r40 1035r74 9|90r74 242r42
+. 254r42 1369r42 1406r42 1426r42 1456r42 1881r28 1896r56 1917r56 1983r50
+. 3674r53 3697r53 3770r27
+64A12*Pubkey{10A9}<integer> 8|242r41 527r30 860r14 875r41 1035r60 9|90r60
+. 242r28 254r28 1369r28 1406r28 1426r28 1456r28 1881r14 1896r42 1917r42 1983r30
+. 3674r39 3697r39 3769r27
+85N4*Signers_Max 8|378r78 533r34 705r25 706r34 756r34 1064r33 9|1968r34
+86N4*Slice_Max 9|3680r60
+90N4*Writers_Max 8|381r69
+102I9*Time64<long_integer> 8|161r29 161r56 168r51 425r62 435r51 441r10 441r22
+. 441r36 442r14 444r12 444r24 444r38 445r14 928r45 9|29r45 734r16 1008r55
+. 1018r55 1034r67 1040r67 1732r69 1754r69 1803r59 1808r59
+103i4*No_Horizon{102I9} 8|161r42 165r14 168r35 443r12 545r31 864r31 9|734r27
+. 1594r70 1691r70 1907r24 1932r24 3747r24
+112E9*Status 120e17 8|556r23 612r23 700r23 9|1325r13 1595r17 1692r17 2041r32
+. 2086r23 2105r23 2109r17 2143r23 2163r23 2166r17 2210r23 2225r23 2239r23
+. 2255r72 2280r76 2287r76 2309r76 2316r76 2337r23 3337r12 3410r20 3432r20
+. 3438r18 3574r20 3593r20 3617r24 3734r23 3805r21
+113n7*OK{112E9} 8|571r22 587r26 593r25 618r22 623r25 707r24 709r25 9|1598r27
+. 1695r27 2046r21 2062r25 2068r24 2126r20 2132r20 2200r17 2260r21 2265r24
+. 2304r17 2330r17 3375r24 3418r27 3419r30 3462r19 3482r17 3583r27 3584r30
+. 3621r25 3669r17 3808r25 3814r20
+114n7*Dominated{112E9} 8|571r27 576r22 9|2046r26 2051r21
+115n7*Inadmissible{112E9} 8|571r39 574r22 9|2046r38 2049r21
+116n7*Malformed{112E9} 8|571r54 573r22 707r29 9|2046r53 2048r21 2230r17 3418r32
+. 3440r17 3583r32 3599r17 3763r20 3779r23
+119n7*No_Space{112E9} 8|571r66 582r22 618r27 619r22 621r25 707r41 708r54
+. 9|2046r65 2057r21 2129r20 2194r20 2260r26 2261r21 2263r24 2294r23 2323r23
+. 3418r44 3463r23 3583r44 3755r20 3783r23
+120n7*Auth_Full{112E9} 8|571r77 579r22 9|2046r76 2054r21
+X 3 kome-frontier.ads
+61K14*Frontier 533e18 8|117w11 117r31 282r35 367r28 373r28 392r38 403r37
+. 413r45 425r41 435r30 440r29 450r41 527r60 532r49 537r32 552r23 610r23 639r45
+. 698r23 721r22 745r48 750r17 760r47 782r47 795r49 801r47 812r45 821r41 835r48
+. 914r23 921r26 928r24 1052r35 1058r16 9|19r23 24r26 29r24 115r26 120r26
+. 865r22 879r22 900r13 913r13 932r47 943r47 961r22 978r22 1008r22 1018r22
+. 1034r46 1040r46 1056r13 1078r13 1207r46 1218r46 1259r57 1264r17 1264r45
+. 1269r57 1295r66 1305r66 1318r43 1323r43 1324r22 1554r22 1584r22 1589r26
+. 1657r22 1682r22 1687r26 1732r48 1754r48 1803r34 1808r34 1823r54 1835r54
+. 1837r25 1842r10 1957r48 1963r17 1973r48 1983r60 2021r53 2026r53 2040r36
+. 2082r23 2101r23 2107r26 2139r23 2159r23 2165r26 2206r23 2221r23 2235r23
+. 2255r36 2280r36 2287r36 2309r36 2316r36 2335r23 3062r11 3079r11 3176r29
+. 3217r29 3231r45 3407r23 3429r23 3572r23 3591r23 3732r23 3737r12 3787r15
+. 3822r47 3830r47 3846r22 3884r48 3889r47 3894r47 3904r49 3909r47 3916r45
+. 3924r41 3946r48
+66N4*Held_Max 8|705r50 9|3680r32
+67I12*Held_Count{natural} 8|238r22 248r40 726r22 856r22 865r14 880r40 907r47
+. 914r62 921r65 956r77 966r44 1020r47 9|14r47 19r62 24r65 57r77 63r44 83r47
+. 110r53 133r30 140r30 153r30 153r66 164r30 164r66 178r30 189r30 215r60 222r60
+. 529r41 529r77 537r41 537r77 545r31 545r66 558r31 558r66 576r31 589r31 609r30
+. 619r30 631r30 644r30 663r31 663r66 677r31 677r66 697r30 697r66 709r30 709r66
+. 745r31 745r66 757r31 757r66 780r59 791r59 793r23 794r14 833r31 833r66 846r31
+. 846r66 866r31 866r66 880r31 880r66 901r31 901r66 914r31 914r66 962r31 962r66
+. 979r31 979r66 1057r31 1058r31 1058r65 1079r31 1080r31 1080r65 1145r47 1145r63
+. 1153r47 1153r63 1181r26 1181r42 1191r26 1191r42 1207r30 1218r30 1368r32
+. 1405r32 1425r32 1455r32 1472r64 1473r30 1491r64 1492r30 1591r26 1620r30
+. 1689r26 1847r32 2389r21 2415r47 2423r47 2475r48 2476r70 2507r48 2508r70
+. 2559r48 2560r70 2589r48 2590r70 2598r17 2604r24 2633r17 2639r24 2646r26
+. 2766r17 2772r24 2805r17 2811r24 2816r21 2875r77 2900r77 2955r30 2977r30
+. 2995r55 3002r55 3014r30 3015r13 3033r30 3034r13 3062r50 3079r50 3103r57
+. 3114r57 3219r20 3233r26 3241r17 3851r22
+68I12*Held_Index{natural} 8|251r38 275r53 782r67 795r69 801r67 812r65 835r71
+. 846r31 882r38 9|110r29 113r27 115r61 120r61 133r61 140r61 154r13 154r32
+. 165r13 165r32 179r13 190r13 202r53 215r79 222r79 563r26 886r26 887r26 921r26
+. 944r21 989r30 993r32 1023r30 1044r27 1086r29 1181r59 1191r59 1221r21 1273r26
+. 1763r29 1786r29 2030r26 2600r17 2635r17 3092r26 3822r67 3830r67 3894r67
+. 3904r69 3909r67 3916r65 3917r20 3946r71 3947r21 3948r21
+75I12*Data_Size{natural} 8|245r43 862r14 877r43 1036r14 9|91r14 242r55 254r55
+. 1369r55 1406r55 1426r55 1456r55 1881r54 1896r69 1917r69 3683r43 3704r28
+. 3789r30
+76I12*Slice_Count{natural} 8|246r45 863r14 878r45 1036r31 9|91r31 242r72
+. 254r72 1369r72 1406r72 1426r72 1456r72 1881r71 1896r86 1917r86
+77I12*Slot_Index{positive} 9|1736r31 1762r29 1785r29
+78I12*Slot_Number{natural}
+80R9*State 508e14 8|282r44 367r37 373r37 392r47 403r46 413r54 425r50 435r39
+. 440r38 450r50 527r69 552r32 610r32 639r54 698r32 721r31 745r57 760r56 782r56
+. 795r58 801r56 812r54 821r50 835r57 914r32 921r35 928r33 1052r44 9|19r32
+. 24r35 29r33 115r35 120r35 865r31 879r31 900r22 913r22 932r56 943r56 961r31
+. 978r31 1008r31 1018r31 1034r55 1040r55 1056r22 1078r22 1207r55 1218r55
+. 1259r66 1269r66 1295r75 1305r75 1318r52 1323r52 1324r31 1554r31 1584r31
+. 1589r35 1657r31 1682r31 1687r35 1732r57 1754r57 1803r43 1808r43 1823r63
+. 1835r63 1837r34 1957r57 1973r57 1983r69 2021r62 2026r62 2040r45 2082r32
+. 2101r32 2107r35 2139r32 2159r32 2165r35 2206r32 2221r32 2235r32 2255r45
+. 2280r45 2287r45 2309r45 2316r45 2335r32 3062r20 3079r20 3176r38 3217r38
+. 3231r54 3407r32 3429r32 3572r32 3591r32 3732r32 3822r56 3830r56 3846r31
+. 3884r57 3889r56 3894r56 3904r58 3909r56 3916r54 3924r50 3946r57
+80i16 Cap{75I12} 8|368r47 533r28 540r36 705r19 706r28 714r44 754r37 756r28
+. 1062r28 1064r27 9|1262r23 1262r35 1967r29 1968r28 1985r33 3737r49 3782r29
+. 3788r33
+80i33 Slice{76I12} 8|376r69 533r50 541r38 704r19 705r41 706r50 715r46 755r39
+. 756r50 1063r27 1064r49 9|1262r54 1262r68 1967r53 1968r50 1985r40 3737r56
+. 3782r52 3788r40
+86V13*Collection{1|42R9} 8|531s83 536s34 749s17 1057s16 9|1263s17 1263s38
+. 1342s34 1962s17
+87V13*Founding{1|46R9} 8|532s58 537s41 750s26 1058s25 9|1264s26 1264s54 1963s26
+88V13*Regs{7|31R9} 8|380s45 381s57 404s13 404s44 405s25 405s39 414s13 414s35
+. 415s25 415s39 416s25 416s39 426s13 426s35 427s25 427s39 428s25 428s39 441s50
+. 444s52 9|1336s19 1339s31 1810s27
+91V13*Data_Count{75I12} 8|368s28 9|1743s36 1746s36 1758s18 1763s47 1770s32
+. 1781s18 1786s47 1791s32
+94V13*Data_Held{4|38R9} 9|1744s34 1745s42 1747s29 1748s42 1759s46 1782s46
+99V13*Slots_Used{78I12} 8|378s61 9|1735s17 1735s38 1739s36
+100V13*Slot_Key{1|46R9} 9|1740s20 1740s42
+103V13*Slot_Count{76I12} 8|376s27 9|1737s20 1737s44 1741s48
+106V13*Auth_Held{4|38R9} 9|1742s32 1742s58 1765s49 1766s31 1766s57 1788s49
+111V13*Slot_Of{78I12} 8|375s18 376s42 378s26
+121V13*Off{natural} 9|1738s29 1738s46 1763s68 1770s53 1786s68 1791s53
+127V13*Count{67I12} 8|406s35 408s35 418s35 420s35 429s35 431s35 436s26 530s17
+. 633s31 797s41 803s41 925s50 931s48 9|26s33 31s33 118s32 122s21 874s36 936s36
+. 938s33 946s21 970s36 981s21 1013s36 1020s21 1037s36 1042s21 1215s18 1227s30
+. 1242s33 1265s17 1265s33 1266s36 1281s28 1282s21 1288s40 1327s10 1706s28
+. 1749s33 1751s36 1756s21 1779s21 1811s21 1959s39 2275s30 2299s43 3090s21
+133V13*Held{4|38R9} 8|407s33 407s58 409s33 409s72 419s33 419s77 421s33 421s72
+. 430s33 430s72 432s33 432s67 436s48 633s57 798s26 804s27 925s82 931s74 9|26s65
+. 31s59 118s51 123s13 126s56 875s34 875s71 889s28 890s44 891s42 937s34 937s59
+. 939s17 940s40 941s53 948s40 948s58 951s15 952s38 953s51 971s39 972s43 973s54
+. 982s31 984s47 986s42 987s53 989s60 991s51 993s70 997s53 1002s56 1014s20
+. 1014s62 1021s13 1023s60 1025s44 1029s50 1037s67 1044s57 1046s41 1049s50
+. 1227s49 1266s53 1266s71 1275s28 1281s69 1283s49 1285s61 1288s70 1330s36
+. 1707s26 1707s64 1750s31 1750s70 1752s34 1752s68 1759s28 1765s31 1770s19
+. 1770s75 1771s45 1772s44 1777s29 1777s69 1782s28 1788s31 1791s19 1791s75
+. 1792s45 1797s29 1797s64 1812s38 1813s35 1816s25 1816s61 2032s41 2275s56
+. 2299s69 3092s63 3097s60
+138V13*Slot_At{77I12} 9|1762s43 1785s43
+148V13*Admitted{boolean} 8|575s62 577s58 583s58 9|1347s32 1566s17 1666s17
+. 2050s61 2052s57 2058s57 2115s14 2174s14 3456s17 3472s38
+154V13*Dom{boolean} 8|393s37 578s56 581s30 9|1568s21 1667s21 2053s55 2056s29
+. 2115s38 2176s17 3456s62 3473s20
+158V13*Holds{boolean} 8|393s11 407s19 409s19 417s20 419s19 421s19 430s19
+. 432s19 578s30 580s62 587s37 593s41 598s21 785s14 918s52 9|21s38 117s14
+. 875s20 883s46 891s28 893s57 909s21 918s46 923s28 935s17 937s20 940s26 952s24
+. 972s29 974s39 983s28 986s28 1014s48 1037s53 1067s17 1095s46 1096s46 1213s23
+. 1277s57 1332s28 1567s21 1576s17 1668s21 1707s12 1744s20 1748s28 1750s17
+. 1752s20 1771s31 1777s15 1792s31 1797s15 1813s25 1816s15 2024s18 2028s10
+. 2053s29 2055s61 2062s36 2068s40 2073s20 2175s17 3083s25 3084s57 3456s41
+. 3472s62
+162V13*Drops_Any{boolean} 8|368s64 377s31 395s22 588s67 595s25 9|2063s66
+. 2070s24 2124s17
+171V13*Is_Frontier{boolean} 8|446s18 453s18 529s14 748s14 1056s16 9|934s14
+. 1261s40 1297s77 1734s14 1734s43 1959s14 2276s23
+175V13*Unchanged{boolean} 8|589s18 621s39 9|1297s43 1321s36 1351s22 2064s17
+. 2263s38
+181V13*Empty{80R9} 9|3737s21 3787s24
+213U14*Apply 9|1333s13 1348s13 1597s7 2180s10
+264U14*Expire 9|1842s19
+295U14*Apply_Expired 9|1694s7 2116s10
+339U14*Lemma_Held_Auth 9|1767s16 1789s16
+348U14*Lemma_Held_Cases 9|1757s10 1780s10
+361U14*Lemma_Frontier_Shape 9|1615s7
+390U14*Lemma_Frontier_Auth 9|1768s16
+400U14*Lemma_Frontier_Held 9|947s10 1328s10
+420U14*Lemma_Ceil_Witness 9|1337s13
+445U14*Lemma_Unchanged 9|1307s10
+X 4 kome-headers.ads
+27K14*Headers 196e17 8|115w11 115r31
+32n18*K_Roster{32E9} 8|180r24 191r24 209r24 894r14 9|3356r15 3878r15
+32n28*K_Revoke{32E9} 8|181r24 192r24 210r24 895r14 9|3362r15 3879r15
+32n38*K_Grant{32E9} 8|182r24 193r24 211r24 379r32 896r14 9|3368r15 3880r15
+32n47*K_Del{32E9} 8|179r24 190r24 208r24 893r14 9|1663r23 3350r15 3472r20
+. 3877r15
+32n54*K_Put{32E9} 8|178r24 189r24 207r24 839r45 892r14 9|1342r21 3344r15
+. 3824r84 3876r15
+35r4*Zero_Id{1|42R9} 9|1342r57 3737r28 3740r24
+36r4*Zero_Key{1|46R9} 9|1342r72 1343r40 1343r65 1344r26 3737r37 3742r24
+38R9*Header 46e14 8|197r51 228r13 271r37 275r38 367r48 373r48 392r58 403r57
+. 413r65 484r53 554r23 807r44 890r51 907r63 1074r37 9|14r63 115r46 120r46
+. 133r46 140r46 202r38 733r16 737r41 902r13 915r13 932r67 943r67 1008r42
+. 1018r42 1059r13 1081r13 1207r66 1218r66 1330r26 1341r26 1556r15 1586r15
+. 1659r15 1684r15 1839r16 2021r73 2026r73 2040r76 2084r23 2103r23 2141r23
+. 2161r23 2208r23 2223r23 2237r23 2394r26 3436r18 3914r44
+39e7*K{32E9} 8|204r32 219r41 379r28 563r50 790r58 839r41 954r72 9|41r72 1342m16
+. 1487r83 1563r62 1663r19 2150r50 2170r67 3472r15 3824r80
+40r7*NS{1|42R9} 8|565r19 840r79 9|1342m28 1561r19 1665r19 2094r19 2152r19
+. 3448r12 3826r78 3833r58 3838r64
+41r7*Ent{1|42R9} 8|841r60 9|1342m50 3827r58 3833r74 3838r80
+42r7*FH{1|46R9} 8|841r83 9|1342m66 3827r81 3833r91 3839r50
+43r7*V{10|14R9} 8|380r57 9|1343m16
+44r7*Issuer{1|46R9} 8|375r32 376r56 378r40 9|1344m16
+45i7*Del_TTL{1|22I9} 9|1344m36
+48V13*Is_Data{boolean} 8|368s7 662s22 662s55 665s22 665s52 9|2394s69 2403s27
+. 2405s58 2448s23 2450s56 2495s21 2519s19 2577s26 2618s17 2724s21 2734s21
+. 2743s19 2753s21 2791s31 2798s41 2829s28 2847s38 3025s41 3043s31 3043s58
+. 3187s29 3209s27 3209s60 3212s27 3212s57 3255s45 3322s21
+51V13*Is_Auth{boolean} 8|374s7 9|2401s27 2404s58 2430s13 2446s23 2449s56
+71V13*Dominates{boolean} 8|409s58 419s63 421s58 9|738s24 941s39 948s29 953s37
+. 1603s52
+87V13*Ceil_Of{1|22I9} 8|404s59
+97V13*Canonical{boolean} 8|218s14 564s17 9|1346s28 1560s17 1664s17 2093s17
+. 2151s17
+113V13*Expired{boolean} 8|394s20 430s63 432s58 436s39 588s25 594s19 633s48
+. 804s18 931s65 9|31s50 738s48 1012s21 1025s35 1029s41 1046s32 1049s41 1288s61
+. 1565s21 1745s33 1747s20 1750s61 1752s59 1772s35 1777s60 1797s55 1812s29
+. 1816s52 2023s36 2032s32 2063s24 2069s18 2096s17 2154s21 2246s13 2275s47
+. 2299s60 3457s20
+X 5 kome-keys.ads
+35K14*Keys 388e14 8|118w11 303r12 531r22 532r22 751r37 753r24 774r22 938r17
+. 1048r23 1059r29 1060r28 9|100r23 420r22 441r39 442r39 443r39 444r39 448r12
+. 449r27 1387r22 1890r36 1900r26 1901r29 1903r30 1904r30 1925r29 1927r29
+. 1940r12 1943r44 1944r48 1945r48 1946r48 1964r30 1965r29 3381r19 3381r56
+. 3386r12 3387r12 3606r20 3691r30 3701r12 3721r43 3773r17 3787r36 3787r62
+69V13*Word_Of{1|40I9} 8|303s17 774s27 938s22 1048s28 9|100s28 420s27 449s32
+. 1387s27 3381s24 3381s61 3606s25 3691s35 3773s22
+75V13*Byte_Of_Word{1|9M9} 9|441s44 442s44 443s44 444s44 1890s41 1943s49 1944s53
+. 1945s53 1946s53 3721s48
+155V13*To_Key256{1|46R9} 8|532s27 751s42 1059s34 9|1903s35 1904s35 1927s34
+. 1964s35 3787s67
+176V13*To_Id128{1|42R9} 8|531s27 753s29 1060s33 9|1900s31 1901s34 1925s34
+. 1965s34 3787s41
+277U14*Lemma_Word_Round_Trip 9|448s17 1940s17
+282U14*Lemma_Lanes_Round_Trip 9|3386s17 3387s17 3701s17
+X 6 kome-records.ads
+88K14*Records 1440e17 8|119w11 157r51 176r12 177r27 178r41 179r41 180r41
+. 181r41 182r41 188r27 189r41 189r67 190r41 190r67 191r41 191r67 192r41 192r67
+. 193r41 193r67 204r41 206r27 207r41 207r65 208r41 208r65 209r41 209r65 210r41
+. 210r65 211r41 211r65 219r50 309r12 318r43 362r12 363r21 398r30 531r42 563r22
+. 753r44 769r27 777r22 790r24 891r17 892r31 892r55 893r31 893r55 894r31 894r55
+. 895r31 895r55 896r31 896r55 954r52 988r64 997r39 1050r23 1061r29 9|41r52
+. 52r64 102r23 486r22 506r12 508r27 509r27 510r27 511r27 512r27 513r27 1441r22
+. 1487r57 1563r44 1891r17 1900r46 1902r30 1914r61 1919r36 1941r12 1947r46
+. 1948r50 1966r30 2150r22 2170r49 2242r15 2243r23 3268r18 3270r35 3271r35
+. 3272r35 3273r35 3274r35 3275r35 3339r19 3343r17 3346r25 3348r21 3352r25
+. 3354r21 3358r25 3360r21 3364r25 3366r21 3370r25 3372r21 3393r19 3394r21
+. 3400r12 3401r12 3449r23 3450r32 3608r41 3648r20 3675r20 3682r59 3688r45
+. 3693r30 3698r20 3703r12 3715r35 3723r43 3771r41 3775r32 3776r17 3875r17
+. 3876r32 3876r69 3877r32 3877r69 3878r32 3878r69 3879r32 3879r69 3880r32
+. 3880r69
+101V13*Tag_Of{1|9M9} 8|790s32 954s60 9|41s60 1487s65 1563s52 2170s57
+110V13*Has_Kind{boolean} 8|176s20 9|3339s27
+113V13*Kind_Of{4|32E9} 8|177s35 188s35 204s49 206s35 219s58 563s30 891s25
+. 9|2150s30 3343s25 3875s25
+130I12*U16_Value{natural} 9|3675r28 3698r28 3775r40
+132V13*Byte_Of_U48{1|9M9} 9|508s35 509s35 510s35 511s35 512s35 513s35 3270s43
+. 3271s43 3272s43 3273s43 3274s43 3275s43
+141V13*U48_Of{1|22I9} 8|309s20 9|486s30 1441s30 3393s27 3394s29 3648s28
+144V13*Byte_Of_U16{1|9M9} 9|1891s25 1947s54 1948s58 3723s51
+147V13*U16_Of{130I12} 8|777s30 1050s31 9|102s31 3693s38 3776s25
+160U14*Lemma_U48_Round_Trip 9|506s20 3268s26
+166U14*Lemma_U48_Bytes_Round_Trip 9|3400s20 3401s20
+175U14*Lemma_U16_Round_Trip 9|1941s20
+179U14*Lemma_U16_Bytes_Round_Trip 9|3703s20
+190V13*Collection_Id{1|61A12} 8|531s50 753s52 769s35 1061s37 9|1900s54 1902s38
+. 1914s69 1919s44 1966s38 3682s67 3688s53 3715s43 3771s49
+196N4*Frame_Max 8|157r59 318r51 398r38 988r72 997r47 9|52r72 3608r49
+262R9*Put_Record 265e14 9|3346r33
+369V13*Is_Put_Frame{boolean} 8|178s49
+378V13*Parse_Put{262R9} 8|189s75 207s73 892s63 9|3876s77
+418V13*Well_Formed{boolean} 8|189s49
+423U14*Decode_Verified 9|3348s29
+444V13*To_Header{4|38R9} 8|207s49 892s39
+457U14*Lemma_Header_Canonical 9|3876s40
+487R9*Del_Record 490e14 9|3352r33
+533V13*Is_Del_Frame{boolean} 8|179s49
+536V13*Parse_Del{487R9} 8|190s75 208s73 893s63 9|3877s77
+557V13*Well_Formed{boolean} 8|190s49
+560U14*Decode_Verified 9|3354s29
+577V13*To_Header{4|38R9} 8|208s49 893s39
+589U14*Lemma_Header_Canonical 9|3877s40
+641R9*Roster_Record 644e14 9|3358r33
+861V13*Is_Roster_Frame{boolean} 8|180s49
+871V13*Parse_Roster{641R9} 8|191s75 209s73 894s63 9|3878s77
+926V13*Well_Formed{boolean} 8|191s49
+935U14*Decode_Verified 9|3360s29
+958V13*To_Header{4|38R9} 8|209s49 894s39
+972U14*Lemma_Header_Canonical 9|3878s40
+1005R9*Revoke_Record 1008e14 9|3364r33
+1083V13*Is_Revoke_Frame{boolean} 8|181s49
+1086V13*Parse_Revoke{1005R9} 8|192s75 210s73 895s63 9|3879s77
+1124V13*Well_Formed{boolean} 8|192s49
+1130U14*Decode_Verified 9|3366s29
+1150V13*To_Header{4|38R9} 8|210s49 895s39
+1162U14*Lemma_Header_Canonical 9|3879s40
+1191R9*Grant_Record 1194e14 9|3370r33
+1261V13*Is_Grant_Frame{boolean} 8|182s49
+1264V13*Parse_Grant{1191R9} 8|193s75 211s73 896s63 9|3880s77
+1298V13*Well_Formed{boolean} 8|193s49
+1303U14*Decode_Verified 9|3372s29
+1323V13*To_Header{4|38R9} 8|211s49 896s39
+1335U14*Lemma_Header_Canonical 9|3880s40
+1353V13*Is_Auth_Frame{boolean} 8|362s20 9|2242s23 3449s31
+1360V13*Root_Key_Of{1|46R9} 8|363s29 9|2243s31 3450s40
+X 7 kome-registers.ads
+26K14*Registers 148e19 8|116w11 116r31 381r40
+28I9*Writer_Count<short_integer>
+33V13*Ceil{1|22I9} 8|404s7 404s38 414s7 414s29 426s7 426s29 441s44 444s46
+. 9|1336s13 1339s25
+34V13*Count{28I9} 8|381s50
+41V13*In_W{boolean} 8|380s39
+44V13*Extends{boolean} 8|405s16 415s16 416s16 427s16 428s16
+120U14*Lemma_Extends_Refl 9|1810s7
+X 8 kome-store.ads
+121K14*Store 1|7k9 8|846E9 1077l10 1077e15 9|2b19 3957l10 3957t15
+129N4*Log_Max 130r43 9|367r52 381r49 410r73 479r73 1373r73 1430r73 2360r35
+. 2360r64 2481r35 2481r68 2538r33 2538r62 2565r35 2565r68 2608r49 2777r49
+. 3492r27 3492r54 3492r81 3516r29 3516r60 3543r29 3543r60
+130I12*Log_Size{natural} 229r13 238r44 254r43 266r58 555r23 852r54 856r44
+. 867r14 869r14 883r43 888r58 944r46 956r44 977r46 1003r43 1035r30 9|34r46
+. 44r46 57r44 70r43 90r30 241r32 241r67 253r32 253r67 272r30 284r30 289r32
+. 289r67 303r32 303r67 318r32 318r67 338r32 338r67 404r46 405r48 431r46 432r48
+. 438r26 439r26 474r45 475r47 495r45 496r47 501r26 502r26 544r30 557r30 575r32
+. 575r67 588r32 588r67 1366r45 1367r47 1403r45 1404r47 1410r26 1412r26 1423r45
+. 1424r47 1453r45 1454r47 1460r26 1462r26 1472r30 1491r30 1592r26 1690r26
+. 1838r25 2006r20 2041r13 2085r23 2104r23 2142r23 2162r23 2209r23 2224r23
+. 2238r23 2415r64 2423r64 2476r33 2508r33 2560r33 2590r33 2596r17 2602r24
+. 2631r17 2637r24 2645r26 2764r17 2770r24 2803r17 2809r24 2815r21 2855r63
+. 2865r63 2875r30 2875r44 2900r30 2900r44 2954r33 2954r66 2976r33 2976r66
+. 3104r13 3115r13 3234r26 3240r17 3437r18 3596r22
+132m4*Op_Header{1|9M9} 324r35 330r25 764r32 828r62 984r32 995r23 1015r47
+. 1042r28 9|48r32 78r47 94r28 279r34 329r31 345r44 350r43 1884r21 2862r38
+. 2883r27 2914r46 2928r41 2935r38 2945r38 3297r34 3684r29 3759r30 3939r58
+133m4*Op_Apply{1|9M9} 317r32 486r37 787r50 952r32 986r35 9|39r32 50r35 306r21
+. 412r29 1376r23 1485r37 1625r64 2867r36 3414r23 3454r15 3600r15 3932r36
+134m4*Op_Apply_Expired{1|9M9} 317r43 496r37 986r62 9|50r62 306r49 412r51
+. 1376r45 1712r61 3414r45 3600r37 3932r73
+135m4*Op_Expire{1|9M9} 325r38 331r28 504r37 681r53 985r35 996r23 9|49r35
+. 485r32 507r22 1440r32 1870r42 2892r68 3269r30 3642r18
+137N4*Magic_Len 138r44 144r40 765r36 1043r37 9|95r37 257r40 3685r36 3760r47
+. 3792r43
+138a4*Magic{1|10A9} 765r82 1043r75 9|95r75 257r79 1885r33 3685r76 3709r38
+. 3710r64 3760r65 3792r83
+140m4*Log_Version{1|9M9} 766r44 1044r37 9|96r37 258r42 1886r33 3686r38 3761r39
+143N4*HO_Magic 144r29 765r66 1043r59 9|95r59 257r63 1885r44 3685r60 3709r49
+. 3710r35 3710r51 3710r75 3760r24 3760r36 3792r67
+144N4*HO_Version 145r29 766r30 1044r23 9|96r23 258r28 1885r17 1886r17 3686r24
+. 3708r20 3711r20 3761r24
+145N4*HO_NS 146r29 768r33 1045r56 9|97r56 259r60 1887r39 3688r27 3714r35
+. 3714r48 3715r74 3778r20 3778r29 3793r64
+146N4*HO_Root 147r29 771r33 1046r60 9|98r60 260r64 1887r17 1888r40 3689r72
+. 3713r20 3717r38 3717r56 3717r71 3769r44 3769r55
+147N4*HO_Salt 148r29 773r33 1047r58 9|99r58 261r62 1888r17 1889r38 3690r69
+. 3716r20 3719r37 3719r55 3719r70 3770r42 3770r53
+148N4*HO_Cap 149r29 774r49 774r71 775r49 775r75 1048r42 1048r56 1049r42 1049r60
+. 9|100r42 100r56 101r42 101r60 262r28 262r44 263r28 263r48 264r28 264r48
+. 265r28 265r48 1889r17 1890r72 1943r29 1944r29 1945r29 1946r29 3691r51 3691r67
+. 3692r51 3692r71 3702r17 3702r33 3702r53 3702r73 3718r20 3721r73 3773r38
+. 3773r54 3774r38 3774r58
+149N4*HO_Slice 150r29 777r51 777r75 1050r44 1050r60 9|102r44 102r60 266r28
+. 266r46 267r28 267r50 1890r17 1891r47 1947r29 1948r29 3693r53 3693r71 3703r55
+. 3703r73 3720r20 3723r75 3776r40 3776r58
+150N4*Header_Len 151r31 324r72 330r40 516r31 534r30 543r34 669r30 670r34
+. 671r31 672r59 757r35 763r32 949r18 984r57 995r38 1041r15 9|36r23 48r57
+. 93r20 247r30 249r42 1396r27 1482r32 1892r20 1899r27 1909r24 1913r36 1920r39
+. 1921r24 1935r24 1939r19 1942r40 1951r43 1960r48 1961r24 2409r36 2409r73
+. 2418r29 2420r62 2428r55 2429r55 2455r44 2456r53 2459r33 2459r71 2491r40
+. 2499r51 2500r28 2515r38 2523r49 2524r26 2575r45 2581r50 2582r27 2615r22
+. 2626r36 2722r40 2730r40 2739r38 2749r40 2754r54 2786r21 2796r36 2819r28
+. 2838r31 2884r22 2887r46 2888r27 2905r41 2968r48 3240r29 3251r26 3253r27
+. 3290r43 3679r29 3679r67 3681r36 3694r33 3705r21 3758r23 3800r44
+153N4*Apply_Prefix 155r31 235r15 305r68 316r38 319r64 332r12 346r63 395r62
+. 397r75 476r40 479r38 485r35 495r35 658r36 789r52 951r32 954r31 987r34 989r73
+. 998r12 9|38r32 41r31 51r34 53r73 414r23 416r28 422r31 424r34 456r29 460r17
+. 464r21 466r41 593r39 1378r17 1383r28 1389r31 1391r34 1484r37 1487r36 1504r38
+. 1506r33 1508r36 1514r44 1514r77 1517r34 1527r20 1530r33 1538r31 1540r44
+. 1542r50 1564r37 1646r28 1670r37 1720r28 1998r38 2000r65 2108r56 2192r29
+. 2401r52 2403r52 2431r40 2437r40 2446r49 2448r49 2494r21 2497r40 2518r19
+. 2521r38 2579r39 2617r21 2622r29 2647r38 2652r31 2659r21 2677r21 2680r31
+. 2686r31 2689r47 2691r31 2695r34 2699r28 2703r31 2733r21 2742r19 2752r21
+. 2826r20 2827r32 2869r45 2971r39 3141r39 3148r38 3156r31 3159r31 3163r25
+. 3170r36 3193r41 3206r38 3284r54 3287r37 3314r31 3416r37 3420r38 3425r50
+. 3544r40 3545r42 3550r29 3550r60 3551r33 3555r21 3556r18 3558r45 3561r40
+. 3561r72 3562r35 3601r23 3609r48 3616r29 3616r49 3619r82 3629r58 3630r46
+. 3630r78 3633r32 3633r63 3637r51 3638r42
+154N4*Expire_Len 325r75 331r43 503r35 620r76 677r70 679r59 985r60 996r38
+. 9|49r60 481r23 483r28 514r17 517r41 1433r17 1438r28 1825r56 2262r75 2292r32
+. 2321r32 2892r38 3262r49 3276r25 3643r23 3660r46 3661r48 3662r39
+155N4*Min_Entry 1011r29 9|74r29 331r40 356r35 357r39 446r36 504r36 2361r31
+. 2407r54 2453r50 2884r35 2941r33 3253r40
+157I12*Frame_Size{positive} 230r13 480r34 490r34 498r34 560r33 9|368r42 382r39
+. 413r39 1377r33 1503r33 1525r33 1562r33 1593r26 1669r33 2077r39 2090r33
+. 2147r33 2214r33 3415r33 3540r76 3553r76 3614r33
+161I12*Horizon_Value{1|102I9} 164r31 167r46 247r40 440r63 502r49 864r14 879r40
+. 9|1823r75 1835r75 2289r21 2318r21
+162i4*No_Horizon_Code{1|22I9} 165r30 168r14
+164V13*Horizon_Code{1|22I9} 164>27 505s43 682s59 9|1865s62 1871s48 3265s36
+. 3651s28
+164i27 H{161I12} 165r10 165r56
+167V13*Horizon_Of_Code{161I12} 167>30 9|3651s42 3652s30
+167i30 C{1|22I9} 168r10 168r59
+175V13*Is_Record_Frame{boolean} 175>30 187s7 199s16 203s14 9|2077s59
+175a30 Frame{1|10A9} 176r30 177r44 178r63 179r63 180r66 181r66 182r65
+186V13*Verified{boolean} 186>23 217s14 561s17 9|2091s17 2148s17 2215s17 3334s25
+186a23 Frame{1|10A9} 187r24 188r44 189r86 190r86 191r89 192r89 193r88
+197V13*Header_Of{4|38R9} 197>24 204s14 205s17 218s25 219s23 562s17 890b13
+. 9|2092s17 2149s17 3445s12
+197a24 Frame{1|10A9} 199r33 891r34 892r74 893r74 894r77 895r77 896r76
+201U14*Lemma_Header_Of 201>31 9|3446s7
+201a31 Frame{1|10A9} 203r31 204r25 204r58 205r28 206r44 207r84 208r84 209r87
+. 210r87 211r86
+215U14*Lemma_Verified_Canonical 215>40 9|3447s7 3873b14 3882l8 3882t32
+215a40 Frame{1|10A9} 217r24 218r36 219r34 219r67 9|3873b40 3875r34 3876r88
+. 3877r88 3878r91 3879r91 3880r90
+227R9*Index_Entry 231e14 234r25 251r57 846r55 882r57 944r60 9|34r60 740r39
+. 2855r77 2865r77
+228r7*H{4|38R9} 278r84 489m53 648r82 650r47 651r74 654r82 657r93 662r47 662r80
+. 665r47 665r77 666r57 667r59 732r64 734r71 738r71 785r40 790r56 809r82 815r42
+. 816r52 839r39 840r58 840r77 841r58 841r81 911r66 918r70 954r70 973r71 973r84
+. 9|16r47 21r56 41r70 67r69 67r82 137r76 143r21 146r64 205r23 208r66 220r22
+. 220r35 227r67 227r81 229r33 229r46 231r33 231r46 740r85 767r51 767r71 770r68
+. 770r82 775r70 775r84 842r69 842r82 851r64 851r77 855r64 855r77 883r68 887r64
+. 889r54 893r80 910r46 918r64 923r46 924r36 926r66 969r79 996r61 1066r24
+. 1070r78 1074r78 1086r73 1088r37 1088r49 1093r75 1095r62 1096r62 1214r55
+. 1224r39 1227r77 1273r66 1275r56 1277r82 1487r81 1603r76 1610r84 1623r61
+. 1627m27 1704r84 1856r90 2401r44 2403r44 2404r75 2405r75 2430r30 2446r41
+. 2448r41 2449r74 2450r74 2489r33 2489r51 2495r44 2513r31 2513r49 2519r42
+. 2573r38 2573r56 2577r49 2618r34 2666m23 2666r36 2720r33 2720r55 2724r48
+. 2728r33 2728r51 2734r44 2737r31 2737r49 2743r42 2747r33 2747r51 2753r44
+. 2791r48 2798r58 2822r30 2829r45 2842r40 2847r55 2848r45 2966r41 2966r59
+. 3024r59 3024r77 3025r62 3043r52 3043r80 3045r40 3045r58 3050r39 3050r57
+. 3056r40 3056r58 3073r59 3073r77 3076r72 3083r49 3084r80 3087r43 3087r55
+. 3088r89 3094r59 3185r45 3185r75 3187r54 3198r49 3199r76 3202r84 3205r95
+. 3209r52 3209r85 3212r52 3212r82 3213r62 3214r64 3223r58 3226r48 3227r58
+. 3255r64 3320r37 3320r67 3322r46 3824r78 3826r57 3826r76 3827r56 3827r79
+. 3833r43 3833r56 3833r72 3833r89 3838r49 3838r62 3838r78 3839r48 3854r42
+. 3861r71 3917r57 3947r57 3948r57 3951r32 3951r46
+229i7*Off{130I12} 235r9 489m61 656r55 657r97 672r53 674r35 676r90 786r47
+. 787r43 788r53 789r46 792r57 949r11 950r20 951r25 952r25 953r35 954r25 973r50
+. 1027r84 9|36r16 37r20 38r25 39r25 40r35 41r25 67r48 86r82 185r67 186r87
+. 193r31 196r77 227r45 593r33 594r39 594r60 595r39 595r64 596r39 596r64 597r39
+. 597r64 598r39 598r64 599r39 599r64 600r49 600r80 615r93 622r49 623r68 625r82
+. 650r79 654r94 657r87 672r25 683r78 687r92 691r85 716r78 720r92 766r69 770r47
+. 775r48 842r48 851r43 855r43 1482r25 1483r25 1484r30 1485r30 1486r40 1487r30
+. 1627m35 1934m45 2420r55 2428r49 2429r49 2491r33 2493r35 2494r86 2498r45
+. 2498r75 2499r45 2501r62 2515r31 2517r33 2518r84 2522r43 2522r73 2523r43
+. 2525r60 2575r38 2580r44 2580r74 2581r44 2583r61 2653r36 2653r70 2658r39
+. 2659r88 2664r45 2666m39 2676r35 2677r84 2681r36 2681r66 2687r36 2687r66
+. 2688r67 2689r42 2692r36 2692r66 2696r40 2696r71 2700r33 2700r63 2704r36
+. 2704r66 2705r49 2706r65 2722r33 2730r33 2732r35 2733r86 2739r31 2741r33
+. 2742r84 2749r33 2751r35 2752r86 2754r48 2860r25 2861r44 2862r30 2863r25
+. 2863r47 2867r29 2868r39 2869r38 2887r40 2889r57 2891r63 2913r52 2914r38
+. 2915r33 2915r62 2918r47 2919r52 2921r71 2949r77 2968r41 2972r44 2972r74
+. 2981r46 2981r72 2982r46 2982r76 2983r46 2983r76 2984r46 2984r76 2985r46
+. 2985r76 2986r46 2986r76 2988r44 2988r80 2998r57 3000r75 3005r34 3008r73
+. 3029r61 3046r65 3049r55 3055r56 3110r69 3119r33 3121r81 3142r40 3142r82
+. 3146r57 3147r71 3157r32 3157r74 3160r38 3160r86 3162r44 3162r82 3168r56
+. 3169r70 3191r60 3192r74 3204r57 3205r99 3283r69 3284r49 3288r39 3288r78
+. 3315r32 3315r74 3749m45 3897r43 3897r77 3900r86 3901r71
+230i7*Len{157I12} 235r32 489m73 651r78 652r42 658r67 788r77 951r49 953r50
+. 9|38r49 40r50 1484r60 1486r61 1627m50 1934m55 2401r75 2403r75 2431r63 2437r63
+. 2446r73 2448r73 2490r33 2490r53 2494r50 2497r67 2514r31 2514r51 2518r48
+. 2521r65 2574r38 2574r58 2579r66 2617r44 2622r52 2647r61 2652r58 2659r48
+. 2666m50 2666r65 2677r48 2680r58 2686r58 2689r74 2691r58 2695r62 2699r55
+. 2703r58 2721r33 2721r57 2729r33 2729r53 2733r50 2738r31 2738r51 2742r48
+. 2748r33 2748r53 2752r50 2826r43 2827r55 2868r54 2869r62 2967r41 2967r61
+. 2971r66 3137r39 3137r65 3141r64 3148r69 3156r56 3159r56 3163r56 3170r68
+. 3186r45 3186r77 3193r72 3199r80 3200r44 3206r69 3284r79 3287r63 3309r31
+. 3309r57 3314r56 3321r37 3321r69 3749m55
+234V13*End_Of{natural} 234>21 516s47 653s24 654s24 674s41 973s22 9|67s20
+. 227s15 554s47 569s53 766s28 770s18 775s18 842s20 851s15 855s15 1395s42
+. 1415s46 2420s82 2455s25 2456s34 2492s21 2499s75 2501s68 2516s19 2523s73
+. 2525s66 2576s26 2581s74 2583s67 2656s12 2674s12 2684s25 2705s55 2706s71
+. 2723s21 2731s21 2740s19 2750s21 2754s78 2863s54 2887s70 2889s63 2915s69
+. 2921s25 2969s29 2998s63 3000s46 3005s40 3008s44 3029s67 3046s28 3049s18
+. 3055s18 3138s29 3139s29 3144s17 3145s26 3166s15 3167s24 3189s20 3190s29
+. 3201s26 3202s26 3310s21 3311s21
+234r21 E{227R9} 235r7 235r30
+238R9*Store 238d16 238d34 240r29 241r27 242r27 243r26 245r29 246r31 247r26
+. 248r26 251r27 254r29 257r27 263r30 266r30 271r26 275r27 282r24 286r43 298r24
+. 302r25 308r26 314r28 322r32 329r29 335r30 340r29 349r28 361r31 384r28 392r27
+. 450r30 457r41 466r37 474r31 484r22 494r22 502r22 508r29 508r54 515r27 527r84
+. 551r23 609r23 639r34 699r23 720r22 745r37 760r36 782r36 795r38 801r36 807r33
+. 812r34 821r30 835r37 856c9 871e14 873r29 874r27 875r27 876r26 877r29 878r31
+. 879r26 880r26 882r27 883r29 885r27 886r30 888r30 1052r24 1074r26 9|202r27
+. 1259r35 1269r35 1295r44 1305r44 1318r25 1323r25 1500r40 1510r40 1522r42
+. 1532r42 1553r22 1583r22 1588r26 1656r22 1681r22 1686r26 1823r36 1835r36
+. 1836r25 1896r28 1917r28 1957r37 1973r37 1983r84 1993r29 2005r28 2021r42
+. 2026r42 2040r18 2081r23 2100r23 2138r23 2158r23 2205r23 2220r23 2234r23
+. 2255r18 2280r18 2287r18 2309r18 2316r18 2334r23 3129r46 3150r46 3176r18
+. 3217r18 3231r34 3232r26 3406r23 3428r23 3434r27 3571r23 3590r23 3733r23
+. 3822r36 3830r36 3845r22 3884r37 3889r36 3894r36 3904r38 3909r36 3914r33
+. 3916r34 3924r30 3946r37
+238i16 Cap{3|67I12} 250r34 533r19 706r19 756r19 856r16 866r32 881r20 881r41
+. 1053r17 1064r18 9|1616r31 1923r26 1968r19 3131r24 3132r35 3738r26
+238i34 Log_Cap{130I12} 256r37 265r38 385r9 534r19 677r44 708r32 711r39 856r34
+. 868r31 870r33 884r20 884r45 887r20 887r45 1054r26 1055r26 9|1502r24 1524r24
+. 1564r19 1670r19 1825r38 1899r16 1924r26 1960r37 2108r39 2192r12 2292r15
+. 2321r15 3131r47 3132r66 3262r34 3294r33 3416r19 3579r32 3739r26 3754r26
+240V13*Collection{1|42R9} 240>25 287s7 287s28 536s17 565s24 749s34 752s17
+. 873b13
+240r25 S{238R9} 873r53
+241V13*Founding{1|46R9} 241>23 288s16 288s35 363s52 537s17 750s41 751s17
+. 874b13
+241r23 S{238R9} 874r52
+242V13*Root_Key{1|64A12} 242>23 289s16 289s35 538s17 751s53 753s67 769s50
+. 771s48 875b13
+242r23 S{238R9} 875r52
+243V13*Salt_Of{1|63A12} 243>22 290s16 290s34 539s17 753s81 769s64 773s48
+. 876b13
+243r22 S{238R9} 876r49
+245V13*Logged_Cap{3|75I12} 245>25 291s16 291s37 540s17 714s24 754s17 776s25
+. 877b13
+245r25 S{238R9} 877r57
+246V13*Logged_Slice{3|76I12} 246>27 292s16 292s39 541s17 715s24 755s17 778s19
+. 878b13
+246r27 S{238R9} 878r61
+247V13*Horizon{161I12} 247>22 394s32 451s30 452s37 545s17 570s12 570s26 588s37
+. 594s31 624s15 627s47 629s77 633s70 644s12 644s26 677s16 682s73 804s40 879b13
+. 9|2045s11 2045s25 2063s36 2069s30 2266s14 2269s46 2271s76 2275s69
+247r22 S{238R9} 879r58
+248V13*Entries{3|67I12} 248>22 250r14 253s18 278s33 488s16 489s33 516s10
+. 516s68 542s17 645s12 645s26 648s31 649s31 660s31 661s38 663s31 664s38 672s16
+. 673s31 675s31 680s45 684s45 731s30 733s48 737s48 784s41 809s51 814s41 838s28
+. 838s54 880b13 1075s25 9|204s21 3153s22 3153s50 3180s17 3180s31 3181s51
+. 3182s23 3183s36 3184s36 3188s36 3194s36 3195s44 3197s33 3207s36 3208s43
+. 3210s36 3211s43 3219s34 3304s22 3304s36 3824s41 3825s34
+248r22 S{238R9} 250r32 881r10 881r18 881r29 881r39
+251V13*Entry_At{227R9} 251>23 251>34 278s54 489s16 516s55 648s62 650s31 651s24
+. 651s58 652s26 653s32 654s32 654s66 656s39 657s43 657s77 658s51 662s31 662s64
+. 665s31 665s61 666s41 667s43 672s37 674s15 674s49 676s74 732s48 734s55 738s55
+. 785s24 786s31 787s27 788s37 788s61 789s30 790s40 792s41 809s66 815s26 816s36
+. 839s23 840s42 840s61 841s42 841s65 882b13 9|3144s25 3145s34 3146s41 3147s45
+. 3148s53 3162s28 3162s56 3163s40 3166s23 3167s32 3168s39 3169s43 3170s51
+. 3185s29 3185s49 3186s29 3186s51 3187s38 3189s28 3190s37 3191s44 3192s48
+. 3193s56 3198s33 3199s26 3199s60 3200s28 3201s34 3202s34 3202s68 3204s41
+. 3205s45 3205s79 3206s53 3209s36 3209s69 3212s36 3212s66 3213s46 3214s48
+. 3223s42 3226s31 3227s41 3320s21 3320s41 3321s21 3321s43 3322s30 3824s62
+. 3826s40 3826s60 3827s40 3827s63
+251r23 S{238R9} 253r27 882r73
+251i34 I{3|68I12} 253r13 882r80
+254V13*Log_Length{130I12} 254>25 256r14 259s17 299s22 305s22 305s46 311s22
+. 311s46 315s11 316s16 319s43 323s11 324s50 325s53 352s43 385s19 458s7 458s29
+. 459s35 467s13 468s16 469s16 475s13 476s16 511s24 511s55 512s33 512s64 543s17
+. 629s57 630s30 630s47 646s28 653s52 655s27 669s12 670s12 678s18 679s27 683s18
+. 712s24 757s17 763s14 831s37 883b13 9|1512s22 1534s22 2006s32 2112s22 2169s22
+. 2271s56 2272s29 2272s46 3144s45 3145s64 3152s22 3152s53 3166s44 3167s63
+. 3189s48 3190s67 3201s54 3203s29 3942s32
+254r25 S{238R9} 256r35 884r10 884r18 884r33 884r43
+257V13*Log_Byte{1|9M9} 257>23 257>34 298s60 303s26 303s47 304s26 304s47 309s28
+. 309s45 309s66 310s28 310s49 310s70 346s44 353s80 460s19 460s41 479s19 510s36
+. 510s59 671s49 671s67 713s57 765s53 766s17 768s20 771s20 773s20 774s36 774s58
+. 775s36 775s62 777s38 777s62 789s17 885b13 9|1508s17 1514s25 1517s15 1538s12
+. 1540s25 1998s19 2000s46 2010s19 2011s66 3160s15 3160s49
+257r23 S{238R9} 259r29 885r63
+257i34 J{natural} 259r13 885r70
+263V13*Log_Entries{natural} 263>26 265r14 268s18 461s16 461s39 462s35 470s16
+. 470s38 471s36 544s17 631s39 631s57 676s24 680s27 684s27 791s37 824s14 826s36
+. 830s39 886b13 9|2273s38 2273s56 3941s35
+263r26 S{238R9} 265r36 887r10 887r18 887r33 887r43
+266V13*Entry_Start{130I12} 266>26 266>37 463s19 463s44 471s16 676s49 792s20
+. 825s17 827s38 828s40 829s45 830s60 888b13 9|3938s33 3939s35 3940s40 3941s56
+266r26 S{238R9} 268r31 888r71
+266i37 K{positive} 268r13 888r78
+271V13*Indexed{boolean} 271>22 271>33 277s14 599s30 648s50 650s15 798s14
+. 809s14 815s14 1074b13 9|1580s17 2074s29 3198s17 3226s15
+271r22 S{238R9} 1075r18 1075r34
+271r33 X{4|38R9} 1075r38
+275V13*Position{3|68I12} 275>23 275>34 278r14 278r67 651s41 654s49 657s60
+. 666s24 667s26 816s23 9|202b13 212l8 212t16 3199s43 3202s51 3205s62 3213s29
+. 3214s31 3223s25 3227s24 3917s34
+275r23 S{238R9} 277r23 278r42 278r64 9|202b23 204r30 205r13 208r56
+275r34 X{4|38R9} 277r26 278r88 9|202b34 205r27 208r71
+282V13*Valid{boolean} 282>20 282>31 535s14 559s14 568s14 615s14 616s14 641s14
+. 642s14 710s15 729s14 747s14 762s14 784s14 797s14 803s14 814s14 823s14 837s14
+. 1052b13 9|1261s14 1267s14 1297s17 1298s17 1320s14 1321s14 1559s14 1571s14
+. 1638s22 1662s14 1671s14 1713s22 1825s14 1826s14 1867s22 1971s14 2023s14
+. 2043s7 2089s14 2146s14 2213s14 2258s7 2283s14 2302s25 2312s14 3179s14 3300s22
+. 3413s14 3417s14 3577s14 3582s14 3799s36 3824s14
+282r20 S{238R9} 1053r7 1053r15 1054r16 1054r24 1055r16 1055r24 1057r33 1058r40
+. 1059r16 1059r45 1060r16 1060r43 1061r16 1061r52 1061r60 1062r16 1063r16
+. 1064r16 1065r25 1065r32 1065r38 1065r45 1065r53 1065r60 1065r68 1066r25
+. 1066r32 1067r28 1067r35 1068r26 1069r24 1069r31 1069r37 1069r44 1070r24
+. 1070r31 1071r23 1071r30 1071r36 1071r43 1072r27 1072r34 1072r40 1072r47
+282r31 F{3|80R9} 1056r29 1057r28 1058r35 1062r26 1063r25 1064r25 1064r47
+. 1066r22 1067r25 1068r23
+286V13*Same_Identity{boolean} 286>28 286>35 569s12 617s12 643s12 9|2044s11
+. 2259s11
+286r28 Old_S{238R9} 287r40 288r45 289r45 290r43 291r49 292r53
+286r35 New_S{238R9} 287r19 288r26 289r26 290r25 291r28 292r30
+298V13*Op_At{1|9M9} 298>20 298>31 317s16 324s20 325s23 330s10 331s13 486s16
+. 496s16 504s16 681s27 764s17 787s17 828s30 9|1870s22 3930s25 3939s25
+298r20 S{238R9} 298r70 299r34
+298i31 P{natural} 298r73 299r18
+302V13*Len_At{1|40I9} 302>21 302>32 318s16 319s25 332s36 344s53 477s16 788s26
+. 9|1535s22 1643s22 1717s22 1994s40 3897s22 3933s18
+302r21 S{238R9} 303r36 303r57 304r36 304r57 305r34 305r58
+302i32 P{natural} 303r39 303r60 304r39 304r60 305r18 305r63
+308V13*Code_At{1|22I9} 308>22 308>33 505s16 682s27 9|1871s22
+308r22 S{238R9} 309r38 309r55 309r76 310r38 310r59 310r80 311r34 311r58
+308i33 P{natural} 309r41 309r58 309r79 310r41 310r62 310r83 311r18 311r63
+314V13*Has_Frame{boolean} 314>24 314>35 326s22 342s14 786s17
+314r24 S{238R9} 315r23 316r28 317r23 318r24 319r33 319r55
+314i35 P{natural} 315r7 316r33 317r26 318r27 319r36 319r60
+322V13*Has_Log_Entry{boolean} 322>28 322>39 333s18 337s18 827s20 9|3934s25
+. 3938s15
+322r28 S{238R9} 323r23 324r27 324r62 325r30 325r65 326r33
+322i39 P{natural} 323r7 324r30 324r67 325r33 325r70 326r36
+329V13*Entry_Size{natural} 329>25 329>36 336s11 9|3935s25
+329r25 S{238R9} 330r17 331r20 332r44 333r33
+329i36 P{natural} 330r20 331r23 332r47 333r36
+335V13*Next_Offset{natural} 335>26 335>37 829s29 9|3940s24
+335r26 S{238R9} 336r23 337r33
+335i37 P{natural} 336r7 336r26 337r36
+340V13*Read_Frame{1|10A9} 340>25 340>36 343r14 344r17 345r31 346r20 9|1993b13
+. 2003l8 2003t18
+340r25 S{238R9} 342r25 344r61 346r54 9|1993b25 1994r48 1998r29 2000r56
+340i36 Off{natural} 342r28 344r64 346r57 9|1993b36 1994r51 1998r32 2000r59
+345i26 K{integer} 346r39 346r78
+349V13*Log_Bytes{1|10A9} 349>24 351r14 352r17 353r31 353r57 9|2005b13 2014l8
+. 2014t17
+349r24 S{238R9} 352r55 353r90 9|2005b24 2006r44 2010r29 2011r76
+353i26 J{integer} 353r75 353r93
+361V13*Foreign_Root{boolean} 361>27 361>38 573s35 575s21 577s21 580s21 583s21
+. 9|2048s34 2050s20 2052s20 2055s20 2058s20 2095s21 2153s21 2216s17
+361r27 S{238R9} 363r62
+361a38 Frame{1|10A9} 362r35 363r42
+367V13*Data_Full{boolean} 367>24 367>44 396s22 9|1569s21 2177s17
+367r24 F{3|80R9} 368r40 368r45 368r75
+367r44 R{4|38R9} 368r16 368r78
+373V13*Auth_Rule{boolean} 373>24 373>44 397s35 581s54 9|1570s21 2056s53 2113s26
+. 2178s17
+373r24 F{3|80R9} 375r27 376r39 376r51 376r67 377r42 378r35 378r73 380r51
+. 381r63
+373r44 R{4|38R9} 374r16 375r30 376r54 377r45 378r38 379r26 380r55
+384V13*Log_Short{boolean} 384>24 384>35 395s48 397s61 620s58 9|2262s57
+384r24 S{238R9} 385r7 385r31
+384i35 Need{natural} 385r36
+392V13*At_Bound{boolean} 392>23 392>34 392>54 392>66 584s26 9|2059s25
+392r23 S{238R9} 394r41 395r59 397r72
+392r34 F{3|80R9} 393r18 393r42 395r33 396r33 397r46
+392r54 H{4|38R9} 393r21 393r45 394r29 395r36 396r36 397r49
+392i66 Len{natural} 395r77 397r90 398r18
+403V13*Applied{boolean} 403>22 403>29 403>53 600s30 9|1577s17 1599s22 2075s29
+403r22 Old_F{3|80R9} 404r50 405r31 407r26 408r42 409r39 409r78
+403r29 New_F{3|80R9} 404r19 405r45 406r42 407r39 407r64 409r26
+403r53 H{4|38R9} 404r68 407r76 409r69
+406i25 I{integer} 407r46 407r71
+408i25 I{integer} 409r46 409r85
+413V13*Expired_Applied{boolean} 413>30 413>37 413>61 596s27 9|1676s17 1696s22
+. 2071s26
+413r30 Old_F{3|80R9} 414r41 415r31 416r45 419r26 420r42 421r39 421r78
+413r37 New_F{3|80R9} 414r19 415r45 416r31 417r27 418r42 419r39 419r83 421r26
+413r61 H{4|38R9} 417r34 419r74 421r69
+418i25 I{integer} 419r46 419r90
+420i25 I{integer} 421r46 421r85
+425V13*Expired_Out{boolean} 425>26 425>33 425>57 627s24 9|1806s14 1831s17
+. 1844s25 2269s23
+425r26 Old_F{3|80R9} 426r41 427r31 428r45 430r26 431r42 432r39 432r73
+425r33 New_F{3|80R9} 426r19 427r45 428r31 429r42 430r39 430r78 432r26
+425i57 Hz{1|102I9} 430r89 432r84
+429i25 I{integer} 430r46 430r85
+431i25 I{integer} 432r46 432r80
+435V13*Expires_Any{boolean} 435>26 435>46 451s51 9|2291s10
+435r26 F{3|80R9} 436r33 436r54
+435i46 Hz{1|102I9} 436r61
+436i16 I{integer} 436r57
+440V13*Horizon_At{161I12} 440>25 440>45 451s8 451s67 452s15 624s29 9|2266s28
+. 2283s36 2289s38 2312s36 2318s38 2340s10
+440r25 F{3|80R9} 441r56 442r46 444r58 445r46 446r31
+440i45 Now{1|22I9} 441r30 444r32
+450V13*Logs_Expire{boolean} 450>26 450>37 450>57 620s17 628s28 9|2262s16
+. 2270s27
+450r26 S{238R9} 451r39 452r46
+450r37 F{3|80R9} 451r20 451r64 451r79 452r27 453r31
+450i57 Now{1|22I9} 451r23 451r82 452r30
+457V13*Log_Extends{boolean} 457>26 457>33 591s12 622s12 9|1578s17 1642s22
+. 1677s17 1716s22 1832s17 1869s22 2066s11 2264s11
+457r26 Old_S{238R9} 458r41 459r47 460r51 461r52 462r48 463r57
+457r33 New_S{238R9} 458r19 460r29 461r29 463r32
+459i25 J{integer} 460r36 460r58
+462i25 K{integer} 463r39 463r64
+466V13*Grew_By{boolean} 466>22 466>29 466>44 466>49 485s7 495s7 503s7
+466r22 Old_S{238R9} 467r25 470r51
+466r29 New_S{238R9} 468r28 469r28 470r29 471r29 471r49
+466i44 Off{natural} 467r7 468r38 469r37 471r59
+466i49 Size{natural} 469r43
+474V13*Frame_Stored{boolean} 474>27 474>38 474>53 487s16 497s16 9|1526s17
+. 1648s22 1722s22 3468s25 3478s25
+474r27 S{238R9} 475r25 476r28 477r24 479r29
+474i38 Off{natural} 475r7 476r33 477r27 479r32
+474a53 Frame{1|10A9} 476r55 477r40 478r35 479r58 479r65 480r18
+478i25 K{integer} 479r53 479r79
+483V13*Appended{boolean} 484>7 484>14 484>29 484>49 484>61 601s30 9|1579s17
+. 1649s22 2076s29 3466s25
+484r7 Old_S{238R9} 485r16
+484r14 New_S{238R9} 485r23 486r23 487r30 488r25 489r26 489r42
+484a29 Frame{1|10A9} 485r50 487r42 489r80 490r18
+484r49 H{4|38R9} 489r58
+484i61 Off{natural} 485r30 486r30 487r37 489r68
+493V13*Appended_Expired{boolean} 494>7 494>14 494>29 494>49 597s36 9|1678s17
+. 1723s22 2072s35
+494r7 Old_S{238R9} 495r16
+494r14 New_S{238R9} 495r23 496r23 497r30
+494a29 Frame{1|10A9} 495r50 497r42 498r18
+494i49 Off{natural} 495r30 496r30 497r37
+501V13*Appended_Expire{boolean} 502>7 502>14 502>29 502>44 629s30 9|1833s17
+. 1872s22 2271s29
+502r7 Old_S{238R9} 503r16
+502r14 New_S{238R9} 503r23 504r23 505r25
+502i29 Off{natural} 503r30 504r30 505r32
+502i44 Hz{161I12} 505r57
+508V13*Same_Bytes{boolean} 508>25 508>36 508>50 508>61 508>75 656s24 9|3146s26
+. 3162s13 3168s24 3191s29 3204s26
+508r25 A{238R9} 510r46 511r36 511r67
+508i36 PA{natural} 510r49 511r18 511r72
+508r50 B{238R9} 510r69 512r45 512r76
+508i61 PB{natural} 510r72 512r27 512r81
+508i75 Len{natural} 510r25 511r48 512r57
+510i15 K{integer} 510r54 510r77
+515V13*Body_End{natural} 515>23 646s12 677s54 678s36 679s44 681s37 682s39
+. 683s35 9|3303s22
+515r23 S{238R9} 516r19 516r65 516r77
+527U14*Open 527>20 527>38 527>56 527<76 9|1983b14 1987l8 1987t12
+527a20 Root_PK{1|64A12} 531r65 532r38 538r32 9|1983b20 1985r16
+527a38 Salt{1|63A12} 531r74 539r31 9|1983b38 1985r25
+527r56 F{3|80R9} 529r27 530r24 531r95 532r68 533r26 533r48 535r24 536r46
+. 537r51 540r34 541r36 9|1983b56 1985r31 1985r38 1986r29
+527r76 S{238R9} 533r17 534r17 535r21 536r29 537r27 538r27 539r26 540r29 541r31
+. 542r26 543r29 544r30 545r26 9|1983b76 1985m13 1986r26
+550U14*Put_Frame 551=7 552=7 553>7 554>7 555<7 556<7 9|2233b14 2251l8 2251t17
+. 3461s10
+551r7 S{238R9} 559r21 565r36 568r21 569r27 569r34 570r21 570r35 573r49 575r35
+. 577r35 580r35 583r35 584r36 588r46 589r48 589r52 591r25 591r32 594r40 597r54
+. 597r61 599r39 601r40 601r47 9|2234b7 2243r54 2245m23 2246r25 2247m23 2249m20
+552r7 F{3|80R9} 559r24 568r24 575r72 577r68 578r37 578r61 580r69 581r35 581r65
+. 583r68 584r43 587r44 588r78 589r29 589r36 593r48 595r36 596r44 596r51 598r28
+. 600r39 600r46 9|2235b7 2245m26 2247m26 2249m23
+553a7 Frame{1|10A9} 560r17 561r27 562r28 563r39 573r56 575r42 577r42 580r42
+. 583r42 584r53 597r64 601r50 9|2236b7 2242r38 2243r44 2245r29 2247r29 2249r26
+554r7 H{4|38R9} 562r37 563r48 564r28 565r17 575r79 577r75 578r44 578r68 580r76
+. 581r42 581r72 583r75 584r50 587r51 588r34 588r85 593r55 594r28 595r43 596r54
+. 598r31 599r42 600r49 601r57 9|2237b7 2245r36 2246r22 2247r36 2249r33
+555i7 Off{130I12} 597r71 601r60 9|2238b7 2245m39 2247m39 2249m36
+556e7 Result{1|112E9} 571r12 573r13 574r13 576r13 579r13 582r13 587r16 593r16
+. 9|2239b7 2245m44 2247m44 2249m41
+608U14*Expire 609=7 610=7 611>7 612<7 9|2333b14 2345l8 2345t14
+609r7 S{238R9} 615r21 616r21 617r27 617r34 620r30 620r69 621r69 621r73 622r25
+. 622r32 624r24 627r56 628r41 629r47 629r54 629r69 629r86 630r42 630r59 631r52
+. 631r70 633r79 9|2334b7 2340r32 2341m24 2343m24
+610r7 F{3|80R9} 615r24 616r24 620r37 621r50 621r57 624r41 627r37 627r44 628r48
+. 633r38 633r63 9|2335b7 2340r22 2341m27 2343m27
+611i7 Now{1|22I9} 620r44 624r48 628r55 9|2336b7 2340r25 2341r30 2343r30
+612e7 Result{1|112E9} 618r12 619r13 621r16 623r16 9|2337b7 2341m35 2343m35
+633i21 I{integer} 633r66
+639U14*Compact 639=23 639>41 9|3231b14 3324l8 3324t15
+639r23 S{238R9} 641r21 642r21 643r27 643r34 644r21 644r35 645r21 645r35 646r22
+. 646r40 648r40 648r59 648r72 649r40 650r24 650r41 651r34 651r51 651r68 652r36
+. 653r42 653r64 654r42 654r59 654r76 655r39 656r36 656r49 657r36 657r53 657r70
+. 657r87 658r61 660r40 661r47 662r41 662r74 663r40 664r47 665r41 665r71 666r34
+. 666r51 667r36 667r53 669r24 670r24 671r59 671r77 672r25 672r47 673r40 674r25
+. 674r59 675r40 676r37 676r62 676r84 677r25 677r42 677r64 678r30 678r46 679r39
+. 679r54 680r40 680r54 681r34 681r47 682r36 682r49 682r82 683r30 683r45 684r40
+. 684r54 9|3231b23 3232r35 3233r40 3234r38 3235r40 3236r41 3245r61 3245r71
+. 3248m57 3248r57 3248m67 3248r67 3249m56 3249r56 3249m66 3249r66 3254r59
+. 3254r69 3255r54 3257r28 3257r67 3258r40 3259r44 3262r13 3262r32 3264r43
+. 3265r50 3269m13 3270m13 3271m13 3272m13 3273m13 3274m13 3275m13 3276m13
+. 3278m13 3280r52 3281r41 3281r51 3283r40 3283r59 3284r69 3287r52 3288r21
+. 3288r28 3290r61 3294r31 3295m18 3295r18 3295r25 3296m7 3297r22 3298r30
+. 3298r37 3298r46 3298r56 3298r63 3299r41 3299r48 3299r54 3299r61 3299r69
+. 3299r76 3299r84 3300r29 3303r32 3304r31 3309r21 3310r29 3310r43 3314r46
+. 3315r15 3315r22 3316r35 3320r31 3321r31 3322r40 3323r34
+639r41 F{3|80R9} 641r24 642r24 9|3231b41 3259r29 3300r32 3323r37
+648i21 J{integer} 648r79
+649i21 I{integer} 650r44 651r71 652r39 653r45 654r79 656r52 657r90 658r64
+660i21 I{integer} 661r29 662r44
+661i24 J{integer} 662r77
+663i21 I{integer} 664r29 665r44 666r54
+664i24 J{integer} 665r74 667r56
+671i21 K{integer} 671r62 671r84
+673i21 I{integer} 674r28 674r62
+675i21 I{integer} 676r15 676r65 676r87
+696U14*Open_From_Log 697>7 698<7 699<7 700<7 9|3730b14 3816l8 3816t21
+697a7 Input{1|10A9} 703r14 708r16 711r24 712r41 713r43 713r75 9|3731b7 3754r10
+. 3758r10 3759r17 3760r17 3761r17 3768r38 3769r37 3770r35 3773r31 3773r47
+. 3774r31 3774r51 3776r33 3776r51 3778r13 3792r60 3793r57 3794r37 3801r78
+. 3807r36
+698r7 F{3|80R9} 704r17 705r17 705r39 706r26 706r48 710r25 714r42 715r44 9|3732b7
+. 3737m7 3737r47 3737r54 3782r27 3782r50 3787m10 3788r31 3788r38 3795r32
+. 3799r46 3807m33
+699r7 S{238R9} 706r17 708r30 710r22 711r37 712r36 713r67 714r36 715r38 9|3733b7
+. 3738m7 3738r24 3739r24 3754r24 3789m16 3794r30 3795r29 3799r43 3800r36
+. 3800r64 3801r54 3801r66 3802r47 3803r23 3807m30
+700e7 Result{1|112E9} 707r14 708r45 709r16 9|3734b7 3755m10 3763m10 3779m13
+. 3783m13 3809m19 3814m10
+713i33 J{integer} 713r70 713r82
+719U14*Find_Cell 720>7 721>7 722>7 723>7 724>7 725<7 726<7 9|3844b14 3865l8
+. 3865t17
+720r7 S{238R9} 729r21 731r39 732r58 733r57 734r65 737r57 738r65 9|3845b7
+. 3853r21 3854r32 3855r31 3861r60
+721r7 F{3|80R9} 729r24 9|3846b7 3855r34
+722r7 NS{1|42R9} 732r67 734r74 738r74 9|3847b7 3854r45 3861r74
+723r7 Ent{1|42R9} 732r71 734r78 738r78 9|3848b7 3854r49 3861r78
+724r7 FH{1|46R9} 732r76 734r83 738r83 9|3849b7 3854r54 3861r83
+725b7 Found{boolean} 730r18 9|3850b7 3856m13 3863m7
+726i7 I{3|67I12} 731r20 732r61 735r42 736r20 9|3851b7 3857m13 3864m7
+733i38 J{integer} 734r68 735r38
+737i38 J{integer} 738r68
+745U14*Lemma_Valid_Facts 745>33 745>44 9|3884b14 3887l8 3887t25
+745r33 S{238R9} 747r21 749r46 750r51 751r27 751r63 752r29 753r77 753r90 754r29
+. 755r31 756r17 757r29 9|3884b33 3886r31 3886r38 3886r44 3886r51 3886r59
+. 3886r66 3886r74
+745r44 F{3|80R9} 747r24 748r27 749r29 750r36 754r35 755r37 756r26 756r48
+. 9|3884b44
+760U14*Lemma_Log_Header 760>32 760>43 9|3889b14 3892l8 3892t24
+760r32 S{238R9} 762r21 763r26 764r24 765r63 766r27 768r30 769r60 769r73 771r30
+. 771r58 773r30 773r57 774r46 774r68 775r46 775r72 776r37 777r48 777r72 778r33
+. 9|3889b32 3891r31 3891r38 3891r44 3891r51 3891r59 3891r66 3891r74
+760r43 F{3|80R9} 762r24 9|3889b43
+765i26 J{integer} 765r77 765r89
+767i26 J{integer} 768r41 769r78
+770i26 J{integer} 771r43 771r62
+772i26 J{integer} 773r43 773r61
+782U14*Lemma_Entry_Held 782>32 782>43 782>63 9|3894b14 3902l8 3902t24
+782r32 S{238R9} 784r21 784r50 785r34 786r28 786r41 787r24 787r37 788r34 788r47
+. 788r71 789r27 789r40 790r50 791r50 792r33 792r51 9|3894b32 3896r32 3896r39
+. 3896r45 3897r30 3897r33 3897r60 3897r67 3898r33 3898r40 3898r46 3898r53
+. 3900r28 3900r56 3900r64 3900r76 3901r41 3901r49 3901r61
+782r43 F{3|80R9} 784r24 785r21 9|3894b43
+782i63 I{3|68I12} 784r36 785r37 786r44 787r40 788r50 788r74 789r43 790r53
+. 792r54 9|3894b63 3896r52 3897r40 3897r74 3901r68
+791i27 K{integer} 792r36
+795U14*Lemma_Held_Indexed 795>34 795>45 795>65 9|3904b14 3907l8 3907t26
+795r34 S{238R9} 797r21 798r23 9|3904b34 3906r34 3906r41
+795r45 F{3|80R9} 797r24 797r48 798r32 9|3904b45 3906r31
+795i65 K{3|68I12} 797r36 798r35 9|3904b65
+801U14*Lemma_No_Expired 801>32 801>43 801>63 9|3909b14 3912l8 3912t24
+801r32 S{238R9} 803r21 804r49 9|3909b32 3911r32
+801r43 F{3|80R9} 803r24 803r48 804r33 9|3909b43 3911r29
+801i63 K{3|68I12} 803r36 804r36 9|3909b63
+807U14*Lemma_Indexed 807>29 807>40
+807r29 S{238R9} 809r23 809r60 809r76
+807r40 X{4|38R9} 809r26 809r86
+809i41 I{integer} 809r79
+812U14*Lemma_Position 812>30 812>41 812>61 9|3222s10 3916b14 3922l8 3922t22
+812r30 S{238R9} 814r21 814r50 815r23 815r36 816r33 816r46 9|3916b30 3917r44
+. 3917r47 3920r33 3920r40
+812r41 F{3|80R9} 814r24 9|3916b41
+812i61 I{3|68I12} 814r36 815r39 816r49 816r57 9|3916b61 3917r54 3919r15 3920r46
+821U14*Lemma_Scan 821>26 821>37 9|3924b14 3944l8 3944t18
+821r26 S{238R9} 823r21 824r27 825r30 826r49 827r35 827r51 828r37 828r53 829r42
+. 829r58 830r52 830r73 831r49 9|3924b26 3926r29 3926r36 3926r42 3926r49 3927r21
+. 3928r26 3928r33 3928r39 3928r46 3929r25 3929r37 3930r32 3930r35 3930r48
+. 3930r55 3932r16 3932r23 3932r53 3932r60 3933r26 3933r29 3933r52 3933r59
+. 3934r40 3934r43 3935r37 3935r40 3935r62 3935r69 3938r30 3938r46 3939r32
+. 3939r48 3940r37 3940r53 3941r48 3941r69 3942r44
+821r37 F{3|80R9} 823r24 9|3924b37
+826i26 K{integer} 827r54 828r56 828r76 829r61 830r35 830r76
+835U14*Lemma_Cell_Unique 835>33 835>44 835>64 835>67 9|3834s13 3946b14 3955l8
+. 3955t25
+835r33 S{238R9} 837r21 838r37 838r63 839r33 840r52 840r71 841r52 841r75 9|3946b33
+. 3947r47 3948r47 3951r22 3951r36 3953r33 3953r40
+835r44 F{3|80R9} 837r24 9|3946b44 3947r44 3948r44 3950r37
+835i64 I{3|68I12} 838r23 839r36 840r74 841r55 841r78 842r14 9|3946b64 3947r54
+. 3951r29 3952r10 3953r46
+835i67 J{3|68I12} 838r49 840r55 842r18 9|3946b67 3948r54 3951r43 3952r15
+. 3953r49
+846A9 Entry_Array(227R9)<integer> 866r14 907r30 914r45 921r48 956r60 966r27
+. 1020r30 9|14r30 19r45 24r48 57r60 63r27 83r30 133r13 140r13 153r13 153r48
+. 164r13 164r48 178r13 189r13 215r43 222r43 529r24 529r59 537r24 537r59 545r13
+. 545r49 558r13 558r49 576r14 589r14 609r13 619r13 631r13 644r13 663r13 663r49
+. 677r13 677r49 697r13 697r48 709r13 709r48 745r13 745r49 757r13 757r49 780r35
+. 791r35 792r23 833r13 833r49 846r13 846r49 866r13 866r49 880r13 880r49 901r13
+. 901r49 914r13 914r49 962r13 962r49 979r13 979r49 1057r13 1058r13 1058r47
+. 1079r13 1080r13 1080r47 1207r13 1218r13 1368r14 1405r14 1425r14 1455r14
+. 1472r46 1473r13 1491r46 1492r13 1590r26 1619r30 1688r26 1846r32 2397r42
+. 2415r30 2423r30 2475r31 2476r53 2507r31 2508r53 2559r31 2560r53 2589r31
+. 2590r53 2597r17 2603r24 2632r17 2638r24 2643r26 2765r17 2771r24 2804r17
+. 2810r24 2875r60 2900r60 2955r13 2955r52 2977r13 2977r52 2995r38 3002r38
+. 3014r13 3014r52 3033r13 3033r52 3062r33 3062r72 3079r33 3079r72 3103r40
+. 3114r40 3236r26
+852A9 Offset_Array(130I12)<integer> 870r14 1003r59 1020r65 9|70r59 83r65
+. 178r48 189r48 272r46 284r46 319r14 319r50 339r14 339r50 405r22 432r22 437r26
+. 475r21 496r21 500r26 609r48 619r48 632r14 632r50 645r14 645r50 664r13 678r13
+. 698r13 710r13 1367r21 1404r21 1411r26 1424r21 1454r21 1461r26 2876r13 2901r13
+. 3103r20 3114r20
+857r7*NS{1|42R9} 873r55 1057r35 1060r18 9|1561r26 1572r19 1572r26 1665r26
+. 1672r19 1672r26 1827r19 1827r26 1900r16 1901r19 1925m13 1962r36 1965r19
+. 2094r26 2152r26 3448r20 3740m13
+858a7*NSb{1|61A12} 1060r45 1061r18 1065r40 9|1625r29 1712r26 1865r27 1901r46
+. 1902r19 1911r41 1926m13 1949r46 1965r46 1966r19 1969r41 3299r56 3741m13
+. 3886r46 3891r46
+859r7*Fnd{1|46R9} 874r54 1058r42 1059r18 9|1572r44 1572r52 1672r44 1672r52
+. 1827r44 1827r52 1903r19 1904r19 1927m13 1963r43 1964r19 2243r56 3450r65
+. 3742m13
+860a7*Root{1|64A12} 875r54 1059r47 1061r54 1065r47 9|1573r19 1573r28 1625r36
+. 1673r19 1673r28 1712r33 1828r19 1828r28 1865r34 1902r55 1904r48 1905r19
+. 1911r48 1928m13 1949r53 1964r48 1966r55 1969r48 3299r63 3743m13 3886r53
+. 3891r53
+861a7*Slt{1|63A12} 876r51 1061r62 1065r55 9|1573r48 1573r56 1625r44 1673r48
+. 1673r56 1712r41 1828r48 1828r56 1865r42 1902r63 1905r42 1911r56 1929m13
+. 1949r61 1966r63 1969r56 3299r71 3744m13 3886r61 3891r61
+862i7*DCap{3|75I12} 877r59 1062r18 1065r62 9|1574r19 1574r28 1625r51 1674r19
+. 1674r28 1712r48 1829r19 1829r28 1865r49 1906r19 1930m13 1967r19 1969r63
+. 3299r78 3745m13 3886r68 3891r68
+863i7*Slc{3|76I12} 878r63 1063r18 1065r70 9|1574r48 1574r56 1625r59 1674r48
+. 1674r56 1712r56 1829r48 1829r56 1865r57 1906r42 1931m13 1967r44 1969r71
+. 3299r86 3746m13 3886r76 3891r76
+864i7*Hz{161I12} 879r60 1068r28 9|1288r89 1289r38 1565r35 1575r19 1575r26
+. 1637r40 1675r19 1675r26 1709r36 1830r19 1841r17 1861r31 1866m9 1907r19
+. 1932m13 1977r34 2023r50 2032r56 2096r31 2154r35 2246r27 2283r60 2301m12
+. 2312r61 2320r17 2328r31 2340r34 3262r15 3265r52 3457r34 3747m13 3911r34
+865i7*NI{3|67I12} 881r12 881r31 1053r9 1066r34 1067r37 1069r46 1070r33 1072r36
+. 9|1271r23 1279r44 1281r65 1283r45 1285r57 1287r47 1591r42 1602m24 1603r42
+. 1604r63 1605r59 1606r64 1607r34 1610r68 1614r34 1616r24 1620r46 1622r42
+. 1623r45 1624r62 1626m12 1626r20 1627r19 1629r70 1630r57 1631r57 1632r79
+. 1636r66 1650r42 1689r42 1698m24 1699r63 1700r64 1701r34 1704r68 1708r66
+. 1711r59 1847r48 1850m30 1851r69 1852r70 1853r40 1856r74 1857r72 1864r60
+. 1908r19 1933m13 1960r19 1975r40 1976r43 1978r52 1979r39 1980r42 3131r16
+. 3132r23 3133r19 3133r30 3134r53 3135r38 3136r38 3140r38 3143r35 3153r38
+. 3153r74 3154r23 3233r42 3748m13 3832r24 3853r23 3898r42 3900r30 3906r43
+. 3920r42 3953r42
+866a7*Idx{846A9} 882r75 1066r27 1067r30 1069r39 1070r26 1072r29 1075r20 9|205r15
+. 208r58 1273r58 1275r48 1277r73 1279r37 1281r58 1283r38 1285r50 1287r40
+. 1590r43 1602m17 1603r68 1604r56 1605r52 1606r57 1607r27 1610r61 1614r27
+. 1619r47 1622r35 1623r53 1624r55 1627m12 1628r56 1629r63 1630r50 1631r50
+. 1632r72 1636r59 1650r35 1688r43 1698m17 1699r56 1700r57 1701r27 1704r61
+. 1708r59 1711r52 1846r49 1850m23 1851r62 1852r63 1853r33 1856r67 1857r65
+. 1864r53 1934m13 1975r33 1976r36 1978r45 1979r32 1980r35 3137r31 3137r51
+. 3138r39 3139r43 3141r56 3142r32 3142r68 3156r48 3157r24 3157r60 3159r48
+. 3160r30 3160r72 3236r43 3245r73 3248m69 3249m68 3254r71 3255r56 3257r69
+. 3258r42 3259r46 3281r53 3283r61 3284r71 3287r54 3288r30 3295r27 3298r48
+. 3309r23 3309r43 3310r31 3311r35 3314r48 3315r24 3315r60 3749m13 3833r34
+. 3833r48 3833r64 3833r81 3838r40 3838r54 3838r70 3839r40 3854r34 3861r62
+. 3896r47 3897r35 3897r69 3898r35 3900r78 3901r63 3906r36 3917r49 3920r35
+. 3947r49 3948r49 3951r24 3951r38 3953r35
+867i7*LL{130I12} 884r12 884r35 1054r18 1065r34 1069r33 1071r32 9|1502r16
+. 1504r26 1504r71 1512r41 1524r16 1527r53 1534r41 1564r31 1579r49 1592r40
+. 1606r34 1624m36 1629r38 1670r31 1678r54 1690r40 1700r34 1711m33 1825r50
+. 1833r46 1838r39 1852r40 1864m34 1909r19 1911r35 1912r33 1935m13 1949r40
+. 1950r41 1952r38 1961r19 1969r35 1970r33 1978r39 2108r51 2111r16 2112r41
+. 2168r16 2169r41 2192r24 2228r16 2292r27 2321r27 3131r39 3132r54 3138r53
+. 3139r67 3152r41 3152r80 3234r40 3276m15 3278m15 3298r39 3299r50 3305r57
+. 3310r45 3311r59 3416r31 3420r22 3420r29 3421r50 3422r38 3423r48 3425r41
+. 3467r37 3478r48 3479r43 3481r46 3580r19 3581r38 3585r22 3585r29 3586r31
+. 3587r50 3596r36 3638r33 3639r51 3662r30 3663r48 3750m13 3800r38 3800r66
+. 3801r56 3802r49 3803r25 3886r40 3891r40 3896r41 3926r38 3928r35 3929r39
+868a7*Log{1|10A9} 885r65 1065r27 1069r26 1071r25 9|1506r22 1514r66 1528r29
+. 1530r22 1542r39 1606r27 1624m29 1629r31 1641r56 1641r72 1646r14 1700r27
+. 1711m26 1715r56 1715r72 1720r14 1852r33 1864m27 1868r56 1868r72 1911r28
+. 1912r26 1914r22 1936m13 1939m9 1942r60 1943r24 1944r24 1945r24 1946r24
+. 1947r24 1948r24 1949r33 1950r34 1951r33 1952r31 1969r28 1970r26 1978r32
+. 3142r25 3142r57 3157r17 3157r49 3235r42 3245r63 3248m59 3249m58 3254r61
+. 3257r30 3264r45 3269m15 3270m15 3271m15 3272m15 3273m15 3274m15 3275m15
+. 3280r54 3281r43 3283r42 3288r23 3290r63 3297r24 3298r32 3299r43 3305r28
+. 3315r17 3315r49 3421r66 3421r82 3422r31 3423r41 3425r34 3481r58 3481r74
+. 3581r50 3587r62 3626r21 3626r36 3626r51 3626r66 3629r49 3630r37 3633r23
+. 3634r33 3635r60 3636r37 3637r36 3639r63 3654r18 3654r33 3654r48 3655r18
+. 3655r33 3655r48 3658r30 3659r57 3660r66 3661r33 3663r60 3751m13 3794r32
+. 3801r68 3886r33 3891r33 3896r34 3897r62 3926r31 3928r28 3930r50 3932r18
+. 3932r55 3933r54 3935r64
+869i7*NB{130I12} 887r12 887r35 1055r18 1071r45 1072r49 9|1607r64 1624m49
+. 1631r70 1701r64 1711m46 1853r70 1864m47 1910r19 1912r46 1937m13 1952r51
+. 1961r46 1970r46 1980r55 3296m9 3298r65 3752m13 3898r55 3900r58 3901r43
+. 3926r51 3927r23 3928r48
+870a7*Bnd{852A9} 888r73 1071r38 1072r42 9|1607r57 1624m42 1631r63 1701r57
+. 1711m39 1853r63 1864m40 1912r39 1938m13 1952r44 1970r39 1980r48 3295m20
+. 3298r58 3753m13 3898r48 3900r66 3901r51 3926r44 3928r41 3929r27 3930r37
+. 3930r57 3932r25 3932r62 3933r31 3933r61 3934r45 3935r42 3935r71
+907V13 Has_Entry{boolean} 907>24 907>43 907>59 911r14 925s63 1075s7 9|14b13
+. 17l8 17t17 26s46 136s60 969s52 974s63 984s28 991s31 996s34 997s34 1002s37
+. 1070s52 1074s52 1075s17 1093s48 1281s45 1283s25 1285s37 1610s48 1650s22
+. 1704s48 1856s54 3076s41 3088s57 3094s28 3097s37
+907a24 Idx{846A9} 910r14 910r42 911r58 9|14b24 16r39
+907i43 N{3|67I12} 910r37 911r53 9|14b43 16r34
+907r59 X{4|38R9} 911r70 9|14b59 16r51
+911i43 I{integer} 911r63
+914V13 Live{boolean} 914>19 914>39 914>58 918r14 1066s16 9|19b13 22l8 22t12
+. 871s17 876s14 907s17 1068s17 1072s14 1212s23 1279s22 1975s22 3070s17 3075s14
+914r19 F{3|80R9} 918r59 9|19b19 21r45
+914a39 Idx{846A9} 917r14 917r42 918r62 9|19b39 21r48
+914i58 N{3|67I12} 917r37 918r47 9|19b58 21r33
+918i37 I{integer} 918r67
+921V13 Covered{boolean} 921>22 921>42 921>61 925r14 1067s16 9|24b13 27l8
+. 27t15 967s17 975s14 1287s22 1976s22 3071s17 3075s44 3906s22
+921r22 F{3|80R9} 925r57 925r88 9|24b22 26r40 26r71
+921a42 Idx{846A9} 924r14 924r42 925r74 9|24b42 26r57
+921i61 N{3|67I12} 924r37 925r79 9|24b61 26r62
+925i40 K{integer} 925r91
+928V13 Fresh{boolean} 928>20 928>40 931r14 1068s16 9|29b13 32l8 32t13 1011s14
+. 1015s14 1036s14 1038s14 1289s22 1805s14 1806s46 1818s22 1859s25 1977s22
+. 3911s22
+928r20 F{3|80R9} 931r55 931r80 9|29b20 31r40 31r65
+928i40 Hz{1|102I9} 931r87 9|29b40 31r72
+931i38 K{integer} 931r83
+936V13 Len_Word{1|40I9} 936>23 936>41 953s18 988s33 989s42 997s13 998s36
+. 9|40s18 52s33 53s42 312s25 312s46 419s17 461s22 600s25 600s56 1386s17 1486s17
+. 1528s17 2868s22 2988s13 2988s51 3423s29 3897s50 3933s42
+936a23 Log{1|10A9} 937r15 937r38 937r56 938r31 938r44 938r57 938r70
+936i41 P{natural} 937r10 937r34 937r67 938r36 938r49 938r62 938r75
+944V13 Frame_OK{boolean} 944>23 944>41 944>56 948r14 962s54 9|34b13 42l8
+. 42t16 60s38 565s28 569s15 592s25 601s25 602s57 1494s22 1495s46 1496s45
+. 2616s17 2821s25 2858s23 2859s14 2908s25 2912s15 2980s25 2989s25 2990s57
+. 3244s45 3896s22
+944a23 Log{1|10A9} 947r14 947r43 952r18 953r28 954r18 9|34b23 39r18 40r28
+. 41r18
+944i41 LL{130I12} 947r37 950r27 951r18 9|34b41 37r27 38r18
+944r56 E{227R9} 949r9 950r18 951r23 951r47 952r23 953r33 953r48 954r23 954r68
+. 9|34b56 36r14 37r18 38r23 38r47 39r23 40r33 40r48 41r23 41r68
+956V13 Framed{boolean} 956>21 956>39 956>54 956>73 962r14 1069s16 9|57b13
+. 61l8 61t14 551s23 553s14 584s23 585s14 1380s17 1398s17 1435s17 1448s17
+. 1480s17 1488s14 1978s22 2785s17 2886s17 2896s17 2963s17 2973s14
+956a21 Log{1|10A9} 960r14 960r43 962r64 9|57b21 60r48
+956i39 LL{130I12} 960r37 962r69 9|57b39 60r53
+956a54 Idx{846A9} 961r23 961r51 962r73 9|57b54 60r57
+956i73 N{3|67I12} 961r46 962r49 9|57b73 60r33
+962i39 I{integer} 962r78
+966V13 Sorted{boolean} 966>21 966>40 970r14 1070s16 9|63b13 68l8 68t14 219s23
+. 754s18 754s40 760s14 789s21 789s50 839s17 843s14 1211s23 1622s25 1979s22
+. 2419s23 3022s17 3030s14
+966a21 Idx{846A9} 969r14 969r42 973r30 973r42 973r63 973r76 9|63b21 67r28
+. 67r40 67r61 67r74
+966i40 N{3|67I12} 969r37 971r35 972r42 9|63b40 65r33 66r40
+971i25 I{integer} 972r33 973r35 973r68
+972i28 J{integer} 973r47 973r81
+977V13 Entry_OK{boolean} 977>23 977>41 977>56 981r14 1014s21 9|44b13 55l8
+. 55t16 77s21 278s14 296s23 298s14 328s17 344s25 349s15 353s22 465s22 516s22
+. 1950s22 2861s23 2904s22 2913s24 2919s25 2920s25 2927s15 2934s12 2938s25
+. 2944s12
+977a23 Log{1|10A9} 980r14 982r15 984r22 985r25 986r25 986r52 988r43 989r52
+. 9|44b23 46r20 48r22 49r25 50r25 50r52 52r43 53r52
+977i41 LL{130I12} 982r9 983r22 984r47 985r50 987r24 989r64 9|44b41 46r14
+. 47r22 48r47 49r50 51r24 53r64
+977i56 P{natural} 983r18 984r27 984r52 985r30 985r55 986r30 986r57 987r29
+. 988r48 989r57 989r69 9|44b56 47r18 48r27 48r52 49r30 49r55 50r30 50r57
+. 51r29 52r48 53r57 53r69
+993V13 Size_At{natural} 993>22 993>40 1016s40 9|79s40 280s27 297s27 299s23
+. 299s43 330s23 331s17 346s36 351s35 354s39 466s22 517s22 1951s22 2863s31
+. 2869s22 2905s22 2906s32 2915s39 2923s27 2929s34 2936s31 2939s39 2946s31
+. 3935s53
+993a22 Log{1|10A9} 994r14 994r36 995r13 996r13 997r23 998r46
+993i40 P{natural} 994r10 994r32 995r18 996r18 997r28 998r51
+1003V13 Chain{boolean} 1003>20 1003>38 1003>53 1003>73 1009r14 1071s16 9|70b13
+. 81l8 81t13 277s23 332s17 335s14 415s23 428s17 482s23 492s17 1381s17 1399s17
+. 1436s17 1449s17 1912s17 1952s22 1970s17 2895s14 2947s22 3926s22
+1003a20 Log{1|10A9} 1007r14 1007r43 1014r31 1015r31 1016r49 9|70b20 77r31
+. 78r31 79r49
+1003i38 LL{130I12} 1007r37 1011r24 1014r36 1017r65 9|70b38 74r24 77r36 80r65
+1003a53 Bnd{852A9} 1008r23 1008r52 1012r18 1014r40 1015r36 1016r30 1016r54
+. 1017r48 9|70b53 75r18 77r40 78r36 79r30 79r54 80r48
+1003i73 NB{natural} 1008r46 1010r9 1011r18 1013r37 1017r40 9|70b73 73r14
+. 74r18 76r37 80r40
+1013i27 K{integer} 1014r45 1015r41 1015r61 1016r35 1016r59 1017r36 1017r53
+1020V13 At_Bounds{boolean} 1020>24 1020>43 1020>59 1020>79 1026r14 1072s16
+. 9|83b13 87l8 87t17 616s14 640s17 641s14 673s17 674s14 705s17 706s14 1382s17
+. 1400s17 1437s17 1450s17 1980s22 2897s17 3898s22
+1020a24 Idx{846A9} 1024r14 1024r42 1027r76 9|83b24 86r74
+1020i43 N{3|67I12} 1024r37 1027r35 9|83b43 86r33
+1020a59 Bnd{852A9} 1025r23 1025r52 1027r66 9|83b59 86r64
+1020i79 NB{natural} 1025r46 1027r60 9|83b79 86r58
+1027i25 I{integer} 1027r81
+1027i50 K{integer} 1027r71
+1034V13 Head_OK{boolean} 1035>7 1035>25 1035>40 1035>53 1035>68 1036>7 1036>25
+. 1040r14 1065s16 9|89b13 103l8 103t15 248s23 250s14 1379s17 1397s17 1434s17
+. 1447s17 1911s17 1949s22 1969s17 3886s22 3891s22
+1035a7 Log{1|10A9} 1039r14 1039r43 1042r18 1043r54 1044r18 1045r51 1046r55
+. 1047r53 1048r37 1048r51 1049r37 1049r55 1050r39 1050r55 9|90b7 94r18 95r54
+. 96r18 97r51 98r55 99r53 100r37 100r51 101r37 101r55 102r39 102r55
+1035i25 LL{130I12} 1039r37 1041r9 9|90b25 93r14
+1035a40 NSb{1|61A12} 1045r69 9|90b40 97r69
+1035a53 Root{1|64A12} 1046r75 9|90b53 98r75
+1035a68 Slt{1|63A12} 1047r73 9|90b68 99r73
+1036i7 DCap{3|75I12} 1049r81 9|91b7 101r81
+1036i25 Slc{3|76I12} 1050r77 9|91b25 102r77
+1043i27 J{integer} 1043r70 1043r82
+1045i27 J{integer} 1045r64 1045r74
+1046i27 J{integer} 1046r70 1046r81
+1047i27 J{integer} 1047r68 1047r78
+X 9 kome-store.adb
+16i24 I{integer} 16r44
+21i23 I{integer} 21r53
+26i23 K{integer} 26r74
+31i23 K{integer} 31r68
+60i23 I{integer} 60r62
+65i23 I{integer} 66r31 67r33 67r66
+66i26 J{integer} 67r45 67r79
+76i27 K{integer} 77r45 78r41 78r61 79r35 79r59 80r36 80r53
+86i23 I{integer} 86r79
+86i48 K{integer} 86r69
+95i27 J{integer} 95r70 95r82
+97i27 J{integer} 97r64 97r74
+98i27 J{integer} 98r70 98r81
+99i27 J{integer} 99r68 99r78
+110A9 Index_Map(3|67I12)<integer> 746r13 758r13 797r14 798r14 1145r32 1153r32
+. 1181r11 1191r11 1193r12 1220r12 2477r13 2509r13 2561r13 2591r13 2605r24
+. 2640r24 2644r26 2773r24 2774r24 2812r24 2813r24 2955r71 2977r71 3014r71
+. 3033r71 3063r18 3080r18 3129r59 3150r59 3176r51 3217r51 3238r17 3239r17
+113A9 Pos_Map(natural)<integer> 609r82 619r82 647r13 680r13 712r13
+115V13 Witness{3|68I12} 115>22 115>42 118r14 118r60 120b13 130l8 130t15 887s40
+. 944s35 989s44 1023s44 1044s41 1221s35 1224s19 1273s40 2030s40 3947s35 3948s35
+115r22 F{3|80R9} 117r21 118r39 118r57 120b22 122r28 123r19 126r62
+115r42 X{4|38R9} 117r24 118r78 120b42 123r27 126r71
+122i11 I{integer} 123r22 124r20 126r51
+126i41 J{integer} 126r65
+132V13 Entry_Witness{3|68I12} 133>7 133>26 133>42 137r14 137r54 139b13 150l8
+. 150t21 993s46 1086s43 3092s40
+133a7 Idx{8|846A9} 136r14 136r42 136r71 137r49 140b7 143r13 146r56
+133i26 N{3|67I12} 136r37 136r76 137r38 140b26 142r21
+133r42 X{4|38R9} 136r79 137r80 140b42 143r25 146r69
+142i11 I{integer} 143r18 144r20 146r51
+146i41 J{integer} 146r61
+152V13 Same_Witness{3|68I12} 153>7 153>26 153>42 153>61 154>7 161r14 161r64
+. 163b13 175l8 175t20 563s40 718s54 886s40 921s40
+153a7 Idx{8|846A9} 157r14 157r42 160r49 161r49 164b7 168r13 171r56
+153i26 N{3|67I12} 157r37 159r28 164b26
+153a42 Old{8|846A9} 158r23 158r52 160r59 161r59 164b42 168r23 171r67
+153i61 N0{3|67I12} 158r46 160r43 161r37 164b61 167r21
+154i7 J{3|68I12} 159r23 160r54 161r54 165b7 168r18 171r61
+160i33 I{integer} 160r64
+167i11 I{integer} 168r28 169r20 171r51
+171i41 K{integer} 171r72
+177V13 Bound_Witness{positive} 178>7 178>26 178>42 178>62 179>7 186r14 186r55
+. 188b13 200l8 200t21 652s21 685s21 718s21
+178a7 Idx{8|846A9} 182r14 182r42 185r59 186r79 189b7 193r23 196r69
+178i26 N{3|67I12} 182r37 184r28 189b26
+178a42 Bnd{8|852A9} 183r23 183r52 185r49 186r50 189b42 193r13 196r57
+178i62 NB{natural} 183r46 185r43 186r38 189b62 192r21
+179i7 J{3|68I12} 184r23 185r64 186r84 190b7 193r28 196r74
+185i33 K{integer} 185r54
+192i11 K{integer} 193r18 194r20 196r52
+196i41 K2{integer} 196r62
+204i11 I{integer} 205r20 206r20 208r51
+208i41 J{integer} 208r63
+215U14 Lemma_Sorted_Distinct 215>37 215>56 215>72 215>75 222b14 233l8 233t29
+. 1232s16 3041s16 3920s10 3953s10
+215a37 Idx{8|846A9} 217r14 217r42 219r31 220r14 220r27 222b37 227r23 227r36
+. 227r58 227r72 229r25 229r38 231r25 231r38
+215i56 N{3|67I12} 217r37 218r28 218r44 219r36 222b56 225r29 226r37
+215i72 I{3|68I12} 218r23 218r55 220r19 222b72 228r10 229r30 231r43
+215i75 J{3|68I12} 218r39 218r60 220r32 222b75 228r14 229r43 231r30
+225i18 I2{integer} 226r27 227r28 227r63
+226i21 J2{integer} 227r41 227r77
+240U14 Lemma_Head_Grow 241>7 241>26 241>42 241>61 242>7 242>21 242>36 242>48
+. 242>66 252b14 268l8 268t23 1419s7 1467s7 3299s7
+241a7 Log1{1|10A9} 245r14 245r45 248r32 249r71 253b7 256r33 262r38 263r42
+. 264r42 265r42 266r40 267r44
+241i26 LL1{8|130I12} 245r38 248r38 253b26
+241a42 Log2{1|10A9} 246r23 246r54 249r60 250r23 253b42 256r22 257r57 258r22
+. 259r54 260r58 261r56 262r22 263r22 264r22 265r22 266r22 267r22
+241i61 LL2{8|130I12} 246r47 247r23 250r29 253b61
+242a7 NSb{1|61A12} 248r43 250r34 254b7 259r73
+242a21 Root{1|64A12} 248r48 250r39 254b21 260r79
+242a36 Slt{1|63A12} 248r54 250r45 254b36 261r77
+242i48 DCap{3|75I12} 248r59 250r50 254b48
+242i66 Slc{3|76I12} 248r65 250r56 254b66
+249i32 P{integer} 249r66 249r77
+257i30 J{integer} 257r74 257r86
+259i30 J{integer} 259r68 259r78
+260i30 J{integer} 260r74 260r85
+261i30 J{integer} 261r72 261r82
+271U14 Lemma_Chain_At 272>7 272>25 272>40 272>60 272>74 342s10 3928s10
+272a7 Log{1|10A9} 275r14 275r43 277r30 278r24 279r18 280r36
+272i25 LL{8|130I12} 275r37 277r35 278r29 280r85
+272a40 Bnd{8|852A9} 276r23 276r52 277r39 278r33 279r23 280r17 280r41 280r68
+. 281r17
+272i60 NB{natural} 276r46 276r75 277r44 280r60
+272i74 K{positive} 276r70 278r38 279r28 279r48 280r22 280r46 280r56 280r73
+283U14 Lemma_Chain_At
+284a7 Log{1|10A9}
+284i25 LL{8|130I12}
+284a40 Bnd{8|852A9}
+284i60 NB{natural}
+284i74 K{positive}
+288U14 Lemma_Entry_Same 289>7 289>26 289>42 289>61 289>77 302b14 314l8 314t24
+. 343s10
+289a7 Log1{1|10A9} 292r14 292r45 295r64 296r33 297r36 299r52 300r34 303b7
+. 305r33 306r10 306r38 308r40 309r40 310r40 311r40 312r56
+289i26 LL1{8|130I12} 292r38 294r23 295r42 296r39 297r48 303b26 307r33
+289a42 Log2{1|10A9} 293r23 293r54 295r53 298r24 299r32 300r23 303b42 305r22
+. 308r25 309r25 310r25 311r25 312r35
+289i61 LL2{8|130I12} 293r47 294r30 298r30 303b61
+289i77 P{natural} 296r44 297r23 297r42 298r35 299r38 299r58 300r29 300r40
+. 303b77 305r28 305r39 306r16 306r44 307r25 308r31 308r46 309r31 309r46 310r31
+. 310r46 311r31 311r46 312r41 312r62
+295i32 Q{integer} 295r59 295r70
+317U14 Lemma_Chain_Grow 318>7 318>26 318>42 318>61 319>7 319>28 319>43 337b14
+. 358l8 358t24 469s7 520s7
+318a7 Log1{1|10A9} 322r14 322r45 327r58 332r24 338b7 342r26 343r28
+318i26 LL1{8|130I12} 322r38 326r17 327r36 328r38 329r23 330r17 330r38 331r32
+. 332r30 334r34 338b26 342r32 343r34 356r29
+318a42 Log2{1|10A9} 323r17 323r48 327r47 328r27 329r17 330r32 331r26 335r21
+. 338b42 343r39 344r35 345r26 346r45 349r25 350r25 351r44 353r32 354r48
+318i61 LL2{8|130I12} 323r41 326r23 328r33 330r45 335r27 338b61 343r45 344r41
+. 349r31 353r38 354r72 357r33
+319a7 Bnd1{8|852A9} 324r17 324r48 332r35 333r54 339b7 342r37 343r50
+319i28 NB1{natural} 324r41 325r41 332r41 333r36 334r23 335r38 339b28 341r21
+. 342r43 353r49 354r28 354r60 356r22 357r22
+319a43 Bnd2{8|852A9} 325r17 325r47 333r43 334r17 335r32 339b43 344r46 345r32
+. 346r25 346r51 346r63 349r36 350r31 351r24 351r50 351r62 353r43 354r22 354r54
+. 355r22
+327i26 P{integer} 327r53 327r64
+333i26 K{integer} 333r49 333r60
+341i11 K{integer} 342r48 343r56 344r52 345r38 345r58 346r31 346r57 346r69
+. 348r31
+348i21 J{integer} 349r42 350r37 350r57 351r30 351r56 351r68
+365V13 Bytes_At{boolean} 365>23 365>41 365>54 370r17 373b13 376l8 376t16
+. 387s17 399s22
+365a23 Log{1|10A9} 367r17 367r40 369r31 369r69 371r58 373b23 375r53
+365i41 P{natural} 369r26 369r80 371r63 373b41 375r58
+365a54 Frame{1|10A9} 368r26 369r49 371r38 371r72 371r79 373b54 375r33 375r67
+. 375r74
+371i28 K{integer} 371r67 371r93
+375i23 K{integer} 375r62 375r88
+379U14 Write_Frame 379=27 379>52 379>65 389b14 400l8 400t19 456s7
+379a27 Log{1|10A9} 381r14 381r37 383r28 383r66 384r28 385r65 385r75 386r17
+. 387r27 389b27 392m10 394r26 395r63 395r73 397r37 399r32
+379i52 P{natural} 383r23 383r77 385r25 385r39 386r22 387r32 389b52 392r15
+. 395r23 395r37 397r42 399r37
+379a65 Frame{1|10A9} 382r23 383r46 385r43 386r27 386r34 387r35 389b65 391r21
+. 392r25 392r32 395r41 397r52 397r59 399r40
+384i23 Q{integer} 385r21 385r35 385r70 385r84
+391i11 K{integer} 392r19 392r46 397r32
+394i21 Q{integer} 395r19 395r33 395r68 395r89
+397i21 K2{integer} 397r46 397r73
+403U14 Append_Apply 404=7 404=34 405=7 405=36 406>7 407>7 430b14 470l8 470t20
+. 1416s7
+404a7 Log{1|10A9} 410r14 410r43 410r61 411r57 414r54 415r30 417r50 417r60
+. 418r17 419r27 420r36 420r54 421r36 421r54 422r17 424r20 428r24 431b7 436r40
+. 450m7 451m7 452m7 453m7 454m7 455r49 456m20 457r49 458r22 458r44 458r70
+. 459r31 459r57 461r32 464r12 465r32 466r31 469r37
+404i34 LL{8|130I12} 410r37 414r65 415r35 416r14 416r19 417r36 418r22 419r32
+. 420r41 420r59 421r41 421r59 422r22 424r25 426r28 428r29 431b34 439r38 460m7
+. 465r37 469r42
+405a7 Bnd{8|852A9} 411r23 411r46 411r81 415r39 426r17 427r46 427r56 428r33
+. 432b7 437r42 447r31 468m7 469r63
+405i36 NB{8|130I12} 411r75 415r44 425r17 425r22 426r22 427r36 428r38 432b36
+. 438r38 467m7 467r13 468r12
+406m7 Op{1|9M9} 412r24 412r46 418r32 433b7 450r22 458r32
+407a7 Frame{1|10A9} 413r23 414r38 416r43 419r48 421r80 422r47 422r54 423r36
+. 424r54 424r61 434b7 440r40 456r43 460r32 463r28 464r41 464r48 466r56
+417i26 P{integer} 417r55 417r69
+423i26 K{integer} 424r49 424r75
+427i26 K{integer} 427r51 427r65
+436a7 Old_Log{1|10A9} 455r59 457r59 469r25
+437a7 Old_Bnd{8|852A9} 469r46
+438i7 Old_NB{8|130I12} 446r22 447r22 469r55
+439i7 P{8|130I12} 446r32 450r12 451r12 452r12 453r12 454r12 455r40 456r25
+. 457r40 458r27 458r49 458r75 459r36 459r62 460r13 461r37 464r17 465r41 466r36
+. 468r19 469r34
+440i7 W{1|40I9} 441r58 442r58 443r58 444r58 448r40 449r59 461r42
+441m7 B0{1|9M9} 449r41 451r22 458r58
+442m7 B1{1|9M9} 449r45 452r22 458r84
+443m7 B2{1|9M9} 449r49 453r22 459r45
+444m7 B3{1|9M9} 449r53 454r22 459r71
+455i30 Q{integer} 455r54 455r68
+457i30 Q{integer} 457r54 457r68
+463i18 K{integer} 464r36 464r62
+473U14 Append_Expire 474=7 474=33 475=7 475=35 476>7 494b14 521l8 521t21
+. 1464s7
+474a7 Log{1|10A9} 479r14 479r43 479r61 480r57 481r37 482r30 484r50 484r60
+. 485r17 486r38 486r56 486r74 487r38 487r56 487r74 492r24 495b7 499r40 507m7
+. 508m7 509m7 510m7 511m7 512m7 513m7 515r49 516r32 517r31 520r37
+474i33 LL{8|130I12} 479r37 481r48 482r35 483r14 483r19 484r36 485r22 486r43
+. 486r61 486r79 487r43 487r61 487r79 490r28 492r29 495b33 502r38 514m7 516r37
+. 520r42
+475a7 Bnd{8|852A9} 480r23 480r46 480r81 482r39 490r17 491r46 491r56 492r33
+. 496b7 500r42 505r31 519m7 520r63
+475i35 NB{8|130I12} 480r75 482r44 489r17 489r22 490r22 491r36 492r38 496b35
+. 501r38 518m7 518r13 519r12
+476i7 Code{1|22I9} 488r19 497b7 506r42 508r48 509r48 510r48 511r48 512r48
+. 513r48
+484i26 P{integer} 484r55 484r69
+491i26 K{integer} 491r51 491r65
+499a7 Old_Log{1|10A9} 515r59 520r25
+500a7 Old_Bnd{8|852A9} 520r46
+501i7 Old_NB{8|130I12} 504r22 505r22 520r55
+502i7 P{8|130I12} 504r32 507r12 508r12 509r12 510r12 511r12 512r12 513r12
+. 514r13 515r40 516r41 517r36 519r19 520r34
+515i30 Q{integer} 515r54 515r68
+529V13 Sub{boolean} 529>18 529>37 529>53 529>72 534r17 537b13 541l8 541t11
+. 552s23 704s17 785s17 826s22 872s17 908s17
+529a18 Idx{8|846A9} 532r17 532r45 535r69 537b18 540r64
+529i37 N{3|67I12} 532r40 535r38 537b37 540r33
+529a53 Old{8|846A9} 533r26 533r55 535r79 537b53 540r74
+529i72 N0{3|67I12} 533r49 535r63 537b72 540r58
+535i28 J{integer} 535r74
+535i53 I{integer} 535r84
+540i23 J{integer} 540r69
+540i48 I{integer} 540r79
+543U14 Lemma_Framed_Sub 544>7 544>25 545>7 545>26 545>43 545>62 556b14 571l8
+. 571t24 1414s7 1606s7 1700s7 1852s13
+544a7 Log{1|10A9} 548r14 548r43 551r31 553r22 557b7 565r38 569r25
+544i25 LL{8|130I12} 548r37 551r36 553r27 554r67 557b25 565r43 569r30 569r74
+545a7 Old{8|846A9} 550r23 550r52 551r40 552r36 558b7 560r81 563r62 565r47
+545i26 N0{3|67I12} 550r46 551r45 552r41 558b26 560r65 563r67
+545a43 Idx{8|846A9} 549r23 549r51 552r28 553r31 554r55 558b43 560r71 563r54
+. 569r34 569r61
+545i62 N{3|67I12} 549r46 552r33 553r36 554r42 558b62 560r40 561r21 563r59
+554i32 J{integer} 554r60
+560i30 J{integer} 560r76
+560i55 I{integer} 560r86
+561i11 J{integer} 563r71 568r32
+563i13 I{3|68I12} 565r52
+568i21 J2{integer} 569r39 569r66
+574U14 Lemma_Framed_Grow 575>7 575>26 575>42 575>61 576>7 576>27 587b14 604l8
+. 604t25 1417s7 1465s7 3281s10
+575a7 Log1{1|10A9} 579r14 579r45 582r64 584r31 588b7 592r35 594r46 595r50
+. 596r50 597r50 598r50 599r50 600r66
+575i26 LL1{8|130I12} 579r38 581r23 582r42 584r37 588b26 592r41 593r54
+575a42 Log2{1|10A9} 580r23 580r54 582r53 585r22 588b42 594r25 595r25 596r25
+. 597r25 598r25 599r25 600r35 601r35 602r67
+575i61 LL2{8|130I12} 580r47 581r30 585r28 588b61 601r41 602r73
+576a7 Idx{8|846A9} 583r23 583r51 584r42 585r33 589b7 592r46 593r25 594r31
+. 594r52 595r31 595r56 596r31 596r56 597r31 597r56 598r31 598r56 599r31 599r56
+. 600r41 600r72 601r46 602r78
+576i27 N{3|67I12} 583r46 584r47 585r38 589b27 591r21
+582i32 P{integer} 582r59 582r70
+591i11 J{integer} 592r51 593r30 594r36 594r57 595r36 595r61 596r36 596r61
+. 597r36 597r61 598r36 598r61 599r36 599r61 600r46 600r77 601r51 602r52
+602i41 J2{integer} 602r83
+608U14 Lemma_At_Bounds_Of 609>7 609>26 609>42 609>62 609>76 618b14 627l8
+. 627t26 658s7 692s7 722s7
+609a7 Idx{8|846A9} 612r14 612r42 615r85 616r25 619b7 622r41 623r60 625r73
+609i26 N{3|67I12} 612r37 614r40 615r36 616r30 619b26 621r21
+609a42 Bnd{8|852A9} 613r17 613r46 615r69 616r33 619b42 622r25 623r50 625r63
+609i62 NB{natural} 613r40 615r57 616r38 619b62 623r44 625r57
+609a76 Wit{113A9} 614r17 614r45 615r41 615r74 619b76 622r30
+615i26 J{integer} 615r46 615r79 615r90
+621i11 J{integer} 622r35 622r46 623r65 625r32
+623i34 K{integer} 623r55
+625i21 J2{integer} 625r78
+625i47 K{integer} 625r68
+630U14 Lemma_Bounds_Grow 631>7 631>26 632>7 632>28 632>43 632>64 643b14 659l8
+. 659t25 1418s7 1466s7
+631a7 Idx{8|846A9} 635r14 635r42 640r28 641r25 644b7 650r71 652r36 654r85
+. 657r79 658r27
+631i26 N{3|67I12} 635r37 640r33 641r30 644b26 647r27 650r28 651r21 652r41
+. 657r28 658r32
+632a7 Bnd1{8|852A9} 636r17 636r48 639r54 640r36 645b7 650r60 652r44 654r67
+632i28 NB1{natural} 636r41 638r17 639r36 640r42 645b28 650r53 652r50 654r54
+632a43 Bnd2{8|852A9} 637r17 637r48 639r43 641r33 645b43 657r62 658r35
+632i64 NB2{natural} 637r41 638r24 641r39 645b64 657r49 658r41
+639i26 K{integer} 639r49 639r60
+647a7 Wit{113A9} 652m10 654r37 654r73 657r33 657r68 658r46
+650i18 J{integer} 650r76
+650i43 K{integer} 650r66
+651i11 J{integer} 652r15 652r55 654r32
+654i21 J2{integer} 654r42 654r78 654r90
+657i18 J{integer} 657r38 657r73 657r84
+662U14 Lemma_Bounds_Push 663>7 663>26 663>43 663>62 664>7 664>27 676b14 693l8
+. 693t25 1631s10
+663a7 Old{8|846A9} 667r14 667r43 671r52 673r28 677b7 683r70 685r36
+663i26 N0{3|67I12} 667r37 670r21 671r36 673r33 677b26 683r28 684r21 685r41
+663a43 Idx{8|846A9} 668r17 668r45 671r42 672r17 674r25 677b43 687r83 691r77
+. 692r27
+663i62 N{3|67I12} 668r40 670r17 672r22 674r30 677b62 680r27 689r12 691r28
+. 692r32
+664a7 Bnd{8|852A9} 669r17 669r46 672r31 673r37 674r33 678b7 683r60 685r45
+. 687r66 691r61 692r35
+664i27 NB{natural} 669r40 670r37 672r36 673r42 674r38 678b27 683r54 685r50
+. 687r54 689r18 691r49 692r40
+671i26 J{integer} 671r47 671r57
+680a7 Wit{113A9} 685m10 687r37 687r71 689m7 691r33 691r66 692r44
+683i18 J{integer} 683r75
+683i44 K{integer} 683r65
+684i11 J{integer} 685r15 685r54 687r32
+687i21 J2{integer} 687r42 687r76 687r88
+691i18 J{integer} 691r38 691r71 691r82
+696U14 Lemma_Bounds_Sub 697>7 697>26 697>42 697>61 698>7 698>27 708b14 723l8
+. 723t24 1607s7 1701s7 1853s13
+697a7 Idx{8|846A9} 701r14 701r42 704r22 706r25 709b7 714r71 718r68 720r83
+. 722r27
+697i26 N{3|67I12} 701r37 704r27 706r30 709b26 712r27 714r40 717r21 718r73
+. 722r32
+697a42 Old{8|846A9} 702r17 702r46 704r30 705r28 709b42 714r81 716r70 718r36
+. 718r76
+697i61 N0{3|67I12} 702r40 704r35 705r33 709b61 714r65 716r28 718r41 718r81
+698a7 Bnd{8|852A9} 703r17 703r46 705r37 706r33 710b7 716r60 718r45 720r66
+. 722r35
+698i27 NB{natural} 703r40 705r42 706r38 710b27 716r54 718r50 720r54 722r40
+712a7 Wit{113A9} 718m10 720r37 720r71 722r44
+714i30 J{integer} 714r76
+714i55 I{integer} 714r86
+716i18 J{integer} 716r75
+716i44 K{integer} 716r65
+717i11 J{integer} 718r15 718r85 720r32
+720i21 J2{integer} 720r42 720r76 720r88
+731R9 Drop_Rule 735e14 737r26 740r24 780r75 791r75 865r42 879r42 961r42 978r42
+. 1056r33 1078r33 1594r26 1691r26 1848r32
+732b7*By_Dom{boolean} 738r12 971r23 974r23 982r15 1594m40 1691m40 1848m46
+733r7*R{4|38R9} 738r37 971r59 974r55 974r84 982r51 983r44 1594m56 1691m56
+. 1848m63
+734i7*Hz{1|102I9} 738r62 1594m64 1691m64 1848m74
+737V13 Drops_H{boolean} 737>22 737>37 740s71 875s59 890s32 973s42 987s41
+. 1707s52
+737r22 D{731R9} 738r10 738r35 738r60
+737r37 X{4|38R9} 738r40 738r57
+740V13 Drops{boolean} 740>20 740>35 784s45 787s28 802s17 814s28 820s23 873s45
+. 969s28 995s38 1070s28 1074s28 1084s17 1093s23 1610s20 1704s20 1856s26
+740r20 D{731R9} 740r80
+740r35 E{8|227R9} 740r83
+744U14 Lemma_Sorted_Sub 745>7 745>26 745>43 745>62 746>7 756b14 777l8 777t24
+. 823s7
+745a7 Old{8|846A9} 749r14 749r43 752r79 754r26 757b7 760r22 766r36 766r54
+. 767r37 767r56
+745i26 N0{3|67I12} 749r37 752r57 754r31 757b26 760r27
+745a43 Idx{8|846A9} 750r17 750r45 752r69 754r48 757b43 770r26 770r38 770r60
+. 770r73 775r26 775r39 775r61 775r75
+745i62 N{3|67I12} 750r40 751r40 752r36 753r36 753r65 754r53 757b62 763r21
+. 764r29 774r40
+746a7 Src{110A9} 751r17 751r45 752r41 752r84 753r70 753r80 758b7 765r28 765r38
+. 766r41 766r59 767r42 767r61
+752i26 J{integer} 752r46 752r74 752r89
+753i26 J{integer} 753r56 753r75
+753i50 J2{integer} 753r85
+763i11 J{integer} 764r20 765r33 766r46 767r47 769r30 770r31 770r65 773r32
+764i14 J2{integer} 765r43 766r64 767r66 769r39
+769i24 J3{integer} 770r43 770r78
+773i21 J1{integer} 774r30 775r31 775r66
+774i24 J3{integer} 775r44 775r80
+780U14 Filter 780=22 780=48 780>71 791b14 828l8 828t14 1602s7 1698s7 1850s13
+780a22 Idx{8|846A9} 782r14 782r42 784r55 785r22 785r30 787r38 788r51 788r61
+. 789r29 789r58 791b22 792r38 801r25 802r27 804m13 804r27 809r61 813r24 821r51
+. 823r34 825r62 826r27
+780i48 N{3|67I12} 782r37 783r14 783r19 784r36 785r27 785r39 786r36 788r46
+. 789r38 789r63 791b48 793r37 827m7
+780r71 D{731R9} 784r52 787r35 791b71 802r24 814r35 820r30
+784i26 J{integer} 784r60
+786i26 I{integer} 787r47 788r70
+788i36 J{integer} 788r56
+792a7 Old{8|846A9} 801r35 809r71 813r34 814r38 820r33 821r67 823r25 825r72
+. 826r38
+793i7 N0{3|67I12} 797r30 798r30 800r21 809r55 823r30 825r56 826r43
+794i7 Kept{3|67I12} 803m13 803r21 804r18 805r18 806r24 808r33 811r31 816r31
+. 817r39 821r37 823r39 825r28 826r32 827r12
+797a7 Src{110A9} 805m13 812r15 813r39 814r43 817r47 817r57 823r45
+798a7 Dst{110A9} 806m13 821r21 821r56
+800i11 I{integer} 801r30 801r40 802r32 804r32 805r27 806r18 808r41 809r46
+. 812r31 819r31
+809i41 K{integer} 809r66 809r76
+811i21 J{integer} 812r20 813r29 813r44 814r48
+816i21 J{integer} 817r30 817r52
+817i24 J2{integer} 817r62
+819i21 K{integer} 820r38 821r26 821r61 821r72
+825i18 J{integer} 825r67
+825i46 I{integer} 825r77
+832U14 Lemma_Sorted_Push 833>7 833>26 833>43 833>62 845b14 856l8 856t25 1630s10
+833a7 Old{8|846A9} 836r14 836r43 839r25 840r52 842r28 842r61 846b7 851r23
+. 851r35 851r56 851r69
+833i26 N0{3|67I12} 836r37 838r21 839r30 840r36 841r36 846b26 849r28 850r35
+833a43 Idx{8|846A9} 837r17 837r45 840r42 842r40 842r74 843r22 846b43 855r23
+. 855r35 855r56 855r69
+833i62 N{3|67I12} 837r40 838r17 842r45 842r79 843r27 846b62 853r28 854r35
+840i26 J{integer} 840r47 840r57
+841i26 J{integer} 842r33 842r66
+849i18 I{integer} 850r26 851r28 851r61
+850i21 J{integer} 851r40 851r74
+853i18 I{integer} 854r26 855r28 855r61
+854i21 J{integer} 855r40 855r74
+864U14 Lemma_Live_Kept 865>7 865>14 865>38 866>7 866>26 866>43 866>62 878b14
+. 895l8 895t23 1604s7 1699s7 1851s13
+865r7 Old_F{3|80R9} 871r23 874r43 875r40 875r77 879b7 883r53 887r49 889r34
+. 890r50 891r48
+865r14 New_F{3|80R9} 875r27 876r20 879b14 891r35 893r64
+865r38 D{731R9} 873r52 875r68 879b38 890r41
+866a7 Old{8|846A9} 870r17 870r46 871r30 872r30 880b7 882r81 883r60 886r62
+. 887r56
+866i26 N0{3|67I12} 870r40 871r35 872r35 880b26 882r65 883r40 886r67
+866a43 Idx{8|846A9} 869r14 869r42 872r22 873r55 876r27 880b43 882r71 886r54
+. 889r46 893r71
+866i62 N{3|67I12} 869r37 872r27 873r36 876r32 880b62 882r40 884r21 886r59
+873i26 J{integer} 873r60
+874i26 I{integer} 875r47 875r84
+882i30 J{integer} 882r76
+882i55 I{integer} 882r86
+883i30 I{integer} 883r65
+884i11 J{integer} 886r71 889r51 893r52
+886i13 I{3|68I12} 887r61
+887i13 K{3|68I12} 889r41 890r57 891r55
+893i41 J2{integer} 893r76
+899U14 Lemma_Not_Indexed 900>7 901>7 901>26 901>43 901>62 902>7 912b14 928l8
+. 928t25 1605s7
+900r7 F{3|80R9} 907r23 909r28 913b7 918r53 923r35
+901a7 Old{8|846A9} 906r17 906r46 907r26 908r30 914b7 917r81 918r56 921r62
+. 923r38
+901i26 N0{3|67I12} 906r40 907r31 908r35 914b26 917r65 918r40 921r67
+901a43 Idx{8|846A9} 905r14 905r42 908r22 910r38 914b43 917r71 921r54 924r28
+. 926r57
+901i62 N{3|67I12} 905r37 908r27 910r33 914b62 917r40 919r21 921r59
+902r7 R{4|38R9} 909r31 910r51 915b7 924r41 926r71
+910i23 J{integer} 910r43
+917i30 J{integer} 917r76
+917i55 I{integer} 917r86
+918i30 I{integer} 918r61
+919i11 J{integer} 921r71 924r33 926r52
+921i13 I{3|68I12} 923r43
+926i41 J2{integer} 926r62
+932U14 Lemma_Apply_Kept 932>32 932>39 932>63 943b14 955l8 955t24 1635s7
+932r32 Old_F{3|80R9} 937r27 940r33 943b32 952r31
+932r39 New_F{3|80R9} 934r27 935r24 936r43 937r40 937r65 938r40 939r23 940r46
+. 941r59 943b39 944r44 946r28 947r31 948r46 948r64 951r21 952r44 953r57
+932r63 R{4|38R9} 935r31 937r77 939r35 941r50 943b63 944r51 951r34 953r48
+936i26 I{integer} 937r47 937r72
+938i23 K{integer} 939r30 940r53 941r66
+944i7 KR{3|68I12} 948r53
+946i11 K{integer} 947r38 948r71 950r32
+950i21 K2{integer} 951r28 952r51 953r64
+960U14 Lemma_Covered_Kept 961>7 961>14 961>38 962>7 962>26 962>43 962>62
+. 977b14 1004l8 1004t26 1636s7 1708s7 1857s13
+961r7 Old_F{3|80R9} 967r26 972r36 978b7 986r35 989r53 991r57
+961r14 New_F{3|80R9} 970r43 971r45 972r49 973r60 974r46 975r23 978b14 981r28
+. 982r37 983r35 984r53 986r48 987r59 989r66 993r76 997r59 1002r62
+961r38 D{731R9} 969r35 971r21 971r57 973r51 974r21 974r53 974r82 978b38 982r13
+. 982r49 983r42 987r50 995r45
+962a7 Old{8|846A9} 966r17 966r46 967r33 969r38 969r71 979b7 991r42 993r61
+. 995r48 996r53
+962i26 N0{3|67I12} 966r40 967r38 968r36 979b26 991r47 993r66
+962a43 Idx{8|846A9} 965r14 965r42 969r63 974r74 975r30 979b43 984r39 996r45
+. 997r45 1002r48
+962i62 N{3|67I12} 965r37 969r68 974r79 975r35 979b62 984r44 996r50 997r50
+. 1002r53
+968i26 I{integer} 969r43 969r76
+970i26 K{integer} 971r52 972r56 973r67
+981i11 K{integer} 982r44 984r60 986r55 987r66 989r73 993r83 997r66 1002r32
+989i16 K2{3|68I12} 991r64
+993i19 I{3|68I12} 995r53 996r58
+1002i21 K3{integer} 1002r69
+1007U14 Lemma_Fresh_Kept 1008>7 1008>14 1008>38 1008>50 1017b14 1031l8 1031t24
+. 1637s7
+1008r7 Old_F{3|80R9} 1011r21 1014r55 1018b7 1023r53 1025r50
+1008r14 New_F{3|80R9} 1013r43 1014r26 1014r68 1015r21 1018b14 1020r28 1021r19
+. 1023r66 1029r56
+1008r38 R{4|38R9} 1012r30 1014r38 1018b38 1021r32
+1008i50 Hz{1|102I9} 1011r28 1012r33 1015r28 1018b50 1025r62 1029r68
+1013i26 K{integer} 1014r33 1014r75
+1020i11 K{integer} 1021r26 1023r73 1029r32
+1023i16 K2{3|68I12} 1025r57
+1029i21 K3{integer} 1029r63
+1034U14 Lemma_Fresh_Sub 1034>31 1034>38 1034>62 1040b14 1051l8 1051t23 1709s7
+1034r31 Old_F{3|80R9} 1036r21 1037r60 1040b31 1044r50 1046r47
+1034r38 New_F{3|80R9} 1037r43 1037r73 1038r21 1040b38 1042r28 1044r63 1049r56
+1034i62 Hz{1|102I9} 1036r28 1038r28 1040b62 1046r59 1049r68
+1037i26 K{integer} 1037r80
+1042i11 K{integer} 1044r70 1049r32
+1044i13 K2{3|68I12} 1046r54
+1049i21 K3{integer} 1049r63
+1055U14 Lemma_Index_Grow 1056>7 1056>29 1057>7 1057>26 1058>7 1058>26 1058>43
+. 1058>60 1059>7 1077b14 1097l8 1097t24 1632s10
+1056r7 F{3|80R9} 1067r24 1068r23 1072r20 1078b7 1095r53 1096r53
+1056r29 D{731R9} 1070r35 1074r35 1078b29 1084r24 1093r30
+1057a7 Old{8|846A9} 1062r14 1062r43 1070r38 1070r70 1074r38 1074r70 1079b7
+. 1084r27 1086r65 1088r41 1093r33 1093r66
+1057i26 N0{3|67I12} 1062r37 1069r36 1073r36 1079b26 1083r21
+1058a7 A{8|846A9} 1063r17 1063r44 1068r26 1070r63 1071r50 1080b7 1086r58
+. 1095r56
+1058i26 NA{3|67I12} 1063r38 1065r22 1068r29 1070r66 1071r36 1080b26 1086r61
+. 1095r40
+1058a43 B{8|846A9} 1064r17 1064r44 1066r17 1071r42 1072r23 1074r63 1075r28
+. 1080b43 1088r31 1093r59 1096r56
+1058i60 NB{3|67I12} 1064r38 1065r17 1066r20 1072r26 1074r66 1075r31 1080b60
+. 1093r62 1096r40
+1059r7 R{4|38R9} 1066r28 1067r27 1075r35 1081b7
+1069i26 I{integer} 1070r43 1070r75
+1071i26 J{integer} 1071r45 1071r53
+1073i26 I{integer} 1074r43 1074r75
+1083i11 I{integer} 1084r32 1086r70 1088r46 1092r32
+1086i16 J{3|68I12} 1088r34
+1092i21 I2{integer} 1093r38 1093r71
+1095i30 J{integer} 1095r59
+1096i30 J{integer} 1096r59
+1103A9 Flag_Array(boolean)<integer> 1106r22 1114r38 1122r38 1130r31 1137r31
+. 1138r23 1162r17
+1106V13 Num{natural} 1106>18 1106>34 1107s28 1110r17 1120s14 1120s28 1125s33
+. 1125s47 1135s23 1135s36 1164s25 1166s36 1172s36
+1106a18 B{1103A9} 1107r33 1107r49 1109r17 1109r43
+1106i34 K{natural} 1107r10 1107r36 1107r52 1109r38 1110r31 1111r45
+1114U14 Lemma_Num_Set 1114>29 1114>33 1114>50 1114>64 1122b14 1127l8 1127t21
+. 1141s7
+1114a29 B1{1103A9} 1116r14 1116r58 1117r28 1117r50 1118r27 1119r42 1119r78
+. 1120r33 1122b29 1125r52
+1114a33 B2{1103A9} 1116r36 1116r68 1118r43 1119r69 1120r19 1122b33 1125r38
+1114i50 P{positive} 1117r45 1118r31 1118r47 1119r62 1120r46 1122b50 1125r65
+1114i64 K{natural} 1117r23 1120r23 1120r37 1120r51 1122b64 1124r21
+1119i32 I{integer} 1119r57 1119r73 1119r82
+1124i11 I{integer} 1125r42 1125r56 1125r70
+1130U14 Mark 1130=20 1130>43 1130>57 1137b14 1142l8 1142t12 1171s13
+1130a20 B{1103A9} 1132r14 1132r35 1132r75 1133r14 1134r63 1134r71 1135r28
+. 1135r41 1137b20 1138r37 1140m7 1141r28
+1130i43 P{positive} 1132r55 1132r78 1133r17 1134r56 1137b43 1140r10 1141r31
+1130i57 C{natural} 1132r44 1132r60 1134r42 1135r31 1135r48 1137b57 1141r34
+1134i32 I{integer} 1134r51 1134r66 1134r78
+1138a7 Prev{1103A9} 1141r22
+1145U14 Lemma_Pigeon 1145>28 1145>43 1145>59 1153b14 1177l8 1177t20 1201s7
+1145a28 M{110A9} 1147r14 1147r40 1148r47 1150r69 1150r79 1153b28 1157r28
+. 1169r56 1169r66 1170r38 1171r25 1174r76
+1145i43 N{3|67I12} 1147r35 1148r42 1149r43 1150r46 1151r14 1153b43 1156r13
+. 1168r24
+1145i59 C{3|67I12} 1148r61 1151r19 1153b59 1155r10 1157r42 1162r34 1165r24
+. 1171r32 1172r47 1174r34
+1148i32 J{integer} 1148r50
+1149i32 J1{integer} 1150r55 1150r72
+1150i35 J2{integer} 1150r61 1150r82
+1162a10 Seen{1103A9} 1164r30 1166r41 1170r32 1171m19 1171r19 1172r41 1174r39
+1165i14 K{integer} 1166r47
+1168i14 J{integer} 1169r47 1169r69 1170r41 1171r28 1172r52 1174r71
+1169i36 J2{integer} 1169r59
+1174i24 P{integer} 1174r45 1174r85
+1174i60 J2{integer} 1174r79
+1180U14 Lemma_Pigeon_Minus 1181>7 1181>22 1181>38 1181>54 1190b14 1202l8
+. 1202t26 1242s7
+1181a7 M{110A9} 1184r14 1184r40 1185r47 1185r72 1187r69 1187r79 1191b7 1196r24
+. 1196r40 1196r55 1198r51 1198r68 1198r84
+1181i22 N{3|67I12} 1184r35 1185r42 1186r43 1187r46 1188r14 1191b22 1193r28
+. 1195r21 1200r40 1201r25
+1181i38 C{3|67I12} 1184r62 1185r61 1188r18 1191b38 1200r60 1201r28
+1181i54 K0{3|68I12} 1184r56 1185r81 1191b54 1196r32 1198r60
+1185i32 J{integer} 1185r50 1185r75
+1186i32 J1{integer} 1187r55 1187r72
+1187i35 J2{integer} 1187r61 1187r82
+1193a7 M2{110A9} 1196m10 1198r37 1200r45 1201r21
+1195i11 J{integer} 1196r14 1196r27 1196r43 1196r58 1198r32
+1198i21 J2{integer} 1198r41 1198r54 1198r71 1198r87
+1200i30 J{integer} 1200r49
+1206U14 Lemma_Index_Room 1207>7 1207>26 1207>42 1207>62 1217b14 1243l8 1243t24
+. 1614s7
+1207a7 Idx{8|846A9} 1210r14 1210r42 1211r31 1212r32 1214r47 1218b7 1224r31
+. 1227r68 1232r39
+1207i26 N{3|67I12} 1210r37 1211r36 1212r37 1214r42 1215r14 1218b26 1220r28
+. 1223r21 1229r22 1230r25 1232r44 1239r35 1241r40 1242r30
+1207r42 F{3|80R9} 1212r29 1213r30 1215r25 1218b42 1221r44 1224r28 1227r37
+. 1227r55 1242r40
+1207r62 R{4|38R9} 1213r33 1214r60 1218b62 1221r47
+1214i32 J{integer} 1214r52
+1220a7 M{110A9} 1224m10 1227r15 1227r58 1235r59 1235r69 1239r58 1239r68 1241r45
+. 1242r27
+1221i7 K0{3|68I12} 1241r54 1242r44
+1223i11 J{integer} 1224r13 1224r36 1226r32
+1226i21 J2{integer} 1227r18 1227r61 1227r73
+1229i11 J1{integer} 1231r16 1232r47 1235r45 1235r62 1238r32
+1230i14 J2{integer} 1231r22 1232r51 1235r35
+1235i24 J3{integer} 1235r51 1235r72
+1238i21 J4{integer} 1239r44 1239r61
+1239i24 J3{integer} 1239r50 1239r71
+1241i30 J{integer} 1241r48
+1259U14 Lemma_Same_Held 1259>31 1259>42 1259>49 1269b14 1290l8 1290t23 1308s10
+1259r31 S{8|238R9} 1261r21 1267r21 1269b31 1271r21 1273r56 1275r46 1277r71
+. 1279r35 1279r42 1281r56 1281r63 1283r36 1283r43 1285r48 1285r55 1287r38
+. 1287r45 1288r87 1289r36
+1259r42 Old_F{3|80R9} 1261r24 1262r29 1262r62 1263r50 1264r64 1265r40 1266r43
+. 1266r77 1269b42 1273r49 1281r35 1281r75 1283r55 1288r47 1288r76
+1259r49 New_F{3|80R9} 1261r53 1262r17 1262r48 1263r29 1264r36 1265r24 1266r59
+. 1267r24 1269b49 1275r34 1277r64 1279r28 1282r28 1285r67 1287r31 1289r29
+1266i26 I{integer} 1266r66 1266r84
+1271i11 J{integer} 1273r63 1275r53 1277r52
+1273i13 K{3|68I12} 1275r41
+1277i41 J2{integer} 1277r78
+1281i18 K{integer} 1281r82
+1282i11 K{integer} 1283r62 1285r32
+1285i21 K2{integer} 1285r74
+1288i30 K{integer} 1288r83
+1292K12 Quiet 1300l8 1300e13 1302b17 1311l8 1311t13 1356r10 2121r13 2185r13
+1318U14 Touch 1318>21 1318=32 1323b14 1358l8 1358t13 2125s10 2128s10 2193s10
+. 2229s7 2293s13 2322s13
+1318r21 S{8|238R9} 1320r21 1321r21 1323b21 1356r39
+1318r32 F{3|80R9} 1320r24 1321r24 1321r47 1321r54 1323b32 1324r40 1327r17
+. 1328r31 1330r42 1332r35 1333m20 1336r25 1337r33 1339r37 1342r46 1347r42
+. 1348m20 1351r38 1356r47
+1324r7 Old{3|80R9} 1351r33 1356r42
+1325e7 St{1|112E9} 1333m26 1348m26
+1330r13 R{4|38R9} 1332r38 1333r23
+1341r13 R{4|38R9} 1346r39 1347r45 1348r23
+1365U14 Log_Entry_Apply 1366=7 1366=33 1367=7 1367=35 1368>7 1368>27 1369>7
+. 1369>21 1369>36 1369>48 1369>66 1370>7 1370>20 1402b14 1420l8 1420t23 1624s10
+. 1711s7
+1366a7 Log{1|10A9} 1373r14 1373r43 1373r61 1374r51 1378r48 1379r26 1380r25
+. 1381r24 1384r50 1384r60 1385r17 1386r27 1387r36 1387r54 1388r36 1388r54
+. 1389r17 1391r20 1397r26 1398r25 1399r24 1403b7 1409r40 1414r25 1416m21
+. 1417r43 1419r41
+1366i33 LL{8|130I12} 1373r37 1378r59 1379r31 1380r30 1381r29 1383r14 1383r19
+. 1384r36 1385r22 1386r32 1387r41 1387r59 1388r41 1388r59 1389r22 1391r25
+. 1393r28 1395r62 1396r17 1397r31 1398r30 1399r29 1403b33 1410r38 1414r30
+. 1416m26 1417r48 1419r46
+1367a7 Bnd{8|852A9} 1374r17 1374r40 1374r75 1381r33 1382r37 1393r17 1394r46
+. 1394r56 1399r33 1400r37 1404b7 1411r42 1416m30 1418r52
+1367i35 NB{8|130I12} 1374r69 1381r38 1382r42 1392r17 1392r22 1393r22 1394r36
+. 1399r38 1400r42 1404b35 1412r38 1416m35 1418r57
+1368a7 Idx{8|846A9} 1375r17 1375r46 1380r34 1382r28 1395r50 1398r34 1400r28
+. 1405b7 1414r34 1414r43 1415r54 1417r52 1418r26
+1368i27 NI{3|67I12} 1375r40 1380r39 1382r33 1395r36 1398r39 1400r33 1405b27
+. 1414r39 1414r48 1415r40 1417r57 1418r31
+1369a7 NSb{1|61A12} 1379r35 1397r35 1406b7 1419r50
+1369a21 Root{1|64A12} 1379r40 1397r40 1406b21 1419r55
+1369a36 Slt{1|63A12} 1379r46 1397r46 1406b36 1419r61
+1369i48 DCap{3|75I12} 1379r51 1397r51 1406b48 1419r66
+1369i66 Slc{3|76I12} 1379r57 1397r57 1406b66 1419r72
+1370m7 Op{1|9M9} 1376r18 1376r40 1385r32 1407b7 1416r39
+1370a20 Frame{1|10A9} 1377r17 1378r32 1383r43 1386r48 1388r80 1389r47 1389r54
+. 1390r36 1391r54 1391r61 1407b20 1416r43
+1384i26 P{integer} 1384r55 1384r69
+1390i26 K{integer} 1391r49 1391r75
+1394i26 K{integer} 1394r51 1394r65
+1395i26 J{integer} 1395r55
+1409a7 Old_Log{1|10A9} 1417r26 1419r24
+1410i7 Old_LL{8|130I12} 1415r66 1417r35 1419r33
+1411a7 Old_Bnd{8|852A9} 1418r35
+1412i7 Old_NB{8|130I12} 1418r44
+1415i30 J{integer} 1415r59
+1422U14 Log_Entry_Expire 1423=7 1423=33 1424=7 1424=35 1425>7 1425>27 1426>7
+. 1426>21 1426>36 1426>48 1426>66 1427>7 1452b14 1468l8 1468t24 1864s7
+1423a7 Log{1|10A9} 1430r14 1430r43 1430r61 1431r51 1433r31 1434r26 1435r25
+. 1436r24 1439r50 1439r60 1440r17 1441r38 1441r56 1441r74 1442r38 1442r56
+. 1442r74 1447r26 1448r25 1449r24 1453b7 1459r40 1464m22 1465r43 1467r41
+1423i33 LL{8|130I12} 1430r37 1433r42 1434r31 1435r30 1436r29 1438r14 1438r19
+. 1439r36 1440r22 1441r43 1441r61 1441r79 1442r43 1442r61 1442r79 1445r28
+. 1447r31 1448r30 1449r29 1453b33 1460r38 1464m27 1465r48 1467r46
+1424a7 Bnd{8|852A9} 1431r17 1431r40 1431r75 1436r33 1437r37 1445r17 1446r46
+. 1446r56 1449r33 1450r37 1454b7 1461r42 1464m31 1466r52
+1424i35 NB{8|130I12} 1431r69 1436r38 1437r42 1444r17 1444r22 1445r22 1446r36
+. 1449r38 1450r42 1454b35 1462r38 1464m36 1466r57
+1425a7 Idx{8|846A9} 1432r17 1432r46 1435r34 1437r28 1448r34 1450r28 1455b7
+. 1465r52 1466r26
+1425i27 NI{3|67I12} 1432r40 1435r39 1437r33 1448r39 1450r33 1455b27 1465r57
+. 1466r31
+1426a7 NSb{1|61A12} 1434r35 1447r35 1456b7 1467r50
+1426a21 Root{1|64A12} 1434r40 1447r40 1456b21 1467r55
+1426a36 Slt{1|63A12} 1434r46 1447r46 1456b36 1467r61
+1426i48 DCap{3|75I12} 1434r51 1447r51 1456b48 1467r66
+1426i66 Slc{3|76I12} 1434r57 1447r57 1456b66 1467r72
+1427i7 Code{1|22I9} 1443r19 1457b7 1464r40
+1439i26 P{integer} 1439r55 1439r69
+1446i26 K{integer} 1446r51 1446r65
+1459a7 Old_Log{1|10A9} 1465r26 1467r24
+1460i7 Old_LL{8|130I12} 1465r35 1467r33
+1461a7 Old_Bnd{8|852A9} 1466r35
+1462i7 Old_NB{8|130I12} 1466r44
+1471U14 Lemma_Framed_Push 1472>7 1472>25 1472>40 1472>59 1473>7 1473>26 1490b14
+. 1497l8 1497t25 1629s10
+1472a7 Log{1|10A9} 1476r14 1476r43 1480r25 1485r17 1486r27 1487r17 1488r22
+. 1491b7 1494r32 1495r56 1496r55
+1472i25 LL{8|130I12} 1476r37 1480r30 1483r32 1484r17 1488r27 1491b25 1494r37
+. 1495r61 1496r60
+1472a40 Old{8|846A9} 1477r17 1477r46 1480r34 1481r52 1491b40 1495r65
+1472i59 N0{3|67I12} 1477r40 1479r21 1480r39 1481r36 1491b59 1495r40
+1473a7 Idx{8|846A9} 1478r17 1478r45 1481r42 1482r17 1483r17 1484r22 1484r52
+. 1485r22 1486r32 1486r53 1487r22 1487r73 1488r31 1492b7 1494r41 1496r64
+1473i26 N{3|67I12} 1478r40 1479r17 1482r22 1483r22 1484r27 1484r57 1485r27
+. 1486r37 1486r58 1487r27 1487r78 1488r36 1492b26 1494r46 1496r40
+1481i26 J{integer} 1481r47 1481r57
+1495i30 J{integer} 1495r70
+1496i30 J{integer} 1496r69
+1500U14 Lemma_Log_Byte_Frame 1500>36 1500>47 1500>62 1510b14 1519l8 1519t28
+. 1647s7 1721s7
+1500r36 S{8|238R9} 1502r14 1502r22 1504r24 1504r69 1506r20 1508r27 1510b36
+. 1512r34 1512r39 1514r35 1514r64 1517r25
+1500i47 Off{natural} 1504r17 1504r76 1506r27 1508r30 1510b47 1514r38 1514r71
+. 1517r28
+1500a62 Frame{1|10A9} 1503r17 1504r53 1505r36 1506r53 1506r60 1507r33 1508r56
+. 1508r63 1510b62 1513r21 1517r55 1517r62
+1505i26 K{integer} 1506r48 1506r74
+1507i23 K{integer} 1508r51 1508r77
+1513i11 K{integer} 1514r59 1514r92 1516r32
+1516i21 K2{integer} 1517r49 1517r76
+1522U14 Lemma_Frame_Stored_Log 1522>38 1522>49 1522>64 1532b14 1544l8 1544t30
+. 3469s10 3479s10
+1522r38 S{8|238R9} 1524r14 1524r22 1526r31 1527r51 1528r27 1530r20 1532b38
+. 1534r34 1534r39 1535r30 1538r22 1540r35 1542r37
+1522i49 Off{natural} 1526r34 1527r14 1528r34 1530r27 1532b49 1535r33 1538r25
+. 1540r38 1542r44
+1522a64 Frame{1|10A9} 1525r17 1526r39 1527r35 1528r47 1529r36 1530r53 1530r60
+. 1532b64 1535r46 1537r28 1538r51 1538r58 1539r21 1540r64 1540r71 1542r71
+. 1542r78
+1529i26 K{integer} 1530r48 1530r74
+1537i18 K{integer} 1538r46 1538r72
+1539i11 K{integer} 1540r59 1540r85 1542r32
+1542i21 K2{integer} 1542r65 1542r92
+1552U14 Put_Fresh 1553=7 1554=7 1555>7 1556>7 1582b14 1651l8 1651t17 2199s7
+1553r7 S{8|238R9} 1559r21 1561r24 1564r17 1564r29 1565r33 1571r21 1572r17
+. 1572r24 1572r42 1572r50 1573r17 1573r26 1573r46 1573r54 1574r17 1574r26
+. 1574r46 1574r54 1575r17 1575r24 1578r30 1578r37 1579r27 1579r34 1579r47
+. 1580r26 1583b7 1588r35 1590r41 1591r40 1592r38 1602m15 1602r15 1602m22
+. 1602r22 1603r40 1603r66 1604r54 1604r61 1605r50 1605r57 1606r25 1606r32
+. 1606r55 1606r62 1607r25 1607r32 1607r55 1607r62 1610r59 1610r66 1614r25
+. 1614r32 1616r22 1616r29 1619r45 1620r44 1622r33 1622r40 1623r43 1623r51
+. 1624m27 1624r27 1624m34 1624r34 1624m40 1624r40 1624m47 1624r47 1624r53
+. 1624r60 1625r27 1625r34 1625r42 1625r49 1625r57 1626m10 1626r18 1627m10
+. 1627r17 1628r54 1629r29 1629r36 1629r61 1629r68 1630r48 1630r55 1631r48
+. 1631r55 1631r61 1631r68 1632r70 1632r77 1636r57 1636r64 1637r38 1638r29
+. 1641r54 1642r42 1643r30 1646r12 1647r29 1648r36 1649r39 1650r33 1650r40
+1554r7 F{3|80R9} 1559r24 1566r27 1567r28 1568r26 1569r32 1570r32 1571r24
+. 1576r24 1577r26 1577r33 1584b7 1589r44 1597m14 1599r38 1604r31 1614r38
+. 1615r29 1632r28 1635r32 1636r34 1637r32 1638r32
+1555a7 Frame{1|10A9} 1562r17 1563r17 1563r24 1564r52 1579r37 1585b7 1593r40
+. 1625r74 1646r48 1646r55 1647r40 1648r47 1649r42
+1556r7 H{4|38R9} 1560r28 1561r17 1563r60 1565r30 1566r30 1567r31 1568r29
+. 1569r35 1570r35 1576r27 1577r36 1579r44 1580r29 1586b7 1594r61 1597r17
+. 1599r41 1603r63 1605r63 1614r41 1623r66 1627r32 1632r83 1635r35 1637r35
+. 1649r49 1650r46
+1588r7 Saved{8|238R9} 1641r66 1642r35 1649r32
+1589r7 Old_F{3|80R9} 1599r31 1604r24 1605r26 1635r25 1636r27 1637r25
+1590a7 Old_Idx{8|846A9} 1604r37 1605r33 1606r38 1607r38 1610r30 1610r72 1632r34
+. 1636r40
+1591i7 Old_NI{3|67I12} 1604r46 1605r42 1606r47 1607r47 1609r28 1632r43 1636r49
+1592i7 Old_LL{8|130I12} 1627r42 1641r40 1643r33 1646r19 1647r32 1648r39 1649r52
+1593i7 Len{8|157I12} 1627r57 1643r49 1645r28
+1594r7 D{731R9} 1602r28 1604r34 1610r27 1632r31 1636r37
+1595e7 St{1|112E9} 1597m20 1598r22
+1603i30 J{integer} 1603r73
+1609i18 I{integer} 1610r39 1610r81
+1619a10 Kept_Idx{8|846A9} 1628r66 1629r42 1630r29 1631r29 1632r51
+1620i10 Kept_NI{3|67I12} 1628r43 1629r52 1630r39 1631r39 1632r61
+1623i33 J{integer} 1623r58
+1628i33 J{integer} 1628r61 1628r76
+1641i30 J{integer} 1641r61 1641r77
+1645i18 K{integer} 1646r43 1646r69
+1655U14 Do_Apply_Expired 1656=7 1657=7 1658>7 1659>7 1680b14 1724l8 1724t24
+. 2131s10 3477s10
+1656r7 S{8|238R9} 1662r21 1665r24 1670r17 1670r29 1671r21 1672r17 1672r24
+. 1672r42 1672r50 1673r17 1673r26 1673r46 1673r54 1674r17 1674r26 1674r46
+. 1674r54 1675r17 1675r24 1677r30 1677r37 1678r35 1678r42 1678r52 1681b7
+. 1686r35 1688r41 1689r40 1690r38 1698m15 1698r15 1698m22 1698r22 1699r54
+. 1699r61 1700r25 1700r32 1700r55 1700r62 1701r25 1701r32 1701r55 1701r62
+. 1704r59 1704r66 1708r57 1708r64 1709r34 1711m24 1711r24 1711m31 1711r31
+. 1711m37 1711r37 1711m44 1711r44 1711r50 1711r57 1712r24 1712r31 1712r39
+. 1712r46 1712r54 1713r29 1715r54 1716r42 1717r30 1720r12 1721r29 1722r36
+. 1723r47
+1657r7 F{3|80R9} 1662r24 1666r27 1667r26 1668r28 1671r24 1676r34 1676r41
+. 1682b7 1687r44 1694m22 1696r46 1699r31 1706r35 1707r32 1707r70 1708r34
+. 1709r31 1713r32
+1658a7 Frame{1|10A9} 1669r17 1670r52 1678r45 1683b7 1712r79 1717r49 1719r28
+. 1720r48 1720r55 1721r40 1722r47 1723r50
+1659r7 H{4|38R9} 1663r17 1664r28 1665r17 1666r30 1667r29 1668r31 1676r44
+. 1684b7 1691r61 1694r25 1696r49
+1686r7 Saved{8|238R9} 1715r66 1716r35 1723r40
+1687r7 Old_F{3|80R9} 1696r39 1699r24 1707r19 1708r27 1709r24
+1688a7 Old_Idx{8|846A9} 1699r37 1700r38 1701r38 1704r30 1704r72 1708r40
+1689i7 Old_NI{3|67I12} 1699r46 1700r47 1701r47 1703r28 1708r49
+1690i7 Old_LL{8|130I12} 1715r40 1717r33 1720r19 1721r32 1722r39 1723r57
+1691r7 D{731R9} 1698r28 1699r34 1704r27 1707r61 1708r37
+1692e7 St{1|112E9} 1694m28 1695r22
+1703i18 I{integer} 1704r39 1704r81
+1706i18 K{integer} 1707r35 1707r73
+1715i30 J{integer} 1715r61 1715r77
+1719i18 K{integer} 1720r43 1720r69
+1732U14 Lemma_Expire_Flat 1732>33 1732>40 1732>64 1754b14 1799l8 1799t25
+. 1843s10
+1732r33 Old_F{3|80R9} 1734r27 1735r50 1737r56 1738r51 1740r52 1742r69 1744r27
+. 1746r48 1747r40 1748r53 1750r24 1751r43 1752r40 1752r74 1754b33 1766r68
+. 1767r33 1768r37 1770r25 1770r44 1770r58 1771r38 1777r22 1779r28 1780r28
+. 1781r30 1782r34 1782r57 1785r52 1786r59 1786r73 1788r37 1788r60 1791r81
+. 1792r51 1797r35 1797r70
+1732r40 New_F{3|80R9} 1734r56 1735r29 1737r32 1738r34 1739r48 1740r30 1741r60
+. 1742r43 1743r48 1744r45 1745r53 1748r35 1749r40 1750r37 1750r76 1752r27
+. 1754b40 1756r28 1757r28 1758r30 1759r34 1759r57 1762r52 1763r59 1763r73
+. 1765r37 1765r60 1766r42 1770r81 1771r51 1772r50 1777r35 1777r75 1789r33
+. 1791r25 1791r44 1791r58 1792r38 1797r22
+1732i64 Hz{1|102I9} 1745r64 1747r51 1750r87 1752r85 1754b64 1772r61 1777r87
+. 1797r82
+1736i26 K{3|77I12} 1737r39 1737r63 1738r41 1738r58
+1739i26 K{integer} 1740r37 1740r59 1741r67 1742r50 1742r76
+1741i38 J{integer} 1742r53 1742r79
+1743i26 I{integer} 1744r52 1745r60
+1746i26 I{integer} 1747r47 1748r60
+1749i23 I{integer} 1750r44 1750r83
+1751i26 I{integer} 1752r47 1752r81
+1756i11 I{integer} 1757r35 1758r13 1759r41 1759r64 1762r59 1763r43 1765r44
+. 1770r88 1771r58 1772r57 1776r32
+1762i16 K{3|77I12} 1763r80 1765r67 1766r49 1766r75 1767r40 1768r44 1770r65
+1763i16 J{3|68I12} 1765r70 1766r52 1766r78 1767r43 1768r47 1770r70
+1776i21 I2{integer} 1777r42 1777r82
+1779i11 I{integer} 1780r35 1781r13 1782r41 1782r64 1785r59 1786r43 1788r44
+. 1791r88 1792r58 1796r32
+1785i16 K{3|77I12} 1786r80 1788r67 1789r40 1791r65
+1786i16 J{3|68I12} 1788r70 1789r43 1791r70
+1796i21 I2{integer} 1797r42 1797r77
+1803U14 Lemma_Out_Refl 1803>30 1803>50 1803>54 1808b14 1819l8 1819t22 1861s10
+. 2300s10 2328s10
+1803r30 F{3|80R9} 1805r21 1806r27 1806r30 1806r53 1808b30 1810r33 1811r28
+. 1812r44 1813r32 1813r41 1816r22 1816r31 1816r67 1818r29
+1803i50 Hz{1|102I9} 1805r24 1805r43 1808b50 1812r51
+1803i54 Hn{1|102I9} 1805r37 1806r33 1806r56 1808b54 1816r75 1818r32
+1811i11 I{integer} 1812r47 1813r44 1815r32
+1815i21 I2{integer} 1816r34 1816r70
+1823U14 Do_Expire 1823=25 1823=43 1823>70 1835b14 1873l8 1873t17 2297s10
+. 2326s10 3652s13
+1823r25 S{8|238R9} 1825r21 1825r36 1825r48 1826r21 1827r17 1827r24 1827r42
+. 1827r50 1828r17 1828r26 1828r46 1828r54 1829r17 1829r26 1829r46 1829r54
+. 1830r17 1832r30 1832r37 1833r34 1833r41 1833r44 1835b25 1836r34 1838r37
+. 1841r15 1846r47 1847r46 1850m21 1850r21 1850m28 1850r28 1851r60 1851r67
+. 1852r31 1852r38 1852r61 1852r68 1853r31 1853r38 1853r61 1853r68 1856r65
+. 1856r72 1857r63 1857r70 1861r29 1864m25 1864r25 1864m32 1864r32 1864m38
+. 1864r38 1864m45 1864r45 1864r51 1864r58 1865r25 1865r32 1865r40 1865r47
+. 1865r55 1866m7 1867r29 1868r54 1869r42 1870r29 1871r31 1872r46
+1823r43 F{3|80R9} 1825r24 1826r24 1831r30 1831r37 1835b43 1837r43 1842m27
+. 1843r36 1844r45 1851r37 1857r40 1859r32 1861r26 1867r32
+1823i70 Hn{8|161I12} 1830r24 1831r40 1833r54 1835b70 1841r10 1842r30 1843r39
+. 1844r48 1848r80 1859r35 1861r35 1865r76 1866r15 1871r62 1872r57
+1836r7 Saved{8|238R9} 1868r66 1869r35 1872r39
+1837r7 Old_F{3|80R9} 1843r29 1844r38 1851r30 1857r33
+1838i7 Old_LL{8|130I12} 1868r40 1870r32 1871r34 1872r49
+1839r7 No_H{4|38R9} 1848r68
+1846a13 Old_Idx{8|846A9} 1851r43 1852r44 1853r44 1856r36 1856r78 1857r46
+1847i13 Old_NI{3|67I12} 1851r52 1852r53 1853r53 1855r34 1857r55
+1848r13 D{731R9} 1850r34 1851r40 1856r33 1857r43
+1855i24 I{integer} 1856r45 1856r87
+1868i30 J{integer} 1868r61 1868r77
+1880V13 Header_Byte{1|9M9} 1881>7 1881>22 1881>34 1881>47 1881>65 1882>7
+. 1914s32 1921s42 3682s30
+1881a7 Root{1|64A12} 1888r30
+1881a22 Slt{1|63A12} 1889r29
+1881a34 NSb{1|61A12} 1887r30
+1881i47 DCap{3|75I12} 1890r61
+1881i65 Slc{3|76I12} 1891r38
+1882i7 J{natural} 1884r10 1885r13 1885r40 1886r13 1887r13 1887r35 1888r13
+. 1888r36 1889r13 1889r34 1890r13 1890r68 1891r43 1892r16
+1896U14 Init 1896<20 1896>35 1896>50 1896>62 1896>80 1917b14 1953l8 1953t12
+. 1985s7 3789s10
+1896r20 S{8|238R9} 1899r14 1900r14 1901r17 1901r44 1902r17 1902r53 1902r61
+. 1903r17 1904r17 1904r46 1905r17 1905r40 1906r17 1906r40 1907r17 1908r17
+. 1909r17 1910r17 1911r26 1911r33 1911r39 1911r46 1911r54 1912r24 1912r31
+. 1912r37 1912r44 1914r20 1917b20 1923m7 1923r24 1924r24 1939m7 1942r58 1943r22
+. 1944r22 1945r22 1946r22 1947r22 1948r22 1949r31 1949r38 1949r44 1949r51
+. 1949r59 1950r32 1950r39 1951r31 1952r29 1952r36 1952r42 1952r49
+1896a35 Root{1|64A12} 1900r69 1903r46 1905r26 1914r45 1914r84 1917b35 1919r59
+. 1921r55 1927r45 1928r24
+1896a50 Slt{1|63A12} 1900r75 1905r48 1914r51 1914r90 1917b50 1919r65 1921r61
+. 1929r24
+1896i62 DCap{3|75I12} 1906r26 1911r61 1915r45 1917b62 1921r71 1930r24 1940r46
+. 1943r69 1944r73 1945r73 1946r73 1949r66
+1896i80 Slc{3|76I12} 1906r48 1911r67 1915r51 1917b80 1921r77 1931r24 1941r42
+. 1947r67 1948r71 1949r72
+1913i26 J{integer} 1914r27 1915r56
+1919a7 NSb{1|61A12} 1921r66 1925r44 1926r24
+1920a7 Hdr{1|10A9} 1939r38 1942r70
+1921i14 J{natural} 1921r82
+1942i30 J{integer} 1942r65 1942r75
+1957U14 Lemma_Valid_Start 1957>33 1957>44 1973b14 1981l8 1981t25 1986s7 3795s10
+1957r33 S{8|238R9} 1960r17 1960r35 1961r17 1961r44 1962r34 1963r41 1964r17
+. 1964r46 1965r17 1965r44 1966r17 1966r53 1966r61 1967r17 1967r42 1968r17
+. 1969r26 1969r33 1969r39 1969r46 1969r54 1969r61 1969r69 1970r24 1970r31
+. 1970r37 1970r44 1971r21 1973b33 1975r31 1975r38 1976r34 1976r41 1977r32
+. 1978r30 1978r37 1978r43 1978r50 1979r30 1979r37 1980r33 1980r40 1980r46
+. 1980r53
+1957r44 F{3|80R9} 1959r27 1959r46 1962r29 1963r36 1967r27 1967r51 1968r26
+. 1968r48 1971r24 1973b44 1975r28 1976r31 1977r29
+1994i7 L{natural} 1995r28 1997r21
+1995a7 R{1|10A9} 1998m10 2000r37 2002r14
+1997i11 K{integer} 1998r13 1998r53 2000r32
+2000i21 K2{integer} 2000r40 2000r80
+2006i7 L{8|130I12} 2007r28 2009r21
+2007a7 R{1|10A9} 2010m10 2011r57 2013r14
+2009i11 J{integer} 2010r13 2010r32 2011r52
+2011i41 J2{integer} 2011r60 2011r79
+2021U14 Lemma_Expired_Not_Held 2021>38 2021>49 2021>69 2026b14 2035l8 2035t30
+. 2114s7
+2021r38 S{8|238R9} 2023r21 2023r48 2026b38 2032r54
+2021r49 F{3|80R9} 2023r24 2024r25 2026b49 2028r17 2030r49 2032r47
+2021r69 H{4|38R9} 2023r45 2024r28 2026b69 2028r20 2030r52
+2030i13 K{3|68I12} 2032r50
+2039V13 Put_Post{boolean} 2040>7 2040>14 2040>25 2040>32 2040>52 2040>72
+. 2041>7 2041>23 2097s14 2155s14 2217s14
+2040r7 Old_S{8|238R9} 2044r26 2045r34 2048r48 2050r34 2052r34 2055r34 2058r34
+. 2059r35 2063r45 2064r51 2066r24 2069r39 2072r53 2076r39
+2040r14 S{8|238R9} 2043r14 2044r33 2045r20 2064r47 2066r31 2072r60 2074r38
+. 2076r46
+2040r25 Old_F{3|80R9} 2050r71 2052r67 2053r36 2053r60 2055r68 2056r34 2056r64
+. 2058r67 2059r42 2062r43 2063r77 2064r28 2068r47 2070r35 2071r43 2075r38
+2040r32 F{3|80R9} 2043r17 2064r35 2071r50 2073r27 2075r45
+2040a52 Frame{1|10A9} 2048r55 2050r41 2052r41 2055r41 2058r41 2059r52 2072r63
+. 2076r49 2077r23 2077r76
+2040r72 H{4|38R9} 2050r78 2052r74 2053r43 2053r67 2055r75 2056r41 2056r71
+. 2058r74 2059r49 2062r50 2063r33 2063r84 2068r54 2069r27 2070r42 2071r53
+. 2073r30 2074r41 2075r48 2076r56
+2041i7 Off{8|130I12} 2072r70 2076r59
+2041e23 Result{1|112E9} 2046r11 2048r12 2049r12 2051r12 2054r12 2057r12 2062r15
+. 2068r15
+2080U14 Put_Expired 2081=7 2082=7 2083>7 2084>7 2085<7 2086<7 2099b14 2134l8
+. 2134t19 2247s10
+2081r7 S{8|238R9} 2089r21 2094r24 2095r35 2096r29 2097r24 2097r31 2100b7
+. 2108r37 2108r49 2111r14 2112r34 2112r39 2114r31 2121r42 2125r17 2128r17
+. 2131m28
+2082r7 F{3|80R9} 2089r24 2097r34 2097r41 2101b7 2107r44 2113r37 2114r34 2115r24
+. 2115r43 2116m25 2121r54 2124r28 2125m20 2128m20 2131m31
+2083a7 Frame{1|10A9} 2090r17 2091r27 2092r28 2095r38 2097r44 2102b7 2108r71
+. 2131r34
+2084r7 H{4|38R9} 2092r37 2093r28 2094r17 2096r26 2097r51 2103b7 2113r40 2114r37
+. 2115r27 2115r46 2116r28 2124r31 2131r41
+2085i7 Off{8|130I12} 2097r54 2104b7 2111m7
+2086e7 Result{1|112E9} 2097r59 2105b7 2123m10 2126m10 2129m10 2132m10
+2107r7 Saved_F{3|80R9} 2121r45
+2108b7 Short{boolean} 2127r13
+2109e7 St{1|112E9} 2116m31 2123r20
+2137U14 Put_Live 2138=7 2139=7 2140>7 2141>7 2142<7 2143<7 2157b14 2201l8
+. 2201t16 2249s10
+2138r7 S{8|238R9} 2146r21 2152r24 2153r35 2154r33 2155r24 2155r31 2158b7
+. 2168r14 2169r34 2169r39 2185r42 2192r10 2192r22 2193r17 2199m18
+2139r7 F{3|80R9} 2146r24 2155r34 2155r41 2159b7 2165r44 2174r24 2175r24 2176r22
+. 2177r28 2178r28 2180m17 2185r54 2193m20 2199m21
+2140a7 Frame{1|10A9} 2147r17 2148r27 2149r28 2150r39 2153r38 2155r44 2160b7
+. 2170r22 2170r29 2192r44 2199r24
+2141r7 H{4|38R9} 2149r37 2150r48 2151r28 2152r17 2154r30 2155r51 2161b7 2170r65
+. 2174r27 2175r27 2176r25 2177r31 2178r31 2180r20 2199r31
+2142i7 Off{8|130I12} 2155r54 2162b7 2168m7
+2143e7 Result{1|112E9} 2155r59 2163b7 2187m10 2194m10 2200m7
+2165r7 Saved_F{3|80R9} 2185r45
+2166e7 St{1|112E9} 2180m23 2187r20
+2204U14 Put_Foreign 2205=7 2206=7 2207>7 2208>7 2209<7 2210<7 2219b14 2231l8
+. 2231t19 2245s10
+2205r7 S{8|238R9} 2213r21 2216r31 2217r24 2217r31 2220b7 2228r14 2229r14
+2206r7 F{3|80R9} 2213r24 2217r34 2217r41 2221b7 2229m17
+2207a7 Frame{1|10A9} 2214r17 2215r27 2216r34 2217r44 2222b7
+2208r7 H{4|38R9} 2217r51 2223b7
+2209i7 Off{8|130I12} 2217r54 2224b7 2228m7
+2210e7 Result{1|112E9} 2217r59 2225b7 2230m7
+2254V13 Expire_Post{boolean} 2255>7 2255>14 2255>25 2255>32 2255>52 2255>63
+. 2284s14 2313s14
+2255r7 Old_S{8|238R9} 2259r26 2262r29 2262r68 2263r72 2264r24 2270r40 2271r46
+. 2271r68 2272r58 2273r69
+2255r14 S{8|238R9} 2258r14 2259r33 2263r68 2264r31 2266r23 2269r55 2271r53
+. 2271r85 2272r41 2273r51 2275r78
+2255r25 Old_F{3|80R9} 2262r36 2263r49 2266r40 2269r36 2270r47 2276r36
+2255r32 F{3|80R9} 2258r17 2263r56 2269r43 2275r37 2275r62
+2255i52 Now{1|22I9} 2262r43 2266r47 2270r54
+2255e63 Result{1|112E9} 2260r11 2261r12 2263r15 2265r15
+2275i20 I{integer} 2275r65
+2279U14 Expire_Raise 2280=7 2280=25 2280>52 2280<63 2286b14 2305l8 2305t20
+. 2341s10
+2280r7 S{8|238R9} 2283r21 2283r58 2284r27 2284r34 2287b7 2292r13 2292r25
+. 2293r20 2297m21 2301m10 2302r32
+2280r25 F{3|80R9} 2283r24 2283r48 2284r37 2284r44 2287b25 2289r50 2291r23
+. 2293m23 2297m24 2299r50 2299r75 2300r26 2302r35
+2280i52 Now{1|22I9} 2283r51 2284r47 2287b52 2289r53
+2280e63 Result{1|112E9} 2284r52 2287b63 2294m13 2304m7
+2289i7 Hn{8|161I12} 2291r26 2297r27 2299r82 2300r29 2300r33 2301r18
+2299i33 K{integer} 2299r78
+2308U14 Expire_Other 2309=7 2309=25 2309>52 2309<63 2315b14 2331l8 2331t20
+. 2343s10
+2309r7 S{8|238R9} 2312r21 2312r59 2313r27 2313r34 2316b7 2320r15 2321r13
+. 2321r25 2322r20 2326m21 2328r29
+2309r25 F{3|80R9} 2312r24 2312r48 2313r37 2313r44 2316b25 2318r50 2322m23
+. 2326m24 2328r26
+2309i52 Now{1|22I9} 2312r51 2313r47 2316b52 2318r53
+2309e63 Result{1|112E9} 2313r52 2316b63 2323m13 2330m7
+2318i7 Hn{8|161I12} 2320r10 2326r27 2328r35
+2354U14 Copy_Bytes 2355=7 2355>32 2355>45 2355>63 2356>7 2373b14 2383l8 2383t18
+. 2664s7
+2355a7 Dst{1|10A9} 2359r14 2360r23 2362r28 2362r58 2364r42 2364r52 2365r48
+. 2366r17 2367r17 2368r17 2369r17 2370r17 2371r17 2374b7 2379m10 2380r60
+. 2380r70 2381r57
+2355i32 W{natural} 2362r23 2362r69 2364r33 2365r53 2366r22 2367r22 2368r22
+. 2369r22 2370r22 2371r22 2374b32 2379r15 2380r51 2381r62
+2355a45 Src{1|10A9} 2359r37 2360r52 2363r31 2363r61 2365r62 2366r27 2367r31
+. 2368r31 2369r31 2370r31 2371r31 2374b45 2379r25 2381r72
+2355i63 From{natural} 2363r23 2363r72 2365r67 2366r32 2367r36 2368r36 2369r36
+. 2370r36 2371r36 2374b63 2379r30 2381r77
+2356i7 Size{positive} 2361r23 2362r46 2363r49 2365r36 2375b7 2378r21
+2364i23 P{integer} 2364r47 2364r61
+2365i26 K{integer} 2365r57 2365r74
+2378i11 K{integer} 2379r19 2379r37 2381r52
+2380i41 P{integer} 2380r65 2380r86
+2381i41 K2{integer} 2381r66 2381r84
+2385A9 Size_Map(natural)<integer> 2390r16 2391r16
+2389R9 Prefix 2389d17 2392e14 2397r28 2415r81 2423r81 2424r11 2767r17 2806r17
+. 3237r26
+2389i17*N{3|67I12} 2390r31 2391r31 2399r37 2406r37 2407r37 2408r37 2410r37
+. 2411r39 2411r71 2412r48 2412r80 2413r50 2421r31 2783r19
+2390a7*SA{2385A9} 2398r9 2400r21 2400r32 2407r44 2409r58 2411r21 2411r33
+. 2424m34 2429r27 2431m15 2431r27 2436m15 2436r27 2441r35 2445r17 2445r29
+. 2453r39 2456r24 2459r55 2462r17 2462r30 2786r50 2793r56 2824r59 2826r84
+. 2834r72 3251r41
+2390a11*SD{2385A9} 2398r31 2402r30 2402r41 2407r72 2409r21 2409r88 2411r53
+. 2411r65 2424m55 2428r27 2429r70 2432m15 2432r27 2437m15 2437r27 2441r57
+. 2447r26 2447r38 2453r69 2455r15 2456r68 2459r17 2459r86 2462r48 2462r61
+. 2793r42 2824r41 2826r70 2834r58 3251r52
+2391a7*CA{2385A9} 2398r53 2404r30 2404r41 2406r44 2412r30 2412r42 2425m26
+. 2433m15 2433r27 2438m15 2438r27 2442r44 2449r26 2449r38 2451r59 2463r26
+. 2463r39 2787r37 2788r40 2794r59 2795r40 2817r34 2835r72 3245r53 3254r51
+. 3255r76 3258r54 3322r58 3323r47
+2391a11*CD{2385A9} 2398r75 2405r30 2405r41 2406r59 2412r62 2412r74 2425m47
+. 2434m15 2434r27 2439m15 2439r27 2442r66 2450r26 2450r38 2451r76 2463r57
+. 2463r70 2794r45 2835r58
+2394V13 Part_Of{boolean} 2394>22 2394>34 2822s13 2842s23 2848s28
+2394r22 X{4|38R9} 2394r78
+2394b34 Data{boolean} 2394r83
+2397V13 Prefix_OK{boolean} 2397>24 2397>36 2397>55 2421s46 2784s17
+2397r24 P{2389R9} 2398r7 2398r29 2398r51 2398r73 2399r35 2400r19 2400r30
+. 2402r28 2402r39 2404r28 2404r39 2405r28 2405r39 2406r35 2406r42 2406r57
+. 2407r35 2407r42 2407r70 2408r35 2409r19 2409r56 2409r86 2410r35 2411r19
+. 2411r31 2411r37 2411r51 2411r63 2411r69 2412r28 2412r40 2412r46 2412r60
+. 2412r72 2412r78 2413r48
+2397a36 Idx{8|846A9} 2401r36 2401r67 2403r36 2403r67 2404r67 2405r67 2413r25
+. 2413r55
+2397i55 LL{natural} 2409r31 2409r68
+2399i25 I{integer} 2400r25 2400r36 2401r41 2401r72 2402r34 2402r45 2403r41
+. 2403r72 2404r34 2404r45 2404r72 2405r34 2405r45 2405r72
+2406i25 I{integer} 2406r48 2406r53 2406r63
+2407i25 I{integer} 2407r48 2407r66 2407r76
+2408i25 I{integer} 2409r25 2409r62 2409r92
+2410i25 I{integer} 2411r25 2411r57 2412r34 2412r66
+2415V13 Prefix_Of{2389R9} 2415>24 2415>43 2415>59 2421r14 2421r57 2423b13
+. 2466l8 2466t17 3237s36
+2415a24 Idx{8|846A9} 2417r14 2417r42 2419r31 2420r47 2420r90 2421r75 2423b24
+. 2428r41 2429r41 2430r22 2431r55 2437r55 2446r32 2446r64 2448r32 2448r64
+. 2449r65 2450r65 2455r33 2456r42
+2415i43 N{3|67I12} 2417r37 2419r36 2420r42 2421r35 2423b43 2424r19 2424r31
+. 2427r21
+2415i59 LL{8|130I12} 2418r23 2420r102 2421r80 2423b59 2459r28 2459r66
+2420i32 I{integer} 2420r52 2420r95
+2424r7 P{2389R9} 2428r25 2429r25 2429r68 2431m13 2431r25 2432m13 2432r25
+. 2433m13 2433r25 2434m13 2434r25 2436m13 2436r25 2437m13 2437r25 2438m13
+. 2438r25 2439m13 2439r25 2441r33 2441r55 2442r42 2442r64 2445r15 2445r27
+. 2447r24 2447r36 2449r24 2449r36 2450r24 2450r36 2451r57 2451r74 2453r37
+. 2453r67 2455r13 2456r22 2456r66 2459r15 2459r53 2459r84 2462r15 2462r28
+. 2462r46 2462r59 2463r24 2463r37 2463r55 2463r68 2465r14
+2427i11 I{integer} 2428r31 2428r46 2429r31 2429r46 2429r74 2430r27 2431r19
+. 2431r31 2431r60 2432r19 2432r31 2433r19 2433r31 2434r19 2434r31 2436r19
+. 2436r31 2437r19 2437r31 2437r60 2438r19 2438r31 2439r19 2439r31 2444r32
+. 2451r52 2453r32 2455r19 2455r38 2456r28 2456r47 2456r72 2458r32 2461r32
+. 2462r34 2462r65 2463r43 2463r74
+2444i21 I2{integer} 2445r21 2445r33 2446r37 2446r69 2447r30 2447r42 2448r37
+. 2448r69 2449r30 2449r42 2449r70 2450r30 2450r42 2450r70
+2451i41 I2{integer} 2451r63 2451r69 2451r80
+2453i21 I2{integer} 2453r43 2453r62 2453r73
+2458i21 I2{integer} 2459r21 2459r59 2459r90
+2461i21 I2{integer} 2462r21 2462r52 2463r30 2463r61
+2474V13 Copied{boolean} 2475>7 2475>25 2475>44 2475>60 2476>7 2476>29 2476>43
+. 2476>66 2477>7 2486r14 2506b13 2570s23 2620s17 2627s17 2649s22 2755s22
+. 2788s17 2795s17 2836s33 2851s22 3245s22
+2475a7 Log{1|10A9} 2480r14 2481r23 2493r42 2494r61 2498r56 2517r40 2518r59
+. 2522r54
+2475a25 Idx{8|846A9} 2483r23 2483r51 2489r37 2490r39 2493r21 2494r36 2494r72
+. 2495r30 2498r61 2513r35 2514r37 2517r19 2518r34 2518r70 2519r28 2522r59
+2475i44 N{3|67I12} 2483r46 2488r28 2512r26
+2475i60 CA{natural} 2495r54 2504r34 2504r49 2519r52 2528r32 2528r47
+2476a7 New_Log{1|10A9} 2480r37 2481r52 2482r28 2498r24 2522r22
+2476i29 W{8|130I12} 2482r23 2492r45 2499r71 2500r24 2516r43 2523r69 2524r22
+2476a43 New_Idx{8|846A9} 2484r23 2484r55 2489r21 2490r21 2491r21 2492r29
+. 2497r55 2498r33 2499r33 2499r83 2501r46 2501r76 2513r19 2514r19 2515r19
+. 2516r27 2521r53 2522r31 2523r31 2523r81 2525r44 2525r74
+2476i66 K{3|67I12} 2484r50 2485r46 2487r28 2496r37 2499r22 2499r92 2501r37
+. 2502r37 2503r45 2511r26 2520r35 2523r20 2523r90 2525r35 2526r35 2527r43
+2477a7 Src{110A9} 2485r23 2485r51 2488r12 2489r42 2490r44 2493r26 2494r41
+. 2494r77 2495r35 2498r66 2504r57 2504r67 2512r10 2513r40 2514r42 2517r24
+. 2518r39 2518r75 2519r33 2522r64 2528r55 2528r65
+2487i18 J{integer} 2488r17 2489r30 2489r47 2490r30 2490r49 2491r30 2492r38
+. 2493r31 2494r46 2494r82 2495r40 2495r50
+2496i27 J{integer} 2497r64 2498r42 2498r71
+2497i30 M{integer} 2498r51 2498r81
+2501i27 J{integer} 2501r55 2501r85
+2502i27 J{integer} 2503r36 2504r45 2504r62
+2503i30 J2{integer} 2504r28 2504r72
+2511i16 J{integer} 2512r15 2513r28 2513r45 2514r28 2514r47 2515r28 2516r36
+. 2517r29 2518r44 2518r80 2519r38 2519r48
+2520i25 J{integer} 2521r62 2522r40 2522r69
+2521i28 M{integer} 2522r49 2522r79
+2525i25 J{integer} 2525r53 2525r83
+2526i25 J{integer} 2527r34 2528r43 2528r60
+2527i28 J2{integer} 2528r26 2528r70
+2531U14 Lemma_Bytes_Kept 2532>7 2532>16 2532>38 2532>52 2533>7 2533>12 2533>18
+. 2546b14 2555l8 2555t24 2688s10 3283s13
+2532a7 Old_Log{1|10A9} 2536r14 2537r17 2542r60 2543r47 2547b7 2552r45
+2532a16 New_Log{1|10A9} 2536r41 2537r32 2538r17 2539r23 2542r46 2544r44 2547b16
+. 2552r25 2553r57
+2532i38 W0{natural} 2539r17 2540r24 2540r43 2542r36 2547b38 2551r35
+2532a52 Log{1|10A9} 2536r68 2538r50 2541r25 2541r54 2543r67 2544r64 2547b52
+. 2553r78
+2533i7 Off{natural} 2540r17 2540r48 2543r56 2544r53 2548b7 2551r25 2552r34
+. 2552r54 2553r66
+2533i12 From{natural} 2541r17 2541r69 2543r72 2544r69 2548b12 2553r83
+2533i18 Len{natural} 2540r36 2541r47 2543r36 2544r33 2548b18 2550r21
+2542i26 Q{integer} 2542r55 2542r69
+2543i26 M{integer} 2543r62 2543r79
+2544i23 M{integer} 2544r59 2544r76
+2550i11 M{integer} 2551r31 2552r40 2552r60 2553r52
+2553i41 M2{integer} 2553r72 2553r90
+2558U14 Lemma_Copied_Unfold 2559>7 2559>25 2559>44 2559>60 2560>7 2560>29
+. 2560>43 2560>66 2561>7 3254s7
+2559a7 Log{1|10A9} 2564r14 2565r23 2570r31 2580r55
+2559a25 Idx{8|846A9} 2567r23 2567r51 2570r36 2573r42 2574r44 2577r35 2580r60
+2559i44 N{3|67I12} 2567r46 2570r41 2572r33
+2559i60 CA{natural} 2570r44 2577r59 2586r33 2586r48
+2560a7 New_Log{1|10A9} 2564r37 2565r52 2566r28 2570r48 2580r23
+2560i29 W{8|130I12} 2566r23 2570r57 2576r50 2581r70 2582r23
+2560a43 New_Idx{8|846A9} 2568r23 2568r55 2570r60 2573r26 2574r26 2575r26
+. 2576r34 2579r54 2580r32 2581r32 2581r82 2583r45 2583r75
+2560i66 K{3|67I12} 2568r50 2569r46 2570r69 2571r33 2578r36 2581r21 2581r91
+. 2583r36 2584r36 2585r44
+2561a7 Src{110A9} 2569r23 2569r51 2570r72 2572r17 2573r47 2574r49 2577r40
+. 2580r65 2586r56 2586r66
+2571i23 J{integer} 2572r22 2573r35 2573r52 2574r35 2574r54 2575r35 2576r43
+. 2577r45 2577r55
+2578i26 J{integer} 2579r63 2580r41 2580r70
+2579i29 M{integer} 2580r50 2580r80
+2583i26 J{integer} 2583r54 2583r84
+2584i26 J{integer} 2585r35 2586r44 2586r61
+2585i29 J2{integer} 2586r27 2586r71
+2588U14 Lemma_Copied_Unfold
+2589a7 Log{1|10A9}
+2589a25 Idx{8|846A9}
+2589i44 N{3|67I12}
+2589i60 CA{natural}
+2590a7 New_Log{1|10A9}
+2590i29 W{8|130I12}
+2590a43 New_Idx{8|846A9}
+2590i66 K{3|67I12}
+2591a7 Src{110A9}
+2594U14 Copy_One 2595>7 2596>7 2597>7 2598>7 2599>7 2600>7 2601=7 2602=7
+. 2603=7 2604=7 2605=7 2629b14 2756l8 2756t16 2830s13
+2595a7 Log{1|10A9} 2608r14 2608r37 2608r72 2609r59 2616r27 2620r25 2627r25
+. 2630b7 2649r30 2653r47 2658r46 2659r59 2664r32 2676r42 2677r59 2681r47
+. 2687r47 2688r50 2692r47 2696r51 2700r44 2704r47 2732r42 2733r61 2741r40
+. 2742r59 2751r42 2752r61 2755r30
+2596i7 LL{8|130I12} 2608r66 2616r32 2617r51 2631b7
+2597a7 Idx{8|846A9} 2610r17 2610r45 2611r59 2616r36 2617r36 2618r26 2620r30
+. 2622r44 2627r30 2632b7 2647r53 2649r35 2653r52 2658r21 2659r70 2664r37
+. 2666r28 2666r57 2676r21 2677r70 2681r52 2687r52 2689r28 2692r52 2696r56
+. 2700r49 2704r52 2720r37 2721r39 2724r30 2728r37 2729r39 2732r21 2733r36
+. 2733r72 2734r30 2737r35 2738r37 2741r19 2742r34 2742r70 2743r28 2747r37
+. 2748r39 2751r21 2752r36 2752r72 2753r30 2755r35
+2598i7 N{3|67I12} 2610r40 2612r51 2613r22 2614r21 2620r35 2627r35 2633b7
+. 2649r40 2657r41 2675r37 2719r32 2727r28 2736r26 2746r28 2755r40
+2599i7 CA{natural} 2618r48 2619r54 2619r69 2620r38 2627r38 2634b7 2649r43
+. 2663r25 2663r40 2710r25 2710r40 2712r43 2712r58 2716r25 2716r40 2724r58
+. 2734r54 2743r52 2753r54 2755r43
+2600i7 I{3|68I12} 2613r17 2616r41 2617r41 2618r31 2619r87 2622r49 2623r27
+. 2635b7 2647r58 2664r42 2666r33 2666r62 2667r18
+2601a7 New_Log{1|10A9} 2609r17 2609r44 2620r42 2626r54 2626r68 2627r42 2636b7
+. 2642r40 2664m19 2671r50 2688r37 2692r15 2696r18 2700r12 2704r15 2755r47
+2602i7 W{8|130I12} 2615r17 2617r17 2620r51 2622r17 2622r21 2627r51 2637b7
+. 2645r38 2668m7 2731r45 2740r43 2750r45 2754r74 2755r56
+2603a7 New_Idx{8|846A9} 2611r17 2611r44 2620r54 2625r45 2625r59 2627r54 2638b7
+. 2643r41 2666m7 2669r46 2674r20 2677r36 2680r46 2681r24 2684r33 2686r46
+. 2687r24 2688r55 2689r62 2691r46 2692r24 2695r49 2696r27 2699r43 2700r21
+. 2703r46 2704r24 2705r37 2705r63 2706r49 2706r79 2728r21 2729r21 2730r21
+. 2731r29 2737r19 2738r19 2739r19 2740r27 2747r21 2748r21 2749r21 2750r29
+. 2754r36 2754r86 2755r59
+2604i7 K{3|67I12} 2614r17 2618r40 2619r36 2619r45 2620r63 2621r14 2621r18
+. 2623r22 2624r36 2625r36 2627r63 2639b7 2646r40 2665m7 2666r16 2667r12 2699r52
+. 2700r30 2700r59 2702r28 2705r46 2706r40 2712r38 2712r81 2714r28 2715r36
+. 2736r15 2737r28 2737r45 2738r28 2738r47 2739r28 2740r36 2741r29 2742r44
+. 2742r80 2743r38 2743r48 2745r28 2754r25 2754r95 2755r68
+2605a7 Src{110A9} 2612r17 2612r40 2619r77 2620r66 2623r17 2624r45 2624r55
+. 2627r66 2640b7 2644r39 2667m7 2670r46 2675r21 2676r26 2677r75 2681r57 2687r57
+. 2689r33 2692r57 2696r61 2700r54 2704r57 2710r48 2710r58 2712r66 2712r76
+. 2716r48 2716r58 2727r12 2728r42 2729r44 2732r26 2733r41 2733r77 2734r35
+. 2736r10 2737r40 2738r42 2741r24 2742r39 2742r75 2743r33 2746r12 2747r42
+. 2748r44 2751r26 2752r41 2752r77 2753r35 2755r71
+2619i26 J{integer} 2619r65 2619r82
+2624i26 J{integer} 2624r50 2624r64
+2625i26 J{integer} 2625r54 2625r72
+2626i26 Q{integer} 2626r63 2626r81
+2642a7 Old_Log{1|10A9} 2649r47 2653r15 2671r64 2681r15 2687r15 2688r28
+2643a7 Old_Idx{8|846A9} 2649r60 2652r46 2653r24 2656r20 2659r36 2669r60 2720r21
+. 2721r21 2722r21 2723r29
+2644a7 Old_Src{110A9} 2649r73 2653r57 2657r21 2658r26 2659r75 2663r48 2663r62
+. 2670r56 2719r12 2720r42 2721r44 2724r35
+2645i7 W0{8|130I12} 2649r56 2656r36 2664r28 2666r46 2668r12 2671r40 2674r36
+. 2684r49 2688r46 2723r45
+2646i7 K0{3|67I12} 2649r69 2651r28 2655r28 2661r28 2662r36 2665r12 2669r40
+. 2670r40 2673r28 2679r28 2683r21 2705r25 2705r72 2708r28 2709r36 2712r28
+. 2718r28 2726r28
+2647i7 Size{positive} 2664r50 2668r17
+2651i18 J{integer} 2652r55 2653r33 2653r66
+2652i21 M{integer} 2653r42 2653r76
+2655i18 J{integer} 2656r29 2657r30 2658r35 2659r45 2659r84
+2661i18 J{integer} 2662r27 2663r36 2663r57
+2662i21 J2{integer} 2663r19 2663r71
+2669i30 J{integer} 2669r55 2669r69
+2670i30 J{integer} 2670r51 2670r65
+2671i30 Q{integer} 2671r59 2671r73
+2673i18 J{integer} 2674r29 2675r26 2676r31 2677r45 2677r80
+2679i18 J{integer} 2680r55 2681r33 2681r62
+2680i21 M{integer} 2681r42 2681r72
+2683i11 J{integer} 2684r42 2686r55 2687r33 2687r62 2688r64 2689r38 2689r71
+. 2691r55 2692r33 2692r62 2694r32
+2686i21 M{integer} 2687r42 2687r72
+2691i21 M{integer} 2692r42 2692r72
+2694i21 J2{integer} 2695r58 2696r36 2696r66
+2695i24 M{integer} 2696r46 2696r77
+2699i18 M{integer} 2700r39 2700r69
+2702i18 J{integer} 2703r55 2704r33 2704r62
+2703i21 M{integer} 2704r42 2704r72
+2706i30 J{integer} 2706r58 2706r88
+2708i18 J{integer} 2709r27 2710r36 2710r53
+2709i21 J2{integer} 2710r19 2710r63
+2712i18 J{integer} 2712r54 2712r71
+2714i18 J{integer} 2715r27 2716r36 2716r53
+2715i21 J2{integer} 2716r19 2716r63
+2718i18 J{integer} 2719r21 2720r30 2720r51 2721r30 2721r53 2722r30 2723r38
+. 2724r44 2724r54
+2726i18 J{integer} 2727r17 2728r30 2728r47 2729r30 2729r49 2730r30 2731r38
+. 2732r31 2733r46 2733r82 2734r40 2734r50
+2745i18 J{integer} 2746r17 2747r30 2747r47 2748r30 2748r49 2749r30 2750r38
+. 2751r31 2752r46 2752r82 2753r40 2753r50
+2762U14 Copy_Part 2763>7 2764>7 2765>7 2766>7 2767>7 2768>7 2769=7 2770=7
+. 2771=7 2772=7 2773=7 2774=7 2801b14 2852l8 2852t17 3248s7 3249s7
+2763a7 Log{1|10A9} 2777r14 2777r37 2777r72 2778r59 2785r25 2788r25 2795r25
+. 2802b7 2821r35 2830r23 2836r41 2851r30
+2764i7 LL{8|130I12} 2777r66 2784r36 2785r30 2803b7 2821r40 2827r62 2830r28
+2765a7 Idx{8|846A9} 2779r17 2779r45 2780r59 2784r31 2785r34 2788r30 2791r40
+. 2795r30 2798r50 2804b7 2821r44 2822r22 2826r35 2827r47 2829r37 2830r32
+. 2836r46 2842r32 2847r47 2848r37 2851r35
+2766i7 N{3|67I12} 2779r40 2781r51 2782r51 2783r23 2785r39 2786r54 2787r41
+. 2788r35 2788r44 2790r39 2793r46 2793r60 2794r49 2794r63 2795r35 2795r44
+. 2797r36 2805b7 2817r38 2820r21 2828r32 2830r37 2836r51 2841r31 2846r31
+. 2851r40
+2767r7 P{2389R9} 2783r17 2784r28 2786r48 2787r35 2788r38 2793r40 2793r54
+. 2794r43 2794r57 2795r38 2806b7 2817r32 2824r39 2824r57 2826r68 2826r82
+. 2834r56 2834r70 2835r56 2835r70
+2768b7 Data{boolean} 2786r38 2787r25 2789r21 2793r30 2794r33 2798r24 2807b7
+. 2822r33 2824r29 2826r58 2834r46 2835r46 2842r43 2847r20 2848r48
+2769a7 New_Log{1|10A9} 2778r17 2778r44 2788r48 2795r48 2796r54 2796r68 2808b7
+. 2830m47 2836r58 2838r49 2838r63 2851r47
+2770i7 W{8|130I12} 2786r17 2788r57 2793r14 2793r18 2795r57 2809b7 2815r33
+. 2824r16 2826r16 2827r28 2830m56 2834r33 2836r67 2851r56
+2771a7 New_Idx{8|846A9} 2780r17 2780r44 2788r60 2795r60 2810b7 2830m59 2836r70
+. 2851r59
+2772i7 K{3|67I12} 2787r17 2788r69 2792r45 2794r17 2794r21 2795r69 2799r42
+. 2811b7 2816r35 2828r28 2829r51 2830m68 2831r24 2832r46 2835r33 2836r79
+. 2844r31 2849r37 2851r68
+2773a7 Src{110A9} 2781r17 2781r40 2788r72 2792r56 2795r72 2799r53 2812b7
+. 2830m71 2832r67 2836r82 2839r57 2839r67 2844r52 2849r48 2851r71
+2774a7 Dst{110A9} 2782r17 2782r40 2792r29 2792r61 2799r26 2799r58 2813b7
+. 2831m13 2842r54 2842r64 2849r21 2849r53
+2790i29 J{integer} 2791r45 2792r34 2792r66 2792r72
+2796i26 Q{integer} 2796r63 2796r81
+2797i26 J{integer} 2798r55 2799r31 2799r63 2799r69
+2815i7 W0{8|130I12} 2819r22 2824r20 2826r49 2834r37
+2816i7 K0{3|67I12} 2832r59 2835r37 2839r51 2844r44
+2817i7 CA{natural} 2829r59 2830r40 2836r54 2851r43
+2820i11 I{integer} 2821r49 2822r27 2824r45 2824r63 2826r40 2826r74 2826r88
+. 2827r52 2829r42 2830r44 2831r18 2832r78 2834r62 2834r76 2835r62 2835r76
+. 2844r63 2848r68
+2832i36 J{integer} 2832r55 2832r72
+2838i21 Q{integer} 2838r58 2838r83
+2839i41 J{integer} 2839r62 2839r83
+2841i21 J{integer} 2842r37 2842r59 2842r80
+2844i21 J{integer} 2844r40 2844r57
+2846i21 J{integer} 2847r52 2848r42 2848r63 2849r26 2849r58 2849r64
+2855U14 Lemma_Compacted_Entry 2855>37 2855>55 2855>59 2855>73 2865b14 2870l8
+. 2870t29 2909s10
+2855a37 Log{1|10A9} 2857r14 2857r43 2858r33 2859r24 2861r33 2862r23 2863r40
+. 2865b37 2867r22 2868r32 2869r31
+2855i55 LL{8|130I12} 2857r37 2857r66 2859r29 2860r31 2861r38 2865b55
+2855i59 W{8|130I12} 2857r61 2858r38 2865b59
+2855r73 E{8|227R9} 2858r41 2859r33 2860r23 2861r42 2862r28 2863r23 2863r45
+. 2863r62 2865b73 2867r27 2868r37 2868r52 2869r36 2869r60
+2874U14 Lemma_Chain_Compacted 2875>7 2875>25 2875>40 2875>54 2875>73 2876>7
+. 2876>27 2876>41 2899b14 2950l8 2950t29 3298s7
+2875a7 Log{1|10A9} 2879r14 2879r43 2883r17 2886r25 2892r58 2895r21 2896r25
+. 2900b7 2904r32 2905r31 2906r41 2908r35 2909r33 2912r25 2913r34 2914r24
+. 2915r48 2919r35 2920r35 2923r36 2927r25 2928r24 2929r43 2934r22 2935r21
+. 2936r40 2938r35 2939r48 2944r22 2945r22 2946r40 2947r29
+2875i25 LL{8|130I12} 2879r37 2885r22 2892r29 2894r23 2895r26 2896r30 2900b25
+. 2904r37 2906r86 2909r38 2912r30 2913r39 2919r40 2920r40 2924r52 2927r30
+. 2930r59 2934r27 2936r89 2938r40 2939r68 2941r28 2944r27 2946r89 2947r34
+2875i40 W{8|130I12} 2884r17 2885r17 2886r30 2887r66 2888r23 2892r34 2892r63
+. 2893r52 2894r28 2900b40 2908r40 2909r42 2921r80
+2875a54 Idx{8|846A9} 2880r17 2880r45 2886r33 2887r32 2887r78 2889r45 2889r71
+. 2891r55 2896r34 2897r28 2900b54 2908r43 2909r45 2912r34 2913r43 2914r29
+. 2915r24 2915r53 2915r77 2918r39 2919r44 2921r33 2921r59 2949r69
+2875i73 N{3|67I12} 2880r40 2882r34 2882r50 2884r47 2886r38 2887r21 2887r83
+. 2889r36 2891r36 2893r43 2896r39 2897r33 2900b73 2907r21 2917r21 2921r52
+. 2933r28 2938r49 2939r30 2939r58 2949r28
+2876a7 Bnd{8|852A9} 2881r17 2881r46 2890r17 2891r41 2893r38 2895r30 2897r36
+. 2901b7 2906r22 2906r46 2906r73 2918r25 2920r44 2923r13 2923r41 2924r35
+. 2927r34 2928r29 2929r24 2929r48 2930r42 2934r31 2935r26 2936r21 2936r45
+. 2936r72 2938r44 2939r25 2939r53 2944r31 2945r27 2946r21 2946r45 2946r72
+. 2947r38 2949r59
+2876i27 NB{natural} 2881r40 2882r29 2882r45 2895r35 2897r41 2901b27 2906r65
+. 2924r27 2930r34 2936r64 2941r22 2943r28 2946r64 2947r43 2949r53
+2876b41 Ex{boolean} 2882r21 2892r21 2901b41 2937r10
+2889i26 J{integer} 2889r50 2889r76
+2891i26 J{integer} 2891r46 2891r60
+2907i11 J{integer} 2908r48 2909r50 2911r32
+2911i21 J2{integer} 2912r39 2913r48 2914r34 2915r29 2915r58 2915r82
+2917i11 J{integer} 2918r30 2918r44 2919r49 2920r49 2921r38 2921r48 2921r64
+. 2923r18 2923r46 2924r19 2924r40 2926r31
+2926i21 K{integer} 2927r39 2928r34 2929r29 2929r53 2930r30 2930r47
+2933i18 K{integer} 2934r36 2935r31 2936r26 2936r50 2936r60 2936r77
+2943i18 K{integer} 2944r36 2945r32 2945r52 2946r26 2946r50 2946r60 2946r77
+2949i18 J{integer} 2949r74
+2949i43 K{integer} 2949r64
+2953U14 Lemma_Copied_Frames 2954>7 2954>29 2954>43 2954>61 2955>7 2955>26
+. 2955>42 2955>65 2975b14 2992l8 2992t27 3257s7
+2954a7 New_Log{1|10A9} 2958r14 2958r46 2972r23 2973r22 2976b7 2981r25 2982r25
+. 2983r25 2984r25 2985r25 2986r25 2988r23 2989r35 2990r67
+2954i29 W{8|130I12} 2958r41 2969r53 2973r31 2976b29 2989r44 2990r76
+2954a43 Log{1|10A9} 2959r17 2959r46 2963r25 2972r55 2976b43 2980r35 2981r53
+. 2982r57 2983r57 2984r57 2985r57 2986r57 2988r61
+2954i61 LL{8|130I12} 2959r40 2963r30 2976b61 2980r40
+2955a7 Old{8|846A9} 2960r17 2960r45 2963r34 2966r45 2967r47 2972r60 2977b7
+. 2980r44 2981r58 2982r62 2983r62 2984r62 2985r62 2986r62 2988r66
+2955i26 N{3|67I12} 2960r40 2961r44 2962r40 2963r39 2964r36 2965r36 2970r36
+. 2973r43 2977b26 2979r21
+2955a42 New_Idx{8|846A9} 2961r17 2961r49 2966r29 2967r29 2968r29 2969r37
+. 2971r54 2972r32 2973r34 2977b42 2981r34 2982r34 2983r34 2984r34 2985r34
+. 2986r34 2988r32 2989r47 2990r79
+2955a65 Src{110A9} 2962r17 2962r45 2965r20 2966r50 2967r52 2972r65 2977b65
+. 2980r49 2981r63 2982r67 2983r67 2984r67 2985r67 2986r67 2988r71
+2964i26 J{integer} 2965r25 2966r38 2966r55 2967r38 2967r57 2968r38 2969r46
+2970i26 J{integer} 2971r63 2972r41 2972r70
+2971i29 M{integer} 2972r50 2972r80
+2979i11 J{integer} 2980r54 2981r43 2981r68 2982r43 2982r72 2983r43 2983r72
+. 2984r43 2984r72 2985r43 2985r72 2986r43 2986r72 2988r41 2988r76 2989r56
+. 2990r52
+2990i41 J2{integer} 2990r88
+2995U14 Lemma_Contiguous 2995>32 2995>51 3002b14 3010l8 3010t24 3036s7
+2995a32 Idx{8|846A9} 2997r14 2997r42 2998r45 2998r71 3000r54 3000r66 3002b32
+. 3005r25 3005r48 3008r52 3008r64
+2995i51 N{3|67I12} 2997r37 2998r36 2999r33 3000r41 3002b51 3004r22
+2998i26 J{integer} 2998r50 2998r76
+2999i23 J{integer} 3000r32 3000r59
+3000i26 J2{integer} 3000r71
+3004i11 J2{integer} 3005r30 3005r53 3007r32
+3007i21 J3{integer} 3008r34 3008r69
+3008i24 J{integer} 3008r57
+3013U14 Lemma_Copied_Sorted 3014>7 3014>26 3014>42 3014>65 3015>7 3032b14
+. 3058l8 3058t27 3258s7
+3014a7 Old{8|846A9} 3018r14 3018r42 3022r25 3024r63 3033b7 3041r39
+3014i26 N{3|67I12} 3018r37 3019r44 3020r40 3021r23 3022r30 3023r36 3024r36
+. 3025r36 3026r36 3027r44 3029r36 3030r31 3033b26 3036r34 3037r21 3038r29
+. 3041r44 3054r40
+3014a42 New_Idx{8|846A9} 3019r17 3019r49 3024r47 3025r50 3029r45 3029r75
+. 3030r22 3033b42 3036r25 3043r40 3043r67 3045r28 3045r45 3046r36 3046r52
+. 3049r26 3049r42 3050r27 3050r44 3055r26 3055r43 3056r27 3056r45
+3014a65 Src{110A9} 3020r17 3020r45 3024r20 3024r68 3028r58 3028r68 3033b65
+. 3040r31 3040r42 3041r47 3041r56
+3015i7 KA{3|67I12} 3021r17 3025r72 3028r34 3028r49 3034b7 3039r22 3039r37
+3023i26 J{integer} 3024r25 3024r56 3024r73
+3025i26 J{integer} 3025r59 3025r68
+3026i26 J{integer} 3027r35 3028r45 3028r63
+3027i29 J2{integer} 3028r28 3028r73
+3029i26 J{integer} 3029r54 3029r84
+3037i11 J{integer} 3038r20 3039r33 3040r36 3041r52 3043r49 3045r37 3046r45
+. 3048r30 3049r35 3050r36 3053r32
+3038i14 J2{integer} 3039r16 3040r47 3041r61 3043r76 3045r54 3046r61 3048r39
+3048i24 J3{integer} 3049r51 3050r53
+3053i21 J1{integer} 3054r30 3055r35 3056r36
+3054i24 J3{integer} 3055r52 3056r54
+3061U14 Lemma_Copied_Records 3062>7 3062>27 3062>46 3062>62 3063>7 3063>12
+. 3078b14 3099l8 3099t28 3259s7
+3062r7 F{3|80R9} 3070r23 3071r26 3075r20 3075r53 3079b7 3083r32 3084r64 3090r28
+. 3092r69 3097r66
+3062a27 Old{8|846A9} 3066r14 3066r42 3070r26 3071r29 3073r63 3076r64 3079b27
+. 3083r35 3087r47 3088r80 3092r55 3094r51
+3062i46 N{3|67I12} 3066r37 3067r44 3068r40 3069r40 3070r31 3071r34 3072r36
+. 3073r36 3074r36 3074r57 3075r32 3075r65 3076r36 3076r61 3079b46 3082r21
+. 3086r21 3088r77 3092r60 3094r48 3097r57
+3062a62 New_Idx{8|846A9} 3067r17 3067r49 3073r47 3075r23 3075r56 3076r52
+. 3079b62 3084r67 3087r25 3088r68 3094r39 3097r48
+3063a7 Src{110A9} 3068r17 3068r45 3073r20 3073r68 3074r68 3080b7 3083r40
+3063a12 Dst{110A9} 3069r17 3069r45 3074r41 3074r73 3080b12 3087r34
+3072i26 J{integer} 3073r25 3073r56 3073r73
+3074i26 J{integer} 3074r46 3074r78 3074r84
+3076i26 J{integer} 3076r69
+3082i11 J{integer} 3083r45 3084r52
+3084i41 J2{integer} 3084r76
+3086i11 J{integer} 3087r39 3087r52 3088r52
+3088i41 J2{integer} 3088r85
+3090i11 K{integer} 3092r72 3097r32
+3092i13 I{3|68I12} 3094r56
+3097i21 K2{integer} 3097r69
+3102U14 Set_Chain 3103=7 3103>34 3103>53 3103>69 3104>7 3113b14 3126l8 3126t17
+. 3295s7
+3103a7 Bnd{8|852A9} 3107r14 3107r46 3109r14 3110r47 3111r35 3114b7 3117m7
+. 3119m10 3120r33 3121r57 3124m10
+3103a34 Idx{8|846A9} 3108r23 3108r51 3110r61 3114b34 3119r25 3121r72
+3103i53 N{3|67I12} 3107r37 3108r46 3110r42 3111r40 3114b53 3118r21 3124r15
+3103b69 Ex{boolean} 3111r27 3114b69 3123r10
+3104i7 W{8|130I12} 3111r49 3115b7 3124r25
+3110i32 J{integer} 3110r52 3110r66
+3118i11 J{integer} 3119r15 3119r30 3121r52
+3121i41 J2{integer} 3121r62 3121r77
+3129U14 Lemma_Compact_Bytes 3129>35 3129>42 3129>53 3150b14 3172l8 3172t27
+. 3316s7
+3129r35 Old_S{8|238R9} 3132r17 3132r29 3132r48 3132r60 3133r24 3137r45 3139r37
+. 3139r61 3142r51 3142r62 3145r44 3145r76 3147r38 3147r55 3150b35 3152r65
+. 3152r74 3153r59 3153r68 3157r43 3157r54 3160r59 3160r66 3162r49 3162r66
+. 3167r42 3167r75 3169r36 3169r53
+3129r42 S{8|238R9} 3131r14 3131r22 3131r37 3131r45 3133r17 3134r51 3135r36
+. 3136r36 3137r29 3138r37 3138r51 3140r36 3141r54 3142r23 3142r30 3143r33
+. 3144r35 3144r57 3146r38 3146r51 3148r63 3150b42 3152r34 3152r39 3153r31
+. 3153r36 3154r21 3156r46 3157r15 3157r22 3159r46 3160r25 3160r28 3162r25
+. 3162r38 3163r50 3166r33 3166r56 3168r36 3168r49 3170r61
+3129a53 Src{110A9} 3134r17 3134r40 3136r20 3137r56 3139r48 3142r73 3145r51
+. 3147r62 3150b53 3157r65 3160r77 3162r73 3167r49 3169r60
+3135i26 J{integer} 3136r25 3137r36 3137r61 3138r44 3139r53
+3140i26 J{integer} 3141r61 3142r37 3142r78
+3141i29 M{integer} 3142r46 3142r88
+3143i23 J{integer} 3144r38 3145r56 3146r54 3147r67 3148r66
+3154i11 J{integer} 3156r53 3157r29 3157r70 3159r53 3160r35 3160r82 3162r41
+. 3162r78 3163r53 3165r32
+3156i21 M{integer} 3157r38 3157r80
+3159i21 M{integer} 3160r44 3160r92
+3165i21 J2{integer} 3166r36 3167r54 3168r52 3169r65 3170r64
+3175U14 Lemma_Compact_Post 3176>7 3176>14 3176>25 3176>45 3176>62 3216b14
+. 3229l8 3229t26 3323s7
+3176r7 Old_S{8|238R9} 3179r21 3180r40 3185r59 3186r61 3190r47 3190r79 3192r41
+. 3192r58 3198r26 3199r36 3199r53 3202r44 3202r61 3203r41 3205r38 3205r55
+. 3205r72 3213r39 3214r41 3217b7 3222r26 3223r35 3226r24 3227r34
+3176r14 S{8|238R9} 3180r26 3181r60 3182r32 3183r45 3184r45 3185r39 3186r39
+. 3187r48 3188r45 3189r38 3189r60 3191r41 3191r54 3193r66 3194r45 3195r53
+. 3197r42 3198r43 3199r70 3200r38 3201r44 3201r66 3202r78 3204r38 3204r51
+. 3205r89 3206r63 3207r45 3208r52 3209r46 3209r79 3210r45 3211r52 3212r46
+. 3212r76 3213r56 3214r58 3217b14 3219r43 3223r52 3226r41 3227r51
+3176r25 F{3|80R9} 3179r28 3217b25 3222r33
+3176a45 Src{110A9} 3181r17 3181r40 3184r20 3185r66 3186r68 3190r54 3192r65
+. 3196r56 3196r66 3217b45 3222r36 3223r63 3227r63
+3176i62 CA{natural} 3182r17 3187r64 3196r33 3196r48 3217b62
+3183i26 J{integer} 3184r25 3185r42 3185r71 3186r42 3186r73 3187r51 3187r60
+3188i26 J{integer} 3189r41 3190r59 3191r57 3192r70 3193r69
+3194i26 J{integer} 3195r35 3196r44 3196r61
+3195i29 J2{integer} 3196r27 3196r71
+3197i23 I{integer} 3198r46 3199r73 3200r41 3201r47 3202r81 3204r54 3205r92
+. 3206r66
+3207i26 I{integer} 3208r34 3209r49
+3208i29 J{integer} 3209r82
+3210i26 I{integer} 3211r34 3212r49 3213r59
+3211i29 J{integer} 3212r79 3214r61
+3219i7 N{3|67I12} 3221r21
+3221i11 J{integer} 3222r41 3223r55 3223r68 3225r32
+3225i21 J2{integer} 3226r44 3227r54 3227r68
+3232r7 Old_S{8|238R9} 3304r45 3305r22 3305r51 3309r37 3311r29 3311r53 3315r43
+. 3315r54 3316r28 3320r51 3321r53 3323r27
+3233i7 N{3|67I12} 3237r56 3238r33 3239r33 3244r40 3245r48 3245r57 3248r44
+. 3249r44 3250r26 3251r45 3251r56 3253r52 3254r46 3254r55 3254r76 3255r40
+. 3255r80 3256r40 3256r61 3257r64 3258r37 3258r58 3259r41 3281r58 3282r24
+. 3294r22 3295r32 3296r27 3296r38 3298r53 3307r28 3308r28 3313r28 3318r28
+. 3319r28 3322r62 3323r51
+3234i7 Old_LL{8|130I12} 3237r59 3244r64 3248r27 3249r27 3252r27 3257r47 3299r33
+. 3305r62
+3235a7 Old_Log{1|10A9} 3244r55 3245r30 3248r18 3249r18 3254r28 3257r38 3283r50
+. 3288r50 3290r73 3299r24 3305r34
+3236a7 Old_Idx{8|846A9} 3237r47 3244r72 3245r39 3248r35 3249r35 3254r37 3257r55
+. 3258r28 3259r32 3284r31 3288r59
+3237r7 P{2389R9} 3245r51 3248r47 3249r47 3251r39 3251r50 3254r49 3255r74
+. 3258r52 3322r56 3323r45
+3238a7 Src{110A9} 3245r81 3248m77 3248r77 3249m76 3249r76 3254r79 3256r72
+. 3257r74 3258r47 3259r51 3284r40 3288r68 3308r12 3309r48 3311r40 3315r65
+. 3316r38 3319r12 3320r58 3321r60 3323r40
+3239a7 Dst{110A9} 3248m82 3248r82 3249m81 3249r81 3256r45 3256r77 3259r56
+3240i7 W{8|130I12} 3245r68 3248m64 3248r64 3249m63 3249r63 3251r22 3252r22
+. 3253r22 3254r66 3257r35 3262r44 3269r20 3270r20 3271r20 3272r20 3273r20
+. 3274r20 3275r20 3276r21 3278r21 3280r43 3281r38 3281r48 3283r47 3295r39
+. 3298r43 3303r37
+3241i7 K{3|67I12} 3245r78 3248m74 3248r74 3249m73 3249r73 3250r22
+3242b7 Ex{boolean} 3262m7 3267r13 3295r35 3296r19 3298r69
+3244i30 I{integer} 3244r81
+3255i30 J{integer} 3255r61 3255r70
+3256i30 J{integer} 3256r50 3256r82 3256r88
+3264a10 Pre_Log{1|10A9} 3280r64 3281r29 3283r31
+3265i10 Code{1|22I9} 3268r48 3270r56 3271r56 3272r56 3273r56 3274r56 3275r56
+3280i33 Q{integer} 3280r59 3280r73
+3282i14 J{integer} 3283r66 3284r45 3284r76 3286r35
+3286i24 J2{integer} 3287r59 3288r35 3288r73
+3287i27 M{integer} 3288r45 3288r84
+3290i33 Q{integer} 3290r68 3290r82
+3307i18 J{integer} 3308r17 3309r28 3309r53 3310r36 3311r45
+3313i18 J{integer} 3314r53 3315r29 3315r70
+3314i21 M{integer} 3315r38 3315r80
+3318i18 J{integer} 3319r17 3320r34 3320r63 3321r34 3321r65 3322r43 3322r52
+3332U14 Decode_Frame 3332>28 3332<48 3336b14 3376l8 3376t20 3441s7
+3332a28 Frame{1|10A9} 3334r35 3336b28 3339r37 3343r34 3348r46 3354r46 3360r46
+. 3366r46 3372r46
+3332b48 Accepted{boolean} 3334r14 3336b48 3340m10 3375m7
+3337e7 St{1|112E9} 3348m56 3354m56 3360m56 3366m56 3372m56 3375r19
+3346r16 R{6|262R9} 3348m53 3348r53
+3352r16 R{6|487R9} 3354m53 3354r53
+3358r16 R{6|641R9} 3360m53 3360r53
+3364r16 R{6|1005R9} 3366m53 3366r53
+3370r16 R{6|1191R9} 3372m53 3372r53
+3379U14 Lemma_Word_Bytes 3379>32 3379>36 3379>40 3379>44 3379>48 3379>52
+. 3379>56 3379>60 3384b14 3388l8 3388t24 3625s16
+3379m32 A0{1|9M9} 3381r33 3382r14 3384b32 3386r41
+3379m36 A1{1|9M9} 3381r37 3382r31 3384b36 3386r45
+3379m40 A2{1|9M9} 3381r41 3382r48 3384b40 3386r49
+3379m44 A3{1|9M9} 3381r45 3382r65 3384b44 3386r53
+3379m48 B0{1|9M9} 3381r70 3382r19 3384b48 3387r41
+3379m52 B1{1|9M9} 3381r74 3382r36 3384b52 3387r45
+3379m56 B2{1|9M9} 3381r78 3382r53 3384b56 3387r49
+3379m60 B3{1|9M9} 3381r82 3382r70 3384b60 3387r53
+3391U14 Lemma_U48_Bytes 3391>31 3391>35 3391>39 3391>43 3391>47 3391>51 3391>55
+. 3391>59 3391>63 3391>67 3391>71 3391>75 3398b14 3402l8 3402t23 3653s13
+3391m31 A0{1|9M9} 3393r35 3395r14 3398b31 3400r48
+3391m35 A1{1|9M9} 3393r39 3395r31 3398b35 3400r52
+3391m39 A2{1|9M9} 3393r43 3395r48 3398b39 3400r56
+3391m43 A3{1|9M9} 3393r47 3396r23 3398b43 3400r60
+3391m47 A4{1|9M9} 3393r51 3396r40 3398b47 3400r64
+3391m51 A5{1|9M9} 3393r55 3396r57 3398b51 3400r68
+3391m55 B0{1|9M9} 3394r37 3395r19 3398b55 3401r48
+3391m59 B1{1|9M9} 3394r41 3395r36 3398b59 3401r52
+3391m63 B2{1|9M9} 3394r45 3395r53 3398b63 3401r56
+3391m67 B3{1|9M9} 3394r49 3396r28 3398b67 3401r60
+3391m71 B4{1|9M9} 3394r53 3396r45 3398b71 3401r64
+3391m75 B5{1|9M9} 3394r57 3396r62 3398b75 3401r68
+3405U14 Replay_Frame 3406=7 3407=7 3408>7 3409>7 3410<7 3427b14 3483l8 3483t20
+. 3620s16
+3406r7 S{8|238R9} 3413r21 3416r17 3416r29 3417r21 3420r20 3420r27 3421r48
+. 3421r64 3421r76 3422r29 3422r36 3423r39 3423r46 3425r32 3425r39 3428b7
+. 3434r36 3448r18 3450r63 3457r32 3461m21 3466r42 3468r39 3469r34 3477m28
+. 3478r39 3479r34 3481r56
+3407r7 F{3|80R9} 3413r24 3417r24 3429b7 3456r27 3456r48 3456r67 3461m24 3472r48
+. 3472r69 3473r25 3477m31
+3408m7 Op{1|9M9} 3414r18 3414r40 3422r48 3430b7 3454r10
+3409a7 Frame{1|10A9} 3415r17 3416r52 3420r53 3423r64 3424r48 3425r70 3425r77
+. 3431b7 3441r21 3445r23 3446r24 3447r33 3449r46 3450r53 3461r27 3466r45
+. 3468r47 3469r42 3477r34 3478r52 3479r47
+3410e7 Result{1|112E9} 3418r17 3419r21 3432b7 3440m7 3463m13 3482m7
+3421i38 J{integer} 3421r71 3421r87
+3424i38 K{integer} 3425r65 3425r91
+3434r7 Saved{8|238R9} 3466r35 3467r31 3478r42 3479r37 3481r40 3481r68
+3435b7 Accepted{boolean} 3441m28 3442r14
+3436r7 H{4|38R9} 3445m7 3448r10 3456r30 3456r51 3456r70 3457r29 3461r34 3466r52
+. 3472r13 3472r51 3472r72 3473r28 3477r41
+3437i7 Off{8|130I12} 3461m37 3466r55 3467r25 3468r42 3469r37
+3438e7 St{1|112E9} 3461m42 3462r13
+3481i30 J{integer} 3481r63 3481r79
+3486U14 Lemma_Bytes_Trans 3487>7 3487>23 3487>37 3487>53 3487>69 3488>7 3500b14
+. 3509l8 3509t25 3630s16
+3487a7 A{1|10A9} 3491r14 3492r17 3494r23 3494r50 3496r47 3498r44 3501b7 3505r25
+. 3507r57
+3487i23 PA{natural} 3494r17 3494r63 3496r50 3498r47 3501b23 3505r28 3507r60
+3487a37 B{1|10A9} 3491r35 3492r44 3493r28 3496r60 3497r47 3501b37 3505r38
+. 3506r25
+3487a53 C{1|10A9} 3491r56 3492r71 3495r23 3495r50 3497r55 3498r57 3501b53
+. 3506r33 3507r71
+3487i69 PC{natural} 3495r17 3495r63 3497r58 3498r60 3501b69 3506r36 3507r74
+3488i7 Len{natural} 3493r17 3494r43 3495r43 3496r36 3497r36 3498r33 3502b7
+. 3504r21
+3496i26 K{integer} 3496r55 3496r63
+3497i26 K{integer} 3497r50 3497r63
+3498i23 K{integer} 3498r52 3498r65
+3504i11 K{integer} 3505r33 3505r41 3506r28 3506r41 3507r52
+3507i41 K2{integer} 3507r65 3507r79
+3513U14 Lemma_Agree_Grow 3513>32 3513>37 3513>57 3513>60 3523b14 3537l8 3537t24
+. 3637s16 3661s13
+3513a32 Log{1|10A9} 3515r14 3516r17 3517r22 3517r47 3519r45 3520r47 3521r48
+. 3523b32 3531r31 3535r57
+3513a37 Input{1|10A9} 3515r37 3516r46 3518r22 3518r49 3519r55 3520r61 3521r58
+. 3523b37 3531r45 3535r68
+3513i57 P{natural} 3517r17 3517r58 3518r17 3518r62 3519r36 3520r52 3520r68
+. 3521r33 3523b57 3525r21 3526r18 3528r44 3531r36 3531r52 3532r31
+3513i60 Len{natural} 3517r40 3518r42 3520r36 3521r37 3523b60 3525r25 3530r35
+3519i26 J{integer} 3519r50 3519r62
+3520i26 K{integer} 3520r56 3520r72
+3521i23 J{integer} 3521r53 3521r65
+3525i11 J{integer} 3526r13 3528r40 3532r39 3535r52
+3528i16 K{natural} 3530r31 3531r40 3531r56 3532r35
+3535i41 J2{integer} 3535r62 3535r75
+3540U14 Lemma_Apply_Agree 3540>33 3540>38 3540>58 3540>71 3553b14 3567l8
+. 3567t25 3636s16
+3540a33 Log{1|10A9} 3542r14 3543r17 3544r22 3544r61 3546r17 3547r17 3547r54
+. 3548r17 3548r54 3550r20 3551r58 3553b33 3561r31 3565r57
+3540a38 Input{1|10A9} 3542r37 3543r46 3545r22 3545r63 3546r27 3547r31 3547r68
+. 3548r31 3548r68 3550r49 3551r72 3553b38 3561r61 3565r72
+3540i58 P{natural} 3544r17 3544r72 3545r17 3545r76 3546r22 3546r34 3547r22
+. 3547r38 3547r59 3547r75 3548r22 3548r38 3548r59 3548r75 3550r25 3550r56
+. 3551r63 3551r79 3553b58 3561r36 3561r68 3562r31 3562r55 3565r62 3565r79
+3540i71 FL{8|157I12} 3544r55 3545r57 3549r36 3551r48 3553b71 3555r36 3560r36
+3549i26 K{integer} 3550r44 3550r75
+3551i23 K{integer} 3551r67 3551r83
+3555i11 K{integer} 3556r13 3558r41 3562r59 3565r52
+3558i16 K1{natural} 3560r31 3561r55 3561r87 3562r50
+3565i41 K2{integer} 3565r66 3565r83
+3570U14 Replay_Entry 3571=7 3572=7 3573>7 3574<7 3589b14 3670l8 3670t20 3807s16
+3571r7 S{8|238R9} 3577r21 3579r30 3580r17 3581r36 3581r48 3582r21 3585r20
+. 3585r27 3586r29 3587r48 3587r60 3590b7 3596r34 3620m30 3626r19 3626r34
+. 3626r49 3626r64 3629r47 3630r35 3633r21 3634r31 3635r58 3636r35 3637r34
+. 3638r31 3639r49 3639r61 3652m24 3654r16 3654r31 3654r46 3655r16 3655r31
+. 3655r46 3658r28 3659r55 3660r64 3661r31 3662r28 3663r46 3663r58
+3572r7 F{3|80R9} 3577r24 3582r24 3591b7 3620m33 3652m27
+3573a7 Input{1|10A9} 3578r17 3579r17 3580r25 3581r60 3586r37 3587r72 3592b7
+. 3595r33 3597r30 3606r34 3606r49 3606r64 3606r79 3616r18 3619r71 3627r19
+. 3627r34 3627r49 3627r64 3630r67 3633r52 3634r43 3635r70 3636r42 3637r41
+. 3639r73 3648r36 3648r51 3648r66 3649r36 3649r51 3649r66 3656r16 3656r31
+. 3656r46 3657r16 3657r31 3657r46 3658r40 3659r67 3660r80 3661r38 3663r70
+3574e7 Result{1|112E9} 3583r17 3584r21 3593b7 3599m7 3622m19 3669m7
+3581i26 J{integer} 3581r55 3581r67
+3587i38 J{integer} 3587r67 3587r79
+3595i7 Len{natural} 3601r13 3609r38 3643r13
+3596i7 P{8|130I12} 3597r37 3601r19 3606r41 3606r56 3606r71 3606r86 3609r44
+. 3616r25 3616r45 3619r78 3626r26 3626r41 3626r56 3626r71 3627r26 3627r41
+. 3627r56 3627r71 3629r54 3630r42 3630r74 3633r28 3633r59 3634r38 3634r50
+. 3635r49 3636r49 3637r48 3638r38 3643r19 3648r43 3648r58 3648r73 3649r43
+. 3649r58 3649r73 3654r23 3654r38 3654r53 3655r23 3655r38 3655r53 3656r23
+. 3656r38 3656r53 3657r23 3657r38 3657r53 3658r35 3658r47 3659r46 3660r71
+. 3660r87 3661r45 3662r35
+3597m7 Op{1|9M9} 3600r10 3600r32 3620r36 3642r13
+3605i13 LW{1|40I9} 3608r16 3608r31 3609r32 3614r56
+3614i16 FL{8|157I12} 3615r50 3616r64 3619r49 3629r37 3630r92 3632r37 3636r52
+. 3637r66 3638r57
+3615a16 Frame{1|10A9} 3619r59 3620r40 3629r78 3630r60
+3617e16 St{1|112E9} 3620m47 3621r19 3622r29
+3619i39 K{integer} 3619r66 3619r97
+3629i27 K{integer} 3629r73 3629r85
+3632i27 K{integer} 3633r47 3633r78
+3635i39 J{integer} 3635r65 3635r77
+3639i39 J{integer} 3639r68 3639r80
+3647i13 Code{1|22I9} 3651r59 3651r68 3652r47
+3659i36 J{integer} 3659r62 3659r74
+3660i36 K{integer} 3660r75 3660r91
+3663i36 J{integer} 3663r65 3663r77
+3673U14 Lemma_Header_Agree 3674>7 3674>12 3674>32 3674>47 3674>59 3675>7
+. 3696b14 3728l8 3728t26 3794s10
+3674a7 Log{1|10A9} 3678r14 3679r17 3682r20 3694r51 3697b7 3707r28 3709r28
+. 3712r28 3721r28 3723r28 3725r25 3726r57
+3674a12 Input{1|10A9} 3678r37 3679r53 3684r17 3685r53 3686r17 3688r20 3689r65
+. 3690r62 3691r44 3691r60 3692r44 3692r64 3693r46 3693r64 3694r61 3697b12
+. 3702r10 3702r26 3702r46 3702r66 3703r48 3703r66 3707r38 3710r28 3712r38
+. 3714r28 3717r49 3719r48 3725r35 3726r68
+3674a32 Root{1|64A12} 3682r43 3682r82 3688r68 3689r54 3697b32 3715r58 3717r28
+3674a47 Slt{1|63A12} 3682r49 3682r88 3688r74 3690r52 3697b47 3715r64 3719r28
+3674i59 Cap_W{1|40I9} 3680r17 3683r54 3691r17 3697b59 3704r39 3704r49 3721r62
+3675i7 Slc_V{6|130I12} 3680r51 3683r62 3693r17 3698b7 3723r64
+3681i26 J{integer} 3682r25 3683r69
+3685i26 J{integer} 3685r71 3685r83
+3687i26 J{integer} 3688r35 3688r80
+3689i26 J{integer} 3689r60 3689r82
+3690i26 J{integer} 3690r57 3690r79
+3694i23 J{integer} 3694r56 3694r68
+3705i11 J{integer} 3706r13 3707r33 3707r45 3708r16 3709r33 3709r45 3710r47
+. 3710r71 3711r16 3712r33 3712r45 3713r16 3714r44 3715r70 3716r16 3717r34
+. 3717r67 3718r16 3719r33 3719r66 3720r16 3721r33 3721r69 3723r33 3723r71
+. 3725r30 3725r42 3726r52
+3726i41 J2{integer} 3726r62 3726r75
+3768i10 Len{natural} 3800r72 3803r30
+3769a10 Root{1|64A12} 3771r64 3787r78 3789r19 3794r44
+3770a10 Slt{1|63A12} 3771r70 3789r25 3794r50
+3771a10 NSb{1|61A12} 3778r52 3787r51 3793r77
+3772i10 Cap_W{1|40I9} 3782r13 3789r41 3794r55
+3775i10 Slc_V{6|130I12} 3782r42 3789r49 3794r62
+3792i33 J{integer} 3792r78 3792r90
+3793i33 J{integer} 3793r72 3793r82
+3801i44 J{integer} 3801r73 3801r85
+3805e16 St{1|112E9} 3807m43 3808r19 3809r29
+3822U14 Lemma_Only_Entry 3822>32 3822>43 3822>63 3830b14 3842l8 3842t24 3855s13
+3822r32 S{8|238R9} 3824r21 3824r50 3824r72 3825r43 3826r50 3826r70 3827r50
+. 3827r73 3830b32 3832r22 3833r32 3833r46 3833r62 3833r79 3834r32 3838r38
+. 3838r52 3838r68 3839r38
+3822r43 F{3|80R9} 3824r24 3830b43 3834r35
+3822i63 J{3|68I12} 3824r36 3824r75 3826r73 3827r53 3827r76 3828r28 3830b63
+. 3833r53 3833r69 3833r86 3834r38 3838r59 3838r75 3839r45 3840r26
+3825i23 J2{integer} 3826r53 3828r23
+3832i11 J2{integer} 3833r39 3834r41 3837r32
+3837i21 J3{integer} 3838r45 3840r21
+3853i11 J{integer} 3854r39 3855r37 3857r18 3861r32
+3861i21 J2{integer} 3861r67
+3871U14 Lemma_Header_Of
+3871a31 Frame{1|10A9}
+3900i18 J{integer} 3900r83
+3900i46 K{integer} 3900r71
+3901i31 K{integer} 3901r56
+3914U14 Lemma_Indexed
+3914r29 S{8|238R9}
+3914r40 X{4|38R9}
+3917i7 J{3|68I12} 3919r10 3920r49
+3927i11 K{integer} 3928r52 3929r32 3930r42 3930r62 3932r30 3932r67 3933r36
+. 3933r66 3934r50 3935r47 3935r76 3937r32
+3937i21 K2{integer} 3938r49 3939r51 3939r72 3940r56 3941r30 3941r72
+3947i7 K1{3|68I12} 3950r40
+3948i7 K2{3|68I12} 3950r44
+X 10 kome-versions.ads
+15i7*T{1|22I9} 9|1343m22
+16r7*Author{1|46R9} 8|380r59 9|1343m30
+17i7*Seq{1|22I9} 9|1343m50
+18r7*H{1|46R9} 9|1343m60
+X 11 kome-views.ads
+67K14*Views 8|120w11 442r27 445r27 732r34 734r41 738r41 840r28 9|3826r26
+. 3833r18 3838r24 3854r18 3861r46 3950r12 11|661e15
+97V13*Put_On{boolean} 8|732s40 734s47 738s47 840s34 9|3826s32 3833s24 3838s30
+. 3854s24 3861s52
+271V13*Del_TTL_Eff{1|22I9} 8|442s33 445s33
+415U14*Lemma_Cell_Unique 9|3950s18
+

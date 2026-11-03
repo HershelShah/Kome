@@ -1,7 +1,7 @@
 --  Root of Kome: the byte types, the integer ranges and the size bounds that
 --  every package shares. The design is docs/design/DESIGN.md; the proved
 --  model it refines is lean/Kome/Frontier.lean. Each DESIGN.md section is a
---  child package (Kome.Version, Kome.Headers, Kome.Frontier, ...); see
+--  child package (Kome.Versions, Kome.Headers, Kome.Frontier, ...); see
 --  CONVENTIONS.md for the rules every child follows.
 pragma Ada_2022;
 package Kome with SPARK_Mode, Pure is
@@ -35,8 +35,8 @@ package Kome with SPARK_Mode, Pure is
    --  In the lattice, identifiers and keys are records of fixed-width words
    --  (big-endian: W0 is the most significant), not byte arrays, so that
    --  equality on them is logical equality for the prover and the byte-
-   --  lexicographic order is a chain of word comparisons. Kome.Records
-   --  converts from the wire bytes.
+   --  lexicographic order is a chain of word comparisons. Kome.Keys converts
+   --  from the wire bytes (To_Key256 / To_Id128), and Kome.Records calls it.
    type Word is range 0 .. 2**32 - 1 with Size => 32;
 
    type Id128 is record
@@ -68,20 +68,39 @@ package Kome with SPARK_Mode, Pure is
    subtype Box     is Byte_Array (0 .. Box_Len - 1);
 
    --  Variable-length bounds (DESIGN.md §2). A field name is 1..32 bytes; a
-   --  value is 0..65_535 bytes, and the empty value is a value.
+   --  value is 0..40_960 bytes, and the empty value is a value. The value
+   --  bound (D12) is what makes every frame, at most 41_136 bytes, fit in
+   --  one 48 KiB reconciliation message (§8).
    Field_Max  : constant := 32;
-   Value_Max  : constant := 65_535;
+   Value_Max  : constant := 40_960;
    subtype Field_Len is Natural range 1 .. Field_Max;
    subtype Value_Len is Natural range 0 .. Value_Max;
 
-   --  Membership bounds (DESIGN.md §2, §6, §7).
-   Members_Max     : constant := 64;      --  n_members per ROSTER
-   Roots_Max       : constant := 4;       --  n_roots per ROSTER (module J)
-   Revocations_Max : constant := 1024;    --  after which a collection is re-founded
-   --  Every key any roster has ever listed (the grow-only register W) is
-   --  bounded by members over the collection's life: Members_Max live plus
-   --  Revocations_Max revoked.
-   Writers_Max     : constant := Members_Max + Revocations_Max;
+   --  Authorization bounds (DESIGN.md §2, §6, §7).
+   Members_Max : constant := 64;     --  n_members per ROSTER
+   Links_Max   : constant := 15;     --  n_links per ROSTER (epoch segments, E3)
+   --  Signers: the founding key plus at most 15 certified roots (A1). Each
+   --  signer has its own slice of at most Slice_Max authorization records
+   --  (rosters, REVOKEs and GRANTs it signed) in the frontier (E1, R5).
+   Signers_Max : constant := 16;
+   Slice_Max   : constant := 512;
+   --  W holds at most one subject per held GRANT, and the frontier holds at
+   --  most Signers_Max * Slice_Max authorization records, so W never fills
+   --  on its own (DESIGN.md §7 "Bounds").
+   Writers_Max : constant := Signers_Max * Slice_Max;   --  8_192
+
+   --  Tombstone lifetime del_ttl, in milliseconds (DESIGN.md §2 rule 3,
+   --  §3 del_ttl_eff, §7). A ROSTER's del_ttl is clamped to
+   --  [Del_TTL_Min, Del_TTL_Max] at decode; with no roster the default holds.
+   Del_TTL_Min     : constant := 604_800_000;        --  7 days
+   Del_TTL_Default : constant := 15_552_000_000;     --  180 days
+   Del_TTL_Max     : constant := 315_360_000_000;    --  3 650 days
+
+   --  Signed 64-bit time for the expiry horizon (DESIGN.md §7): horizon :=
+   --  min (now_local, maxceil) - del_ttl_eff is computed in 64 bits, so it
+   --  never wraps, and a value below 0 means "no horizon".
+   type Time64 is range -(2**62) .. 2**62 with Size => 64;
+   No_Horizon : constant Time64 := -1;
 
    --  Reconciliation (DESIGN.md §8).
    Split_Fanout    : constant := 16;
@@ -97,6 +116,8 @@ package Kome with SPARK_Mode, Pure is
       Malformed,        --  bounds or signature failed; a function of the bytes
       Shadowed,         --  write emitted at the ceiling and loses to the floor
       Seq_Exhausted,    --  seq would exceed 2**48 - 1; nothing emitted
-      No_Space);        --  bounded store is full; nothing changed
+      No_Space,         --  bounded store is full; nothing changed
+      Auth_Full);       --  the signer's authorization slice, or the slot
+                        --  table, is full; nothing changed (DESIGN.md §7)
 
 end Kome;

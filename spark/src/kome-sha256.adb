@@ -1153,32 +1153,6 @@ package body Kome.SHA256 with SPARK_Mode is
       pragma Assert (Fill (X, Chunk).Buf = Fill (Y, Chunk).Buf);
    end Lemma_Fill_Eq;
 
-   --  So does Absorbed: induction over its chunks.
-   procedure Lemma_Absorbed_Eq (X, Y : Context; Data : Byte_Array)
-     with Ghost,
-          Global => null,
-          Subprogram_Variant => (Decreases => Data'Length),
-          Pre    => X = Y
-                    and then Data'Length <= Max_Update_Len
-                    and then Byte_Total (Data'Length) <= Max_Total - X.Total,
-          Post   => Absorbed (X, Data) = Absorbed (Y, Data);
-
-   procedure Lemma_Absorbed_Eq (X, Y : Context; Data : Byte_Array) is
-      T : constant Natural := Take_Len (X, Data'Length);
-   begin
-      if Data'Length = 0 then
-         null;
-      elsif T = Data'Length then
-         Lemma_Fill_Eq (X, Y, Data);
-      else
-         pragma Assert (Take_Len (Y, Data'Length) = T);
-         Lemma_Fill_Eq (X, Y, Data (Data'First .. Data'First + T - 1));
-         Lemma_Absorbed_Eq (Fill (X, Data (Data'First .. Data'First + T - 1)),
-                            Fill (Y, Data (Data'First .. Data'First + T - 1)),
-                            Data (Data'First + T .. Data'Last));
-      end if;
-   end Lemma_Absorbed_Eq;
-
    --  Writing A at Pos and then B right after it is writing A & B at Pos.
    procedure Lemma_Written_Concat
      (Buf : Block; Pos : Natural; A, B : Byte_Array)
@@ -1293,164 +1267,199 @@ package body Kome.SHA256 with SPARK_Mode is
       pragma Assert (Compressed (Ctx.State, WX) = Compressed (Ctx.State, WY));
    end Lemma_Fill_Rebase;
 
-   --  So does Absorbed: induction over its chunks, each rebased by
-   --  Lemma_Fill_Rebase.
-   procedure Lemma_Absorbed_Rebase (Ctx : Context; X, Y : Byte_Array)
+   --  Absorbed respects equality of contexts and depends on the bytes of
+   --  its data, not on their bounds: one induction over the chunks, each
+   --  step one Lemma_Fill_Eq and one Lemma_Fill_Rebase (constant work).
+   --  This used to be two inductions (Lemma_Absorbed_Eq, and
+   --  Lemma_Absorbed_Rebase, which called Lemma_Absorbed_Eq at every
+   --  level), so that executing it under -gnata was cubic in the length;
+   --  merged, it is quadratic (the Post at each level evaluates Absorbed
+   --  on the rest of the data), see the spec, "Running the lemmas".
+   procedure Lemma_Absorbed_Cong (X, Y : Context; DX, DY : Byte_Array)
      with Ghost,
           Global => null,
-          Subprogram_Variant => (Decreases => X'Length),
-          Pre    => X'Length <= Max_Update_Len
-                    and then Byte_Total (X'Length) <= Max_Total - Ctx.Total
-                    and then Same_Bytes (X, Y),
-          Post   => Absorbed (Ctx, X) = Absorbed (Ctx, Y);
+          Subprogram_Variant => (Decreases => DX'Length),
+          Pre    => X = Y
+                    and then DX'Length <= Max_Update_Len
+                    and then Byte_Total (DX'Length) <= Max_Total - X.Total
+                    and then Same_Bytes (DX, DY),
+          Post   => Absorbed (X, DX) = Absorbed (Y, DY);
 
-   procedure Lemma_Absorbed_Rebase (Ctx : Context; X, Y : Byte_Array) is
-      T : constant Natural := Take_Len (Ctx, X'Length);
+   procedure Lemma_Absorbed_Cong (X, Y : Context; DX, DY : Byte_Array) is
+      T : constant Natural := Take_Len (X, DX'Length);
    begin
-      if X'Length = 0 then
-         null;
-      elsif T = X'Length then
-         Lemma_Fill_Rebase (Ctx, X, Y);
+      if DX'Length = 0 then
+         pragma Assert (DY'Length = 0);
+      elsif T = DX'Length then
+         pragma Assert (Take_Len (Y, DY'Length) = T);
+         Lemma_Fill_Eq (X, Y, DX);
+         Lemma_Fill_Rebase (Y, DX, DY);
+         pragma Assert (Fill (X, DX) = Fill (Y, DY));
       else
          declare
-            CX : constant Context := Fill (Ctx, X (X'First .. X'First + T - 1));
-            CY : constant Context := Fill (Ctx, Y (Y'First .. Y'First + T - 1));
+            CX : constant Context := Fill (X, DX (DX'First .. DX'First + T - 1));
+            CY : constant Context := Fill (Y, DY (DY'First .. DY'First + T - 1));
          begin
-            pragma Assert (Same_Bytes (X (X'First .. X'First + T - 1),
-                                       Y (Y'First .. Y'First + T - 1)));
-            Lemma_Fill_Rebase (Ctx, X (X'First .. X'First + T - 1),
-                                    Y (Y'First .. Y'First + T - 1));
+            pragma Assert (Take_Len (Y, DY'Length) = T);
+            Lemma_Fill_Eq (X, Y, DX (DX'First .. DX'First + T - 1));
+            pragma Assert (Same_Bytes (DX (DX'First .. DX'First + T - 1),
+                                       DY (DY'First .. DY'First + T - 1)));
+            Lemma_Fill_Rebase (Y, DX (DX'First .. DX'First + T - 1),
+                                  DY (DY'First .. DY'First + T - 1));
             pragma Assert (CX = CY);
-            pragma Assert (Same_Bytes (X (X'First + T .. X'Last),
-                                       Y (Y'First + T .. Y'Last)));
-            Lemma_Absorbed_Rebase (CX, X (X'First + T .. X'Last),
-                                       Y (Y'First + T .. Y'Last));
-            Lemma_Absorbed_Eq (CX, CY, Y (Y'First + T .. Y'Last));
-            pragma Assert (Absorbed (Ctx, X)
-                           = Absorbed (CX, X (X'First + T .. X'Last)));
-            pragma Assert (Absorbed (Ctx, Y)
-                           = Absorbed (CY, Y (Y'First + T .. Y'Last)));
+            pragma Assert (Same_Bytes (DX (DX'First + T .. DX'Last),
+                                       DY (DY'First + T .. DY'Last)));
+            Lemma_Absorbed_Cong (CX, CY, DX (DX'First + T .. DX'Last),
+                                         DY (DY'First + T .. DY'Last));
+            pragma Assert (Absorbed (X, DX)
+                           = Absorbed (CX, DX (DX'First + T .. DX'Last)));
+            pragma Assert (Absorbed (Y, DY)
+                           = Absorbed (CY, DY (DY'First + T .. DY'Last)));
          end;
       end if;
-   end Lemma_Absorbed_Rebase;
+   end Lemma_Absorbed_Cong;
 
-   --  The chunking law on the model. Induction on A'Length: the recursive
-   --  call is on A minus its first chunk, which is strictly shorter.
-   procedure Lemma_Absorbed_Concat (Ctx : Context; A, B : Byte_Array)
+   --  The equality step alone (same data on both sides).
+   procedure Lemma_Absorbed_Eq (X, Y : Context; Data : Byte_Array)
+     with Ghost,
+          Global => null,
+          Pre    => X = Y
+                    and then Data'Length <= Max_Update_Len
+                    and then Byte_Total (Data'Length) <= Max_Total - X.Total,
+          Post   => Absorbed (X, Data) = Absorbed (Y, Data);
+
+   procedure Lemma_Absorbed_Eq (X, Y : Context; Data : Byte_Array) is
+   begin
+      pragma Assert (Same_Bytes (Data, Data));
+      Lemma_Absorbed_Cong (X, Y, Data, Data);
+   end Lemma_Absorbed_Eq;
+
+   --  X holds the bytes of A followed by the bytes of B, whatever the three
+   --  sets of bounds: A & B without building it. Lemma_Absorbed_Concat
+   --  takes X separately so that its induction runs on slices of X, A and
+   --  B, and no level copies a concatenation.
+   function Is_Concat (X, A, B : Byte_Array) return Boolean is
+     (X'Length <= Max_Update_Len
+      and then A'Length <= X'Length
+      and then B'Length = X'Length - A'Length
+      and then (for all I in A'Range => X (X'First + (I - A'First)) = A (I))
+      and then (for all I in B'Range =>
+                  X (X'First + A'Length + (I - B'First)) = B (I)))
+     with Ghost, Global => null;
+
+   --  The chunking law on the model, for any X holding A's bytes then B's
+   --  and any two equal contexts: induction on A'Length, the recursive call
+   --  on A minus its first chunk (strictly shorter). Each level takes the
+   --  first chunk of X and of A (one Lemma_Fill_Eq, one Lemma_Fill_Rebase)
+   --  and only the base cases call the induction Lemma_Absorbed_Cong, once,
+   --  on what is left of B; so the whole proof is one induction deep and,
+   --  executed, quadratic in the length (spec, "Running the lemmas"). The
+   --  former version built A & B at every level and called two inductive
+   --  lemmas there, which made it cubic and overflowed the stack.
+   procedure Lemma_Absorbed_Concat (C1, C2 : Context; X, A, B : Byte_Array)
      with Ghost,
           Global => null,
           Subprogram_Variant => (Decreases => A'Length),
-          Pre    => A'Length <= Max_Update_Len
-                    and then B'Length <= Max_Update_Len - A'Length
+          Pre    => C1 = C2
+                    and then Is_Concat (X, A, B)
                     and then (A'Length = 0
                               or else A'Last <= Natural'Last - B'Length)
-                    and then Byte_Total (A'Length) + Byte_Total (B'Length)
-                             <= Max_Total - Ctx.Total,
-          Post   => Absorbed (Ctx, A & B) = Absorbed (Absorbed (Ctx, A), B);
+                    and then Byte_Total (X'Length) <= Max_Total - C1.Total,
+          Post   => Absorbed (C1, X) = Absorbed (Absorbed (C2, A), B);
 
-   procedure Lemma_Absorbed_Concat (Ctx : Context; A, B : Byte_Array) is
-      Room : constant Positive   := Block_Len - Ctx.Buf_Len;
-      AB   : constant Byte_Array := A & B;
+   procedure Lemma_Absorbed_Concat (C1, C2 : Context; X, A, B : Byte_Array) is
+      Room : constant Positive := Block_Len - C2.Buf_Len;
    begin
+      pragma Assert (C1.Buf_Len = C2.Buf_Len and then C1.Total = C2.Total);
       if A'Length = 0 then
-         --  A & B is B itself (RM 4.5.3: a null left operand gives the
-         --  right operand) and Absorbed (Ctx, A) = Ctx.
-         pragma Assert (AB = B);
-         pragma Assert (Same_Bytes (AB, B));
-         Lemma_Absorbed_Rebase (Ctx, AB, B);
-         pragma Assert (Absorbed (Ctx, A) = Ctx);
-         Lemma_Absorbed_Eq (Absorbed (Ctx, A), Ctx, B);
+         --  Absorbed (C2, A) is C2 and X holds B's bytes.
+         pragma Assert (Absorbed (C2, A) = C2);
+         pragma Assert (Same_Bytes (X, B));
+         Lemma_Absorbed_Cong (C1, Absorbed (C2, A), X, B);
       elsif B'Length = 0 then
-         --  A & B is A and absorbing nothing after A changes nothing.
-         pragma Assert (AB = A);
-         pragma Assert (Absorbed (Absorbed (Ctx, A), B) = Absorbed (Ctx, A));
-         pragma Assert (Same_Bytes (AB, A));
-         Lemma_Absorbed_Rebase (Ctx, AB, A);
+         --  X holds A's bytes and absorbing nothing after A changes nothing.
+         pragma Assert (Absorbed (Absorbed (C2, A), B) = Absorbed (C2, A));
+         pragma Assert (Same_Bytes (X, A));
+         Lemma_Absorbed_Cong (C1, C2, X, A);
       elsif A'Length >= Room then
-         --  Both sides take the same first chunk: A's first Room bytes.
+         --  Both sides take their first Room bytes, which are the same.
          declare
-            C1  : constant Context :=
-              Fill (Ctx, A (A'First .. A'First + Room - 1));
-            C1B : constant Context :=
-              Fill (Ctx, AB (A'First .. A'First + Room - 1));
+            D1 : constant Context := Fill (C1, X (X'First .. X'First + Room - 1));
          begin
-            pragma Assert (AB'First = A'First
-                           and then AB'Last = A'Last + B'Length);
-            pragma Assert (Take_Len (Ctx, A'Length) = Room);
-            pragma Assert (Take_Len (Ctx, AB'Length) = Room);
-            pragma Assert (Same_Bytes (AB (A'First .. A'First + Room - 1),
-                                       A (A'First .. A'First + Room - 1)));
-            Lemma_Fill_Rebase (Ctx, AB (A'First .. A'First + Room - 1),
-                                    A (A'First .. A'First + Room - 1));
-            pragma Assert (C1B = C1);
-            pragma Assert (Absorbed (Ctx, AB)
-                           = Absorbed (C1B, AB (A'First + Room .. AB'Last)));
-            Lemma_Absorbed_Eq (C1B, C1, AB (A'First + Room .. AB'Last));
-            pragma Assert (Absorbed (Ctx, AB)
-                           = Absorbed (C1, AB (A'First + Room .. AB'Last)));
+            pragma Assert (Take_Len (C1, X'Length) = Room);
+            pragma Assert (Take_Len (C2, A'Length) = Room);
+            pragma Assert (Absorbed (C1, X)
+                           = Absorbed (D1, X (X'First + Room .. X'Last)));
+            Lemma_Fill_Eq (C1, C2, X (X'First .. X'First + Room - 1));
             if A'Length = Room then
-               --  A is exactly the chunk; what is left of A & B is B's
-               --  bytes at A's indices.
-               pragma Assert (Absorbed (Ctx, A) = Fill (Ctx, A));
-               Lemma_Fill_Rebase (Ctx, A, A (A'First .. A'First + Room - 1));
-               pragma Assert (Absorbed (Ctx, A) = C1);
-               pragma Assert (Same_Bytes (AB (A'First + Room .. AB'Last), B));
-               Lemma_Absorbed_Rebase (C1, AB (A'First + Room .. AB'Last), B);
-               Lemma_Absorbed_Eq (Absorbed (Ctx, A), C1, B);
+               --  A is exactly the chunk; the rest of X holds B's bytes.
+               pragma Assert (Absorbed (C2, A) = Fill (C2, A));
+               pragma Assert (Same_Bytes (X (X'First .. X'First + Room - 1), A));
+               Lemma_Fill_Rebase (C2, X (X'First .. X'First + Room - 1), A);
+               pragma Assert (D1 = Absorbed (C2, A));
+               pragma Assert (Same_Bytes (X (X'First + Room .. X'Last), B));
+               Lemma_Absorbed_Cong (D1, Absorbed (C2, A),
+                                    X (X'First + Room .. X'Last), B);
             else
-               --  What is left of A & B is (the rest of A) & B: induction.
-               pragma Assert (Absorbed (Ctx, A)
-                              = Absorbed (C1, A (A'First + Room .. A'Last)));
-               pragma Assert (Same_Bytes (AB (A'First + Room .. AB'Last),
-                                          A (A'First + Room .. A'Last) & B));
-               Lemma_Absorbed_Rebase (C1, AB (A'First + Room .. AB'Last),
-                                          A (A'First + Room .. A'Last) & B);
-               Lemma_Absorbed_Concat (C1, A (A'First + Room .. A'Last), B);
-               Lemma_Absorbed_Eq (Absorbed (Ctx, A),
-                                  Absorbed (C1, A (A'First + Room .. A'Last)),
-                                  B);
+               --  The rest of X holds (the rest of A) then B: induction.
+               pragma Assert (Same_Bytes (X (X'First .. X'First + Room - 1),
+                                          A (A'First .. A'First + Room - 1)));
+               Lemma_Fill_Rebase (C2, X (X'First .. X'First + Room - 1),
+                                      A (A'First .. A'First + Room - 1));
+               pragma Assert (D1 = Fill (C2, A (A'First .. A'First + Room - 1)));
+               pragma Assert (Absorbed (C2, A)
+                              = Absorbed (Fill (C2, A (A'First .. A'First + Room - 1)),
+                                          A (A'First + Room .. A'Last)));
+               pragma Assert (Is_Concat (X (X'First + Room .. X'Last),
+                                         A (A'First + Room .. A'Last), B));
+               Lemma_Absorbed_Concat
+                 (D1, Fill (C2, A (A'First .. A'First + Room - 1)),
+                  X (X'First + Room .. X'Last), A (A'First + Room .. A'Last), B);
             end if;
          end;
       else
-         --  A fits in the buffer: Absorbed (Ctx, A) = Fill (Ctx, A), and the
-         --  first chunk of A & B is A followed by the first T2 bytes of B,
+         --  A fits in the buffer: Absorbed (C2, A) = Fill (C2, A), and the
+         --  first chunk of X is A followed by the first T2 bytes of B,
          --  which is also the first chunk B contributes after A.
          declare
-            CA : constant Context    := Fill (Ctx, A);
+            CA : constant Context    := Fill (C2, A);
             T2 : constant Positive   := Natural'Min (Room - A'Length, B'Length);
             B1 : constant Byte_Array := B (B'First .. B'First + (T2 - 1));
+            N1 : constant Positive   := A'Length + T2;
          begin
-            pragma Assert (Absorbed (Ctx, A) = CA);
-            pragma Assert (CA.Buf_Len = Ctx.Buf_Len + A'Length);
+            pragma Assert (Absorbed (C2, A) = CA);
+            pragma Assert (CA.Buf_Len = C2.Buf_Len + A'Length);
             pragma Assert (Take_Len (CA, B'Length) = T2);
-            pragma Assert (Take_Len (Ctx, AB'Length) = A'Length + T2);
+            pragma Assert (Take_Len (C1, X'Length) = N1);
             if T2 = B'Length then
-               --  A & B is a single chunk on both sides.
-               Lemma_Fill_Concat (Ctx, A, B);
+               --  X is a single chunk on both sides.
+               Lemma_Fill_Concat (C2, A, B);
+               pragma Assert (Same_Bytes (X, A & B));
+               Lemma_Fill_Eq (C1, C2, X);
+               Lemma_Fill_Rebase (C2, X, A & B);
+               pragma Assert (Absorbed (C1, X) = Fill (C1, X));
                pragma Assert (Absorbed (CA, B) = Fill (CA, B));
-               pragma Assert (Absorbed (Ctx, AB) = Fill (Ctx, AB));
-               Lemma_Absorbed_Eq (Absorbed (Ctx, A), CA, B);
+               pragma Assert (Fill (C1, X) = Fill (CA, B));
             else
-               --  Both sides continue from the same context with the same
+               --  Both sides continue from equal contexts with the same
                --  bytes (the rest of B), at different indices.
-               Lemma_Fill_Concat (Ctx, A, B1);
-               pragma Assert (Same_Bytes (AB (A'First .. A'Last + T2), A & B1));
-               Lemma_Fill_Rebase (Ctx, AB (A'First .. A'Last + T2), A & B1);
-               pragma Assert (Fill (Ctx, AB (A'First .. A'Last + T2)) = Fill (CA, B1));
-               pragma Assert (Absorbed (Ctx, AB)
-                              = Absorbed (Fill (Ctx, AB (A'First .. A'Last + T2)),
-                                          AB (A'Last + T2 + 1 .. AB'Last)));
+               Lemma_Fill_Concat (C2, A, B1);
+               pragma Assert (Same_Bytes (X (X'First .. X'First + N1 - 1), A & B1));
+               Lemma_Fill_Eq (C1, C2, X (X'First .. X'First + N1 - 1));
+               Lemma_Fill_Rebase (C2, X (X'First .. X'First + N1 - 1), A & B1);
+               pragma Assert (Fill (C1, X (X'First .. X'First + N1 - 1))
+                              = Fill (CA, B1));
+               pragma Assert (Absorbed (C1, X)
+                              = Absorbed (Fill (C1, X (X'First .. X'First + N1 - 1)),
+                                          X (X'First + N1 .. X'Last)));
                pragma Assert (Absorbed (CA, B)
                               = Absorbed (Fill (CA, B1), B (B'First + T2 .. B'Last)));
-               Lemma_Absorbed_Eq (Fill (Ctx, AB (A'First .. A'Last + T2)),
-                                  Fill (CA, B1),
-                                  AB (A'Last + T2 + 1 .. AB'Last));
-               pragma Assert (Same_Bytes (AB (A'Last + T2 + 1 .. AB'Last),
+               pragma Assert (Same_Bytes (X (X'First + N1 .. X'Last),
                                           B (B'First + T2 .. B'Last)));
-               Lemma_Absorbed_Rebase (Fill (CA, B1),
-                                      AB (A'Last + T2 + 1 .. AB'Last),
-                                      B (B'First + T2 .. B'Last));
-               Lemma_Absorbed_Eq (Absorbed (Ctx, A), CA, B);
+               Lemma_Absorbed_Cong (Fill (C1, X (X'First .. X'First + N1 - 1)),
+                                    Fill (CA, B1),
+                                    X (X'First + N1 .. X'Last),
+                                    B (B'First + T2 .. B'Last));
             end if;
          end;
       end if;
@@ -1515,7 +1524,31 @@ package body Kome.SHA256 with SPARK_Mode is
          pragma Assert (U64 (LB) <= U64 (Max_Message - (T + LA)));
          pragma Assert (U64 (B'Length) <= Max_Message_Bytes - U64 (CA.Total));
          Lemma_Updated_Model (CA, B);
-         Lemma_Absorbed_Concat (Ctx, A, B);
+         declare
+            AB : constant Byte_Array := A & B;
+         begin
+            --  AB is a concatenation in the sense of Is_Concat (RM 4.5.3:
+            --  A & B is indexed from A'First, or is B when A is null).
+            pragma Assert (AB'Length = A'Length + B'Length);
+            if A'Length = 0 then
+               pragma Assert (AB'First = B'First);
+               pragma Assert (for all I in B'Range => AB (I) = B (I));
+               pragma Assert (for all I in B'Range =>
+                                AB (AB'First + A'Length + (I - B'First)) = B (I));
+            else
+               pragma Assert (AB'First = A'First);
+               pragma Assert (for all I in A'Range => AB (I) = A (I));
+               pragma Assert (for all I in A'Range =>
+                                AB (AB'First + (I - A'First)) = A (I));
+               pragma Assert (for all I in B'Range =>
+                                AB (A'Last + 1 + (I - B'First)) = B (I));
+               pragma Assert (for all I in B'Range =>
+                                AB (AB'First + A'Length + (I - B'First)) = B (I));
+            end if;
+            pragma Assert (Is_Concat (AB, A, B));
+            Lemma_Absorbed_Concat (Ctx, Ctx, AB, A, B);
+            pragma Assert (Absorbed (Ctx, A & B) = Absorbed (Absorbed (Ctx, A), B));
+         end;
          Lemma_Absorbed_Eq (CA, Absorbed (Ctx, A), B);
          pragma Assert (Updated (Ctx, A & B) = Updated (CA, B));
       end;

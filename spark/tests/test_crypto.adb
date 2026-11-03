@@ -1,10 +1,14 @@
 --  Test main for Kome.Crypto. Known answers from vectors/crypto.txt (see its
---  header for where each comes from), named answers from the brief (BLAKE2b
---  of "" and "abc", the RFC 8032 TEST 1 seed, RFC 7748), published
---  Ed25519-BLAKE2b key pairs, low-order X25519 points, round trips, tamper
---  rejection, the wipes, and the contracts' refusals (only a failed Pre of
---  Kome.Crypto counts as a refusal). Compiled with -gnata, so every Pre and
---  Post of the binding runs against monocypher's real output.
+--  header for where each comes from): BLAKE2b, RFC 8032 Ed25519 TESTs 1-3,
+--  a Wycheproof ed25519 subset (valid, S >= L, non-canonical R, truncated),
+--  non-canonical encodings plain monocypher accepts, regressions showing
+--  the pre-D4 BLAKE2b-EdDSA answers are now rejected, X25519 (RFC 7748, low
+--  order, Is_Reduced_U / Is_Low_Order_U answers) and AEAD. Then named
+--  answers, round trips, tamper rejection, the wipes, the default-initial
+--  conditions and the contracts' refusals (only a failed Pre of Kome.Crypto
+--  counts as a refusal). Compiled with -gnata, so every Pre, Post and DIC
+--  of the binding, and the ghost functions Is_Valid and Seed_Of, run
+--  against monocypher's real output.
 pragma Ada_2022;
 with Ada.Command_Line;   use Ada.Command_Line;
 with Ada.Text_IO;        use Ada.Text_IO;
@@ -12,6 +16,7 @@ with Ada.Directories;
 with Ada.Exceptions;
 with Ada.Assertions;
 with Ada.Strings.Fixed;
+with Ada.Numerics.Discrete_Random;
 with Kome;               use Kome;
 with Kome.Crypto;        use Kome.Crypto;
 
@@ -105,6 +110,37 @@ procedure Test_Crypto with SPARK_Mode => Off is
          end;
    end Refused;
 
+   --  Facts about the ghost functions (Is_Valid, Seed_Of) can only be
+   --  stated in assertions. Holds runs a procedure made of pragma Asserts
+   --  and reports whether all of them held (under -gnata a false one raises
+   --  Assertion_Error).
+   generic
+      with procedure Run;
+   function Holds return Boolean;
+   function Holds return Boolean is
+   begin
+      Run;
+      return True;
+   exception
+      when E : Ada.Assertions.Assertion_Error =>
+         Put_Line ("  assertion failed: " & Ada.Exceptions.Exception_Message (E));
+         return False;
+   end Holds;
+
+   --  True iff B cannot be made a Sig (its length is not Sig_Len): the
+   --  conversion raises Constraint_Error, so such bytes never reach Verify.
+   function Not_A_Sig (B : Byte_Array) return Boolean is
+   begin
+      declare
+         S : constant Sig := B;
+      begin
+         Sink_Sig := S;
+         return False;
+      end;
+   exception
+      when Constraint_Error => return True;
+   end Not_A_Sig;
+
    ---------------------------------------------------------------------------
    --  Named answers from the brief
    ---------------------------------------------------------------------------
@@ -116,7 +152,8 @@ procedure Test_Crypto with SPARK_Mode => Off is
    B2_Abc : constant Byte_Array := From_Hex
      ("bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319");
 
-   --  RFC 8032 §7.1 TEST 1 (SHA-512 Ed25519).
+   --  RFC 8032 §7.1 TEST 1 (Ed25519, SHA-512 internal), the scheme bound
+   --  since D4.
    RFC_Seed : constant Byte_Array := From_Hex
      ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
    RFC_Pub : constant Byte_Array := From_Hex
@@ -124,11 +161,14 @@ procedure Test_Crypto with SPARK_Mode => Off is
    RFC_Sig : constant Byte_Array := From_Hex
      ("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
       & "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
-   --  The same seed and message under monocypher's crypto_eddsa (BLAKE2b-512
-   --  in place of SHA-512), from the independent reference behind
-   --  vectors/crypto.txt.
+   --  REGRESSION: the same seed and message under monocypher's crypto_eddsa
+   --  (BLAKE2b-512 in place of SHA-512), the binding before D4, from the
+   --  independent reference behind vectors/crypto.txt. Must be rejected now.
    B2_Pub : constant Byte_Array := From_Hex
      ("78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f");
+   B2_Sig : constant Byte_Array := From_Hex
+     ("99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0"
+      & "085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805");
 
    --  The group order L, little-endian (RFC 8032 §5.1).
    L_LE : constant Byte_Array := From_Hex
@@ -156,17 +196,37 @@ procedure Test_Crypto with SPARK_Mode => Off is
       Check ("blake2b256_final_inactive",
              not Is_Active (Ctx) and then Absorbed (Ctx) = 0);
 
-      --  RFC 8032 TEST 1 seed: the key pair layout and the BLAKE2b-EdDSA
-      --  public key; the RFC's SHA-512 public key and signature are a
-      --  different scheme, and Verify must reject the RFC signature.
+      --  RFC 8032 TEST 1: the key pair layout, the public key, the
+      --  signature, and verification (D4: RFC 8032 Ed25519).
       Key_Pair (RFC_Seed, SK, PK);
-      Check ("eddsa_rfc8032_t1_secret_layout",
-             Seed_Of (SK) = RFC_Seed and then Public_Of (SK) = PK);
-      Check ("eddsa_rfc8032_t1_seed_blake2b_public", PK = B2_Pub);
-      Check ("eddsa_rfc8032_t1_sha512_public_differs", PK /= RFC_Pub);
-      Check ("eddsa_rfc8032_t1_sha512_sig_rejected",
-             not Verify (RFC_Sig, RFC_Pub, Empty));
-      Check ("eddsa_rfc8032_t1_sha512_sig_canonical", S_Below_L (RFC_Sig));
+      declare
+         procedure Layout is
+         begin
+            pragma Assert (Is_Valid (SK));
+            pragma Assert (Seed_Of (SK) = RFC_Seed);
+         end Layout;
+         function Layout_Holds is new Holds (Layout);
+      begin
+         Check ("ed25519_rfc8032_t1_secret_layout",
+                Layout_Holds and then Public_Of (SK) = PK);
+      end;
+      Check ("ed25519_rfc8032_t1_public", PK = RFC_Pub);
+      Check ("ed25519_rfc8032_t1_derive_public", Derive_Public (RFC_Seed) = RFC_Pub);
+      Check ("ed25519_rfc8032_t1_sign", Sign (SK, Empty) = RFC_Sig);
+      Check ("ed25519_rfc8032_t1_verify", Verify (RFC_Sig, RFC_Pub, Empty));
+      Check ("ed25519_rfc8032_t1_encodings_canonical",
+             S_Below_L (RFC_Sig)
+             and then Is_Canonical_Point (RFC_Sig (0 .. 31))
+             and then Is_Canonical_Point (RFC_Pub));
+
+      --  REGRESSION (the open major "BLAKE2b-EdDSA vs Ed25519"): the old
+      --  BLAKE2b-EdDSA public key is no longer derived from the TEST 1
+      --  seed, and its signature is rejected under the old and the new key.
+      Check ("b2eddsa_rfc8032_t1_public_no_longer_derived", PK /= B2_Pub);
+      Check ("b2eddsa_rfc8032_t1_old_sig_rejected",
+             not Verify (B2_Sig, B2_Pub, Empty)
+             and then not Verify (B2_Sig, RFC_Pub, Empty));
+      Wipe (SK);
    end Named_Answers;
 
    ---------------------------------------------------------------------------
@@ -255,9 +315,13 @@ procedure Test_Crypto with SPARK_Mode => Off is
         (Line (Fields (K).First .. Fields (K).Last));
       function Hex (K : Positive) return Byte_Array is (From_Hex (Field (K)));
 
-      N_B2, N_Ed, N_Pk, N_Rfc, N_X, N_Low, N_DH, N_AE : Natural := 0;
-      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Pk, Ok_Rfc, Ok_X, Ok_Low,
-      Ok_DH, Ok_AE, Ok_AE_Tamper : Boolean := True;
+      N_B2, N_Ed, N_Old, N_Old_Pk, N_X, N_Low, N_DH, N_AE, N_Key,
+      N_Strict_Valid, N_Strict_Invalid : Natural := 0;
+      N_Wp_Valid, N_Wp_Invalid, N_Wp_Length : Natural := 0;
+      Seen_151, Seen_S_Over_L : Boolean := False;
+      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Old, Ok_Old_Pk, Ok_Wp,
+      Ok_Strict, Ok_X, Ok_Low, Ok_DH, Ok_AE, Ok_AE_Tamper, Ok_Key : Boolean
+        := True;
 
       procedure Fail (Flag : in out Boolean; What : String) is
       begin
@@ -292,7 +356,8 @@ procedure Test_Crypto with SPARK_Mode => Off is
          end loop;
       end Do_Blake2b;
 
-      procedure Do_Eddsa is
+      --  RFC 8032 §7.1: seed -> public key, sign, verify, and tampering.
+      procedure Do_Ed25519 is
          S    : constant Seed       := Hex (2);
          Pub  : constant Pubkey     := Hex (3);
          Msg  : constant Byte_Array := Hex (4);
@@ -301,31 +366,38 @@ procedure Test_Crypto with SPARK_Mode => Off is
          PK   : Pubkey;
          T    : Sig;
          Other : Pubkey;
+         procedure Seed_Kept is
+         begin
+            pragma Assert (Seed_Of (SK) = S);
+         end Seed_Kept;
+         function Seed_Kept_Holds is new Holds (Seed_Kept);
       begin
          N_Ed := N_Ed + 1;
          Key_Pair (S, SK, PK);
-         if PK /= Pub or else Public_Of (SK) /= Pub or else Seed_Of (SK) /= S then
-            Fail (Ok_Ed, "eddsa public");
+         if PK /= Pub or else Public_Of (SK) /= Pub
+           or else Derive_Public (S) /= Pub or else not Seed_Kept_Holds
+         then
+            Fail (Ok_Ed, "ed25519 public");
          end if;
          if Sign (SK, Msg) /= Want then
-            Fail (Ok_Ed, "eddsa sign");
+            Fail (Ok_Ed, "ed25519 sign");
          end if;
          if not Verify (Want, Pub, Msg) then
-            Fail (Ok_Ed, "eddsa verify");
+            Fail (Ok_Ed, "ed25519 verify");
          end if;
          --  Tampering: a bit of R, a bit of S, the message, the key.
          T := Want;
          T (0) := T (0) xor 1;
          if Verify (T, Pub, Msg) then
-            Fail (Ok_Ed_Tamper, "eddsa R flip");
+            Fail (Ok_Ed_Tamper, "ed25519 R flip");
          end if;
          T := Want;
          T (40) := T (40) xor 16#80#;
          if Verify (T, Pub, Msg) then
-            Fail (Ok_Ed_Tamper, "eddsa S flip");
+            Fail (Ok_Ed_Tamper, "ed25519 S flip");
          end if;
          if Verify (Want, Pub, Msg & Byte (0)) then
-            Fail (Ok_Ed_Tamper, "eddsa msg extended");
+            Fail (Ok_Ed_Tamper, "ed25519 msg extended");
          end if;
          if Msg'Length > 0 then
             declare
@@ -333,28 +405,100 @@ procedure Test_Crypto with SPARK_Mode => Off is
             begin
                M2 (M2'Last) := M2 (M2'Last) xor 1;
                if Verify (Want, Pub, M2) then
-                  Fail (Ok_Ed_Tamper, "eddsa msg flip");
+                  Fail (Ok_Ed_Tamper, "ed25519 msg flip");
                end if;
             end;
          end if;
          Other := Pub;
          Other (5) := Other (5) xor 4;
          if Verify (Want, Other, Msg) then
-            Fail (Ok_Ed_Tamper, "eddsa other key");
+            Fail (Ok_Ed_Tamper, "ed25519 other key");
          end if;
          Wipe (SK);
-      end Do_Eddsa;
+      end Do_Ed25519;
 
-      procedure Do_Rfc is
-         Pub : constant Pubkey     := Hex (2);
-         Msg : constant Byte_Array := Hex (3);
-         S   : constant Sig        := Hex (4);
+      --  Wycheproof ed25519_test.json: Verify agrees with "result" on every
+      --  64-byte signature; any other length cannot be made a Sig at all.
+      procedure Do_Wycheproof is
+         Id    : constant String     := Field (2);
+         Res   : constant String     := Field (3);
+         Pub   : constant Pubkey     := Hex (4);
+         Msg   : constant Byte_Array := Hex (5);
+         Raw   : constant Byte_Array := Hex (6);
+         Valid : constant Boolean    := Res = "valid";
       begin
-         N_Rfc := N_Rfc + 1;
-         if Verify (S, Pub, Msg) then
-            Fail (Ok_Rfc, "ed25519_sha512 accepted");
+         if Res /= "valid" and then Res /= "invalid" then
+            Fail (Ok_Wp, "wycheproof result " & Res & " tcId " & Id);
+            return;
          end if;
-      end Do_Rfc;
+         if Raw'Length = Sig_Len then
+            declare
+               S : constant Sig := Raw;
+            begin
+               if Valid then
+                  N_Wp_Valid := N_Wp_Valid + 1;
+               else
+                  N_Wp_Invalid := N_Wp_Invalid + 1;
+               end if;
+               if Verify (S, Pub, Msg) /= Valid then
+                  Fail (Ok_Wp, "wycheproof tcId " & Id);
+               end if;
+               if Id = "151" then
+                  Seen_151 := True;
+               end if;
+               if not S_Below_L (S) then
+                  Seen_S_Over_L := True;
+               end if;
+            end;
+         else
+            N_Wp_Length := N_Wp_Length + 1;
+            if Valid or else not Not_A_Sig (Raw) then
+               Fail (Ok_Wp, "wycheproof length tcId " & Id);
+            end if;
+         end if;
+      end Do_Wycheproof;
+
+      --  Non-canonical encodings plain crypto_ed25519_check accepts: Verify
+      --  rejects exactly those, and the rejection is the encoding check
+      --  (the S scalar is reduced on every line).
+      procedure Do_Strict is
+         Valid : constant Boolean    := Field (2) = "valid";
+         Pub   : constant Pubkey     := Hex (3);
+         Msg   : constant Byte_Array := Hex (4);
+         S     : constant Sig        := Hex (5);
+         Canon : constant Boolean    :=
+           Is_Canonical_Point (S (0 .. 31)) and then Is_Canonical_Point (Pub);
+      begin
+         if Valid then
+            N_Strict_Valid := N_Strict_Valid + 1;
+         else
+            N_Strict_Invalid := N_Strict_Invalid + 1;
+         end if;
+         if Verify (S, Pub, Msg) /= Valid or else Canon /= Valid
+           or else not S_Below_L (S)
+         then
+            Fail (Ok_Strict, "ed25519_strict");
+         end if;
+      end Do_Strict;
+
+      --  REGRESSION: the pre-D4 BLAKE2b-EdDSA answers are rejected now.
+      procedure Do_Old is
+         S       : constant Seed       := Hex (2);
+         Old_Pub : constant Pubkey     := Hex (3);
+         Msg     : constant Byte_Array := Hex (4);
+         Old_Sig : constant Sig        := Hex (5);
+         SK      : Secret_Key;
+         PK      : Pubkey;
+      begin
+         N_Old := N_Old + 1;
+         Key_Pair (S, SK, PK);
+         if PK = Old_Pub or else Verify (Old_Sig, Old_Pub, Msg)
+           or else Verify (Old_Sig, PK, Msg)
+         then
+            Fail (Ok_Old, "b2eddsa_old accepted");
+         end if;
+         Wipe (SK);
+      end Do_Old;
 
       procedure Do_X25519 is
          K    : constant DH_Secret     := Hex (2);
@@ -388,20 +532,44 @@ procedure Test_Crypto with SPARK_Mode => Off is
          end loop;
       end Do_Low_Order;
 
-      --  A published Ed25519-BLAKE2b key pair (private seed -> public).
-      procedure Do_Eddsa_Pk is
+      --  REGRESSION: a published Ed25519-BLAKE2b key pair is no longer the
+      --  key pair Kome derives.
+      procedure Do_Old_Pk is
          S   : constant Seed   := Hex (2);
          Pub : constant Pubkey := Hex (3);
          SK  : Secret_Key;
          PK  : Pubkey;
       begin
-         N_Pk := N_Pk + 1;
+         N_Old_Pk := N_Old_Pk + 1;
          Key_Pair (S, SK, PK);
-         if PK /= Pub or else Derive_Public (S) /= Pub then
-            Fail (Ok_Pk, "eddsa published public key");
+         if PK = Pub or else Derive_Public (S) = Pub then
+            Fail (Ok_Old_Pk, "b2eddsa published public key still derived");
          end if;
          Wipe (SK);
-      end Do_Eddsa_Pk;
+      end Do_Old_Pk;
+
+      --  Is_Reduced_U, Is_Low_Order_U and Is_Good_DH_Key against the
+      --  expected answers; a low-order key is also never contributory.
+      procedure Do_DH_Key is
+         U       : constant Pubkey  := Hex (2);
+         Reduced : constant Boolean := Field (3) = "1";
+         Low     : constant Boolean := Field (4) = "1";
+         Got     : Shared_Secret;
+         Contrib : Boolean;
+      begin
+         N_Key := N_Key + 1;
+         if Is_Reduced_U (U) /= Reduced or else Is_Low_Order_U (U) /= Low
+           or else Is_Good_DH_Key (U) /= (Reduced and then not Low)
+         then
+            Fail (Ok_Key, "dh_key");
+         end if;
+         if Low then
+            X25519 (Pattern (DH_Key_Len, 41, 3), U, Got, Contrib);
+            if Contrib then
+               Fail (Ok_Key, "dh_key low order contributory");
+            end if;
+         end if;
+      end Do_DH_Key;
 
       procedure Do_DH is
          A_SK : constant DH_Secret     := Hex (2);
@@ -511,14 +679,20 @@ procedure Test_Crypto with SPARK_Mode => Off is
             begin
                if Kind = "blake2b256" and then N_Fields = 3 then
                   Do_Blake2b;
-               elsif Kind = "eddsa" and then N_Fields = 5 then
-                  Do_Eddsa;
-               elsif Kind = "eddsa_pk" and then N_Fields = 3 then
-                  Do_Eddsa_Pk;
+               elsif Kind = "ed25519" and then N_Fields = 5 then
+                  Do_Ed25519;
+               elsif Kind = "wycheproof" and then N_Fields = 6 then
+                  Do_Wycheproof;
+               elsif Kind = "ed25519_strict" and then N_Fields = 5 then
+                  Do_Strict;
+               elsif Kind = "b2eddsa_old" and then N_Fields = 5 then
+                  Do_Old;
+               elsif Kind = "b2eddsa_old_pk" and then N_Fields = 3 then
+                  Do_Old_Pk;
                elsif Kind = "x25519_low" and then N_Fields = 2 then
                   Do_Low_Order;
-               elsif Kind = "ed25519_sha512" and then N_Fields = 4 then
-                  Do_Rfc;
+               elsif Kind = "dh_key" and then N_Fields = 4 then
+                  Do_DH_Key;
                elsif Kind = "x25519" and then N_Fields = 4 then
                   Do_X25519;
                elsif Kind = "x25519dh" and then N_Fields = 6 then
@@ -534,15 +708,30 @@ procedure Test_Crypto with SPARK_Mode => Off is
       Close (F);
       Check ("blake2b256_vectors" & N_B2'Image, Ok_B2 and then N_B2 >= 2);
       Check ("blake2b256_incremental_every_split", Ok_B2_Inc and then N_B2 >= 2);
-      Check ("eddsa_blake2b_vectors" & N_Ed'Image, Ok_Ed and then N_Ed >= 1);
-      Check ("eddsa_tampered_rejected", Ok_Ed_Tamper and then N_Ed >= 1);
-      Check ("eddsa_blake2b_published_public_keys" & N_Pk'Image,
-             Ok_Pk and then N_Pk >= 5);
-      Check ("ed25519_sha512_rfc8032_rejected", Ok_Rfc and then N_Rfc >= 1);
+      Check ("ed25519_rfc8032_vectors" & N_Ed'Image, Ok_Ed and then N_Ed = 3);
+      Check ("ed25519_tampered_rejected", Ok_Ed_Tamper and then N_Ed = 3);
+      Check ("wycheproof_valid_accepted" & N_Wp_Valid'Image,
+             Ok_Wp and then N_Wp_Valid >= 12);
+      Check ("wycheproof_invalid_rejected" & N_Wp_Invalid'Image,
+             Ok_Wp and then N_Wp_Invalid >= 14);
+      Check ("wycheproof_s_at_least_l_rejected",
+             Ok_Wp and then Seen_S_Over_L);
+      Check ("wycheproof_tc151_noncanonical_r_rejected",
+             Ok_Wp and then Seen_151);
+      Check ("wycheproof_wrong_length_not_a_sig" & N_Wp_Length'Image,
+             Ok_Wp and then N_Wp_Length >= 5);
+      Check ("ed25519_noncanonical_encodings_rejected" & N_Strict_Invalid'Image,
+             Ok_Strict and then N_Strict_Invalid >= 6 and then N_Strict_Valid >= 3);
+      Check ("b2eddsa_old_signatures_rejected" & N_Old'Image,
+             Ok_Old and then N_Old = 3);
+      Check ("b2eddsa_old_public_keys_not_derived" & N_Old_Pk'Image,
+             Ok_Old_Pk and then N_Old_Pk >= 5);
       Check ("x25519_rfc7748_vectors" & N_X'Image, Ok_X and then N_X >= 1);
       Check ("x25519_low_order_not_contributory" & N_Low'Image,
              Ok_Low and then N_Low >= 5);
       Check ("x25519_rfc7748_dh", Ok_DH and then N_DH >= 1);
+      Check ("dh_key_reduced_low_order_answers" & N_Key'Image,
+             Ok_Key and then N_Key >= 13);
       Check ("aead_vectors" & N_AE'Image, Ok_AE and then N_AE >= 1);
       Check ("aead_tampered_rejected", Ok_AE_Tamper and then N_AE >= 1);
    end Vectors;
@@ -584,7 +773,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
             end loop;
          end;
       end loop;
-      Check ("eddsa_sign_then_verify", Ok);
+      Check ("ed25519_sign_then_verify", Ok);
 
       --  A message signed by one key does not verify under another.
       declare
@@ -594,13 +783,13 @@ procedure Test_Crypto with SPARK_Mode => Off is
       begin
          Key_Pair (Pattern (Seed_Len, 3, 1), SK1, PK1);
          Key_Pair (Pattern (Seed_Len, 3, 2), SK2, PK2);
-         Check ("eddsa_wrong_key_rejected",
+         Check ("ed25519_wrong_key_rejected",
                 PK1 /= PK2 and then not Verify (Sign (SK1, M), PK2, M)
                 and then Verify (Sign (SK2, M), PK2, M));
       end;
 
       --  Non-malleability: S + L encodes the same scalar mod L and is a
-      --  mathematically valid signature, but crypto_eddsa_check refuses it
+      --  mathematically valid signature, but Verify refuses it
       --  (Verify's Post: True implies S < L).
       declare
          SK    : Secret_Key;
@@ -621,7 +810,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
                Carry := V / 256;
             end;
          end loop;
-         Check ("eddsa_s_plus_l_rejected",
+         Check ("ed25519_s_plus_l_rejected",
                 Carry = 0 and then Verify (S, PK, M)
                 and then not S_Below_L (T) and then not Verify (T, PK, M));
       end;
@@ -654,6 +843,87 @@ procedure Test_Crypto with SPARK_Mode => Off is
                 and then S_Below_L (With_S (Mid_Under)));
       end;
 
+      --  Is_Canonical_Point at its boundaries (RFC 8032 §5.1.3): y = p - 1
+      --  and y = 1 are canonical only with the sign bit clear; y = 0 with
+      --  the sign bit set is canonical (x /= 0 there); y >= p never is.
+      declare
+         function Enc (Hex_Str : String) return Pubkey is (From_Hex (Hex_Str));
+         P_Minus_1   : constant Pubkey := Enc
+           ("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
+         P_Minus_1_S : constant Pubkey := Enc
+           ("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+         P_Minus_2_S : constant Pubkey := Enc
+           ("ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+         P_Enc       : constant Pubkey := Enc
+           ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
+         P_Enc_S     : constant Pubkey := Enc
+           ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+         Max_Enc     : constant Pubkey := [others => 16#FF#];
+         One         : constant Pubkey := Enc
+           ("0100000000000000000000000000000000000000000000000000000000000000");
+         One_S       : constant Pubkey := Enc
+           ("0100000000000000000000000000000000000000000000000000000000000080");
+         Zero_S      : constant Pubkey := Enc
+           ("0000000000000000000000000000000000000000000000000000000000000080");
+         Two_S       : constant Pubkey := Enc
+           ("0200000000000000000000000000000000000000000000000000000000000080");
+         Ok_Keys     : Boolean := True;
+      begin
+         for K in 0 .. 15 loop
+            if not Is_Canonical_Point (Derive_Public (Pattern (Seed_Len, 23, K)))
+            then
+               Ok_Keys := False;
+            end if;
+         end loop;
+         Check ("canonical_point_boundaries",
+                Is_Canonical_Point (P_Minus_1)
+                and then not Is_Canonical_Point (P_Minus_1_S)
+                and then Is_Canonical_Point (P_Minus_2_S)
+                and then not Is_Canonical_Point (P_Enc)
+                and then not Is_Canonical_Point (P_Enc_S)
+                and then not Is_Canonical_Point (Max_Enc)
+                and then Is_Canonical_Point (One)
+                and then not Is_Canonical_Point (One_S)
+                and then Is_Canonical_Point (Zero_S)
+                and then Is_Canonical_Point (Two_S)
+                and then Ok_Keys);
+         --  Is_Reduced_U on p and p + 1 (not reduced), p - 1 (reduced).
+         Check ("is_reduced_u_p_and_p_plus_1",
+                not Is_Reduced_U (P_Enc)
+                and then not Is_Reduced_U (Enc
+                  ("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"))
+                and then Is_Reduced_U (P_Minus_1)
+                and then not Is_Reduced_U (Max_Enc));
+      end;
+
+      --  Is_Low_Order_U is false, and Is_Good_DH_Key true, for the public
+      --  key of every one of 64 random secrets (fixed generator seed, so the
+      --  run is reproducible).
+      declare
+         package Random_Byte is new Ada.Numerics.Discrete_Random (Byte);
+         G      : Random_Byte.Generator;
+         Secret : DH_Secret;
+         Ok_R   : Boolean := True;
+      begin
+         Random_Byte.Reset (G, 2026);
+         for K in 1 .. 64 loop
+            for I in Secret'Range loop
+               Secret (I) := Random_Byte.Random (G);
+            end loop;
+            declare
+               U : constant Pubkey := X25519_Public (Secret);
+            begin
+               if Is_Low_Order_U (U) or else not Is_Reduced_U (U)
+                 or else not Is_Good_DH_Key (U)
+               then
+                  Ok_R := False;
+               end if;
+            end;
+         end loop;
+         Wipe (Secret);
+         Check ("x25519_public_of_random_secret_not_low_order", Ok_R);
+      end;
+
       --  X25519: both sides of a fresh exchange agree; distinct peers differ.
       declare
          A : constant DH_Secret := Pattern (DH_Key_Len, 9, 1);
@@ -668,6 +938,14 @@ procedure Test_Crypto with SPARK_Mode => Off is
          Check ("x25519_exchange_agrees",
                 AB = BA and then AB /= AC and then C1 and then C2 and then C3
                 and then not Is_Zero (AB));
+         --  X25519's Post (checked here under -gnata) says the procedure
+         --  computes the ghost function X25519_Shared; restate it for both
+         --  directions of the exchange.
+         pragma Assert (AB = X25519_Shared (A, X25519_Public (B)));
+         pragma Assert (BA = X25519_Shared (B, X25519_Public (A)));
+         pragma Assert (X25519_Shared (A, X25519_Public (B))
+                        = X25519_Shared (B, X25519_Public (A)));
+         Check ("x25519_shared_function_matches_procedure", not Is_Zero (AB));
          Wipe (AB);
          Wipe (BA);
          Wipe (AC);
@@ -720,6 +998,23 @@ procedure Test_Crypto with SPARK_Mode => Off is
          Unlock (Wrap_Key, N, [1 .. 0 => 0], Sealed (0 .. AEAD_Key_Len - 1),
                  Sealed (AEAD_Key_Len .. Box_Len - 1), Back, Au);
          Check ("aead_box_shape", Au and then Back = Epoch_Key);
+      end;
+
+      --  Lemma_Blake2b_Congruent is an axiom for the prover; under -gnata
+      --  its Pre and Post run, so it is checked here on inputs with equal
+      --  bytes and different bounds (a slid copy, and two interior slices).
+      declare
+         Src     : constant Byte_Array := Pattern (300, 7, 1);
+         Shifted : constant Byte_Array (1000 .. 1299) := Src;
+      begin
+         Lemma_Blake2b_Congruent (Src, Shifted);
+         Lemma_Blake2b_Congruent (Src (10 .. 109), Shifted (1010 .. 1109));
+         Lemma_Blake2b_Congruent (Src (0 .. -1), Shifted (1300 .. 1299));
+         Check ("blake2b256_congruent_across_bounds",
+                Src'First = 0
+                and then Blake2b_256 (Src) = Blake2b_256 (Shifted)
+                and then Blake2b_256 (Src (10 .. 109)) = Blake2b_256 (Shifted (1010 .. 1109))
+                and then Blake2b_256 (Src (10 .. 109)) /= Blake2b_256 (Src (11 .. 110)));
       end;
    end Round_Trips;
 
@@ -833,23 +1128,53 @@ procedure Test_Crypto with SPARK_Mode => Off is
          Check ("blake2b256_procedure_form", D1 = B2_Abc);
       end;
 
-      --  A key pair is valid and consistent; a default key is not valid;
-      --  Wipe zeros both halves and invalidates the key.
+      --  A key pair is valid and consistent; a default key is not valid
+      --  (its DIC, also checked at its declaration under -gnata); Wipe
+      --  zeros both halves and invalidates the key. Is_Valid and Seed_Of
+      --  are ghost, so they are asserted.
       declare
          Fresh, SK : Secret_Key;
          PK        : Pubkey;
          S         : constant Seed := Pattern (Seed_Len, 19, 3);
+         procedure Fresh_Invalid is
+         begin
+            pragma Assert (not Is_Valid (Fresh));
+            pragma Assert (for all B of Seed_Of (Fresh) => B = 0);
+         end Fresh_Invalid;
+         procedure Made_Valid is
+         begin
+            pragma Assert (Is_Valid (SK));
+            pragma Assert (Seed_Of (SK) = S);
+         end Made_Valid;
+         procedure Wiped is
+         begin
+            pragma Assert (not Is_Valid (SK));
+            pragma Assert (for all B of Seed_Of (SK) => B = 0);
+         end Wiped;
+         function Fresh_Invalid_Holds is new Holds (Fresh_Invalid);
+         function Made_Valid_Holds is new Holds (Made_Valid);
+         function Wiped_Holds is new Holds (Wiped);
       begin
+         Check ("secret_key_default_not_valid", Fresh_Invalid_Holds);
          Key_Pair (S, SK, PK);
          Check ("key_pair_valid_and_derived",
-                not Is_Valid (Fresh) and then Is_Valid (SK)
+                Made_Valid_Holds
                 and then Public_Of (SK) = Derive_Public (S)
-                and then Derive_Public (S) = PK and then Seed_Of (SK) = S);
+                and then Derive_Public (S) = PK);
          Wipe (SK);
          Check ("wipe_secret_key",
-                not Is_Valid (SK)
-                and then (for all B of Seed_Of (SK) => B = 0)
+                Wiped_Holds
                 and then (for all B of Public_Of (SK) => B = 0));
+      end;
+
+      --  Default-initialized contexts satisfy their DIC (checked at each
+      --  declaration under -gnata, and here explicitly).
+      declare
+         C4, C5 : Blake2b_Context;
+      begin
+         Check ("context_default_initial_condition",
+                not Is_Active (C4) and then Absorbed (C4) = 0
+                and then not Is_Active (C5) and then Absorbed (C5) = 0);
       end;
 
       --  Wipe abandons a context mid-stream; Init starts afresh after it.
