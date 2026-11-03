@@ -1,0 +1,53 @@
+# Placeholder checks. Caution: these jobs test nothing.
+#
+# The ruleset on master (id 17774746) still requires seven status checks
+# from the CI of the previous engine: Release, Debug, ASan, UBSan, TSan,
+# coverage and wasm. Nothing in this repository produces them any more, so
+# these jobs report them as passed to let pull requests merge.
+#
+# Remove this file after you remove the seven checks from the ruleset:
+# Settings > Rules > Rulesets > 17774746 > Require status checks to pass.
+name: legacy-required-checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  debug:
+    name: Debug
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  asan:
+    name: ASan
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  ubsan:
+    name: UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  tsan:
+    name: TSan
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder for a check of the previous engine. Tests nothing."
