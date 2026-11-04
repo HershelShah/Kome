@@ -866,6 +866,9 @@ package body Kome.Frontier with SPARK_Mode is
 
       --  Each writer's register cap is the cap of a held grant of it.
       for I in 1 .. Registers.Count (Upd_RG) loop
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I - 1 =>
+              Grant_Cap_Of (Upd, Writer (Upd_RG, I2), W_Cap (Upd_RG, Writer (Upd_RG, I2))));
          declare
             Wr : constant Key256 := Writer (Upd_RG, I);
          begin
@@ -907,10 +910,8 @@ package body Kome.Frontier with SPARK_Mode is
                Lemma_Grant_Cap_Kept (Old, Upd, K0, R, Src, Dst, Wr, W_Cap (Old_RG, Wr));
                pragma Assert (Grant_Cap_Of (Upd, Wr, W_Cap (Upd_RG, Wr)));
             end if;
+            pragma Assert (Grant_Cap_Of (Upd, Wr, W_Cap (Upd_RG, Wr)));
          end;
-         pragma Loop_Invariant
-           (for all I2 in 1 .. I =>
-              Grant_Cap_Of (Upd, Writer (Upd_RG, I2), W_Cap (Upd_RG, Writer (Upd_RG, I2))));
       end loop;
    end Lemma_Coherent_Step;
 
