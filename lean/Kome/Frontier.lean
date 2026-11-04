@@ -19,8 +19,9 @@ Domination is per key:
   dominates a `put`.
 - A newer `del` dominates a `del`.
 - A roster of the same signer dominates a roster if it is strictly greater
-  in `gen` and not lower in epoch or in ceiling (a product order). Two
-  rosters of one signer at equal `gen` never dominate each other.
+  in `gen` and not lower in epoch, in ceiling or in `del_ttl` (a product
+  order). Two rosters of one signer at equal `gen` never dominate each
+  other.
 - A grant of the same issuer and subject with a greater hash and a cap that
   is not lower dominates a grant (a product order).
 - A `revoke` is never dominated and dominates nothing.
@@ -140,10 +141,13 @@ deriving DecidableEq, Repr
 open Record
 
 /-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, the witness of `dom`).
-The product order (D3) compares rosters: the same signer, a ceiling that is
-not lower, an epoch that is not lower, and a strictly greater `gen`. The
-hash takes no part: two rosters of one signer at equal `gen` never dominate
-each other. A grant's key is `(issuer, subject)`; a grant dominates a grant
+The product order (D3, H15) compares rosters: the same signer, a ceiling
+that is not lower, an epoch that is not lower, a `del_ttl` that is not
+lower, and a strictly greater `gen`. The hash takes no part: two rosters of
+one signer at equal `gen` never dominate each other. The `del_ttl` conjunct
+is what makes `del_ttl_eff` a function of the frontier (`delTtlEff_F`): a
+roster leaves `F` only under a roster with a `del_ttl` at least equal to
+its own. A grant's key is `(issuer, subject)`; a grant dominates a grant
 of the same key when its hash is greater and its cap is not lower. No other
 record dominates. A `revoke` is never dominated and never dominates. No
 clause compares authorization records of different kinds. -/
@@ -151,7 +155,8 @@ def dominates : Record → Record → Bool
   | put e' f' v' _, put e f v _ => decide (e = e' ∧ f = f' ∧ Version.lt v v')
   | del e' v',      put e _ v _ => decide (e = e' ∧ Version.lt v v')
   | del e' v',      del e v     => decide (e = e' ∧ Version.lt v v')
-  | roster s' c' g' _ e' _, roster s c g _ e _ => decide (s = s' ∧ c ≤ c' ∧ e ≤ e' ∧ g < g')
+  | roster s' c' g' t' e' _, roster s c g t e _ =>
+      decide (s = s' ∧ c ≤ c' ∧ e ≤ e' ∧ t ≤ t' ∧ g < g')
   | grant i' j' c' h', grant i j c h => decide (i = i' ∧ j = j' ∧ c ≤ c' ∧ h < h')
   | _, _ => false
 
@@ -411,16 +416,16 @@ theorem dominates_grant {q : Record} {i k c h : Nat} (hq : dominates q (grant i 
     exact ⟨c', h', rfl, hc⟩
   | _ => simp [dominates] at hq
 
-/-- A dominator of a roster is a roster of the same signer, with a ceiling
-and an epoch that are not lower and a strictly greater `gen`. -/
+/-- A dominator of a roster is a roster of the same signer, with a ceiling,
+an epoch and a `del_ttl` that are not lower and a strictly greater `gen`. -/
 theorem dominates_roster {q : Record} {s c g t e h : Nat}
     (hq : dominates q (roster s c g t e h) = true) :
-    ∃ c' g' t' e' h', q = roster s c' g' t' e' h' ∧ c ≤ c' ∧ e ≤ e' ∧ g < g' := by
+    ∃ c' g' t' e' h', q = roster s c' g' t' e' h' ∧ c ≤ c' ∧ e ≤ e' ∧ t ≤ t' ∧ g < g' := by
   cases q with
   | roster s' c' g' t' e' h' =>
     simp only [dominates, decide_eq_true_eq] at hq
-    obtain ⟨rfl, hc, he, hg⟩ := hq
-    exact ⟨c', g', t', e', h', rfl, hc, he, hg⟩
+    obtain ⟨rfl, hc, he, ht, hg⟩ := hq
+    exact ⟨c', g', t', e', h', rfl, hc, he, ht, hg⟩
   | _ => simp [dominates] at hq
 
 /-! ### Derived registers: `maxceil`, `W` and `wcap` (§3, T4') -/
@@ -1096,6 +1101,23 @@ theorem expire_admitted {h : Nat} {S : List Record} (hA : Admitted S) :
   rw [expire_adm]
   exact hA x (expire_subset h S hx)
 
+/-- N1: a later expiry absorbs an earlier one. The horizon is per replica
+(it reads the local clock), so two replicas that applied the same records
+agree only when they also expired at the same horizon. This lemma says that
+the earlier horizons of each replica do not matter: `expire h₂` gives the
+same state whether or not an `expire h₁` with `h₁ ≤ h₂` came first. -/
+theorem expire_expire {h₁ h₂ : Nat} (h : h₁ ≤ h₂) (S : List Record) :
+    expire h₂ (expire h₁ S) = expire h₂ S := by
+  induction S with
+  | nil => rfl
+  | cons r S ih =>
+    unfold expire at ih ⊢
+    cases hr : isExpiredDel h₂ r
+    · have hr₁ : isExpiredDel h₁ r = false := by
+        cases r <;> simp only [isExpiredDel, decide_eq_false_iff_not] at hr ⊢ <;> omega
+      simp [hr, hr₁, ih]
+    · cases hr₁ : isExpiredDel h₁ r <;> simp [hr, hr₁, ih]
+
 /-- Two replicas: one holds the data record `d` (state `A`), and one does not
 (state `B`). After any further records, `A = F(B ∪ {d})` stays true. -/
 theorem reapply_rel {d : Record} (hd : isAuth d = false) :
@@ -1524,7 +1546,7 @@ theorem rkey_inj {a b : Record} (ha : ∃ s c g t e hh, a = roster s c g t e hh)
 epoch is not lower, and its `gen` is greater. -/
 theorem dominates_rkLt {s c g t e hh : Nat} {p : Record}
     (h : dominates p (roster s c g t e hh) = true) : rkLt (roster s c g t e hh) p = true := by
-  obtain ⟨c', g', t', e', h', rfl, _, he, hg⟩ := dominates_roster h
+  obtain ⟨c', g', t', e', h', rfl, _, he, _, hg⟩ := dominates_roster h
   simp only [rkLt, rkey, lexLt, decide_eq_true_eq]
   omega
 
@@ -1683,7 +1705,7 @@ theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff 
       refine mem_F_iff.mpr ⟨h1, ?_⟩
       rintro ⟨q, hq, hqm⟩
       obtain ⟨s, c, g, t, e, hh, rfl⟩ := hc m h2
-      obtain ⟨c', g', t', e', h', rfl, _, _, _⟩ := dominates_roster hqm
+      obtain ⟨c', g', t', e', h', rfl, _, _, _, _⟩ := dominates_roster hqm
       have hqc : isRosterOK f H (roster s c' g' t' e' h') = true := by
         simp only [isRosterOK] at h2 ⊢; exact h2
       have hlt := dominates_rkLt hqm
@@ -1755,6 +1777,47 @@ theorem delTtlEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y
       (maxTtl_le fun r hr hc => maxTtl_ge ((h r).mpr hr) hc)
   rw [hany, hmax]
 
+/-- A dominator's `del_ttl` is at least the `del_ttl` of the dominated
+record (H15). For rosters, this follows from the product order. Every other
+kind has `del_ttl` 0. -/
+theorem dominates_ttl {q y : Record} (h : dominates q y = true) : ttlOf y ≤ ttlOf q := by
+  cases y <;> cases q <;> simp [dominates, ttlOf] at h ⊢ <;> omega
+
+/-- A dominator of a candidate of `del_ttl_eff` is a candidate: it is a roster
+of the same signer. -/
+theorem isRosterOK_of_dominates {f : Nat} {H : List Record} {q y : Record}
+    (hy : isRosterOK f H y = true) (h : dominates q y = true) : isRosterOK f H q = true := by
+  obtain ⟨s, c, g, t, e, hh, rfl⟩ := isRosterOK_roster hy
+  obtain ⟨c', g', t', e', h', rfl, _, _, _, _⟩ := dominates_roster h
+  simpa only [isRosterOK] using hy
+
+/-- T5 (H15): `del_ttl_eff(F(H)) = del_ttl_eff(H)`, proved like `maxCeil_F`.
+A dominated candidate has an undominated dominator. This dominator has the
+same signer, so it is a candidate, and a `del_ttl` that is at least as
+high. -/
+theorem delTtlEff_F {f : Nat} {H : List Record} (dflt : Nat) :
+    delTtlEff f (F H) dflt = delTtlEff f H dflt := by
+  unfold delTtlEff
+  rw [isRosterOK_F]
+  have hany : (F H).any (isRosterOK f H) = H.any (isRosterOK f H) := by
+    apply Bool.eq_iff_iff.mpr
+    rw [List.any_eq_true, List.any_eq_true]
+    constructor
+    · rintro ⟨r, hr, hc⟩; exact ⟨r, F_subset H hr, hc⟩
+    · rintro ⟨r, hr, hc⟩
+      rcases F_covers hr with hF | ⟨q, hq, hqr⟩
+      · exact ⟨r, hF, hc⟩
+      · exact ⟨q, hq, isRosterOK_of_dominates hc hqr⟩
+  have hmax : maxTtl (isRosterOK f H) (F H) = maxTtl (isRosterOK f H) H := by
+    apply Nat.le_antisymm
+    · exact maxTtl_le fun r hr hc => maxTtl_ge (F_subset H hr) hc
+    · apply maxTtl_le
+      intro r hr hc
+      rcases F_covers hr with hF | ⟨q, hq, hqr⟩
+      · exact maxTtl_ge hF hc
+      · exact Nat.le_trans (dominates_ttl hqr) (maxTtl_ge hq (isRosterOK_of_dominates hc hqr))
+  rw [hany, hmax]
+
 /-! ### T12: authorization records do not touch data -/
 
 /-- T12: the application of an authorization record `a` does not add or
@@ -1811,6 +1874,205 @@ theorem cell_unique {H : List Record} {e f : Nat} {vx vy : Version} {ax ay : Nat
   · exact absurd ⟨put e f vx ax, (mem_F_iff.mp hx).1, by simp [dominates, hgt]⟩
       (mem_F_iff.mp hy).2
 
+/-! ### T5: `deleted_at` and `exists` -/
+
+theorem Version.lt_asymm {a b : Version} (h : Version.lt a b) : ¬ Version.lt b a := by
+  unfold Version.lt at *; omega
+
+theorem Version.not_lt_trans {a b c : Version} (h₁ : ¬ Version.lt a b) (h₂ : ¬ Version.lt b c) :
+    ¬ Version.lt a c := by
+  unfold Version.lt at *; omega
+
+theorem Version.eq_of_not_lt {a b : Version} (h₁ : ¬ Version.lt a b) (h₂ : ¬ Version.lt b a) :
+    a = b :=
+  (Version.lt_trichotomy a b).elim (fun h => absurd h h₁)
+    (fun h => h.elim id (fun h => absurd h h₂))
+
+/-- One fold step of `deleted_at(e)`: keep the larger version of a `del` on
+`e`. -/
+def delStep (e : Nat) (acc : Option Version) : Record → Option Version
+  | del e' v =>
+    if e' = e then
+      match acc with
+      | none => some v
+      | some a => if Version.lt a v then some v else some a
+    else acc
+  | _ => acc
+
+/-- `deleted_at(e)`: the largest version of the held `del`s on entity `e`, or
+`none` if there is no such `del`. -/
+def deletedAt (H : List Record) (e : Nat) : Option Version := H.foldl (delStep e) none
+
+/-- `v` is the version of a `del` on `e` in `H` that no `del` on `e` in `H`
+exceeds. -/
+def IsDelMax (H : List Record) (e : Nat) (v : Version) : Prop :=
+  del e v ∈ H ∧ ∀ v', del e v' ∈ H → ¬ Version.lt v v'
+
+theorem delStep_skip {e : Nat} {acc : Option Version} {r : Record} (h : ∀ v, r ≠ del e v) :
+    delStep e acc r = acc := by
+  cases r with
+  | del e' v =>
+    have he : e' ≠ e := fun he => h v (by rw [he])
+    simp [delStep, he]
+  | _ => rfl
+
+theorem foldl_delStep_none (e : Nat) :
+    ∀ (l : List Record) (acc : Option Version),
+      l.foldl (delStep e) acc = none ↔ acc = none ∧ ∀ v, del e v ∉ l := by
+  intro l
+  induction l with
+  | nil => intro acc; simp
+  | cons r l ih =>
+    intro acc
+    rw [List.foldl_cons, ih]
+    by_cases hr : ∃ v, r = del e v
+    · obtain ⟨v, rfl⟩ := hr
+      cases acc with
+      | none =>
+        simp only [delStep, ↓reduceIte]
+        constructor
+        · rintro ⟨h, _⟩; cases h
+        · rintro ⟨_, hv⟩; exact absurd (List.mem_cons_self ..) (hv v)
+      | some a =>
+        simp only [delStep, ↓reduceIte]
+        split <;> simp
+    · have hr' : ∀ v, r ≠ del e v := fun v h => hr ⟨v, h⟩
+      rw [delStep_skip hr']
+      constructor
+      · rintro ⟨ha, hl⟩
+        refine ⟨ha, fun v hv => ?_⟩
+        rcases List.mem_cons.mp hv with h | h
+        · exact hr' v h.symm
+        · exact hl v h
+      · rintro ⟨ha, hl⟩
+        exact ⟨ha, fun v hv => hl v (List.mem_cons_of_mem _ hv)⟩
+
+theorem foldl_delStep_some (e : Nat) :
+    ∀ (l : List Record) (acc : Option Version) (m : Version),
+      l.foldl (delStep e) acc = some m →
+        (acc = some m ∨ del e m ∈ l) ∧
+        (∀ a, acc = some a → ¬ Version.lt m a) ∧
+        (∀ v, del e v ∈ l → ¬ Version.lt m v) := by
+  intro l
+  induction l with
+  | nil =>
+    intro acc m h
+    simp only [List.foldl_nil] at h
+    refine ⟨Or.inl h, ?_, fun v hv => absurd hv List.not_mem_nil⟩
+    intro a ha; rw [h] at ha; cases ha; exact Version.lt_irrefl _
+  | cons r l ih =>
+    intro acc m h
+    rw [List.foldl_cons] at h
+    obtain ⟨hmem, hacc, hl⟩ := ih _ m h
+    by_cases hr : ∃ v, r = del e v
+    · obtain ⟨v, rfl⟩ := hr
+      cases acc with
+      | none =>
+        have hs : delStep e none (del e v) = some v := by simp [delStep]
+        rw [hs] at hmem hacc
+        refine ⟨Or.inr ?_, (fun a ha => by cases ha), ?_⟩
+        · rcases hmem with he | h1
+          · cases he; exact List.mem_cons_self ..
+          · exact List.mem_cons_of_mem _ h1
+        · intro v' hv'
+          rcases List.mem_cons.mp hv' with he | h1
+          · cases he; exact hacc _ rfl
+          · exact hl v' h1
+      | some a =>
+        by_cases hlt : Version.lt a v
+        · have hs : delStep e (some a) (del e v) = some v := by simp [delStep, hlt]
+          rw [hs] at hmem hacc
+          have hmv : ¬ Version.lt m v := hacc v rfl
+          refine ⟨?_, ?_, ?_⟩
+          · rcases hmem with he | h1
+            · cases he; exact Or.inr (List.mem_cons_self ..)
+            · exact Or.inr (List.mem_cons_of_mem _ h1)
+          · intro a' ha'; cases ha'
+            exact Version.not_lt_trans hmv (Version.lt_asymm hlt)
+          · intro v' hv'
+            rcases List.mem_cons.mp hv' with he | h1
+            · cases he; exact hmv
+            · exact hl v' h1
+        · have hs : delStep e (some a) (del e v) = some a := by simp [delStep, hlt]
+          rw [hs] at hmem hacc
+          have hma : ¬ Version.lt m a := hacc a rfl
+          refine ⟨hmem.imp id (List.mem_cons_of_mem _), hacc, ?_⟩
+          intro v' hv'
+          rcases List.mem_cons.mp hv' with he | h1
+          · cases he; exact Version.not_lt_trans hma hlt
+          · exact hl v' h1
+    · have hr' : ∀ v, r ≠ del e v := fun v h => hr ⟨v, h⟩
+      rw [delStep_skip hr'] at hmem hacc
+      refine ⟨hmem.imp id (List.mem_cons_of_mem _), hacc, ?_⟩
+      intro v' hv'
+      rcases List.mem_cons.mp hv' with he | h1
+      · exact absurd he.symm (hr' v')
+      · exact hl v' h1
+
+theorem deletedAt_none {H : List Record} {e : Nat} :
+    deletedAt H e = none ↔ ∀ v, del e v ∉ H := by
+  unfold deletedAt; rw [foldl_delStep_none]; simp
+
+theorem deletedAt_some {H : List Record} {e : Nat} {m : Version} (h : deletedAt H e = some m) :
+    IsDelMax H e m := by
+  obtain ⟨hmem, _, hl⟩ := foldl_delStep_some e H none m h
+  rcases hmem with he | h1
+  · cases he
+  · exact ⟨h1, hl⟩
+
+theorem IsDelMax_unique {H : List Record} {e : Nat} {m m' : Version} (h : IsDelMax H e m)
+    (h' : IsDelMax H e m') : m = m' :=
+  Version.eq_of_not_lt (h.2 m' h'.1) (h'.2 m h.1)
+
+theorem deletedAt_eq {H : List Record} {e : Nat} {m : Version} (h : IsDelMax H e m) :
+    deletedAt H e = some m := by
+  cases hr : deletedAt H e with
+  | none => exact absurd h.1 (deletedAt_none.mp hr m)
+  | some m' => rw [IsDelMax_unique (deletedAt_some hr) h]
+
+/-- T5: `deleted_at` is a function of the held set. -/
+theorem deletedAt_congr {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (e : Nat) :
+    deletedAt H e = deletedAt H' e := by
+  cases hr : deletedAt H e with
+  | none =>
+    have hn := deletedAt_none.mp hr
+    exact (deletedAt_none.mpr fun v hv => hn v ((h _).mpr hv)).symm
+  | some m =>
+    obtain ⟨h1, h2⟩ := deletedAt_some hr
+    exact (deletedAt_eq ⟨(h _).mp h1, fun v hv => h2 v ((h _).mpr hv)⟩).symm
+
+/-- T5: `deleted_at(F(H)) = deleted_at(H)`. The largest `del` on an entity is
+undominated: only a `del` on the same entity with a greater version
+dominates a `del`. -/
+theorem deletedAt_F {H : List Record} (e : Nat) : deletedAt (F H) e = deletedAt H e := by
+  cases hr : deletedAt H e with
+  | none =>
+    have hn := deletedAt_none.mp hr
+    exact deletedAt_none.mpr fun v hv => hn v (F_subset H hv)
+  | some m =>
+    obtain ⟨h1, h2⟩ := deletedAt_some hr
+    have hmF : del e m ∈ F H := by
+      refine mem_F_iff.mpr ⟨h1, ?_⟩
+      rintro ⟨q, hq, hqm⟩
+      cases q with
+      | del e' v =>
+        simp only [dominates, decide_eq_true_eq] at hqm
+        obtain ⟨rfl, hlt⟩ := hqm
+        exact h2 v hq hlt
+      | _ => simp [dominates] at hqm
+    exact deletedAt_eq ⟨hmF, fun v hv => h2 v (F_subset H hv)⟩
+
+/-- `exists(e)`: entity `e` has a live field, that is, the held set has a
+`put` on a cell of `e`. In a frontier, this is `∃ f, cell(e, f) ≠ None`, and
+`cell_unique` gives one value per cell. -/
+def existsEnt (H : List Record) (e : Nat) : Prop := ∃ f v x, put e f v x ∈ H
+
+/-- T5: `exists` is a function of the held set. (The name `exists_congr` is
+taken by core Lean.) -/
+theorem existsEnt_congr {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (e : Nat) :
+    existsEnt H e ↔ existsEnt H' e :=
+  ⟨fun ⟨f, v, x, hm⟩ => ⟨f, v, x, (h _).mp hm⟩, fun ⟨f, v, x, hm⟩ => ⟨f, v, x, (h _).mpr hm⟩⟩
+
 /-! ### T8: the chase, and D8 -/
 
 /-- The emitted `t`: the larger of the wall clock and the value just above the
@@ -1826,6 +2088,64 @@ theorem chase {now floorT c : Nat} (h : floorT < c) : floorT < emitT now floorT 
 theorem emitT_le (now floorT c : Nat) : emitT now floorT c ≤ c := by
   unfold emitT; omega
 
+/-- T9 (after a raise): a record pinned at the old ceiling `c` (every admitted
+record is at or below the ceiling, `adm_put_le`) cannot shadow a write under
+a new ceiling `c' > c`. The emission lands above the pin and below `c'`. -/
+theorem chase_after_raise {now floorT c c' : Nat} (hpin : floorT ≤ c) (hraise : c < c') :
+    floorT < emitT now floorT c' ∧ emitT now floorT c' ≤ c' :=
+  ⟨chase (Nat.lt_of_le_of_lt hpin hraise), emitT_le now floorT c'⟩
+
+/-- The `seq` of a held data record by author `k`; 0 for every other
+record. -/
+def seqOf (k : Nat) : Record → Nat
+  | put _ _ v _ => if v.author = k then v.seq else 0
+  | del _ v => if v.author = k then v.seq else 0
+  | _ => 0
+
+/-- The largest own `seq` held, 0 if there is none. -/
+def maxSeq (k : Nat) : List Record → Nat
+  | [] => 0
+  | r :: l => max (seqOf k r) (maxSeq k l)
+
+theorem maxSeq_ge {k : Nat} {r : Record} {l : List Record} (h : r ∈ l) :
+    seqOf k r ≤ maxSeq k l := by
+  induction l with
+  | nil => exact absurd h List.not_mem_nil
+  | cons q l ih =>
+    simp only [maxSeq]
+    rcases List.mem_cons.mp h with hq | hl
+    · rw [hq]; exact Nat.le_max_left _ _
+    · exact Nat.le_trans (ih hl) (Nat.le_max_right _ _)
+
+/-- The emitted `seq` of author `k`: one more than the larger of the device's
+own counter `seqSelf` (the largest `seq` that it emitted) and the largest
+own `seq` held (§5). -/
+def emitSeq (seqSelf : Nat) (H : List Record) (k : Nat) : Nat := max seqSelf (maxSeq k H) + 1
+
+/-- T8 (seq clause): the emitted `seq` exceeds every `seq` that the device
+emitted. -/
+theorem seq_emit_gt_self (seqSelf : Nat) (H : List Record) (k : Nat) :
+    seqSelf < emitSeq seqSelf H k := by
+  unfold emitSeq; omega
+
+/-- T8 (seq clause): the emitted `seq` exceeds the `seq` of every held record
+of its author. -/
+theorem seq_emit_gt {seqSelf k : Nat} {H : List Record} {r : Record} (hr : r ∈ H) :
+    seqOf k r < emitSeq seqSelf H k := by
+  unfold emitSeq
+  have := maxSeq_ge (k := k) hr
+  omega
+
+theorem seq_emit_gt_put {seqSelf : Nat} {H : List Record} {e f : Nat} {v : Version} {x : Nat}
+    (hr : put e f v x ∈ H) : v.seq < emitSeq seqSelf H v.author := by
+  have := seq_emit_gt (seqSelf := seqSelf) (k := v.author) hr
+  simpa [seqOf] using this
+
+theorem seq_emit_gt_del {seqSelf : Nat} {H : List Record} {e : Nat} {v : Version}
+    (hr : del e v ∈ H) : v.seq < emitSeq seqSelf H v.author := by
+  have := seq_emit_gt (seqSelf := seqSelf) (k := v.author) hr
+  simpa [seqOf] using this
+
 /-- The version order on the `(t, author, seq)` prefix alone. -/
 def prefixLt (a b : Version) : Prop :=
   a.t < b.t ∨ (a.t = b.t ∧ (a.author < b.author ∨ (a.author = b.author ∧ a.seq < b.seq)))
@@ -1838,5 +2158,20 @@ theorem lt_iff_prefix {a b : Version}
   simp only [ne_eq, Prod.mk.injEq] at h
   unfold Version.lt prefixLt
   constructor <;> intro h' <;> omega
+
+/-! ### T10: equivocation -/
+
+/-- T10: two different records with equal `(author, seq)` have comparable
+versions (T1), so every replica puts them in the same order. -/
+theorem equivocation_ordered {a b : Version} (h : a ≠ b) : Version.lt a b ∨ Version.lt b a :=
+  (Version.lt_trichotomy a b).elim Or.inl (fun h' => h'.elim (fun he => absurd he h) Or.inr)
+
+/-- T10: arrival order has no effect on the frontier (an alias of
+`convergence`, for `applyD`; with a horizon, under `NoLateDom`, as in T4 (b),
+`expire_applyAllH`). -/
+theorem equivocation {S l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') (x : Record)
+    (hF : Frontier S) (hA : Admitted S) :
+    x ∈ applyAllD (applyAllD S l) l ↔ x ∈ applyAllD (applyAllD S l') l' :=
+  convergence h x hF hA
 
 end Kome.Frontier

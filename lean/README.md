@@ -6,25 +6,39 @@ model's theorems. It uses only core Lean (no Mathlib), so it builds
 offline:
 
 ```bash
-./build.sh        # or: lake build
+./build.sh        # or: lake build --wfail
 ```
 
 If `lake` is not installed, `build.sh` gets Lean from nixpkgs.
 `lean-toolchain` names the version for users of `elan`.
+
+The build enforces the "no `sorry`, standard axioms only" claim:
+
+- `build.sh` runs `lake build --wfail`, so every warning fails the build.
+  Lean reports a `sorry` as a warning.
+- `Kome/Axioms.lean` is part of the build. Its command
+  `#assert_std_axioms Kome.Frontier` collects the axioms of every
+  declaration of the module and fails the build if one of them is outside
+  `propext`, `Classical.choice` and `Quot.sound`. A `sorry` adds `sorryAx`,
+  so it fails this check too. The check covers every theorem that the
+  table below lists, and every theorem that is added later.
 
 ## What the model contains
 
 - Five record kinds: `put`, `del`, per-signer `roster` (with its epoch),
   `revoke` and issuer-keyed `grant` (with its write cap).
 - The version order.
-- Domination (the product orders on rosters, strict in `gen`, and on
-  grants, non-decreasing in cap).
+- Domination (the product orders on rosters, strict in `gen` and
+  non-decreasing in epoch, ceiling and `del_ttl`, and on grants,
+  non-decreasing in cap).
 - The frontier.
 - Admission under `maxceil`, `W` and `wcap`, as functions of the held set.
 - The discard model (`applyD`), and the store's apply with expiry on
   arrival (`applyH`).
 - Tombstone expiry.
-- The views `root_void`, `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
+- The views `deleted_at`, `exists`, `root_void`, `W_eff`, `void`,
+  `ROSTER_eff` and `del_ttl_eff`.
+- The emitted `t` (`emitT`) and the emitted `seq` (`emitSeq`).
 
 Out of scope: the model assumes that records are well-formed. So it does
 not model certificates, capacity (`NO_SPACE`, `AUTH_FULL`), the horizon's
@@ -40,16 +54,22 @@ clock clamp or assumption A7.
 | T4 convergence | `auth_first`, `convergence_two_pass`, `convergence` |
 | A16 bundles closed under admission | `auth_first_closed` |
 | T4′ admission is monotone | `adm_mono`, `maxCeil_F`, `isWriter_F`, `wcap_F`, `adm_F` |
-| T5 views | `cell_unique`, `rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_congr`, `rosterEff_F`, `rosterEff_present`, `delTtlEff_congr` |
-| T8 chase | `chase`, `lt_iff_prefix` (D8) |
-| T9 nothing admitted above the ceiling or the write cap | `adm_put_le`, `adm_put_le_wcap` |
+| T5 views | `cell_unique`, `deletedAt_congr`, `deletedAt_F`, `existsEnt_congr`, `rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_congr`, `rosterEff_F`, `rosterEff_present`, `delTtlEff_congr`, `delTtlEff_F` (H15) |
+| T8 chase | `chase`, `lt_iff_prefix` (D8); seq clause `seq_emit_gt`, `seq_emit_gt_self` |
+| T9 nothing admitted above the ceiling or the write cap | `adm_put_le`, `adm_put_le_wcap`; after a raise `chase_after_raise` |
+| T10 equivocation | `instance : StrictTotal Version`, `equivocation_ordered`, `equivocation` (an alias of `convergence`), `convergence_empty` |
 | T11 expiry | `expire_none`, `expire_only_del`, `expire_frontier`, `expire_adm`, `expire_admitted`, `expire_reapply` |
+| N1 a later expiry absorbs an earlier one | `expire_expire` |
 | G1 expiry on arrival | `expire_applyAllH` (under `NoLateDom`) |
 | T12 revocation | `data_F_auth_free`, `applyF_local`, `revoke_never_dominated`, `rootVoid_mono`, `wEff_mono_fixed`, `voided_revoke_mono` |
 | T13 bounds | `emitT_le` |
 | T18 replay after compaction | `auth_first` |
 
-**Status:** Lean machine-checks 158 theorems (156 `theorem` and 2
+`exists_congr` of the audit (G3) is `existsEnt_congr`: core Lean already
+uses the name `exists_congr`.
+
+**Status:** Lean machine-checks 183 theorems (181 `theorem` and 2
 `instance` declarations), with no `sorry`. The only
 axioms that the proofs use are the standard Lean axioms `propext`,
-`Classical.choice` and `Quot.sound`. T7 (reconciliation) is open.
+`Classical.choice` and `Quot.sound`; `Kome/Axioms.lean` checks this on
+every build. T7 (reconciliation) is open.
