@@ -15,14 +15,13 @@ package body Kome.Headers with SPARK_Mode is
    procedure Lemma_Dominates_Trans (X, Y, Z : Header) is
    begin
       Lemma_Lt_Trans (X.V, Y.V, Z.V);
-      if X.K = K_Roster then
-         Lemma_Gen_Lt_Trans (X, Y, Z);
-      end if;
    end Lemma_Dominates_Trans;
 
    procedure Lemma_Revoke_Never_Dominated (Q, X : Header) is null;
 
    procedure Lemma_Roster_Dom (P, Q : Header) is null;
+
+   procedure Lemma_Equal_Gen_No_Dom (P, Q : Header) is null;
 
    procedure Lemma_Grant_Dom (P, Q : Header) is null;
 

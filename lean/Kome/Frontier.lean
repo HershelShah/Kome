@@ -9,24 +9,26 @@ There are five record kinds (§2):
 - The data records `put` and `del`. Each one has a version
   `(t, author, seq, h)`. One strict total order compares the versions.
 - The authorization records:
-  - `roster`: one for each signer, with its ceiling, its generation and its
-    tombstone lifetime.
+  - `roster`: one for each signer, with its ceiling, its generation, its
+    tombstone lifetime and its epoch.
   - `revoke`: issuer, subject, `from_t`.
-  - `grant`: issuer, subject.
+  - `grant`: issuer, subject, write cap.
 
 Domination is per key:
 - A newer `put` of the same cell, or a newer `del` of the same entity,
   dominates a `put`.
 - A newer `del` dominates a `del`.
-- A roster of the same signer dominates a roster if it is greater in
-  `(gen, h)` and not lower in ceiling (a product order).
-- A grant of the same issuer and subject with a greater hash dominates a
-  grant.
+- A roster of the same signer dominates a roster if it is strictly greater
+  in `gen` and not lower in epoch or in ceiling (a product order). Two
+  rosters of one signer at equal `gen` never dominate each other.
+- A grant of the same issuer and subject with a greater hash and a cap that
+  is not lower dominates a grant (a product order).
 - A `revoke` is never dominated and dominates nothing.
 
 Admission (§4) is a function of the authorization records alone. A data
 record is admitted iff its `t` is at most `maxceil` (the largest roster
-ceiling) and its author is in `W` (the subjects of the grants). Both
+ceiling), its author is in `W` (the subjects of the grants) and its `t` is
+at most `wcap(author)` (the largest cap of the author's grants). All three
 registers are functions of the frontier that never shrink (T4'). So
 admission is monotone. Admission never reads `revoke`, `root_void` or
 `W_eff`.
@@ -123,33 +125,34 @@ instance : StrictTotal Version where
 /-- The records of one collection, reduced to the fields that the lattice and
 the views read:
 - `put` and `del` carry a version.
-- `roster` carries its signer, its ceiling, its generation, its `del_ttl` and
-  its hash.
+- `roster` carries its signer, its ceiling, its generation, its `del_ttl`,
+  its epoch and its hash.
 - `revoke` carries its issuer, its subject, `from_t`, `rev_seq` and its hash.
-- `grant` carries its issuer, its subject and its hash. -/
+- `grant` carries its issuer, its subject, its write cap and its hash. -/
 inductive Record where
   | put (ent field : Nat) (v : Version) (value : Nat)
   | del (ent : Nat) (v : Version)
-  | roster (signer ceil gen ttl h : Nat)
+  | roster (signer ceil gen ttl epoch h : Nat)
   | revoke (issuer subject fromT revSeq h : Nat)
-  | grant (issuer subject h : Nat)
+  | grant (issuer subject cap h : Nat)
 deriving DecidableEq, Repr
 
 open Record
 
 /-- `dominates q p`: `q` dominates `p` (DESIGN.md §3, the witness of `dom`).
 The product order (D3) compares rosters: the same signer, a ceiling that is
-not lower, and a greater `(gen, h)`. A grant's key is
-`(issuer, subject)`. No other record dominates. A `revoke` is never
-dominated and never dominates. No clause compares authorization records of
-different kinds. -/
+not lower, an epoch that is not lower, and a strictly greater `gen`. The
+hash takes no part: two rosters of one signer at equal `gen` never dominate
+each other. A grant's key is `(issuer, subject)`; a grant dominates a grant
+of the same key when its hash is greater and its cap is not lower. No other
+record dominates. A `revoke` is never dominated and never dominates. No
+clause compares authorization records of different kinds. -/
 def dominates : Record → Record → Bool
   | put e' f' v' _, put e f v _ => decide (e = e' ∧ f = f' ∧ Version.lt v v')
   | del e' v',      put e _ v _ => decide (e = e' ∧ Version.lt v v')
   | del e' v',      del e v     => decide (e = e' ∧ Version.lt v v')
-  | roster s' c' g' _ h', roster s c g _ h =>
-      decide (s = s' ∧ c ≤ c' ∧ (g < g' ∨ (g = g' ∧ h < h')))
-  | grant i' j' h', grant i j h => decide (i = i' ∧ j = j' ∧ h < h')
+  | roster s' c' g' _ e' _, roster s c g _ e _ => decide (s = s' ∧ c ≤ c' ∧ e ≤ e' ∧ g < g')
+  | grant i' j' c' h', grant i j c h => decide (i = i' ∧ j = j' ∧ c ≤ c' ∧ h < h')
   | _, _ => false
 
 theorem dominates_irrefl (x : Record) : dominates x x = false := by
@@ -397,29 +400,33 @@ theorem auth_not_dominates_data {q y : Record} (hq : isAuth q = true) (hy : isAu
     dominates q y = false := by
   cases q <;> cases y <;> simp [isAuth, dominates] at hq hy ⊢
 
-theorem dominates_grant {q : Record} {i k h : Nat} (hq : dominates q (grant i k h) = true) :
-    ∃ h', q = grant i k h' := by
+/-- A dominator of a grant is a grant of the same key with a cap that is not
+lower. -/
+theorem dominates_grant {q : Record} {i k c h : Nat} (hq : dominates q (grant i k c h) = true) :
+    ∃ c' h', q = grant i k c' h' ∧ c ≤ c' := by
   cases q with
-  | grant i' k' h' =>
+  | grant i' k' c' h' =>
     simp only [dominates, decide_eq_true_eq] at hq
-    obtain ⟨rfl, rfl, _⟩ := hq
-    exact ⟨h', rfl⟩
+    obtain ⟨rfl, rfl, hc, _⟩ := hq
+    exact ⟨c', h', rfl, hc⟩
   | _ => simp [dominates] at hq
 
-theorem dominates_roster {q : Record} {s c g t h : Nat}
-    (hq : dominates q (roster s c g t h) = true) :
-    ∃ c' g' t' h', q = roster s c' g' t' h' ∧ c ≤ c' ∧ (g < g' ∨ (g = g' ∧ h < h')) := by
+/-- A dominator of a roster is a roster of the same signer, with a ceiling
+and an epoch that are not lower and a strictly greater `gen`. -/
+theorem dominates_roster {q : Record} {s c g t e h : Nat}
+    (hq : dominates q (roster s c g t e h) = true) :
+    ∃ c' g' t' e' h', q = roster s c' g' t' e' h' ∧ c ≤ c' ∧ e ≤ e' ∧ g < g' := by
   cases q with
-  | roster s' c' g' t' h' =>
+  | roster s' c' g' t' e' h' =>
     simp only [dominates, decide_eq_true_eq] at hq
-    obtain ⟨rfl, hc, hg⟩ := hq
-    exact ⟨c', g', t', h', rfl, hc, hg⟩
+    obtain ⟨rfl, hc, he, hg⟩ := hq
+    exact ⟨c', g', t', e', h', rfl, hc, he, hg⟩
   | _ => simp [dominates] at hq
 
-/-! ### Derived registers: `maxceil` and `W` (§3, T4') -/
+/-! ### Derived registers: `maxceil`, `W` and `wcap` (§3, T4') -/
 
 def ceilOf : Record → Nat
-  | roster _ c _ _ _ => c
+  | roster _ c _ _ _ _ => c
   | _ => 0
 
 theorem ceilOf_of_not_auth {r : Record} (h : isAuth r = false) : ceilOf r = 0 := by
@@ -460,23 +467,24 @@ theorem maxCeil_congr {l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') : m
     (maxCeil_le fun r hr => maxCeil_ge ((h r).mpr hr))
 
 /-- `k ∈ W(H)`: some grant in `H` names `k`. -/
-def isWriter (H : List Record) (k : Nat) : Prop := ∃ i hh, grant i k hh ∈ H
+def isWriter (H : List Record) (k : Nat) : Prop := ∃ i c hh, grant i k c hh ∈ H
 
 /-- The grant-to-`k` test. -/
 def grantsTo (k : Nat) : Record → Bool
-  | grant _ j _ => decide (j = k)
+  | grant _ j _ _ => decide (j = k)
   | _ => false
 
 /-- `W` as a Boolean test. -/
 def writerB (H : List Record) (k : Nat) : Bool := H.any (grantsTo k)
 
-theorem grantsTo_iff {k : Nat} {r : Record} : grantsTo k r = true ↔ ∃ i hh, r = grant i k hh := by
+theorem grantsTo_iff {k : Nat} {r : Record} :
+    grantsTo k r = true ↔ ∃ i c hh, r = grant i k c hh := by
   cases r with
-  | grant i j h =>
+  | grant i j c h =>
     simp only [grantsTo, decide_eq_true_eq]
     constructor
-    · intro hj; subst hj; exact ⟨i, h, rfl⟩
-    · rintro ⟨i', hh, he⟩; cases he; rfl
+    · intro hj; subst hj; exact ⟨i, c, h, rfl⟩
+    · rintro ⟨i', c', hh, he⟩; cases he; rfl
   | _ => simp [grantsTo]
 
 theorem writerB_iff {H : List Record} {k : Nat} : writerB H k = true ↔ isWriter H k := by
@@ -484,10 +492,62 @@ theorem writerB_iff {H : List Record} {k : Nat} : writerB H k = true ↔ isWrite
   rw [List.any_eq_true]
   constructor
   · rintro ⟨r, hr, hg⟩
-    obtain ⟨i, hh, rfl⟩ := grantsTo_iff.mp hg
-    exact ⟨i, hh, hr⟩
-  · rintro ⟨i, hh, hm⟩
-    exact ⟨_, hm, grantsTo_iff.mpr ⟨i, hh, rfl⟩⟩
+    obtain ⟨i, c, hh, rfl⟩ := grantsTo_iff.mp hg
+    exact ⟨i, c, hh, hr⟩
+  · rintro ⟨i, c, hh, hm⟩
+    exact ⟨_, hm, grantsTo_iff.mpr ⟨i, c, hh, rfl⟩⟩
+
+/-- The cap that a grant of subject `k` gives; 0 for every other record. -/
+def capOf (k : Nat) : Record → Nat
+  | grant _ j c _ => if j = k then c else 0
+  | _ => 0
+
+theorem capOf_of_not_auth {k : Nat} {r : Record} (h : isAuth r = false) : capOf k r = 0 := by
+  cases r <;> simp [isAuth, capOf] at h ⊢
+
+/-- A dominator's cap for `k` is at least the cap of the dominated record. For
+grants, this follows from the product order. Every other kind has cap 0. -/
+theorem dominates_cap {q y : Record} (k : Nat) (h : dominates q y = true) :
+    capOf k y ≤ capOf k q := by
+  cases y <;> cases q <;> simp [dominates, capOf] at h ⊢ <;> (try obtain ⟨rfl, rfl, hc, _⟩ := h) <;>
+    (try split) <;> omega
+
+/-- `wcap(k)`: the largest cap of the grants of subject `k`, 0 if there is
+none. -/
+def wcap (H : List Record) (k : Nat) : Nat :=
+  match H with
+  | [] => 0
+  | r :: l => max (capOf k r) (wcap l k)
+
+theorem wcap_ge {k : Nat} {r : Record} {l : List Record} (h : r ∈ l) : capOf k r ≤ wcap l k := by
+  induction l with
+  | nil => exact absurd h List.not_mem_nil
+  | cons q l ih =>
+    simp only [wcap]
+    rcases List.mem_cons.mp h with hq | hl
+    · rw [hq]; exact Nat.le_max_left _ _
+    · exact Nat.le_trans (ih hl) (Nat.le_max_right _ _)
+
+/-- A grant of `k` with cap `c` gives `c ≤ wcap(k)`. -/
+theorem wcap_ge_grant {k i c hh : Nat} {l : List Record} (h : grant i k c hh ∈ l) :
+    c ≤ wcap l k := by
+  have := wcap_ge (k := k) h
+  simpa [capOf] using this
+
+theorem wcap_le {k : Nat} {l : List Record} {m : Nat} (h : ∀ r, r ∈ l → capOf k r ≤ m) :
+    wcap l k ≤ m := by
+  induction l with
+  | nil => exact Nat.zero_le m
+  | cons q l ih =>
+    simp only [wcap]
+    exact Nat.max_le.mpr ⟨h q (List.mem_cons.mpr (Or.inl rfl)),
+      ih (fun r hr => h r (List.mem_cons.mpr (Or.inr hr)))⟩
+
+theorem wcap_congr {l l' : List Record} (h : ∀ r, r ∈ l ↔ r ∈ l') (k : Nat) :
+    wcap l k = wcap l' k :=
+  Nat.le_antisymm
+    (wcap_le fun r hr => wcap_ge ((h r).mp hr))
+    (wcap_le fun r hr => wcap_ge ((h r).mpr hr))
 
 /-- If `T` holds only records of `U` and covers every authorization record of
 `U`, the two have the same `maxceil`. -/
@@ -507,16 +567,29 @@ theorem maxCeil_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
 theorem isWriter_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
     (hcov : ∀ y ∈ U, isAuth y = true → Cov y T) (k : Nat) : isWriter T k ↔ isWriter U k := by
   constructor
-  · rintro ⟨i, hh, hm⟩; exact ⟨i, hh, hsub _ hm⟩
-  · rintro ⟨i, hh, hm⟩
+  · rintro ⟨i, c, hh, hm⟩; exact ⟨i, c, hh, hsub _ hm⟩
+  · rintro ⟨i, c, hh, hm⟩
     rcases hcov _ hm rfl with hT | ⟨q, hq, hqg⟩
-    · exact ⟨i, hh, hT⟩
-    · obtain ⟨h', rfl⟩ := dominates_grant hqg
-      exact ⟨i, h', hq⟩
+    · exact ⟨i, c, hh, hT⟩
+    · obtain ⟨c', h', rfl, _⟩ := dominates_grant hqg
+      exact ⟨i, c', h', hq⟩
 
 theorem writerB_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
     (hcov : ∀ y ∈ U, isAuth y = true → Cov y T) (k : Nat) : writerB T k = writerB U k :=
   Bool.eq_iff_iff.mpr (by rw [writerB_iff, writerB_iff]; exact isWriter_cover hsub hcov k)
+
+/-- The same for `wcap`. -/
+theorem wcap_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
+    (hcov : ∀ y ∈ U, isAuth y = true → Cov y T) (k : Nat) : wcap T k = wcap U k := by
+  apply Nat.le_antisymm
+  · exact wcap_le fun r hr => wcap_ge (hsub r hr)
+  · apply wcap_le
+    intro r hr
+    cases ha : isAuth r
+    · rw [capOf_of_not_auth ha]; exact Nat.zero_le _
+    · rcases hcov r hr ha with hT | ⟨q, hq, hqr⟩
+      · exact wcap_ge hT
+      · exact Nat.le_trans (dominates_cap k hqr) (wcap_ge hq)
 
 /-- T4': `maxceil(F(H)) = maxceil(H)`. A dominated roster has an undominated
 dominator. This dominator has the same signer and a ceiling that is at least
@@ -529,6 +602,11 @@ the same issuer and subject. -/
 theorem isWriter_F (H : List Record) (k : Nat) : isWriter (F H) k ↔ isWriter H k :=
   isWriter_cover (fun _ hy => F_subset H hy) (fun _ hy _ => F_covers hy) k
 
+/-- T4': `wcap(F(H)) = wcap(H)`. A dominated grant has an undominated
+dominator with the same subject and a cap that is at least as high. -/
+theorem wcap_F (H : List Record) (k : Nat) : wcap (F H) k = wcap H k :=
+  wcap_cover (fun _ hy => F_subset H hy) (fun _ hy _ => F_covers hy) k
+
 theorem maxCeil_mono_auth {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x ∈ H') :
     maxCeil H ≤ maxCeil H' := by
   apply maxCeil_le
@@ -539,17 +617,26 @@ theorem maxCeil_mono_auth {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true
 
 theorem isWriter_mono_auth {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x ∈ H')
     {k : Nat} (hw : isWriter H k) : isWriter H' k :=
-  let ⟨i, hh, hm⟩ := hw
-  ⟨i, hh, h _ hm rfl⟩
+  let ⟨i, c, hh, hm⟩ := hw
+  ⟨i, c, hh, h _ hm rfl⟩
+
+theorem wcap_mono_auth {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x ∈ H')
+    (k : Nat) : wcap H k ≤ wcap H' k := by
+  apply wcap_le
+  intro r hr
+  cases ha : isAuth r
+  · rw [capOf_of_not_auth ha]; exact Nat.zero_le _
+  · exact wcap_ge (h r hr ha)
 
 /-! ### Admission (§4; T4', T9) -/
 
-/-- A data record is admitted iff its `t` is at most `maxceil` and its author
-is in `W`. Authorization records are always admitted. Admission does not
-read `revoke`, `root_void` or `W_eff`. -/
+/-- A data record is admitted iff its `t` is at most `maxceil`, its author is
+in `W` and its `t` is at most `wcap(author)`. Authorization records are
+always admitted. Admission reads `W`, `maxceil` and `wcap` and nothing else;
+it does not read `revoke`, `root_void` or `W_eff`. -/
 def adm (H : List Record) : Record → Bool
-  | put _ _ v _ => decide (v.t ≤ maxCeil H) && writerB H v.author
-  | del _ v => decide (v.t ≤ maxCeil H) && writerB H v.author
+  | put _ _ v _ => decide (v.t ≤ maxCeil H) && writerB H v.author && decide (v.t ≤ wcap H v.author)
+  | del _ v => decide (v.t ≤ maxCeil H) && writerB H v.author && decide (v.t ≤ wcap H v.author)
   | _ => true
 
 theorem adm_auth {H : List Record} {r : Record} (hr : isAuth r = true) : adm H r = true := by
@@ -558,26 +645,28 @@ theorem adm_auth {H : List Record} {r : Record} (hr : isAuth r = true) : adm H r
 /-- Admission depends only on the authorization records, up to covering. -/
 theorem adm_cover {T U : List Record} (hsub : ∀ y ∈ T, y ∈ U)
     (hcov : ∀ y ∈ U, isAuth y = true → Cov y T) {r : Record} : adm T r = adm U r := by
-  cases r <;> simp only [adm, maxCeil_cover hsub hcov, writerB_cover hsub hcov]
+  cases r <;> simp only [adm, maxCeil_cover hsub hcov, writerB_cover hsub hcov, wcap_cover hsub hcov]
 
 theorem adm_congr {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') {r : Record} :
     adm H r = adm H' r :=
   adm_cover (fun y hy => (h y).mp hy) (fun y hy _ => Or.inl ((h y).mpr hy))
 
 /-- T4' (monotone admission): if every authorization record of `H` is in `H'`,
-then `H'` admits every record that `H` admits. -/
+then `H'` admits every record that `H` admits. `maxceil`, `W` and `wcap`
+all grow with the authorization records. -/
 theorem adm_mono {H H' : List Record} (h : ∀ x ∈ H, isAuth x = true → x ∈ H') {r : Record}
     (ha : adm H r = true) : adm H' r = true := by
   have hc := maxCeil_mono_auth h
   have hw : ∀ k, writerB H k = true → writerB H' k = true :=
     fun k hk => writerB_iff.mpr (isWriter_mono_auth h (writerB_iff.mp hk))
+  have hp := wcap_mono_auth h
   cases r with
   | put e f v x =>
     simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at ha ⊢
-    exact ⟨Nat.le_trans ha.1 hc, hw _ ha.2⟩
+    exact ⟨⟨Nat.le_trans ha.1.1 hc, hw _ ha.1.2⟩, Nat.le_trans ha.2 (hp _)⟩
   | del e v =>
     simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at ha ⊢
-    exact ⟨Nat.le_trans ha.1 hc, hw _ ha.2⟩
+    exact ⟨⟨Nat.le_trans ha.1.1 hc, hw _ ha.1.2⟩, Nat.le_trans ha.2 (hp _)⟩
   | _ => rfl
 
 /-- T4': admission under the frontier is the same as admission under the
@@ -597,11 +686,25 @@ theorem adm_data_irrelevant {H D : List Record} (hD : ∀ x ∈ D, isAuth x = fa
 /-- T9: no admitted data record is above the ceiling. -/
 theorem adm_put_le {H : List Record} {e f : Nat} {v : Version} {x : Nat}
     (h : adm H (put e f v x) = true) : v.t ≤ maxCeil H := by
-  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.1
+  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.1.1
 
 theorem adm_del_le {H : List Record} {e : Nat} {v : Version}
     (h : adm H (del e v) = true) : v.t ≤ maxCeil H := by
-  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.1
+  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.1.1
+
+/-- T9 (write cap): no admitted data record is above its author's cap. -/
+theorem adm_put_le_wcap {H : List Record} {e f : Nat} {v : Version} {x : Nat}
+    (h : adm H (put e f v x) = true) : v.t ≤ wcap H v.author := by
+  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.2
+
+theorem adm_del_le_wcap {H : List Record} {e : Nat} {v : Version}
+    (h : adm H (del e v) = true) : v.t ≤ wcap H v.author := by
+  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact h.2
+
+/-- An admitted data record's author is in `W`. -/
+theorem adm_put_writer {H : List Record} {e f : Nat} {v : Version} {x : Nat}
+    (h : adm H (put e f v x) = true) : isWriter H v.author := by
+  simp only [adm, Bool.and_eq_true, decide_eq_true_eq] at h; exact writerB_iff.mp h.1.2
 
 def admitted (H : List Record) : List Record := H.filter (adm H)
 
@@ -612,7 +715,15 @@ theorem mem_admitted {H : List Record} {x : Record} :
 
 /-- Apply one record. If the record is admitted, `applyD` adds it and reduces
 the result to its frontier. If the record is inadmissible, `applyD`
-discards it. The record is offered again later. -/
+discards it. The record is offered again later.
+
+The store's apply is not `applyD` but `applyH` (below): `Put_Frame` expires
+a `del` on arrival when it is at or below the local horizon `h`. T4 (b),
+T10 and T11 (b) are stated for `applyD`, that is, for runs in which no
+`del` arrives at or below the horizon. `expire_applyAllH` relates the two:
+after an expiry at `h`, a run under `applyH` and the same run under
+`applyD` hold the same records, on the side condition `NoLateDom` (no
+record that an expired `del` dominates arrives after that `del`). -/
 def applyD (S : List Record) (r : Record) : List Record := if adm S r then F (S ++ [r]) else S
 
 def applyAllD (S : List Record) (l : List Record) : List Record := l.foldl applyD S
@@ -863,6 +974,25 @@ theorem auth_first {S la ld : List Record} (x : Record) (hF : Frontier S) (hA : 
     · exact hP y h
     · rw [hld y h] at ha; exact absurd ha Bool.false_ne_true
 
+/-- A16 (a corollary of `auth_first`): a bundle is closed under admission
+when its authorization records come first and every data record of the
+bundle is admitted once they are applied. Then every data record of the
+bundle is held after the bundle, unless a record of the start state or of
+the bundle dominates it. No data record of such a bundle waits for a later
+session. -/
+theorem auth_first_closed {S la ld : List Record} {d : Record} (hF : Frontier S)
+    (hA : Admitted S) (hla : ∀ y ∈ la, isAuth y = true) (hld : ∀ y ∈ ld, isAuth y = false)
+    (hadm : adm (applyAllD S la) d = true) (hd : d ∈ ld) (hnd : ¬ Dom d (S ++ la ++ ld)) :
+    d ∈ applyAllD S (la ++ ld) := by
+  rw [auth_first d hF hA hla hld, mem_F_iff, mem_admitted]
+  refine ⟨⟨List.mem_append_right _ hd, adm_mono ?_ hadm⟩, ?_⟩
+  · intro x hx _
+    rcases applyAllD_sub hx with h1 | h1
+    · exact List.mem_append_left _ (List.mem_append_left _ h1)
+    · exact List.mem_append_left _ (List.mem_append_right _ h1)
+  · rintro ⟨q, hq, hqd⟩
+    exact hnd ⟨q, (mem_admitted.mp hq).1, hqd⟩
+
 /-- T4 (b): two passes apply the same records, in any order and with any
 duplication. The second pass offers again the records that the first pass
 refused. The result is the frontier of the union's admitted records. -/
@@ -1019,6 +1149,161 @@ theorem expire_reapply {S l : List Record} {d : Record} {h : Nat} (x : Record)
     exact h1
   rw [applyD_pos hadmB, mem_expire, mem_expire, ← hrel x]
 
+/-! #### Expiry on arrival (G1) -/
+
+/-- The store's apply (`Put_Frame`): `applyD`, then an expiry at the local
+horizon `h` when the record is a `del` at or below `h`. So the store never
+holds an expired `del`, even for one step. -/
+def applyH (h : Nat) (S : List Record) (r : Record) : List Record :=
+  if isExpiredDel h r then expire h (applyD S r) else applyD S r
+
+def applyAllH (h : Nat) (S l : List Record) : List Record := l.foldl (applyH h) S
+
+theorem applyH_exp {h : Nat} {S : List Record} {r : Record} (hr : isExpiredDel h r = true) :
+    applyH h S r = expire h (applyD S r) := by
+  simp [applyH, hr]
+
+theorem applyH_live {h : Nat} {S : List Record} {r : Record} (hr : isExpiredDel h r = false) :
+    applyH h S r = applyD S r := by
+  simp [applyH, hr]
+
+/-- The side condition of G1: no record that an expired `del` dominates
+arrives after that `del`. Under `applyD` the `del` would stay and remove
+such a record; under `applyH` the `del` is gone before the record arrives. -/
+def NoLateDom (h : Nat) : List Record → Prop
+  | [] => True
+  | r :: l => (isExpiredDel h r = true → ∀ q ∈ l, dominates r q = false) ∧ NoLateDom h l
+
+/-- The invariant of a run under `applyH` (state `A`) against the same run
+under `applyD` (state `B`), with the records `l` still to come:
+- `A ⊆ B`, and `B` is a frontier (so `A` is one).
+- `A` holds no expired `del`.
+- Every record of `B ∖ A` is an expired `del`, and it dominates no record
+  of `l`. -/
+def HRel (h : Nat) (A B l : List Record) : Prop :=
+  (∀ y ∈ A, y ∈ B) ∧ Frontier B ∧ (∀ y ∈ A, isExpiredDel h y = false) ∧
+  (∀ y ∈ B, y ∉ A → isExpiredDel h y = true ∧ ∀ q ∈ l, dominates y q = false)
+
+/-- `A` and `B` admit the same records: the difference holds only `del`s. -/
+theorem HRel_adm {h : Nat} {A B l : List Record} (hR : HRel h A B l) (r : Record) :
+    adm A r = adm B r := by
+  obtain ⟨hsub, _, _, hdiff⟩ := hR
+  refine adm_cover hsub ?_
+  intro y hy ha
+  by_cases hyA : y ∈ A
+  · exact Or.inl hyA
+  · rw [isAuth_of_expired (hdiff y hy hyA).1] at ha
+    exact absurd ha Bool.false_ne_true
+
+/-- After an expiry at `h`, the two states hold the same records. -/
+theorem HRel_expire {h : Nat} {A B l : List Record} (hR : HRel h A B l) (x : Record) :
+    x ∈ expire h A ↔ x ∈ expire h B := by
+  obtain ⟨hsub, _, _, hdiff⟩ := hR
+  rw [mem_expire, mem_expire]
+  constructor
+  · rintro ⟨hx, he⟩; exact ⟨hsub x hx, he⟩
+  · rintro ⟨hx, he⟩
+    refine ⟨?_, he⟩
+    by_cases hxA : x ∈ A
+    · exact hxA
+    · rw [(hdiff x hx hxA).1] at he; exact absurd he.symm Bool.false_ne_true
+
+/-- One step keeps the invariant. A record of `B ∖ A` dominates neither a
+record of `A` (`B` is a frontier) nor the new record `r` (the side
+condition), so `F (A ++ [r]) ⊆ F (B ++ [r])`. In the other direction, a
+record of `F (B ++ [r])` that is in `A ++ [r]` is in `F (A ++ [r])`. -/
+theorem HRel_step {h : Nat} {A B : List Record} {r : Record} {l : List Record}
+    (hR : HRel h A B (r :: l)) (hr : isExpiredDel h r = true → ∀ q ∈ l, dominates r q = false) :
+    HRel h (applyH h A r) (applyD B r) l := by
+  have hadm := HRel_adm hR r
+  obtain ⟨hsub, hFB, hA, hdiff⟩ := hR
+  cases hB : adm B r with
+  | false =>
+    rw [applyD_neg hB]
+    have hA' : ∀ y, y ∈ applyH h A r ↔ y ∈ A := by
+      intro y
+      cases hre : isExpiredDel h r
+      · rw [applyH_live hre, applyD_neg (hadm.trans hB)]
+      · rw [applyH_exp hre, applyD_neg (hadm.trans hB), mem_expire]
+        exact ⟨And.left, fun hy => ⟨hy, hA y hy⟩⟩
+    refine ⟨fun y hy => hsub y ((hA' y).mp hy), hFB, fun y hy => hA y ((hA' y).mp hy), ?_⟩
+    intro y hy hyA
+    obtain ⟨he, hd⟩ := hdiff y hy (fun h' => hyA ((hA' y).mpr h'))
+    exact ⟨he, fun q hq => hd q (List.mem_cons_of_mem _ hq)⟩
+  | true =>
+    rw [applyD_pos hB]
+    have hsub' : ∀ y, y ∈ A ++ [r] → y ∈ B ++ [r] := by
+      intro y hy
+      rcases List.mem_append.mp hy with h1 | h1
+      · exact List.mem_append_left _ (hsub y h1)
+      · exact List.mem_append_right _ h1
+    have hlift : ∀ y, y ∈ F (A ++ [r]) → y ∈ F (B ++ [r]) := by
+      intro y hy
+      obtain ⟨hyA, hnd⟩ := mem_F_iff.mp hy
+      refine mem_F_iff.mpr ⟨hsub' y hyA, ?_⟩
+      rintro ⟨q, hq, hqy⟩
+      by_cases hqA : q ∈ A ++ [r]
+      · exact hnd ⟨q, hqA, hqy⟩
+      · have hqB : q ∈ B := by
+          rcases List.mem_append.mp hq with h1 | h1
+          · exact h1
+          · exact absurd (List.mem_append_right _ h1) hqA
+        obtain ⟨_, hd⟩ := hdiff q hqB (fun h1 => hqA (List.mem_append_left _ h1))
+        rcases List.mem_append.mp hyA with h1 | h1
+        · exact hFB y (hsub y h1) ⟨q, hqB, hqy⟩
+        · rw [List.mem_singleton.mp h1, hd r (List.mem_cons_self ..)] at hqy
+          exact Bool.false_ne_true hqy
+    have hdown : ∀ y, y ∈ F (B ++ [r]) → y ∈ A ++ [r] → y ∈ F (A ++ [r]) := by
+      intro y hy hyA
+      exact mem_F_iff.mpr ⟨hyA, fun hd => (mem_F_iff.mp hy).2 (Dom_mono hd hsub')⟩
+    have hA' : ∀ y, y ∈ applyH h A r ↔ y ∈ F (A ++ [r]) ∧ isExpiredDel h y = false := by
+      intro y
+      cases hre : isExpiredDel h r
+      · rw [applyH_live hre, applyD_pos (hadm.trans hB)]
+        refine ⟨fun hy => ⟨hy, ?_⟩, And.left⟩
+        rcases List.mem_append.mp (F_subset _ hy) with h1 | h1
+        · exact hA y h1
+        · rw [List.mem_singleton.mp h1]; exact hre
+      · rw [applyH_exp hre, applyD_pos (hadm.trans hB), mem_expire]
+    refine ⟨fun y hy => hlift y ((hA' y).mp hy).1, F_frontier _,
+      fun y hy => ((hA' y).mp hy).2, ?_⟩
+    intro y hy hyA
+    by_cases hyAr : y ∈ A ++ [r]
+    · have hye : isExpiredDel h y = true := by
+        cases he : isExpiredDel h y
+        · exact absurd ((hA' y).mpr ⟨hdown y hy hyAr, he⟩) hyA
+        · rfl
+      refine ⟨hye, ?_⟩
+      rcases List.mem_append.mp hyAr with h1 | h1
+      · rw [hA y h1] at hye; exact absurd hye Bool.false_ne_true
+      · rw [List.mem_singleton.mp h1] at hye ⊢; exact hr hye
+    · have hyB : y ∈ B := by
+        rcases List.mem_append.mp (F_subset _ hy) with h1 | h1
+        · exact h1
+        · exact absurd (List.mem_append_right _ h1) hyAr
+      obtain ⟨he, hd⟩ := hdiff y hyB (fun h1 => hyAr (List.mem_append_left _ h1))
+      exact ⟨he, fun q hq => hd q (List.mem_cons_of_mem _ hq)⟩
+
+theorem HRel_run {h : Nat} (l : List Record) :
+    ∀ (A B : List Record), HRel h A B l → NoLateDom h l →
+      ∀ x, x ∈ expire h (applyAllH h A l) ↔ x ∈ expire h (applyAllD B l) := by
+  induction l with
+  | nil => intro A B hR _ x; exact HRel_expire hR x
+  | cons r l ih => intro A B hR hl x; exact ih _ _ (HRel_step hR hl.1) hl.2 x
+
+/-- G1: a run under the store's apply (`applyH`, expiry on arrival) and the
+same run under the model's apply (`applyD`) agree after an expiry at the
+horizon, when the start state holds no expired `del` and no record that an
+expired `del` dominates arrives after that `del` (`NoLateDom`). Without the
+side condition the two differ: under `applyD` the held `del` removes the
+late record; under `applyH` the `del` is already gone. The proof does not
+use `Admitted S`: admission is the same on both sides because the two
+states differ only in `del`s. -/
+theorem expire_applyAllH {S l : List Record} {h : Nat} (x : Record) (hF : Frontier S)
+    (_hA : Admitted S) (hS : ∀ d ∈ S, isExpiredDel h d = false) (hl : NoLateDom h l) :
+    x ∈ expire h (applyAllH h S l) ↔ x ∈ expire h (applyAllD S l) :=
+  HRel_run l S S ⟨fun _ hy => hy, hF, hS, fun _ hy hyA => absurd hy hyA⟩ hl x
+
 /-! ### Views (§3, §6; T5, T12). `founding` is the collection's founding
 key. -/
 
@@ -1029,7 +1314,7 @@ def rootVoid (founding : Nat) (H : List Record) (k : Nat) : Prop :=
 
 /-- `k ∈ W_eff`: a grant of `k` by an issuer that is not root-voided. -/
 def wEff (founding : Nat) (H : List Record) (k : Nat) : Prop :=
-  ∃ i hh, grant i k hh ∈ H ∧ ¬ rootVoid founding H i
+  ∃ i c hh, grant i k c hh ∈ H ∧ ¬ rootVoid founding H i
 
 /-- The `REVOKE` clause of `void` for a record by `a` at time `t`. -/
 def revokeVoids (founding : Nat) (H : List Record) (a t : Nat) : Prop :=
@@ -1068,29 +1353,31 @@ theorem wEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ 
     wEff f H k ↔ wEff f H' k := by
   unfold wEff
   constructor
-  · rintro ⟨i, hh, hm, hv⟩; exact ⟨i, hh, (h _).mp hm, fun hv' => hv ((rootVoid_congr h i).mpr hv')⟩
-  · rintro ⟨i, hh, hm, hv⟩; exact ⟨i, hh, (h _).mpr hm, fun hv' => hv ((rootVoid_congr h i).mp hv')⟩
+  · rintro ⟨i, c, hh, hm, hv⟩
+    exact ⟨i, c, hh, (h _).mp hm, fun hv' => hv ((rootVoid_congr h i).mpr hv')⟩
+  · rintro ⟨i, c, hh, hm, hv⟩
+    exact ⟨i, c, hh, (h _).mpr hm, fun hv' => hv ((rootVoid_congr h i).mp hv')⟩
 
 /-- T5: `W_eff(F(H)) = W_eff(H)`. A dominated grant has an undominated
 dominator with the same issuer and subject. -/
 theorem wEff_F {f : Nat} {H : List Record} {k : Nat} : wEff f (F H) k ↔ wEff f H k := by
   unfold wEff
   constructor
-  · rintro ⟨i, hh, hm, hv⟩
-    exact ⟨i, hh, F_subset H hm, fun hv' => hv (rootVoid_F.mpr hv')⟩
-  · rintro ⟨i, hh, hm, hv⟩
+  · rintro ⟨i, c, hh, hm, hv⟩
+    exact ⟨i, c, hh, F_subset H hm, fun hv' => hv (rootVoid_F.mpr hv')⟩
+  · rintro ⟨i, c, hh, hm, hv⟩
     have hv' : ¬ rootVoid f (F H) i := fun h' => hv (rootVoid_F.mp h')
     rcases F_covers hm with hF | ⟨q, hq, hqg⟩
-    · exact ⟨i, hh, hF, hv'⟩
-    · obtain ⟨h', rfl⟩ := dominates_grant hqg
-      exact ⟨i, h', hq, hv'⟩
+    · exact ⟨i, c, hh, hF, hv'⟩
+    · obtain ⟨c', h', rfl, _⟩ := dominates_grant hqg
+      exact ⟨i, c', h', hq, hv'⟩
 
 /-- T12: for a fixed `root_void` set, `W_eff` is monotone (a `GRANT` can only
 un-void). -/
 theorem wEff_mono_fixed {f : Nat} {H H' : List Record} {k : Nat} (hs : H ⊆ H')
     (hfix : ∀ i, rootVoid f H' i → rootVoid f H i) (h : wEff f H k) : wEff f H' k :=
-  let ⟨i, hh, hm, hv⟩ := h
-  ⟨i, hh, hs hm, fun hv' => hv (hfix i hv')⟩
+  let ⟨i, c, hh, hm, hv⟩ := h
+  ⟨i, c, hh, hs hm, fun hv' => hv (hfix i hv')⟩
 
 /-- T12: for a fixed `root_void` set, the `REVOKE` clause of `void` is
 monotone (a `REVOKE` can only void). -/
@@ -1168,13 +1455,13 @@ theorem rootVoidB_F {f : Nat} {H : List Record} (k : Nat) : rootVoidB f (F H) k 
 /-- The candidates for `ROSTER_eff` and `del_ttl_eff`: rosters whose signer is
 not root-voided. -/
 def isRosterOK (founding : Nat) (H : List Record) : Record → Bool
-  | roster s _ _ _ _ => !rootVoidB founding H s
+  | roster s _ _ _ _ _ => !rootVoidB founding H s
   | _ => false
 
 theorem isRosterOK_roster {f : Nat} {H : List Record} {r : Record} (h : isRosterOK f H r = true) :
-    ∃ s c g t hh, r = roster s c g t hh := by
+    ∃ s c g t e hh, r = roster s c g t e hh := by
   cases r with
-  | roster s c g t hh => exact ⟨s, c, g, t, hh, rfl⟩
+  | roster s c g t e hh => exact ⟨s, c, g, t, e, hh, rfl⟩
   | _ => simp [isRosterOK] at h
 
 theorem isRosterOK_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') :
@@ -1186,52 +1473,58 @@ theorem isRosterOK_F {f : Nat} {H : List Record} : isRosterOK f (F H) = isRoster
   funext r
   cases r <;> simp only [isRosterOK, rootVoidB_F]
 
-/-- The whole roster tuple, in comparison order: `(gen, h, signer, ceil, ttl)`. -/
-def rkey : Record → Nat × Nat × Nat × Nat × Nat
-  | roster s c g t h => (g, h, s, c, t)
-  | _ => (0, 0, 0, 0, 0)
+/-- The whole roster tuple, in comparison order:
+`(epoch, gen, h, signer, ceil, ttl)`. The epoch comes first, so a roster of
+a later epoch beats every roster of an earlier epoch whatever its `gen`. -/
+abbrev RKey := Nat × Nat × Nat × Nat × Nat × Nat
 
-/-- Lexicographic order on five-tuples. -/
-def lexLt (p q : Nat × Nat × Nat × Nat × Nat) : Bool :=
+def rkey : Record → RKey
+  | roster s c g t e h => (e, g, h, s, c, t)
+  | _ => (0, 0, 0, 0, 0, 0)
+
+/-- Lexicographic order on six-tuples. -/
+def lexLt (p q : RKey) : Bool :=
   decide (p.1 < q.1 ∨ (p.1 = q.1 ∧ (p.2.1 < q.2.1 ∨ (p.2.1 = q.2.1 ∧
     (p.2.2.1 < q.2.2.1 ∨ (p.2.2.1 = q.2.2.1 ∧
-      (p.2.2.2.1 < q.2.2.2.1 ∨ (p.2.2.2.1 = q.2.2.2.1 ∧ p.2.2.2.2 < q.2.2.2.2))))))))
+      (p.2.2.2.1 < q.2.2.2.1 ∨ (p.2.2.2.1 = q.2.2.2.1 ∧
+        (p.2.2.2.2.1 < q.2.2.2.2.1 ∨ (p.2.2.2.2.1 = q.2.2.2.2.1 ∧
+          p.2.2.2.2.2 < q.2.2.2.2.2))))))))))
 
 /-- The order that `ROSTER_eff` maximizes. On rosters, it is a strict total
 order. -/
 def rkLt (a b : Record) : Bool := lexLt (rkey a) (rkey b)
 
-theorem lexLt_asymm {p q : Nat × Nat × Nat × Nat × Nat} (h : lexLt p q = true) :
-    lexLt q p = false := by
+theorem lexLt_asymm {p q : RKey} (h : lexLt p q = true) : lexLt q p = false := by
   simp only [lexLt, decide_eq_true_eq, decide_eq_false_iff_not] at h ⊢; omega
 
-theorem lexLt_irrefl (p : Nat × Nat × Nat × Nat × Nat) : lexLt p p = false := by
+theorem lexLt_irrefl (p : RKey) : lexLt p p = false := by
   simp only [lexLt, decide_eq_false_iff_not]; omega
 
-theorem lexLt_le_trans {p q r : Nat × Nat × Nat × Nat × Nat} (h₁ : lexLt p q = false)
-    (h₂ : lexLt q r = false) : lexLt p r = false := by
+theorem lexLt_le_trans {p q r : RKey} (h₁ : lexLt p q = false) (h₂ : lexLt q r = false) :
+    lexLt p r = false := by
   simp only [lexLt, decide_eq_false_iff_not] at h₁ h₂ ⊢; omega
 
-theorem lexLt_antisymm {p q : Nat × Nat × Nat × Nat × Nat} (h₁ : lexLt p q = false)
-    (h₂ : lexLt q p = false) : p = q := by
-  obtain ⟨a1, a2, a3, a4, a5⟩ := p
-  obtain ⟨b1, b2, b3, b4, b5⟩ := q
+theorem lexLt_antisymm {p q : RKey} (h₁ : lexLt p q = false) (h₂ : lexLt q p = false) :
+    p = q := by
+  obtain ⟨a1, a2, a3, a4, a5, a6⟩ := p
+  obtain ⟨b1, b2, b3, b4, b5, b6⟩ := q
   simp only [lexLt, decide_eq_false_iff_not] at h₁ h₂
   simp only [Prod.mk.injEq]
   omega
 
-theorem rkey_inj {a b : Record} (ha : ∃ s c g t hh, a = roster s c g t hh)
-    (hb : ∃ s c g t hh, b = roster s c g t hh) (h : rkey a = rkey b) : a = b := by
-  obtain ⟨s, c, g, t, hh, rfl⟩ := ha
-  obtain ⟨s', c', g', t', hh', rfl⟩ := hb
+theorem rkey_inj {a b : Record} (ha : ∃ s c g t e hh, a = roster s c g t e hh)
+    (hb : ∃ s c g t e hh, b = roster s c g t e hh) (h : rkey a = rkey b) : a = b := by
+  obtain ⟨s, c, g, t, e, hh, rfl⟩ := ha
+  obtain ⟨s', c', g', t', e', hh', rfl⟩ := hb
   simp only [rkey, Prod.mk.injEq] at h
-  obtain ⟨rfl, rfl, rfl, rfl, rfl⟩ := h
+  obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩ := h
   rfl
 
-/-- A dominating roster is strictly greater in the `ROSTER_eff` order. -/
-theorem dominates_rkLt {s c g t hh : Nat} {p : Record}
-    (h : dominates p (roster s c g t hh) = true) : rkLt (roster s c g t hh) p = true := by
-  obtain ⟨c', g', t', h', rfl, _, hg⟩ := dominates_roster h
+/-- A dominating roster is strictly greater in the `ROSTER_eff` order: its
+epoch is not lower, and its `gen` is greater. -/
+theorem dominates_rkLt {s c g t e hh : Nat} {p : Record}
+    (h : dominates p (roster s c g t e hh) = true) : rkLt (roster s c g t e hh) p = true := by
+  obtain ⟨c', g', t', e', h', rfl, _, he, hg⟩ := dominates_roster h
   simp only [rkLt, rkey, lexLt, decide_eq_true_eq]
   omega
 
@@ -1244,8 +1537,9 @@ def maxStep (cand : Record → Bool) (acc : Option Record) (r : Record) : Option
   else acc
 
 /-- `ROSTER_eff`: of the rosters whose signer is not root-voided, the one that
-is maximal under `(gen, h, signer, ceil, ttl)`. This order is a strict total
-order on rosters. If there is no such roster, the value is `none`. -/
+is maximal under `(epoch, gen, h, signer, ceil, ttl)`. This order is a
+strict total order on rosters. If there is no such roster, the value is
+`none`. -/
 def rosterEff (founding : Nat) (H : List Record) : Option Record :=
   H.foldl (maxStep (isRosterOK founding H)) none
 
@@ -1341,13 +1635,13 @@ theorem maxOf_some {cand : Record → Bool} {l : List Record} {m : Record}
   · exact ⟨h1, h2, hl⟩
 
 theorem IsMaxR_unique {cand : Record → Bool} {l : List Record} {m m' : Record}
-    (hc : ∀ r, cand r = true → ∃ s c g t hh, r = roster s c g t hh)
+    (hc : ∀ r, cand r = true → ∃ s c g t e hh, r = roster s c g t e hh)
     (h : IsMaxR cand l m) (h' : IsMaxR cand l m') : m = m' :=
   rkey_inj (hc m h.2.1) (hc m' h'.2.1)
     (lexLt_antisymm (h.2.2 m' h'.1 h'.2.1) (h'.2.2 m h.1 h.2.1))
 
 theorem maxOf_eq {cand : Record → Bool} {l : List Record} {m : Record}
-    (hc : ∀ r, cand r = true → ∃ s c g t hh, r = roster s c g t hh)
+    (hc : ∀ r, cand r = true → ∃ s c g t e hh, r = roster s c g t e hh)
     (h : IsMaxR cand l m) : l.foldl (maxStep cand) none = some m := by
   cases hr : l.foldl (maxStep cand) none with
   | none =>
@@ -1360,7 +1654,7 @@ theorem rosterEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y
     rosterEff f H = rosterEff f H' := by
   unfold rosterEff
   rw [← isRosterOK_congr h]
-  have hc : ∀ r, isRosterOK f H r = true → ∃ s c g t hh, r = roster s c g t hh :=
+  have hc : ∀ r, isRosterOK f H r = true → ∃ s c g t e hh, r = roster s c g t e hh :=
     fun _ hr => isRosterOK_roster hr
   cases hr : H.foldl (maxStep (isRosterOK f H)) none with
   | none =>
@@ -1372,11 +1666,12 @@ theorem rosterEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y
 
 /-- T5: `ROSTER_eff(F(H)) = ROSTER_eff(H)`. The maximum is undominated. A
 dominator has the same signer, so it is also a candidate. A dominator also
-has a strictly greater `(gen, h)`. -/
+has an epoch that is not lower and a strictly greater `gen`, so it is
+strictly greater under `(epoch, gen, h, …)`. -/
 theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff f H := by
   unfold rosterEff
   rw [isRosterOK_F]
-  have hc : ∀ r, isRosterOK f H r = true → ∃ s c g t hh, r = roster s c g t hh :=
+  have hc : ∀ r, isRosterOK f H r = true → ∃ s c g t e hh, r = roster s c g t e hh :=
     fun _ hr => isRosterOK_roster hr
   cases hr : H.foldl (maxStep (isRosterOK f H)) none with
   | none =>
@@ -1387,9 +1682,9 @@ theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff 
     have hmF : m ∈ F H := by
       refine mem_F_iff.mpr ⟨h1, ?_⟩
       rintro ⟨q, hq, hqm⟩
-      obtain ⟨s, c, g, t, hh, rfl⟩ := hc m h2
-      obtain ⟨c', g', t', h', rfl, _, _⟩ := dominates_roster hqm
-      have hqc : isRosterOK f H (roster s c' g' t' h') = true := by
+      obtain ⟨s, c, g, t, e, hh, rfl⟩ := hc m h2
+      obtain ⟨c', g', t', e', h', rfl, _, _, _⟩ := dominates_roster hqm
+      have hqc : isRosterOK f H (roster s c' g' t' e' h') = true := by
         simp only [isRosterOK] at h2 ⊢; exact h2
       have hlt := dominates_rkLt hqm
       rw [h3 _ hq hqc] at hlt
@@ -1399,8 +1694,8 @@ theorem rosterEff_F {f : Nat} {H : List Record} : rosterEff f (F H) = rosterEff 
 /-- If the held set contains a roster that the founding key signed, then
 `ROSTER_eff` is present. -/
 theorem rosterEff_present {f : Nat} {H : List Record}
-    (h : ∃ c g t hh, roster f c g t hh ∈ H) : rosterEff f H ≠ none := by
-  obtain ⟨c, g, t, hh, hm⟩ := h
+    (h : ∃ c g t e hh, roster f c g t e hh ∈ H) : rosterEff f H ≠ none := by
+  obtain ⟨c, g, t, e, hh, hm⟩ := h
   intro hn
   have := maxOf_none.mp hn _ hm
   have hnv : rootVoidB f H f = false := by
@@ -1410,7 +1705,7 @@ theorem rosterEff_present {f : Nat} {H : List Record}
   simp [isRosterOK, hnv] at this
 
 def ttlOf : Record → Nat
-  | roster _ _ _ t _ => t
+  | roster _ _ _ t _ _ => t
   | _ => 0
 
 /-- The largest `ttl` of the candidates (0 if there is no candidate). -/

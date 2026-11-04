@@ -45,16 +45,30 @@
 --      Kome.Records.Is_Founding_Revoke for this collection. The caller
 --      verifies and applies only the frames whose subject is a signer that
 --      it holds and that is not yet root-voided. It skips the other frames
---      without verification (this limits the pre-gate work). Only after
---      this does it evaluate its gate.
+--      without verification (this limits the pre-gate work). Then it
+--      calls Kome.Guard.Note_Open with the states before and after (the
+--      quarantine flag, AUDIT.md H2), and only after this does it
+--      evaluate its gate.
 --    * HELLO (post-gate, D13): the cred must be a ROSTER frame for which
 --      Kome.Records.Roster_Lists_DH (cred, Noise static key of the peer)
 --      holds. If not, the caller aborts the session. If it holds, the
---      caller decodes, verifies and applies it, and evaluates its gate
---      again.
+--      caller decodes, verifies and applies it, calls
+--      Kome.Guard.Note_Credential, and evaluates its gate again.
+--    * The gate is Kome.Guard.Admits (the quarantine flag, and the
+--      REVOKE-aware gate: the peer's static key is the dh_pk of a member
+--      of ROSTER_eff whose sign_pk is not Kome.Views.Revoked; AUDIT.md
+--      A3). While the flag is set, the caller takes no sealed bundle and
+--      seals none.
 --    * ELEMENTS / HAVE items: the caller decodes and verifies each frame.
 --      It checks that the key of the frame is the key that the item gives
---      (Key_Of (To_Header (R))), and it applies the frame.
+--      (Key_Of (To_Header (R))), and it applies the frame. If the frame's
+--      author is already void in the caller's view (Kome.Views.Is_Void
+--      before the apply), the caller records the peer's static key and
+--      reports SUSPECT_RELAY for it (DESIGN.md §8; AUDIT.md A1).
+--      Admission does not change.
+--    * Durability: a session counts as Complete only after the log is
+--      flushed to Kome.Store.Log_Length (the sync point, DESIGN.md §8;
+--      AUDIT.md H35).
 --    Kome.Store.Put_Frame applies every accepted frame.
 --  This package trusts nothing that a lying peer puts in an OPEN or a
 --  HELLO. The counts go into the budgets only as min (claimed, Elem_Max).

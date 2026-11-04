@@ -14,13 +14,15 @@ If `lake` is not installed, `build.sh` gets Lean from nixpkgs.
 
 ## What the model contains
 
-- Five record kinds: `put`, `del`, per-signer `roster`, `revoke` and
-  issuer-keyed `grant`.
+- Five record kinds: `put`, `del`, per-signer `roster` (with its epoch),
+  `revoke` and issuer-keyed `grant` (with its write cap).
 - The version order.
-- Domination (the product order on rosters).
+- Domination (the product orders on rosters, strict in `gen`, and on
+  grants, non-decreasing in cap).
 - The frontier.
-- Admission under `maxceil` and `W`, as functions of the held set.
-- The discard model.
+- Admission under `maxceil`, `W` and `wcap`, as functions of the held set.
+- The discard model (`applyD`), and the store's apply with expiry on
+  arrival (`applyH`).
 - Tombstone expiry.
 - The views `root_void`, `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff`.
 
@@ -36,15 +38,18 @@ clock clamp or assumption A7.
 | T2, T2′ domination | `Dom_mono`, `dominates_trans` |
 | T3 frontier homomorphism | `frontier_hom`, `F_idem`, through `F_sandwich` |
 | T4 convergence | `auth_first`, `convergence_two_pass`, `convergence` |
-| T4′ admission is monotone | `adm_mono`, `maxCeil_F`, `isWriter_F`, `adm_F` |
+| A16 bundles closed under admission | `auth_first_closed` |
+| T4′ admission is monotone | `adm_mono`, `maxCeil_F`, `isWriter_F`, `wcap_F`, `adm_F` |
 | T5 views | `cell_unique`, `rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_congr`, `rosterEff_F`, `rosterEff_present`, `delTtlEff_congr` |
 | T8 chase | `chase`, `lt_iff_prefix` (D8) |
-| T9 nothing admitted above the ceiling | `adm_put_le` |
+| T9 nothing admitted above the ceiling or the write cap | `adm_put_le`, `adm_put_le_wcap` |
 | T11 expiry | `expire_none`, `expire_only_del`, `expire_frontier`, `expire_adm`, `expire_admitted`, `expire_reapply` |
+| G1 expiry on arrival | `expire_applyAllH` (under `NoLateDom`) |
 | T12 revocation | `data_F_auth_free`, `applyF_local`, `revoke_never_dominated`, `rootVoid_mono`, `wEff_mono_fixed`, `voided_revoke_mono` |
 | T13 bounds | `emitT_le` |
 | T18 replay after compaction | `auth_first` |
 
-**Status:** Lean machine-checks 136 theorems, with no `sorry`. The only
+**Status:** Lean machine-checks 158 theorems (156 `theorem` and 2
+`instance` declarations), with no `sorry`. The only
 axioms that the proofs use are the standard Lean axioms `propext`,
 `Classical.choice` and `Quot.sound`. T7 (reconciliation) is open.

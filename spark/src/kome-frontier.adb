@@ -149,7 +149,19 @@ package body Kome.Frontier with SPARK_Mode is
         (for some J in 1 .. SC (A, K) =>
            A.H (K, J).K = K_Grant and then A.H (K, J).V.Author = W));
 
-   --  The register copy is equal to the views maxceil(F) and W(F).
+   --  A held GRANT of W with cap C.
+   function Grant_Cap_Of (A : Auth_Rows; W : Key256; C : U48) return Boolean is
+     (for some K in Slot_Index =>
+        (for some J in 1 .. SC (A, K) =>
+           A.H (K, J).K = K_Grant and then A.H (K, J).V.Author = W
+           and then A.H (K, J).V.T = C));
+
+   --  The register copy is equal to the views maxceil(F), W(F) and
+   --  wcap(F, k): each held roster is bounded by the ceiling and the
+   --  ceiling is a held roster's; each held grant's subject is a writer and
+   --  each writer has a held grant; each held grant's cap is bounded by its
+   --  subject's register cap and that cap is a held grant's. The file is
+   --  Distinct (Empty is, and each operation keeps it).
    function Coherent (A : Auth_Rows; RG : Register_File) return Boolean is
      ((for all K in Slot_Index =>
          (for all J in 1 .. SC (A, K) => Ceil_Of (A.H (K, J)) <= Ceil (RG)))
@@ -157,7 +169,14 @@ package body Kome.Frontier with SPARK_Mode is
                   (for all J in 1 .. SC (A, K) =>
                      (if A.H (K, J).K = K_Grant then In_W (RG, A.H (K, J).V.Author))))
       and then (Ceil (RG) = 0 or else Roster_At (A, Ceil (RG)))
-      and then (for all I in 1 .. Registers.Count (RG) => Grant_Of (A, Writer (RG, I))));
+      and then (for all I in 1 .. Registers.Count (RG) => Grant_Of (A, Writer (RG, I)))
+      and then (for all K in Slot_Index =>
+                  (for all J in 1 .. SC (A, K) =>
+                     (if A.H (K, J).K = K_Grant
+                      then A.H (K, J).V.T <= W_Cap (RG, A.H (K, J).V.Author))))
+      and then (for all I in 1 .. Registers.Count (RG) =>
+                  Grant_Cap_Of (A, Writer (RG, I), W_Cap (RG, Writer (RG, I))))
+      and then Distinct (RG));
 
    function Is_Frontier (S : State) return Boolean is
      (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Data_OK (S)
@@ -552,6 +571,40 @@ package body Kome.Frontier with SPARK_Mode is
       J := 1;
    end Find_Grant;
 
+   procedure Find_Grant_Cap
+     (A : Auth_Rows; W : Key256; C : U48; K : out Slot_Index; J : out Positive)
+   with
+     Ghost, Global => null,
+     Pre  => Grant_Cap_Of (A, W, C),
+     Post => J <= SC (A, K) and then A.H (K, J).K = K_Grant
+             and then A.H (K, J).V.Author = W and then A.H (K, J).V.T = C
+   is
+   begin
+      for K2 in Slot_Index loop
+         for J2 in 1 .. SC (A, K2) loop
+            if A.H (K2, J2).K = K_Grant and then A.H (K2, J2).V.Author = W
+              and then A.H (K2, J2).V.T = C
+            then
+               K := K2;
+               J := J2;
+               return;
+            end if;
+            pragma Loop_Invariant
+              (for all J3 in 1 .. J2 =>
+                 not (A.H (K2, J3).K = K_Grant and then A.H (K2, J3).V.Author = W
+                      and then A.H (K2, J3).V.T = C));
+         end loop;
+         pragma Loop_Invariant
+           (for all K3 in 1 .. K2 =>
+              (for all J3 in 1 .. SC (A, K3) =>
+                 not (A.H (K3, J3).K = K_Grant and then A.H (K3, J3).V.Author = W
+                      and then A.H (K3, J3).V.T = C)));
+      end loop;
+      pragma Assert (False);
+      K := 1;
+      J := 1;
+   end Find_Grant_Cap;
+
    --  An authorization step on slot K0, on the rows:
    --    * no other slot changes;
    --    * slot K0 keeps some of its old records (Src) and ends in R;
@@ -608,6 +661,39 @@ package body Kome.Frontier with SPARK_Mode is
       end if;
    end Lemma_Grant_Kept;
 
+   --  A held grant of W with cap C is kept, unless R is a grant of W with a
+   --  cap at least C (then R dominated it).
+   procedure Lemma_Grant_Cap_Kept
+     (Old, Upd : Auth_Rows; K0 : Slot_Index; R : Header; Src, Dst : Index_Map;
+      W : Key256; C : U48)
+   with
+     Ghost, Global => null,
+     Pre  => Grant_Cap_Of (Old, W, C) and then Auth_Step (Old, Upd, K0, R, Src, Dst),
+     Post => Grant_Cap_Of (Upd, W, C)
+             or else (R.K = K_Grant and then R.V.Author = W and then Cap_Of (R) >= C)
+   is
+      K : Slot_Index;
+      J : Positive;
+   begin
+      Find_Grant_Cap (Old, W, C, K, J);
+      if K /= K0 then
+         pragma Assert (SC (Upd, K) = SC (Old, K));
+         pragma Assert (J <= SC (Upd, K));
+         pragma Assert (Upd.H (K, J) = Old.H (K, J));
+         pragma Assert (Upd.H (K, J).K = K_Grant and then Upd.H (K, J).V.Author = W
+                        and then Upd.H (K, J).V.T = C);
+      elsif Dst (J) /= 0 then
+         pragma Assert (Dst (J) <= SC (Upd, K0));
+         pragma Assert (Upd.H (K0, Dst (J)) = Old.H (K0, J));
+         pragma Assert (Upd.H (K0, Dst (J)).K = K_Grant
+                        and then Upd.H (K0, Dst (J)).V.Author = W
+                        and then Upd.H (K0, Dst (J)).V.T = C);
+      else
+         Lemma_Dominator_Keeps_Registers (R, Old.H (K0, J));
+         pragma Assert (R.K = K_Grant and then R.V.Author = W and then Cap_Of (R) >= C);
+      end if;
+   end Lemma_Grant_Cap_Kept;
+
    procedure Lemma_Roster_Kept
      (Old, Upd : Auth_Rows; K0 : Slot_Index; R : Header; Src, Dst : Index_Map; C : U48)
    with
@@ -648,10 +734,12 @@ package body Kome.Frontier with SPARK_Mode is
              and then Auth_Step (Old, Upd, K0, R, Src, Dst)
              and then Ceil (Upd_RG) = U48'Max (Ceil (Old_RG), Ceil_Of (R))
              and then Extends (Old_RG, Upd_RG)
-             and then (if R.K = K_Grant then Added (Old_RG, Upd_RG, R.V.Author)
+             and then Distinct (Upd_RG)
+             and then (if R.K = K_Grant then Added (Old_RG, Upd_RG, R.V.Author, Cap_Of (R))
                        else Registers.Count (Upd_RG) = Registers.Count (Old_RG)
                             and then (for all I in 1 .. Registers.Count (Upd_RG) =>
-                                        Writer (Upd_RG, I) = Writer (Old_RG, I))),
+                                        Writer (Upd_RG, I) = Writer (Old_RG, I))
+                            and then Extends (Upd_RG, Old_RG)),
      Post => Coherent (Upd, Upd_RG)
    is
       N : constant Natural := SC (Upd, K0);
@@ -680,7 +768,7 @@ package body Kome.Frontier with SPARK_Mode is
             else
                pragma Assert (Upd.H (K, J) = R);
                if R.K = K_Grant then
-                  Lemma_Added_In_W (Old_RG, Upd_RG, R.V.Author, R.V.Author);
+                  Lemma_Added_In_W (Old_RG, Upd_RG, R.V.Author, Cap_Of (R), R.V.Author);
                end if;
             end if;
             pragma Loop_Invariant
@@ -717,7 +805,7 @@ package body Kome.Frontier with SPARK_Mode is
       for I in 1 .. Registers.Count (Upd_RG) loop
          if R.K = K_Grant then
             Lemma_In_W_Iff (Upd_RG, Writer (Upd_RG, I));
-            Lemma_Added_In_W (Old_RG, Upd_RG, R.V.Author, Writer (Upd_RG, I));
+            Lemma_Added_In_W (Old_RG, Upd_RG, R.V.Author, Cap_Of (R), Writer (Upd_RG, I));
             if Writer (Upd_RG, I) = R.V.Author then
                pragma Assert (N >= 1 and then N <= SC (Upd, K0));
                pragma Assert (Upd.H (K0, N) = R);
@@ -737,6 +825,92 @@ package body Kome.Frontier with SPARK_Mode is
          end if;
          pragma Loop_Invariant
            (for all I2 in 1 .. I => Grant_Of (Upd, Writer (Upd_RG, I2)));
+      end loop;
+
+      --  Each held grant's cap is at most its subject's register cap.
+      for K in Slot_Index loop
+         for J in 1 .. SC (Upd, K) loop
+            if K /= K0 then
+               pragma Assert (Upd.H (K, J) = Old.H (K, J));
+               if Upd.H (K, J).K = K_Grant then
+                  pragma Assert (In_W (Old_RG, Old.H (K, J).V.Author));
+                  pragma Assert (Old.H (K, J).V.T <= W_Cap (Old_RG, Old.H (K, J).V.Author));
+                  Lemma_Extends_In_W (Old_RG, Upd_RG, Upd.H (K, J).V.Author);
+               end if;
+            elsif J < N then
+               pragma Assert (Upd.H (K, J) = Old.H (K, Src (J)));
+               if Upd.H (K, J).K = K_Grant then
+                  pragma Assert (In_W (Old_RG, Old.H (K, Src (J)).V.Author));
+                  pragma Assert (Old.H (K, Src (J)).V.T
+                                 <= W_Cap (Old_RG, Old.H (K, Src (J)).V.Author));
+                  Lemma_Extends_In_W (Old_RG, Upd_RG, Upd.H (K, J).V.Author);
+               end if;
+            else
+               pragma Assert (Upd.H (K, J) = R);
+               if R.K = K_Grant then
+                  Lemma_Added_Cap (Old_RG, Upd_RG, R.V.Author, Cap_Of (R), R.V.Author);
+                  pragma Assert (W_Cap (Upd_RG, R.V.Author) >= R.V.T);
+               end if;
+            end if;
+            pragma Loop_Invariant
+              (for all J2 in 1 .. J =>
+                 (if Upd.H (K, J2).K = K_Grant
+                  then Upd.H (K, J2).V.T <= W_Cap (Upd_RG, Upd.H (K, J2).V.Author)));
+         end loop;
+         pragma Loop_Invariant
+           (for all K2 in 1 .. K =>
+              (for all J2 in 1 .. SC (Upd, K2) =>
+                 (if Upd.H (K2, J2).K = K_Grant
+                  then Upd.H (K2, J2).V.T <= W_Cap (Upd_RG, Upd.H (K2, J2).V.Author))));
+      end loop;
+
+      --  Each writer's register cap is the cap of a held grant of it.
+      for I in 1 .. Registers.Count (Upd_RG) loop
+         declare
+            Wr : constant Key256 := Writer (Upd_RG, I);
+         begin
+            Lemma_In_W_Iff (Upd_RG, Wr);
+            if R.K = K_Grant then
+               Lemma_Added_In_W (Old_RG, Upd_RG, R.V.Author, Cap_Of (R), Wr);
+               Lemma_Added_Cap (Old_RG, Upd_RG, R.V.Author, Cap_Of (R), Wr);
+               if Wr = R.V.Author then
+                  if In_W (Old_RG, Wr) and then W_Cap (Old_RG, Wr) > R.V.T then
+                     --  The old cap stays, and its witness is kept: R, with
+                     --  a smaller cap, dominates no grant with that cap.
+                     pragma Assert (W_Cap (Upd_RG, Wr) = W_Cap (Old_RG, Wr));
+                     Lemma_In_W_Iff (Old_RG, Wr);
+                     pragma Assert (Grant_Cap_Of (Old, Wr, W_Cap (Old_RG, Wr)));
+                     Lemma_Grant_Cap_Kept (Old, Upd, K0, R, Src, Dst, Wr, W_Cap (Old_RG, Wr));
+                     pragma Assert (Grant_Cap_Of (Upd, Wr, W_Cap (Upd_RG, Wr)));
+                  else
+                     pragma Assert (W_Cap (Upd_RG, Wr) = R.V.T);
+                     pragma Assert (N >= 1 and then N <= SC (Upd, K0));
+                     pragma Assert (Upd.H (K0, N) = R);
+                     pragma Assert (Grant_Cap_Of (Upd, Wr, R.V.T));
+                  end if;
+               else
+                  pragma Assert (In_W (Old_RG, Wr));
+                  pragma Assert (W_Cap (Upd_RG, Wr) = W_Cap (Old_RG, Wr));
+                  Lemma_In_W_Iff (Old_RG, Wr);
+                  pragma Assert (Grant_Cap_Of (Old, Wr, W_Cap (Old_RG, Wr)));
+                  Lemma_Grant_Cap_Kept (Old, Upd, K0, R, Src, Dst, Wr, W_Cap (Old_RG, Wr));
+                  pragma Assert (Grant_Cap_Of (Upd, Wr, W_Cap (Upd_RG, Wr)));
+               end if;
+            else
+               pragma Assert (Wr = Writer (Old_RG, I));
+               Lemma_In_W_Iff (Old_RG, Wr);
+               pragma Assert (In_W (Old_RG, Wr));
+               Lemma_Extends_In_W (Old_RG, Upd_RG, Wr);
+               Lemma_Extends_In_W (Upd_RG, Old_RG, Wr);
+               pragma Assert (W_Cap (Upd_RG, Wr) = W_Cap (Old_RG, Wr));
+               pragma Assert (Grant_Cap_Of (Old, Wr, W_Cap (Old_RG, Wr)));
+               Lemma_Grant_Cap_Kept (Old, Upd, K0, R, Src, Dst, Wr, W_Cap (Old_RG, Wr));
+               pragma Assert (Grant_Cap_Of (Upd, Wr, W_Cap (Upd_RG, Wr)));
+            end if;
+         end;
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              Grant_Cap_Of (Upd, Writer (Upd_RG, I2), W_Cap (Upd_RG, Writer (Upd_RG, I2))));
       end loop;
    end Lemma_Coherent_Step;
 
@@ -996,6 +1170,25 @@ package body Kome.Frontier with SPARK_Mode is
       Lemma_Item (S, Row_Of (S, I), Pos_Of (S, I));
    end Lemma_W_Complete;
 
+   procedure Lemma_W_Cap_Bound (S : State; I : Held_Index) is
+   begin
+      Lemma_Off_Mono (S);
+      Lemma_Flat_Row (S, I);
+      Lemma_Item (S, Row_Of (S, I), Pos_Of (S, I));
+   end Lemma_W_Cap_Bound;
+
+   procedure Lemma_W_Cap_Sound (S : State; A : Key256) is
+      K : Slot_Index;
+      J : Positive;
+   begin
+      Lemma_Off_Mono (S);
+      Lemma_In_W_Iff (S.RG, A);
+      pragma Assert (Grant_Cap_Of (S.A, A, W_Cap (S.RG, A)));
+      Find_Grant_Cap (S.A, A, W_Cap (S.RG, A), K, J);
+      Lemma_Row_Flat (S, K, J);
+      pragma Assert (Held (S, Flat_Index (S, K, J)) = S.A.H (K, J));
+   end Lemma_W_Cap_Sound;
+
    procedure Lemma_Drops_Any (S : State; R : Header) is null;
 
    procedure Lemma_Unchanged_Refl (S : State) is null;
@@ -1233,7 +1426,7 @@ package body Kome.Frontier with SPARK_Mode is
        and then Ceil (Regs (S)) = U48'Max (Ceil (Regs (S'Old)), Ceil_Of (R))
        and then Extends (Regs (S'Old), Regs (S))
        and then (if R.K = K_Grant
-                 then Added (Regs (S'Old), Regs (S), R.V.Author)
+                 then Added (Regs (S'Old), Regs (S), R.V.Author, Cap_Of (R))
                  else Extends (Regs (S), Regs (S'Old)))
        and then (for all I in 1 .. Count (S) =>
                    Holds (S'Old, Held (S, I)) or else Held (S, I) = R)
@@ -1323,7 +1516,7 @@ package body Kome.Frontier with SPARK_Mode is
          pragma Assert
            (for all I in 1 .. Registers.Count (S.RG) => Writer (S.RG, I) = Writer (Old_S.RG, I));
       elsif R.K = K_Grant then
-         Add_Writer (S.RG, R.V.Author);
+         Add_Writer (S.RG, R.V.Author, R.V.T);
       else
          Lemma_Extends_Refl (S.RG);
          pragma Assert (Registers.Count (S.RG) = Registers.Count (Old_S.RG));
@@ -1373,6 +1566,9 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (Coherent (Old_S.A, Old_S.RG));
       pragma Assert (Ceil (S.RG) = U48'Max (Ceil (Old_S.RG), Ceil_Of (R)));
       pragma Assert (Extends (Old_S.RG, S.RG));
+      pragma Assert (Distinct (Old_S.RG));
+      pragma Assert (Distinct (S.RG));
+      pragma Assert (if R.K /= K_Grant then Extends (S.RG, Old_S.RG));
       Lemma_Coherent_Step (Old_S.A, S.A, Old_S.RG, S.RG, K0, R, Src, Dst);
       pragma Assert (Is_Frontier (S));
 
@@ -1412,7 +1608,7 @@ package body Kome.Frontier with SPARK_Mode is
                    and then Ceil (Regs (S)) = U48'Max (Ceil (Regs (S'Old)), Ceil_Of (R))
                    and then Extends (Regs (S'Old), Regs (S))
                    and then (if R.K = K_Grant
-                             then Added (Regs (S'Old), Regs (S), R.V.Author)
+                             then Added (Regs (S'Old), Regs (S), R.V.Author, Cap_Of (R))
                              else Extends (Regs (S), Regs (S'Old)))
                    and then (for all I in 1 .. Count (S) =>
                                Holds (S'Old, Held (S, I)) or else Held (S, I) = R)
@@ -1463,7 +1659,8 @@ package body Kome.Frontier with SPARK_Mode is
                pragma Assert (Ceil_Of (R) <= Ceil (S.RG));
                if R.K = K_Grant then
                   pragma Assert (In_W (S.RG, R.V.Author));
-                  Lemma_Added_Refl (S.RG, R.V.Author);
+                  pragma Assert (R.V.T <= W_Cap (S.RG, R.V.Author));
+                  Lemma_Added_Refl (S.RG, R.V.Author, R.V.T);
                end if;
                Lemma_Extends_Refl (S.RG);
                Result := OK;
@@ -1530,7 +1727,10 @@ package body Kome.Frontier with SPARK_Mode is
    begin
       --  Admitted (S, R), read on the component (Regs would copy the
       --  register file).
-      if Is_Data (R) and then not (R.V.T <= Ceil (S.RG) and then In_W (S.RG, R.V.Author)) then
+      if Is_Data (R)
+        and then not (R.V.T <= Ceil (S.RG) and then In_W (S.RG, R.V.Author)
+                      and then R.V.T <= W_Cap (S.RG, R.V.Author))
+      then
          Result := Inadmissible;
          return;
       end if;

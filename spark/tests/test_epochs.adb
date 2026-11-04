@@ -841,12 +841,35 @@ procedure Test_Epochs with SPARK_Mode => Off is
       end;
    end Links;
 
+   --  H6: fixed segment boundaries.
+   procedure Segments is
+   begin
+      Check ("segments: 16 segments of 4096 epochs cover 0 .. 65535",
+             Segments_Max = 16 and then Segment_Len = 4096
+             and then Segment_Start (0) = 0 and then Segment_Top (0) = 4095
+             and then Segment_Start (15) = 61_440 and then Segment_Top (15) = Epoch'Last);
+      Check ("segments: the next segment starts at top + 1",
+             (for all J in Segment_Index range 0 .. Segments_Max - 2 =>
+                Segment_Top (J) + 1 = Segment_Start (J + 1)));
+      Check ("segments: every epoch is in exactly its segment",
+             Segment_Of (0) = 0 and then Segment_Of (4095) = 0 and then Segment_Of (4096) = 1
+             and then Segment_Of (Epoch'Last) = 15
+             and then (for all E in Epoch range 0 .. 9000 =>
+                         Segment_Start (Segment_Of (E)) <= E
+                         and then E <= Segment_Top (Segment_Of (E))));
+      for E in Epoch range 0 .. 9000 loop
+         Lemma_Segment_Bounds (E);
+      end loop;
+      Lemma_Segment_Bounds (Epoch'Last);
+   end Segments;
+
 begin
    Vectors;
    Algebra;
    Boxes;
    Regressions;
    Links;
+   Segments;
    if Failed then
       Set_Exit_Status (Failure);
    end if;

@@ -25,10 +25,10 @@ the properties that are tested and not proved.
 | 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding, RFC 8032 Ed25519), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 60 tests, 35 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 171 tests, 2,622 checks, 0 unproved |
 | 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first, expiry at `Horizon_At`) | §7 | T11, T18 | done. 109 tests, 4,504 checks, 0 unproved |
 | 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 55 tests, 313 checks, 0 unproved |
-| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `far`, `ROSTER_eff`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 131 tests, 1,117 checks, 0 unproved |
+| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `revoked`, `far`, `ROSTER_eff` by `(epoch, gen, h)`, `ROSTER_FORK`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 141 tests, 1,190 checks, 0 unproved |
 | 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
 | 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range, C8 sketch) | §8 | T7 (open) | done. 142 tests, 2,134 checks, 0 unproved |
-| 8 | `Kome.Epochs` (hash-chained keys, synthetic-nonce boxes, segment links), `Kome.Roster` (certification, segments, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 69 tests, 220 checks, 0 unproved. `Kome.Roster` not started |
+| 8 | `Kome.Epochs` (hash-chained keys, synthetic-nonce boxes, fixed segment boundaries, segment links), `Kome.Guard` (the REVOKE-aware gate and the quarantine flag), `Kome.Roster` (certification, segments, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 72 tests, 230 checks, 0 unproved. Guard done: 18 tests, 26 checks, 0 unproved. `Kome.Roster` not started |
 | 9 | Transports (Noise XX, sealed bundles), C ABI | §8, §10.6 | — | not started |
 | 10 | Extension F (typed fields) | §4 | F's T15–T17 | after T7 |
 
@@ -94,15 +94,30 @@ only as far as their formats and checks go.
 
 - **Transport (phase 9)** (the caller duties listed in `kome-reconcile.ads`):
   - Verify and apply OPEN's founding REVOKEs (`Is_Founding_Revoke`)
-    before the gate.
-  - Check the HELLO credential (`Roster_Lists_DH`) and evaluate the gate.
+    before the gate, then `Kome.Guard.Note_Open` (the quarantine flag).
+  - Check the HELLO credential (`Roster_Lists_DH`), apply it,
+    `Kome.Guard.Note_Credential`, and evaluate the gate
+    (`Kome.Guard.Admits`: the flag and the REVOKE-aware gate). While the
+    flag is set, take no sealed bundle and seal none.
   - Verify ELEMENTS/HAVE items, check each item's key and apply the items
-    in key order.
-  - Seal bundles with synthetic nonces.
+    in key order. Report `SUSPECT_RELAY` for a peer that delivers a record
+    whose author is already void (DESIGN.md §8).
+  - Seal bundles with synthetic nonces, closed under admission (each
+    author's GRANTs and the largest-ceiling roster first, DESIGN.md §8).
+  - Flush the log to `Log_Length` before a session is Complete and before
+    a bundle is acknowledged (DESIGN.md §8).
+  - Choose `Log_Cap` with `Kome.Store.Log_Fits`, and compact and retry on
+    `LOG_FULL` (DESIGN.md §7).
 - **`Kome.Roster` (phase 8):**
-  - Let only the founding key open a segment. Choose and deliver the
-    segment tops (E3).
-  - Enforce the honest-issuer gen rule (DESIGN.md §10.3).
+  - Let only the founding key open a segment, at `Segment_Top + 1`
+    (`Kome.Epochs.Segment_Start`). Choose and deliver the segment tops
+    (E3).
+  - Enforce the honest-issuer rules (DESIGN.md §10.3): reconcile first;
+    `gen = 1 + max` over `gen ≤ 2^47`, else `STOLEN_ROOT_SUSPECTED`; the
+    epoch at least the largest held; `ceiling_t ≤ now + Cap_Lead`; the
+    founding reserve of 15 entries; the recovery roster's membership
+    (no revoked `sign_pk`) and ceiling (`> maxceil`). Seal no box for a
+    `Revoked` member.
   - Wipe the caller's ephemeral `eph_sk` (D5).
   - Give a "largest certified cap" view. Today only the per-record
     `cert_cap` check exists (`Cert_OK` in `kome-records.ads`).

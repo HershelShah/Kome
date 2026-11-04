@@ -33,22 +33,39 @@ begin
    Check ("ceiling is a max-register", Ceil (R) = 500);
 
    Old := R;
-   Add_Writer (R, Key (1));
-   Lemma_Added_In_W (Old, R, Key (1), Key (1));
-   Lemma_Added_In_W (Old, R, Key (1), Key (2));
-   Check ("a new writer counts once", Registers.Count (R) = 1 and then In_W (R, Key (1))
-          and then not In_W (R, Key (2)) and then Ceil (R) = 500);
+   Add_Writer (R, Key (1), 100);
+   Lemma_Added_In_W (Old, R, Key (1), 100, Key (1));
+   Lemma_Added_In_W (Old, R, Key (1), 100, Key (2));
+   Lemma_Added_Cap (Old, R, Key (1), 100, Key (1));
+   Lemma_Added_Cap (Old, R, Key (1), 100, Key (2));
+   Lemma_W_Cap_Def (R, Key (1));
+   Lemma_W_Cap_Def (R, Key (2));
+   Check ("a new writer counts once, at its cap", Registers.Count (R) = 1 and then In_W (R, Key (1))
+          and then not In_W (R, Key (2)) and then Ceil (R) = 500
+          and then W_Cap (R, Key (1)) = 100 and then W_Cap (R, Key (2)) = 0
+          and then Cap_At (R, 1) = 100);
 
    Old := R;
-   Add_Writer (R, Key (1));
-   Lemma_Added_Refl (Old, Key (1));
-   Check ("an existing writer is not counted again",
-          Registers.Count (R) = 1 and then Added (Old, R, Key (1)) and then Added (Old, Old, Key (1)));
+   Add_Writer (R, Key (1), 50);
+   Lemma_Added_Refl (Old, Key (1), 50);
+   Check ("an existing writer is not counted again, and a lower cap changes nothing",
+          Registers.Count (R) = 1 and then Added (Old, R, Key (1), 50)
+          and then Added (Old, Old, Key (1), 50) and then W_Cap (R, Key (1)) = 100);
+
+   Old := R;
+   Add_Writer (R, Key (1), 300);
+   Lemma_Added_Cap (Old, R, Key (1), 300, Key (1));
+   Check ("a higher cap raises the writer's cap: wcap is a max-register",
+          Registers.Count (R) = 1 and then W_Cap (R, Key (1)) = 300
+          and then Extends (Old, R) and then not Extends (R, Old));
 
    for I in 2 .. 40 loop
-      Add_Writer (R, Key (I));
-      Add_Writer (R, Key (I / 2));
+      Add_Writer (R, Key (I), U48 (I));
+      Add_Writer (R, Key (I / 2), U48 (I));
    end loop;
+   Check ("caps: each writer's cap is the largest it was given",
+          W_Cap (R, Key (20)) = 40 and then W_Cap (R, Key (40)) = 40
+          and then W_Cap (R, Key (1)) = 300 and then W_Cap (R, Key (3)) = 7);
    Check ("count is the number of distinct writers", Registers.Count (R) = 40 and then Distinct (R));
    for I in 1 .. 40 loop
       Lemma_In_W_Iff (R, Key (I));

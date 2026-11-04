@@ -8,15 +8,17 @@
 --  frontier is a function of the held set and of nothing else (T5).
 --
 --  The header is small and flat by design: one kind tag, the collection,
---  the entity, the field hash, one version, the issuer and del_ttl. Each
---  kind keeps its identity in V, so one version order serves all five kinds
---  (DESIGN.md §3 table):
+--  the entity, the field hash, one version, the issuer, del_ttl and the
+--  epoch. Each kind keeps its identity in V, so one version order serves
+--  all five kinds (DESIGN.md §3 table):
 --
 --    PUT     V = (t, author, seq, h)            cell = (ns, ent, fh)
 --    DEL     V = (t, author, seq, h)            entity = (ns, ent), FH = 0
---    ROSTER  V = (ceiling_t, signer, gen, h)    Issuer = signer, Del_TTL
+--    ROSTER  V = (ceiling_t, signer, gen, h)    Issuer = signer, Del_TTL, Epoch
 --    REVOKE  V = (from_t, subject, rev_seq, h)  Issuer = signer
---    GRANT   V = (0, subject, 0, h)             Issuer = signer
+--    GRANT   V = (cap, subject, 0, h)           Issuer = signer; cap is the
+--                                               issuer's cert_cap, or 2^48 - 1
+--                                               for the founding key (AUDIT.md A1)
 --
 --  If a kind does not use a field, that field is zero. This is the
 --  canonical header (D3). Decode makes it (Kome.Records), and the lattice
@@ -43,6 +45,7 @@ package Kome.Headers with SPARK_Mode, Pure is
       V       : Version;
       Issuer  : Key256;                --  ROSTER, REVOKE, GRANT: the signer
       Del_TTL : U48    := 0;           --  ROSTER: del_ttl (milliseconds)
+      Epoch   : Kome.Epoch := 0;       --  ROSTER: the epoch of its boxes
    end record;
 
    function Is_Data (R : Header) return Boolean is (R.K in K_Put | K_Del);
@@ -51,9 +54,11 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  (§7).
    function Is_Auth (R : Header) return Boolean is (not Is_Data (R));
 
-   --  The roster generation order (DESIGN.md §3, §6) is (gen, h). The V of a
-   --  roster is (ceiling_t, signer, gen, h). This order is the (gen, h) half
-   --  of roster domination, and it is the order of ROSTER_eff.
+   --  The (gen, h) order of rosters (DESIGN.md §3, §6). The V of a roster
+   --  is (ceiling_t, signer, gen, h). Kome.Views orders ROSTER_eff by
+   --  epoch first and then by this order. Domination (below) does not use
+   --  it: a roster dominates only with a strictly greater gen, so h never
+   --  decides between two rosters of one signer (AUDIT.md H1).
    function Gen_Lt (A, B : Header) return Boolean is
      (A.V.Seq < B.V.Seq
       or else (A.V.Seq = B.V.Seq and then Lt (A.V.H, B.V.H)));
@@ -62,10 +67,14 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  For each kind of P, this table gives the records Q that beat P:
    --    PUT     a newer PUT on the same cell, or a newer DEL of its entity
    --    DEL     a newer DEL of the same entity
-   --    ROSTER  a roster of the same signer that is greater in (gen, h)
-   --            and not lower in ceiling_t: the product order (D3)
+   --    ROSTER  a roster of the same signer with a strictly greater gen,
+   --            and not lower in ceiling_t or in epoch: the product order
+   --            (D3). Two rosters of one signer at equal gen are both held
+   --            (Kome.Views.Roster_Fork reports this).
    --    GRANT   a GRANT of the same issuer and subject with a greater h
-   --            (D1′; keyed by (ns, issuer, subject))
+   --            and a cap at least as large: the product order (D1′; keyed
+   --            by (ns, issuer, subject)). So wcap, the largest cap of a
+   --            subject's held GRANTs, never shrinks (T4').
    --    REVOKE  no record (so a REVOKE can never be lost)
    --  Collections never mix: a record only dominates in its own ns. Each
    --  clause implies that the dominator's version is greater. The
@@ -80,9 +89,11 @@ package Kome.Headers with SPARK_Mode, Pure is
                           or else (Q.K = K_Del and then Q.Ent = P.Ent),
          when K_Del    => Q.K = K_Del and then Q.Ent = P.Ent,
          when K_Roster => Q.K = K_Roster and then Q.V.Author = P.V.Author
-                          and then P.V.T <= Q.V.T and then Gen_Lt (P, Q),
+                          and then P.V.T <= Q.V.T and then P.Epoch <= Q.Epoch
+                          and then P.V.Seq < Q.V.Seq,
          when K_Grant  => Q.K = K_Grant and then Q.V.Author = P.V.Author
-                          and then Q.Issuer = P.Issuer,
+                          and then Q.Issuer = P.Issuer
+                          and then P.V.T <= Q.V.T and then Lt (P.V.H, Q.V.H),
          when K_Revoke => False));
 
    --  The ceiling that a record carries: ROSTER.ceiling_t (its V.T), else
@@ -90,26 +101,36 @@ package Kome.Headers with SPARK_Mode, Pure is
    function Ceil_Of (R : Header) return U48 is
      (if R.K = K_Roster then R.V.T else 0);
 
+   --  The write cap that a GRANT carries (its V.T), else 0. wcap(F, k) is
+   --  the largest Cap_Of over the held GRANTs of subject k (DESIGN.md §3,
+   --  §4; Frontier.lean `capOf`, `wcap`).
+   function Cap_Of (R : Header) return U48 is
+     (if R.K = K_Grant then R.V.T else 0);
+
    function Data_T (R : Header) return U48 is (R.V.T);
 
    function Data_Author (R : Header) return Key256 is (R.V.Author);
 
    --  The canonical header (D3, DESIGN.md §3): the fields that a kind does
-   --  not use are zero. The issuer of a roster is its signer, and its
-   --  del_ttl is in range. The V of a grant is (0, subject, 0, h).
+   --  not use are zero. The issuer of a roster is its signer, its del_ttl
+   --  is in range, and its gen is at most its ceiling_t (DESIGN.md §2 rule
+   --  3; AUDIT.md H7: a certified root's gen is then bounded by its cap).
+   --  The V of a grant is (cap, subject, 0, h). Only a roster has an epoch.
    function Canonical (X : Header) return Boolean is
      (case X.K is
-        when K_Put    => X.Issuer = Zero_Key and then X.Del_TTL = 0,
+        when K_Put    => X.Issuer = Zero_Key and then X.Del_TTL = 0
+                         and then X.Epoch = 0,
         when K_Del    => X.FH = Zero_Key and then X.Issuer = Zero_Key
-                         and then X.Del_TTL = 0,
+                         and then X.Del_TTL = 0 and then X.Epoch = 0,
         when K_Roster => X.Ent = Zero_Id and then X.FH = Zero_Key
                          and then X.Issuer = X.V.Author
-                         and then X.Del_TTL in Del_TTL_Min .. Del_TTL_Max,
+                         and then X.Del_TTL in Del_TTL_Min .. Del_TTL_Max
+                         and then X.V.Seq <= X.V.T,
         when K_Revoke => X.Ent = Zero_Id and then X.FH = Zero_Key
-                         and then X.Del_TTL = 0,
+                         and then X.Del_TTL = 0 and then X.Epoch = 0,
         when K_Grant  => X.Ent = Zero_Id and then X.FH = Zero_Key
-                         and then X.V.T = 0 and then X.V.Seq = 0
-                         and then X.Del_TTL = 0);
+                         and then X.V.Seq = 0
+                         and then X.Del_TTL = 0 and then X.Epoch = 0);
 
    --  True if X is a tombstone that is expired at Horizon (DESIGN.md §7 drop
    --  rule, second clause). With No_Horizon (-1), no record is expired.
@@ -153,16 +174,24 @@ package Kome.Headers with SPARK_Mode, Pure is
      Post => not Dominates (Q, X);
 
    --  Roster domination is the product order (D3): the other conjuncts imply
-   --  the version conjunct.
+   --  the version conjunct. It is strict in gen, so two rosters of one
+   --  signer at equal gen never dominate each other (AUDIT.md H1).
    procedure Lemma_Roster_Dom (P, Q : Header) with
      Ghost, Global => null,
      Pre  => P.K = K_Roster and then Q.K = K_Roster and then P.NS = Q.NS,
      Post => Dominates (Q, P)
              = (Q.V.Author = P.V.Author and then P.V.T <= Q.V.T
-                and then Gen_Lt (P, Q));
+                and then P.Epoch <= Q.Epoch and then P.V.Seq < Q.V.Seq);
 
-   --  Grant domination uses the key (ns, issuer, subject) and the order of h
-   --  (D1′).
+   --  Two rosters of one signer at equal gen never dominate each other.
+   procedure Lemma_Equal_Gen_No_Dom (P, Q : Header) with
+     Ghost, Global => null,
+     Pre  => P.K = K_Roster and then Q.K = K_Roster
+             and then P.V.Author = Q.V.Author and then P.V.Seq = Q.V.Seq,
+     Post => not Dominates (Q, P) and then not Dominates (P, Q);
+
+   --  Grant domination uses the key (ns, issuer, subject) and the product
+   --  order of (cap, h) (D1′, AUDIT.md A1).
    procedure Lemma_Grant_Dom (P, Q : Header) with
      Ghost, Global => null,
      Pre  => P.K = K_Grant and then Q.K = K_Grant
@@ -170,13 +199,13 @@ package Kome.Headers with SPARK_Mode, Pure is
              and then P.NS = Q.NS,
      Post => Dominates (Q, P)
              = (Q.V.Author = P.V.Author and then Q.Issuer = P.Issuer
-                and then Lt (P.V.H, Q.V.H));
+                and then P.V.T <= Q.V.T and then Lt (P.V.H, Q.V.H));
 
    --  T4' (registers lose nothing to domination, DESIGN.md §3): a dominator
    --  has the same kind class as the record that it dominates. The dominator
-   --  of a roster is a roster of the same signer, with a ceiling at least
-   --  equal to its own. The dominator of a grant is a grant of the same
-   --  issuer and subject.
+   --  of a roster is a roster of the same signer, with a ceiling and an
+   --  epoch at least equal to its own. The dominator of a grant is a grant
+   --  of the same issuer and subject, with a cap at least equal to its own.
    procedure Lemma_Dominator_Keeps_Registers (Q, P : Header) with
      Ghost, Global => null,
      Pre  => Dominates (Q, P),
@@ -184,10 +213,12 @@ package Kome.Headers with SPARK_Mode, Pure is
              and then (if Is_Data (P) then Is_Data (Q))
              and then (if P.K = K_Roster
                        then Ceil_Of (Q) >= Ceil_Of (P)
+                            and then Q.Epoch >= P.Epoch
                             and then Q.V.Author = P.V.Author)
              and then (if P.K = K_Grant
                        then Q.V.Author = P.V.Author
-                            and then Q.Issuer = P.Issuer);
+                            and then Q.Issuer = P.Issuer
+                            and then Cap_Of (Q) >= Cap_Of (P));
 
    --  Each dominator stays in the same capacity row as the record that it
    --  dominates (DESIGN.md §3, §7). Only data dominates data. Only an

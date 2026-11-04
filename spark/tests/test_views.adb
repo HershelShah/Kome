@@ -57,30 +57,31 @@ procedure Test_Views with SPARK_Mode => Off is
 
    function Put (E : Byte; F : Character; Ver : Version) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => Ver,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    function Del (E : Byte; Ver : Version) return Header is
      (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => Ver,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    --  V = (ceiling_t, signer, gen, h), Issuer = signer.
    function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural;
-                    TTL : U48 := Del_TTL_Default) return Header is
+                    TTL : U48 := Del_TTL_Default; E : Kome.Epoch := 0) return Header is
      (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (T => Ceiling, Author => Key (Signer), Seq => Gen, H => Hsh (H)),
-      Issuer => Key (Signer), Del_TTL => TTL);
+      Issuer => Key (Signer), Del_TTL => TTL, Epoch => E);
 
-   --  V = (0, subject, 0, h), Issuer = signer.
-   function Grant (Issuer, Subject : Byte; H : Natural) return Header is
+   --  V = (cap, subject, 0, h), Issuer = signer. The cap is unbounded
+   --  unless Cap says otherwise.
+   function Grant (Issuer, Subject : Byte; H : Natural; Cap : U48 := U48'Last) return Header is
      (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (T => 0, Author => Key (Subject), Seq => 0, H => Hsh (H)),
-      Issuer => Key (Issuer), Del_TTL => 0);
+      V => (T => Cap, Author => Key (Subject), Seq => 0, H => Hsh (H)),
+      Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    --  V = (from_t, subject, rev_seq, h), Issuer = signer.
    function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (T => From_T, Author => Key (Subject), Seq => 1, H => Hsh (H)),
-      Issuer => Key (Issuer), Del_TTL => 0);
+      Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    function New_State (Cap : Data_Size := 64; Slice : Slice_Count := 16) return State is
      (Empty (NS, Key (Fnd), Cap, Slice));
@@ -514,6 +515,78 @@ procedure Test_Views with SPARK_Mode => Off is
          Check ("T5: Lemma_Roster_Local on equal generations", A2 (A));
       end;
 
+      --  A2: epoch comes first in the ROSTER_eff order. A roster at a
+      --  newer epoch is effective whatever its gen, in each arrival order.
+      declare
+         RA : constant Header := Roster (5, 9, 100, 41, E => 4);
+         RB : constant Header := Roster (6, 7, 200, 31, E => 5);
+         A  : constant State := Run ([RA, RB]);
+         B  : constant State := Run ([RB, RA]);
+      begin
+         Check ("epoch first: the roster at the newer epoch is ROSTER_eff despite a lower gen",
+                Holds (A, RA) and Holds (A, RB)
+                and Roster_Lt (RA, RB) and not Roster_Lt (RB, RA)
+                and Roster_Eff (A) = (Present => True, Hdr => RB)
+                and Roster_Eff (B) = (Present => True, Hdr => RB));
+         Lemma_Dominates_Roster_Lt (Roster (5, 1, 100, 1), Roster (5, 2, 100, 2));
+         Lemma_Roster_Local (A, B);
+         Def_Lemmas (A, Void_Probes);
+      end;
+
+      --  H1: a same-signer roster at equal gen (a root restored from
+      --  backup) does not evict the newer roster. Both stay, ROSTER_FORK
+      --  reports the pair, and the roster at the higher epoch stays
+      --  effective whatever its h.
+      declare
+         R6  : constant Header := Roster (5, 6, 300, 10, E => 7);   --  removes a member
+         R6F : constant Header := Roster (5, 6, 300, 90, E => 6);   --  from the backup
+         R7  : constant Header := Roster (5, 7, 300, 11, E => 8);   --  above both
+         A   : constant State := Run ([R6, R6F]);
+         B   : constant State := Run ([R6F, R6]);
+         C   : State := A;
+      begin
+         Check ("H1: equal gen, same signer: both held, neither dominates",
+                Holds (A, R6) and Holds (A, R6F) and Holds (B, R6) and Holds (B, R6F)
+                and not Dominates (R6F, R6) and not Dominates (R6, R6F));
+         Check ("H1: the roster at the higher epoch stays ROSTER_eff, in each order",
+                Roster_Eff (A) = (Present => True, Hdr => R6)
+                and Roster_Eff (B) = (Present => True, Hdr => R6));
+         Check ("H1: ROSTER_FORK reports the pair, and nothing else",
+                Roster_Fork (A) and Roster_Fork (B)
+                and not Roster_Fork (Run ([R6])) and not Roster_Fork (Run ([R6, R7])));
+         Lemma_Roster_Fork_Def (A);
+         Lemma_Roster_Fork_Def (Run ([R6]));
+         Apply_Auth (C, R7, "a roster above both forks");
+         Check ("H1: a roster above both forks dominates both and clears the fork",
+                Holds (C, R7) and not Holds (C, R6) and not Holds (C, R6F)
+                and not Roster_Fork (C)
+                and Roster_Eff (C) = (Present => True, Hdr => R7));
+         Lemma_Roster_Local (A, B);
+         Def_Lemmas (A, Void_Probes);
+      end;
+
+      --  A3: revoked(k) reads every counting REVOKE of k, whatever its
+      --  from_t, so the gate can refuse a member before the roster that
+      --  removes it arrives. A root-voided issuer's REVOKE stops counting.
+      declare
+         XF : constant Header := Revoke (Fnd, 3, 1_000_000, 71);   --  from_t in the future
+         X8 : constant Header := Revoke (8, 4, 0, 72);             --  by root 8
+         V8 : constant Header := Revoke (Fnd, 8, 0, 73);           --  root-void of 8
+         A  : State := Run ([RF, XF, X8]);
+      begin
+         Check ("revoked: a REVOKE with a future from_t still revokes the key for the gate",
+                Revoked (A, Key (3)) and not Revoke_Void (A, Put (1, 'n', V (5, 3, 1, 1))));
+         Check ("revoked: a certified root's REVOKE counts, other keys are not revoked",
+                Revoked (A, Key (4)) and not Revoked (A, Key (5)) and not Revoked (A, Key (Fnd)));
+         Lemma_Revoked_Def (A, Key (3));
+         Lemma_Revoked_Def (A, Key (5));
+         Lemma_Revoke_Void_Revoked (A, Put (1, 'n', V (2_000_000, 3, 1, 1)));
+         Apply_Auth (A, V8, "root-void of root 8");
+         Check ("revoked: a root-voided root's REVOKE stops counting",
+                not Revoked (A, Key (4)) and Revoked (A, Key (3)) and Revoked (A, Key (8)));
+         Lemma_Revoked_Def (A, Key (4));
+      end;
+
       --  (d) T5 across arrival orders: two states built from the same
       --  records in different orders hold the same records, and each view
       --  agrees.
@@ -554,7 +627,9 @@ procedure Test_Views with SPARK_Mode => Off is
 
          CRF : constant Header := Roster (Fnd, 1, 10_000, 11);
          CRH : constant Header := Roster (H, 2, 9_000, 12, TTL => 200 * Day);
-         CRR : constant Header := Roster (R, U48'Last, 12_000, 13, TTL => Del_TTL_Max);
+         --  H7: gen is at most ceiling_t, so a stolen certified root's gen
+         --  stops at its cap.
+         CRR : constant Header := Roster (R, 12_000, 12_000, 13, TTL => Del_TTL_Max);
          GFM1 : constant Header := Grant (Fnd, M1, 21);
          GRM1 : constant Header := Grant (R, M1, 22);
          GHM2 : constant Header := Grant (H, M2, 23);
@@ -594,7 +669,7 @@ procedure Test_Views with SPARK_Mode => Off is
             Apply_Auth (C, X, "compromised root's record");
          end loop;
          Apply_Data (C, PK2, "data of R's grantee", VP);
-         Apply_Auth (C, CRR, "compromised root's gen 2^48-1 roster");
+         Apply_Auth (C, CRR, "compromised root's roster at gen = its cap (H7)");
          Check ("before root-void: ROSTER_eff is R's roster, del_ttl_eff R's",
                 Roster_Eff (C) = (Present => True, Hdr => CRR)
                 and Del_TTL_Eff (C) = Del_TTL_Max);
@@ -720,7 +795,7 @@ procedure Test_Views with SPARK_Mode => Off is
       --  header in each order.
       declare
          RA : constant Header := Roster (5, 3, 1000, 50);
-         RB : constant Header := (RA with delta Del_TTL => Del_TTL_Max);
+         RB : constant Header := (RA with delta Del_TTL => Del_TTL_Max, Epoch => 0);
          Q0 : constant Header := Put (4, 'n', V (10, 1, 1, 90));
          A  : constant State := Run ([RF, GF1, Q0, RA, RB]);
          B  : constant State := Run ([RB, RA, Q0, GF1, RF]);

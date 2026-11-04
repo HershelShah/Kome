@@ -2113,7 +2113,7 @@ package body Kome.Store with SPARK_Mode is
      (Valid (S, F)
       and Same_Identity (Old_S, S)
       and Horizon (S) = Horizon (Old_S)
-      and Result in OK | Dominated | Inadmissible | Malformed | No_Space | Auth_Full
+      and Result in OK | Dominated | Inadmissible | Malformed | No_Space | Auth_Full | Log_Full
       --  The order of DESIGN.md §7, each outcome as an iff.
       and (Result = Malformed) = Foreign_Root (Old_S, Frame)
       and (Result = Inadmissible)
@@ -2127,6 +2127,9 @@ package body Kome.Store with SPARK_Mode is
       and (Result = No_Space)
             = (not Foreign_Root (Old_S, Frame) and then Admitted (Old_F, H)
                and then At_Bound (Old_S, Old_F, H, Frame'Length))
+      and (Result = Log_Full)
+            = (not Foreign_Root (Old_S, Frame) and then Admitted (Old_F, H)
+               and then At_Log_Bound (Old_S, Old_F, H, Frame'Length))
       --  Nothing changes on a refusal, on a duplicate, or for an expired
       --  DEL that drops nothing (T13).
       and (if Result /= OK or else Holds (Old_F, H)
@@ -2191,7 +2194,7 @@ package body Kome.Store with SPARK_Mode is
          Result := OK;
       elsif Short then
          Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
-         Result := No_Space;
+         Result := Log_Full;
       else
          Do_Apply_Expired (S, F, Frame, H);
          Result := OK;
@@ -2251,7 +2254,7 @@ package body Kome.Store with SPARK_Mode is
       --  (5) Frontier can hold it, but the log has no room for its APPLY.
       if S.Log_Cap - S.LL < Apply_Prefix + Frame'Length then
          Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
-         Result := No_Space;
+         Result := Log_Full;
          return;
       end if;
 
@@ -2317,10 +2320,10 @@ package body Kome.Store with SPARK_Mode is
    is
      (Valid (S, F)
       and Same_Identity (Old_S, S)
-      and Result in OK | No_Space
-      and (Result = No_Space)
+      and Result in OK | Log_Full
+      and (Result = Log_Full)
             = (Logs_Expire (Old_S, Old_F, Now) and then Log_Short (Old_S, Expire_Len))
-      and (if Result = No_Space then Unchanged (Old_F, F) and then S = Old_S)
+      and (if Result = Log_Full then Unchanged (Old_F, F) and then S = Old_S)
       and Log_Extends (Old_S, S)
       and (if Result = OK then
              Horizon (S) = Horizon_At (Old_F, Now)
@@ -2351,7 +2354,7 @@ package body Kome.Store with SPARK_Mode is
       if Expires_Any (F, Hn) then
          if S.Log_Cap - S.LL < Expire_Len then
             Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
-            Result := No_Space;
+            Result := Log_Full;
             return;
          end if;
          Do_Expire (S, F, Hn);
@@ -2380,7 +2383,7 @@ package body Kome.Store with SPARK_Mode is
       if Hn < S.Hz then
          if S.Log_Cap - S.LL < Expire_Len then
             Lemma_Unchanged_Refl (F);   --  a refusal: F does not change
-            Result := No_Space;
+            Result := Log_Full;
             return;
          end if;
          Do_Expire (S, F, Hn);

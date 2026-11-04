@@ -577,7 +577,7 @@ begin
       Links_15   : constant Byte_Array := Fill (Links_Max * Link_Len, 11);
       Members_64 : constant Byte_Array := Members_Of (Members_Max, 77);
       Big  : Roster_Record :=
-        Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, Max_U48, 5000,
+        Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, Max_U48, Max_U48,
                      Del_TTL_Max, 65_535, Links_15, Members_64);
       Back : Roster_Record;
       Keep : Roster_Record;
@@ -601,7 +601,7 @@ begin
                 and then E (103 .. 166) = Zero_Sig
                 and then E (167 .. 198) = Box_A
                 and then E (199 .. 204) = BE48 (Max_U48)
-                and then E (205 .. 210) = BE48 (5000)
+                and then E (205 .. 210) = BE48 (Max_U48)
                 and then E (211 .. 216) = BE48 (Del_TTL_Max)
                 and then E (217 .. 218) = [16#FF#, 16#FF#]
                 and then E (219) = 15 and then E (220 .. 220 + 1110 - 1) = Links_15
@@ -641,12 +641,12 @@ begin
          Check ("ROSTER header: V = (ceiling_t, signer, gen, h), issuer, del_ttl",
                 H.K = K_Roster and then H.NS = To_Id128 (NS_A)
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
-                and then H.V.T = 5000 and then H.V.Author = To_Key256 (Root_PK)
+                and then H.V.T = Max_U48 and then H.V.Author = To_Key256 (Root_PK)
                 and then H.V.Author = Signer_Key (Big)
                 and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E)
                 and then H.Issuer = To_Key256 (Root_PK)
                 and then H.Del_TTL = Del_TTL_Max
-                and then Ceil_Of (H) = 5000);
+                and then Ceil_Of (H) = Max_U48);
          Lemma_Header_Canonical (Big);
          Check ("ROSTER header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
 
@@ -809,6 +809,16 @@ begin
       St := Verdict (X, Other_SK);
       Check ("ROSTER by certified root claiming a larger cap than certified: Malformed",
              St = Malformed);
+      --  H7: gen is bounded by ceiling_t, so a certified root's gen is
+      --  bounded by its cap. The helper R uses gen 7.
+      X := R (Other_PK, Cap_2, Cert_2, 7);
+      St := Verdict (X, Other_SK);
+      Check ("ROSTER with gen = ceiling_t: OK", St = OK and then Well_Formed (X));
+      X := R (Other_PK, Cap_2, Cert_2, 6);
+      St := Verdict (X, Other_SK);
+      Check ("ROSTER with gen > ceiling_t (H7): Malformed",
+             St = Malformed and then not Well_Formed (X)
+             and then not Kome.Headers.Canonical (To_Header (X)));
       X := R (Other_PK, Cap_2, Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), 6000);
       St := Verdict (X, Other_SK);
       Check ("ROSTER with a certificate made for another ns: Malformed", St = Malformed);
@@ -1011,10 +1021,11 @@ begin
          Lemma_Decode_Encode (G);
          Lemma_Encode_Decode_Grant (E);
          Check ("GRANT: Encode (Decode (frame)) = frame", Encode (Back) = E);
-         Check ("GRANT header: V = (0, subject, 0, h), issuer = signer",
+         Check ("GRANT header: V = (cap, subject, 0, h), issuer = signer; founding cap 2^48-1",
                 H.K = K_Grant and then H.NS = To_Id128 (NS_A)
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
-                and then H.V.T = 0 and then H.V.Author = To_Key256 (Author_PK)
+                and then H.V.T = U48'Last and then Grant_Cap (G) = U48'Last
+                and then H.V.Author = To_Key256 (Author_PK)
                 and then H.V.Seq = 0 and then H.V.H = H_Of (E)
                 and then H.Issuer = To_Key256 (Root_PK) and then H.Del_TTL = 0
                 and then Signer_Key (G) = To_Key256 (Root_PK));

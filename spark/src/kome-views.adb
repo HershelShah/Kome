@@ -172,6 +172,60 @@ package body Kome.Views with SPARK_Mode is
       return 0;
    end Find_Grant;
 
+   --  A REVOKE of K, with any from_t, with an issuer that is not root_void.
+   function Find_Revoked (S : State; K : Key256) return Held_Count with
+     Global => null,
+     Post =>
+       Find_Revoked'Result <= Count (S)
+       and then
+       (if Find_Revoked'Result = 0 then
+          (for all I in 1 .. Count (S) =>
+             not (Revokes (Held (S, I), K)
+                  and then not Root_Void (S, Held (S, I).Issuer)))
+        else Revokes (Held (S, Find_Revoked'Result), K)
+             and then not Root_Void (S, Held (S, Find_Revoked'Result).Issuer))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         if Revokes (Held (S, I), K) and then not Root_Void (S, Held (S, I).Issuer) then
+            return I;
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              not (Revokes (Held (S, J), K)
+                   and then not Root_Void (S, Held (S, J).Issuer)));
+      end loop;
+      return 0;
+   end Find_Revoked;
+
+   --  A roster that is forked with another held roster.
+   function Find_Fork (S : State) return Held_Count with
+     Global => null,
+     Post =>
+       Find_Fork'Result <= Count (S)
+       and then
+       (if Find_Fork'Result = 0 then
+          (for all I in 1 .. Count (S) =>
+             (for all J in 1 .. Count (S) => not Forked (Held (S, I), Held (S, J))))
+        else
+          (for some J in 1 .. Count (S) => Forked (Held (S, Find_Fork'Result), Held (S, J))))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         for J in 1 .. Count (S) loop
+            if Forked (Held (S, I), Held (S, J)) then
+               return I;
+            end if;
+            pragma Loop_Invariant
+              (for all J2 in 1 .. J => not Forked (Held (S, I), Held (S, J2)));
+         end loop;
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              (for all J in 1 .. Count (S) => not Forked (Held (S, I2), Held (S, J))));
+      end loop;
+      return 0;
+   end Find_Fork;
+
    --  A REVOKE that voids P and has an issuer that is not root_void.
    function Find_Void (S : State; P : Header) return Held_Count with
      Global => null,
@@ -316,6 +370,12 @@ package body Kome.Views with SPARK_Mode is
    function Revoke_Void (S : State; P : Header) return Boolean is
      (Find_Void (S, P) /= 0);
 
+   function Revoked (S : State; K : Key256) return Boolean is
+     (Find_Revoked (S, K) /= 0);
+
+   function Roster_Fork (S : State) return Boolean is
+     (Find_Fork (S) /= 0);
+
    function Is_Void (S : State; P : Header) return Boolean is
      (Revoke_Void (S, P) or else not W_Eff (S, P.V.Author));
 
@@ -352,13 +412,25 @@ package body Kome.Views with SPARK_Mode is
       I : constant Held_Count := Find_Roster (S);
    begin
       if I /= 0 then
-         --  Gen_Lt is the first disjunct of Roster_Lt.
+         --  A greater epoch is the first disjunct of Roster_Lt.
          pragma Assert
            (for all J in 1 .. Count (S) =>
-              (if Gen_Lt (Held (S, I), Held (S, J))
+              (if Held (S, I).Epoch < Held (S, J).Epoch
                then Roster_Lt (Held (S, I), Held (S, J))));
       end if;
    end Lemma_Roster_Eff_Def;
+
+   procedure Lemma_Revoked_Def (S : State; K : Key256) is null;
+
+   procedure Lemma_Roster_Fork_Def (S : State) is null;
+
+   procedure Lemma_Revoke_Void_Revoked (S : State; P : Header) is
+      I : constant Held_Count := Find_Void (S, P);
+   begin
+      pragma Assert (I /= 0);
+      pragma Assert (Revokes (Held (S, I), P.V.Author));
+      pragma Assert (Find_Revoked (S, P.V.Author) /= 0);
+   end Lemma_Revoke_Void_Revoked;
 
    procedure Lemma_Del_TTL_Eff_Def (S : State) is null;
 
@@ -451,6 +523,13 @@ package body Kome.Views with SPARK_Mode is
       pragma Assert (not Lt (A.V.Author, A.V.Author));
    end Lemma_Roster_Lt_Irrefl;
 
+   procedure Lemma_Dominates_Roster_Lt (P, Q : Header) is
+   begin
+      Lemma_Roster_Dom (P, Q);
+      pragma Assert (P.Epoch <= Q.Epoch and then P.V.Seq < Q.V.Seq);
+      pragma Assert (Gen_Lt (P, Q));
+   end Lemma_Dominates_Roster_Lt;
+
    procedure Lemma_Cell_Unique (S : State; I, J : Held_Index) is
    begin
       Lemma_Frontier_Held (S, I);
@@ -492,7 +571,8 @@ package body Kome.Views with SPARK_Mode is
      Pre  => X.K = K_Roster and then Y.K = K_Roster
              and then Canonical (X) and then Canonical (Y)
              and then X.NS = Y.NS
-             and then X.V = Y.V and then X.Del_TTL = Y.Del_TTL,
+             and then X.V = Y.V and then X.Del_TTL = Y.Del_TTL
+             and then X.Epoch = Y.Epoch,
      Post => X = Y
    is
    begin

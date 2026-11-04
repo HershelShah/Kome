@@ -2,6 +2,37 @@
 
 Scope: docs/design (REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md), lean/Kome/Frontier.lean, spark/src/kome-*.ads/.adb, spark/CONVENTIONS.md, spark/tests, spark/vectors, CI and build files. The previous C++ engine is out of scope. Line numbers are at 2be1260. "F<n>" is the confirmed finding ID; merged items list every ID.
 
+## 0. Status
+
+Applied on branch `ccr-f1194bfd-dei9h4` after the audit, in the order that
+§1 recommends. Each item names what changed; the proofs are gnatprove at
+`--level=3` and `lake build`, run on the final state.
+
+1. Roster and gate integrity: H1 (domination strict in gen, `ROSTER_FORK`
+   view, `Lemma_Equal_Gen_No_Dom`), A2 (epoch in `Header`, `ROSTER_eff` by
+   `(epoch, gen, h)`), H6 (fixed segment boundaries, `Kome.Epochs`), H7
+   (`gen ≤ ceiling_t` in Well_Formed and Canonical, issuer rules), A3 (the
+   `revoked` view and `Kome.Guard.Gate`), H2 (`Kome.Guard` quarantine
+   flag). Lean: `roster` carries its epoch, `dominates` is strict in gen,
+   `rkey` puts the epoch first.
+2. Revocation and recovery: A1 (write cap: GRANT `V = (cap, subject, 0, h)`,
+   product order `(cap, h)`, `wcap` register in `Kome.Registers`, admission
+   `t ≤ wcap`, `Eff_Ceil` in `Kome.Emit`; A7 restated; `SUSPECT_RELAY`
+   duty), H3 (`Kome.Store.Log_Fits`, the `LOG_FULL` status; the
+   compact-room obligation is stated in §7 and tested, not proved), A4 (the
+   founding reserve rule), H8 (recovery membership step), H16 (recovery
+   ceiling step). Lean: `grant` carries its cap, `wcap`, `adm` reads it.
+3. Expiry: H14 and A5 (`Cap_Lead` = 3 days `< Del_TTL_Min`; a DEL is
+   emitted at `t ≥ maxceil − Cap_Lead`, `Kome.Emit.Del_Low`), H4, H35 and
+   A16 (A4′ restated over every frame copy, admitted and durable, bundles
+   closed under admission, the sync point), G1 (T4(b), T10, T11(b) scoped
+   to `applyD`; Lean `applyH`, `NoLateDom`, `expire_applyAllH`,
+   `auth_first_closed`).
+
+Residue applied: E2, E3, E11 (the pre-D4 vectors and tests, `build/`, the
+duplicate check), and the "decode clamps" wording of E8 in `kome.ads`.
+Everything else in §2 to §5 is still open.
+
 ## 1. Summary
 
 The lattice core is sound. T1-T3, the view functions and the store replay (T18) are proved, and Byteorder, Versions, Keys and Registers have no confirmed defect. The weak parts are the authorization layer around ROSTER_eff and the session gate, the tombstone-expiry rules, and the store's capacity and crash behaviour. Several normative claims are false as written: the D3 rationale and the H8 "Root restored from backup" row (equal-gen domination), E1 "the founding key's REVOKE always lands", D10 "never shorter", "pins stop at the next roster refresh", T4(b)/T10/T11(b) under a store horizon, and the check mark on T4(c). The unbuilt layers (Kome.Roster, transports, storage binding) carry many duties that no phase owns.

@@ -8,7 +8,7 @@
 --      every field of its entity;
 --    * refusals that change nothing: an unrostered author and a record
 --      above the ceiling (Inadmissible), a full frontier (No_Space), a full
---      slice (Auth_Full) and a full log (No_Space);
+--      slice (Auth_Full) and a full log (Log_Full);
 --    * a dominated PUT and a dominated roster on a full log give Dominated,
 --      not No_Space;
 --    * an authorization record of a foreign founding key;
@@ -620,11 +620,11 @@ procedure Test_Store with SPARK_Mode => Off is
             Check ("log full: a duplicate needs no room and is OK",
                    St = OK and then Sm = B and then SmL = BL);
             Put (Sm, SmL, P4, St);
-            Check ("log full: a PUT Frontier would hold is No_Space, nothing changed",
-                   St = No_Space and then Sm = B and then SmL = BL);
+            Check ("log full: a PUT Frontier would hold is Log_Full, nothing changed",
+                   St = Log_Full and then Sm = B and then SmL = BL);
             Put (Sm, SmL, R2, St);
-            Check ("log full: a roster refresh is No_Space, maxceil not raised",
-                   St = No_Space and then Sm = B and then SmL = BL
+            Check ("log full: a roster refresh is Log_Full, maxceil not raised",
+                   St = Log_Full and then Sm = B and then SmL = BL
                    and then Kome.Registers.Ceil (Regs (SmL)) = 100 * Day);
          end;
          Kome.Store.Expire (Sm, SmL, 32 * Day, St);
@@ -635,8 +635,8 @@ procedure Test_Store with SPARK_Mode => Off is
             BL : constant Lattice := SmL;
          begin
             Put (Sm, SmL, DE, St);
-            Check ("log full: an expired DEL that drops something is No_Space, nothing changed",
-                   St = No_Space and then Sm = B and then SmL = BL
+            Check ("log full: an expired DEL that drops something is Log_Full, nothing changed",
+                   St = Log_Full and then Sm = B and then SmL = BL
                    and then Holds (SmL, Hdr (P2)));
             Put (Sm, SmL, DN, St);
             Check ("log full: an expired DEL that drops nothing is OK and changes nothing",
@@ -799,8 +799,8 @@ procedure Test_Store with SPARK_Mode => Off is
             BL : constant Lattice := SmL;
          begin
             Kome.Store.Expire (Sm, SmL, 50 * Day, St);
-            Check ("expire on a full log, something to remove: No_Space, nothing changed",
-                   St = No_Space and then Sm = B and then SmL = BL
+            Check ("expire on a full log, something to remove: Log_Full, nothing changed",
+                   St = Log_Full and then Sm = B and then SmL = BL
                    and then Holds (SmL, Hdr (D1)));
          end;
       end;
@@ -1056,9 +1056,12 @@ procedure Test_Store with SPARK_Mode => Off is
         Roster_Of (Root2_SK, Root2_PK, Cap2, Cert2a, 1, 100 * Day, TTL, Member (Author2_PK, 31));
       Ga   : constant Byte_Array := Grant_Of (Root2_SK, Root2_PK, Cap2, Cert2a, Author2_PK);
       Gb   : constant Byte_Array := Grant_Of (Root2_SK, Root2_PK, Cap2 + 1, Cert2b, Author2_PK);
+      --  A1: GRANT domination is the product order (cap, h). Gb has the
+      --  larger cap. If it also has the larger h, it replaces Ga; if not,
+      --  both stay, and wcap is the larger cap either way.
       Lo   : constant Boolean := Kome.Lt (Hdr (Ga).V.H, Hdr (Gb).V.H);
-      GLow : constant Byte_Array := (if Lo then Ga else Gb);
-      GHi  : constant Byte_Array := (if Lo then Gb else Ga);
+      GLow : constant Byte_Array := Ga;
+      GHi  : constant Byte_Array := Gb;
       PG   : constant Byte_Array := Put_Of (4, 'g', 50 * Day, 1, [4], Author2_SK, Author2_PK);
       St   : Status;
    begin
@@ -1070,8 +1073,10 @@ procedure Test_Store with SPARK_Mode => Off is
       Put (S, SL, PG, St);
       Check ("after the GRANT the re-offered PUT is held", St = OK);
       Put (S, SL, GHi, St);
-      Check ("a second GRANT of the same issuer and subject replaces the first, after the PUT",
-             St = OK and then Holds (SL, Hdr (GHi)) and then not Holds (SL, Hdr (GLow))
+      Check ("a second GRANT of the same issuer and subject, with a larger cap and h, replaces the first after the PUT; with a smaller h both stay",
+             St = OK and then Holds (SL, Hdr (GHi))
+             and then (if Lo then not Holds (SL, Hdr (GLow)) else Holds (SL, Hdr (GLow)))
+             and then Kome.Registers.W_Cap (Regs (SL), To_Key256 (Author2_PK)) = Cap2 + 1
              and then Position_Of (S, Hdr (PG)) < Position_Of (S, Hdr (GHi)));
       Compact (S, SL);
       Check ("Compact writes the GRANT before the PUT it admits",
@@ -1190,8 +1195,8 @@ procedure Test_Store with SPARK_Mode => Off is
          BL : constant Lattice := SmL;
       begin
          Kome.Store.Expire (Sm, SmL, 20 * Day, St);
-         Check ("full log: lowering the horizon is No_Space, nothing changed",
-                St = No_Space and then Sm = B and then SmL = BL);
+         Check ("full log: lowering the horizon is Log_Full, nothing changed",
+                St = Log_Full and then Sm = B and then SmL = BL);
       end;
       Compact (Sm, SmL);
       Check ("full log: Compact has no room for EXPIRE, the horizon stays in memory",

@@ -352,7 +352,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                                   Seq    => Seq,
                                   H      => To_Key256 (Hash (Make_Put'Result.C))),
                       Issuer  => Zero_Key,
-                      Del_TTL => 0)
+                      Del_TTL => 0,
+                      Epoch   => 0)
           and then Kome.Headers.Canonical (To_Header (Make_Put'Result));
 
    --  tag ‖ content, the bytes h is computed over.
@@ -476,7 +477,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Zero_Key,
-      Del_TTL => 0);
+      Del_TTL => 0,
+      Epoch   => 0);
 
    --  D3: the header is canonical.
    procedure Lemma_Header_Canonical (R : Put_Record) with
@@ -609,7 +611,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Zero_Key,
-      Del_TTL => 0);
+      Del_TTL => 0,
+      Epoch   => 0);
 
    procedure Lemma_Header_Canonical (R : Del_Record) with
      Ghost, Global => null,
@@ -642,7 +645,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                                   Seq    => Seq,
                                   H      => To_Key256 (Hash (Make_Del'Result.C))),
                       Issuer  => Zero_Key,
-                      Del_TTL => 0)
+                      Del_TTL => 0,
+                      Epoch   => 0)
           and then Kome.Headers.Canonical (To_Header (Make_Del'Result));
 
    procedure Lemma_Decode_Encode (R : Del_Record) with
@@ -981,7 +985,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --    * ns agrees with (root_pk, salt);
    --    * the signer block is valid;
    --    * for a certified root, ceiling_t is not more than its cert_cap;
-   --    * del_ttl is in the clamp;
+   --    * gen is not more than ceiling_t (so a certified root's gen is
+   --      bounded by its cap; AUDIT.md H7);
+   --    * del_ttl is in range;
    --    * the X25519 keys are good (E5);
    --    * the signature over h verifies under signer.
    function Well_Formed (R : Roster_Record) return Boolean is
@@ -989,6 +995,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
       and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
       and then (if R.C.Signer /= R.C.Root_PK then R.C.Ceiling_T <= R.C.Cert_Cap)
+      and then R.C.Gen <= R.C.Ceiling_T
       and then R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max
       and then DH_Keys_OK (R.C)
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
@@ -1026,13 +1033,15 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Seq    => R.C.Gen,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Signer_Key (R),
-      Del_TTL => R.C.Del_TTL);
+      Del_TTL => R.C.Del_TTL,
+      Epoch   => R.C.Epoch);
 
-   --  D3: the header is canonical when del_ttl is in the clamp (Well_Formed
-   --  requires this).
+   --  D3: the header is canonical when del_ttl is in range and gen is at
+   --  most ceiling_t (Well_Formed requires both).
    procedure Lemma_Header_Canonical (R : Roster_Record) with
      Ghost, Global => null,
-     Pre  => R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max,
+     Pre  => R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max
+             and then R.C.Gen <= R.C.Ceiling_T,
      Post => To_Header (R).K = K_Roster and then Kome.Headers.Canonical (To_Header (R));
 
    procedure Lemma_Decode_Encode (R : Roster_Record) with
@@ -1218,7 +1227,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   Seq    => R.C.Rev_Seq,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Signer_Key (R),
-      Del_TTL => 0);
+      Del_TTL => 0,
+      Epoch   => 0);
 
    procedure Lemma_Header_Canonical (R : Revoke_Record) with
      Ghost, Global => null,
@@ -1381,17 +1391,26 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      (To_Key256 (R.C.Signer));
 
    --  DESIGN.md §3: V = (0, subject, 0, h); Issuer = signer.
+   --  The write cap of a GRANT (DESIGN.md §2, §4; AUDIT.md A1): the
+   --  issuer's cert_cap, or 2^48 - 1 for the founding key, whose records
+   --  have no cap. It is a function of the signer block, so admission still
+   --  depends only on bytes (D1).
+   function Grant_Cap (R : Grant_Record) return U48 is
+     (if R.C.Signer = R.C.Root_PK then U48'Last else R.C.Cert_Cap);
+
+   --  The lattice header: V = (cap, subject, 0, h).
    function To_Header (R : Grant_Record) return Header is
      (K       => K_Grant,
       NS      => To_Id128 (R.C.NS),
       Ent     => Zero_Id,
       FH      => Zero_Key,
-      V       => (T      => 0,
+      V       => (T      => Grant_Cap (R),
                   Author => To_Key256 (R.C.Subject),
                   Seq    => 0,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Signer_Key (R),
-      Del_TTL => 0);
+      Del_TTL => 0,
+      Epoch   => 0);
 
    procedure Lemma_Header_Canonical (R : Grant_Record) with
      Ghost, Global => null,
