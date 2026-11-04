@@ -21,8 +21,11 @@ Neither tool does the other's work.
 If a SPARK contract mirrors a Lean theorem, name the theorem in the comment
 (`T2'`, `Frontier.lean dominates_trans`). If the implementation is
 intentionally different from the model, say so in the comment and record
-the difference in DESIGN.md §10. Today there is one difference: the model
-holds inadmissible records, and the implementation refuses them.
+the difference in DESIGN.md §10.1, which is the only divergence register:
+it lists what the implementation has and the model does not (no
+certificates, no `ns`, no capacity, no clock clamp, `Nat` for `u48`, no
+journal, and expiry on arrival). A difference that is not listed there is
+a bug in one of the two.
 
 ## Layout
 
@@ -62,9 +65,11 @@ holds inadmissible records, and the implementation refuses them.
   cite the DESIGN.md section that sets it.
 - Use *range* types for semantic integers (`U48`, `Epoch`, counts), never
   modular types. Then every overflow is a proof obligation, and no value is
-  reserved (H6). Use modular types only for wire encoding and hashing
-  (`Kome.Byteorder`, `Kome.Accumulator`, `Kome.Digest`). There, wrap is the
-  intended semantics.
+  reserved (H6). `Kome.Byte` and `Kome.U64` are the only modular types.
+  `Byte` is the wire unit. `U64` is for the limbs of the accumulator and
+  their byte encoding (`Kome.Byteorder`, `Kome.Accumulator`, `Kome.Digest`)
+  and for C storage in `Kome.Crypto`. There, wrap is the intended
+  semantics.
 - If an operation can exceed a bound, it must refuse with a `Status` and
   leave the state unchanged. Its `Post` must say so (T13). Do not let a
   value saturate silently.
@@ -102,17 +107,27 @@ holds inadmissible records, and the implementation refuses them.
   existentials. A ghost array that records *which* old index each kept
   element came from is first-order, and it proves. "Some index exists"
   inside "for all" frequently does not prove.
-- Put `Global`/`Depends` on all code that touches a file or a clock. Then
-  flow analysis can prove "open never writes".
+- Code that touches a file or a clock declares it in `Global`/`Depends`.
+  `Open_From_Log` is `Global => null`. The log is append-only: DESIGN.md
+  §10.10 (a) rewrites no byte of it. Until `Kome.Store` moves `data_cap`
+  out of the log (the known gap in `docs/design/IMPLEMENTATION_PLAN.md`),
+  the HEADER capacity rewrite on a larger reopen is the one write that is
+  not an append, and the storage binding owns that write, not the store.
 
 ## Proof hygiene
 
+- `pragma Assume` and `pragma Annotate` (including justified checks, and
+  every other GNATprove annotation) are forbidden in `spark/src` and
+  `spark/tests`. `check.sh` greps for both and fails on either. A fact
+  that the prover cannot discharge is a ghost lemma with a proof body, a
+  tested known gap listed in `docs/design/IMPLEMENTATION_PLAN.md`, or an
+  assumed `Post` of a `SPARK_Mode Off` body that a known-answer vector
+  checks; it is never an assumption written into the proved code.
 - "Private" in rule 2 means "completed in the body". To hide an expression
-  function, complete it in the body, or put
-  `Hide_Info "Expression_Function_Body"` in the visible part. In gnatprove
-  14, clients can see an expression function that is completed in the
-  private part, even with a private-part `Hide_Info`. `kome-accumulator.ads`
-  records the probe.
+  function, complete it in the body. `Hide_Info` is a `pragma Annotate`,
+  so it is not available; and in gnatprove 14 a private-part `Hide_Info`
+  would not have hidden a definition that is completed in the private part
+  anyway (`kome-accumulator.ads` records the probe).
 - Do not put a `Dynamic_Predicate` on a state type such as
   `Kome.Frontier.State` or `Kome.Store.Store`. gnatprove 14 crashed when
   the code assigned such an object. State the invariant as a named function
