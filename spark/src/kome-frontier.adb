@@ -1212,8 +1212,14 @@ package body Kome.Frontier with SPARK_Mode is
            (for all J in 1 .. Slot_Count (Old, K) => Upd.A.H (K, J) = Old.A.H (K, J)));
       pragma Assert (for all K in Slot_Index => SC (Upd.A, K) = SC (Old.A, K));
       for K in Slot_Index loop
-         pragma Assert
-           (for all J in 1 .. Row_Count (Old, K) => Row_At (Upd, K, J) = Row_At (Old, K, J));
+         for J in 1 .. Row_Count (Old, K) loop
+            pragma Assert (J <= SC (Old.A, K) and then J <= SC (Upd.A, K));
+            pragma Assert (Upd.A.H (K, J) = Old.A.H (K, J));
+            pragma Assert (Row_At (Upd, K, J) = Upd.A.H (K, J));
+            pragma Assert (Row_At (Old, K, J) = Old.A.H (K, J));
+            pragma Loop_Invariant
+              (for all J2 in 1 .. J => Row_At (Upd, K, J2) = Row_At (Old, K, J2));
+         end loop;
          pragma Loop_Invariant
            (for all K2 in 1 .. K =>
               (for all J in 1 .. Row_Count (Old, K2) => Row_At (Upd, K2, J) = Row_At (Old, K2, J)));
