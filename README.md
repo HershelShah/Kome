@@ -58,14 +58,14 @@ PROVE=0 ./spark/check.sh all   # tests only
 ```
 
 `spark/check.sh` uses GNAT 14, gprbuild, gnatprove 14 and the cvc5 and z3
-provers. It fails if a module has an unproved check, except for the modules
-in the `PROOF_WIP` list. By default that list is empty. Today no module needs
-it, because every module proves with 0 unproved checks. `PROOF_WIP=""` also
-gives an empty list. CI (`.github/workflows/ci.yml`) runs every night and
-on demand, because the full proof takes about an hour. It builds the Lean
-model and runs `spark/check.sh <module>` for every module, as parallel jobs.
-Before you push, run `PROVE=0 ./spark/check.sh all` and the proof of each
-module that you changed.
+provers (the proof switches are in `spark/kome_spark.gpr`). It fails if a
+module has an unproved check, if a source uses `pragma Assume` or `pragma
+Annotate`, or if a test binary links a monocypher symbol that Kome does not
+bind. `spark/check.sh --list` prints the module list that CI uses. CI
+(`.github/workflows/ci.yml`) runs the tests and the Lean build on every
+pull request, and the full proof every night and on demand, because the
+full proof takes about an hour. Before you push, run `PROVE=0
+./spark/check.sh all` and the proof of each module that you changed.
 
 ## How the SPARK code relates to the Lean proofs
 
