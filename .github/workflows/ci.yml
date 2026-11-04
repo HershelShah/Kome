@@ -1,9 +1,13 @@
 name: ci
 
-# The full proof takes about an hour, so CI runs nightly and on demand
-# (Actions > ci > Run workflow), not on every push. GitHub runs scheduled
-# workflows on the default branch only.
+# Two kinds of run. A pull request runs the gate job: the Lean build and
+# the SPARK tests (PROVE=0), which take minutes. The full proof takes about
+# an hour, so it runs nightly and on demand (Actions > ci > Run workflow),
+# not on every push. GitHub runs scheduled workflows on the default branch
+# only. A ruleset that requires the gate job and the dco check is a GitHub
+# setting, not a file in this repository.
 on:
+  pull_request:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -16,8 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  gate:
+    name: Lean build and SPARK tests (pull request gate)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: Build every theorem
+        run: ./lean/build.sh
+      - name: Build and run every SPARK test main (no proof)
+        run: PROVE=0 ./spark/check.sh all
+
   lean:
     name: Lean model (machine-check)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -27,19 +45,24 @@ jobs:
 
   modules:
     name: List SPARK modules
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       list: ${{ steps.list.outputs.list }}
     steps:
       - uses: actions/checkout@v5
       - id: list
-        name: One entry per spark/src/kome-*.adb
+        name: The modules of check.sh --list
+        # check.sh --list needs no toolchain. It fails when a source has no
+        # test main or a test main has no source, so the matrix is never
+        # built from a half-module.
         run: |
-          list=$(ls spark/src/kome-*.adb | sed 's|.*/kome-||; s|\.adb$||' | jq -R . | jq -sc .)
+          list=$(./spark/check.sh --list | jq -R . | jq -sc .)
           echo "list=$list" >> "$GITHUB_OUTPUT"
           echo "$list"
 
   spark:
+    # Skipped with its dependency on a pull request.
     name: SPARK ${{ matrix.module }} (build, test, prove)
     needs: modules
     runs-on: ubuntu-latest
