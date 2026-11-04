@@ -1,4 +1,4 @@
-# Kome redesign: the problem, the constraints, the scoring
+# Kome redesign: the problem and the constraints
 
 This is the specification that the design must satisfy. It is about the
 problem, not about an implementation.
@@ -25,15 +25,20 @@ prose.
 
 ## 2. Hard constraints
 
-H1. **Convergence is a theorem, not a test.** If two replicas hold the same
-    set of records, they must hold the same state. The proof must state its
-    assumptions, and the assumptions must be minimal. "Clocks are roughly
-    right" is a weak assumption. "Signatures are unforgeable" is an
-    acceptable assumption.
+H1. **Convergence is a theorem, not a test.** If two replicas applied the
+    same set of records, and expired tombstones at the same horizon, they
+    must hold the same state; before any expiry, the same records alone
+    must give the same state. The proof must state its assumptions, and
+    the assumptions must be minimal. "Clocks are roughly right" is a weak
+    assumption. "Signatures are unforgeable" is an acceptable assumption.
 H2. **No trusted third party**: no server for ordering, membership or keys.
     Relays can exist, but they are untrusted and blind.
-H3. **End-to-end encryption** of all record content. Relays and strangers
-    learn only what is unavoidable (sizes, timing, routing keys).
+H3. **End-to-end encryption** of all record content. A relay learns only
+    the collection identifier, the padded size bucket of each bundle, the
+    timing and its routing key. A stranger on the interactive transport
+    learns only that an endpoint answers: no device key, no collection
+    identifier and no membership, and nothing that links the endpoint
+    across places, networks or collections.
 H4. **Incremental sync**: the transfer is proportional to the difference,
     and the number of rounds is logarithmic in the state size. Sync works
     over any byte transport (UDP, TCP, WS, BLE). The two sides must not need
@@ -54,6 +59,10 @@ H8. **Authorized writers can misbehave**: a device with write access can be
     single record must not permanently brick a collection or a different
     writer's future writes.
 
+The design must list its **assumptions** (what must be true for the
+theorems), its **known weaknesses** (what it gives up) and its **proof
+obligations** (the theorems to prove).
+
 ## 3. Failure classes the design must make impossible
 
 - An unbounded counter that has a meaning at its maximum (one record pins
@@ -71,26 +80,11 @@ H8. **Authorized writers can misbehave**: a device with write access can be
 - Authorization as a non-monotone accept/reject gate (if only one side sees
   a revocation, the record sets become different).
 
-## 4. Scoring criteria (each 0–5, with a one-line justification)
+## 4. Fixed points (not open to debate)
 
-C1. Strength of the convergence theorem (fewer, weaker assumptions = higher).
-C2. Blast radius of an authorized writer that misbehaves; recoverability.
-C3. Metadata overhead per record and per replica; GC without membership.
-C4. Sync efficiency and transport independence; relay blindness.
-C5. Privacy and revocation: what a removed member can still do or learn.
-C6. Provability: size of the trusted core; expressibility in SPARK + Lean.
-C7. Footprint: embedded/WASM/C ABI, dependencies, code size.
-C8. Application ergonomics: how conflicts and deletes show to the app.
-C9. Representation hygiene: H5 and H6 by construction.
-
-A design must also list its **assumptions** (what must be true for the
-theorems), its **known weaknesses** (what it gives up) and its **proof
-obligations** (the theorems to prove).
-
-## 5. Fixed points (not open to debate)
-
-- Crypto primitives: X25519, Ed25519, BLAKE2b, ChaCha20-Poly1305
-  (monocypher). A design can use them in different ways (group keys, hash
+- Crypto primitives: X25519, RFC 8032 Ed25519 (SHA-512 only inside the
+  signature), BLAKE2b, XChaCha20-Poly1305 (24-byte nonce), from
+  monocypher. A design can use them in different ways (group keys, hash
   chains), but it must not add primitives outside that set.
 - Implementation target: a SPARK core behind a C ABI, and the design
   theorems in Lean.
