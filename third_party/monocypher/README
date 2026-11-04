@@ -48,9 +48,9 @@ substitution as in monocypher.c. So all four files are the 4.0.2 release.
 Why monocypher-ed25519 (DESIGN.md §1.2 D4, §2, A1): Kome signs with RFC 8032
 Ed25519, and uses SHA-512 only inside the signature. Core monocypher's
 crypto_eddsa_* functions are EdDSA with BLAKE2b-512. This is not
-RFC 8032, and Kome no longer uses it for signatures. Kome.Crypto binds
+RFC 8032, so Kome does not bind them. Kome.Crypto binds
 crypto_ed25519_key_pair, crypto_ed25519_sign and crypto_ed25519_check.
-BLAKE2b, X25519, XChaCha20-Poly1305 and crypto_wipe still come from
+BLAKE2b, X25519, XChaCha20-Poly1305 and crypto_wipe come from
 monocypher.c.
 
 Note on strictness: crypto_ed25519_check refuses S >= L. But, by design, it
