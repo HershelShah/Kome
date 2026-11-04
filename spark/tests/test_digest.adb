@@ -413,18 +413,18 @@ procedure Test_Digest with SPARK_Mode => Off is
                     Hh : Natural) return Header is
         (K => K_Put, NS => NS, Ent => Ent (E), FH => K (F),
          V => (T => T, Author => K (A), Seq => 1, H => H (Hh)),
-         Issuer => Zero_Key, Del_TTL => 0);
+         Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
       --  The founding key's roster (V = (ceiling_t, signer, gen, h))
       --  and its GRANTs (V = (0, subject, 0, h)) to the two writers.
       Roster : constant Header :=
         (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
          V => (T => 100, Author => K (Fnd), Seq => 1, H => H (500)),
-         Issuer => K (Fnd), Del_TTL => Del_TTL_Default);
+         Issuer => K (Fnd), Del_TTL => Del_TTL_Default, Epoch => 0);
       function Grant (Subject : Natural; Hh : Natural) return Header is
         (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-         V => (T => 0, Author => K (Subject), Seq => 0, H => H (Hh)),
-         Issuer => K (Fnd), Del_TTL => 0);
+         V => (T => U48'Last, Author => K (Subject), Seq => 0, H => H (Hh)),
+         Issuer => K (Fnd), Del_TTL => 0, Epoch => 0);
       Auth : constant array (1 .. 3) of Header :=
         [Roster, Grant (1, 510), Grant (2, 511)];
 

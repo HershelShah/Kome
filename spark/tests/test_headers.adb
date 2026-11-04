@@ -29,24 +29,26 @@ procedure Test_Headers with SPARK_Mode => Off is
 
    function Put (E : Byte; T : U48; A : Byte; Seq : U48; H : Natural) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Key (1),
-      V => (T, Key (A), Seq, Hsh (H)), Issuer => Zero_Key, Del_TTL => 0);
+      V => (T, Key (A), Seq, Hsh (H)), Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    function Del (E : Byte; T : U48; A : Byte; Seq : U48; H : Natural) return Header is
      (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key,
-      V => (T, Key (A), Seq, Hsh (H)), Issuer => Zero_Key, Del_TTL => 0);
+      V => (T, Key (A), Seq, Hsh (H)), Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
-   function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural) return Header is
+   function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural;
+                    E : Kome.Epoch := 0) return Header is
      (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (Ceiling, Key (Signer), Gen, Hsh (H)), Issuer => Key (Signer),
-      Del_TTL => Del_TTL_Min);
+      Del_TTL => Del_TTL_Min, Epoch => E);
 
-   function Grant (Issuer, Subject : Byte; H : Natural) return Header is
+   --  V = (cap, subject, 0, h). The founding key's cap is 2^48 - 1.
+   function Grant (Issuer, Subject : Byte; H : Natural; Cap : U48 := U48'Last) return Header is
      (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (0, Key (Subject), 0, Hsh (H)), Issuer => Key (Issuer), Del_TTL => 0);
+      V => (Cap, Key (Subject), 0, Hsh (H)), Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (From_T, Key (Subject), 1, Hsh (H)), Issuer => Key (Issuer), Del_TTL => 0);
+      V => (From_T, Key (Subject), 1, Hsh (H)), Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    type List is array (Positive range <>) of Header;
 
@@ -55,6 +57,8 @@ procedure Test_Headers with SPARK_Mode => Off is
       Del (1, 150, 2, 1, 4), Del (1, 300, 2, 2, 5), Del (2, 50, 2, 3, 6),
       Roster (9, 1, 5000, 7), Roster (9, 2, 6000, 8), Roster (9, 1, 9000, 9),
       Roster (9, 3, 5500, 10), Roster (9, 4, 9000, 11), Roster (21, 5, 9000, 12),
+      Roster (9, 2, 6000, 19), Roster (9, 4, 9000, 20, E => 3),
+      Roster (9, 5, 9000, 21, E => 2),
       Grant (9, 1, 13), Grant (9, 1, 14), Grant (21, 1, 15), Grant (9, 2, 16),
       Revoke (9, 1, 0, 17), Revoke (9, 1, 0, 18)];
 
@@ -63,6 +67,11 @@ procedure Test_Headers with SPARK_Mode => Off is
    RS : constant Header := Roster (9, 1, 9000, 9);
    R3 : constant Header := Roster (9, 3, 5500, 10);
    R4 : constant Header := Roster (9, 4, 9000, 11);
+   --  Equal gen and ceiling as R2, another h (a root restored from backup).
+   R2F : constant Header := Roster (9, 2, 6000, 19);
+   --  R4 at epoch 3, and gen 5 at the lower epoch 2.
+   R4E : constant Header := Roster (9, 4, 9000, 20, E => 3);
+   R5E : constant Header := Roster (9, 5, 9000, 21, E => 2);
 begin
    Check ("Kind'Pos is the wire tag",
           Kind'Pos (K_Roster) = 0 and then Kind'Pos (K_Revoke) = 1
@@ -78,9 +87,18 @@ begin
           not Canonical ((R1 with delta Issuer => Key (3)))
           and then not Canonical ((R1 with delta Del_TTL => 0))
           and then not Canonical ((R1 with delta Del_TTL => Del_TTL_Max + 1)));
-   Check ("non-canonical: a grant with t or seq set",
-          not Canonical ((Grant (9, 1, 1) with delta V => (1, Key (1), 0, Hsh (1))))
-          and then not Canonical ((Grant (9, 1, 1) with delta V => (0, Key (1), 1, Hsh (1)))));
+   Check ("non-canonical: a roster with gen above ceiling_t (H7), or a PUT, DEL, GRANT with an epoch",
+          not Canonical (Roster (9, 6001, 6000, 8))
+          and then Canonical (Roster (9, 6000, 6000, 8))
+          and then not Canonical ((Put (1, 1, 1, 1, 1) with delta Epoch => 1))
+          and then not Canonical ((Del (1, 1, 1, 1, 1) with delta Epoch => 1))
+          and then not Canonical ((Grant (9, 1, 1) with delta Epoch => 1))
+          and then not Canonical ((Revoke (9, 1, 0, 17) with delta Epoch => 1)));
+   Check ("non-canonical: a grant with seq set; a grant carries its cap in t",
+          Canonical ((Grant (9, 1, 1) with delta V => (1, Key (1), 0, Hsh (1))))
+          and then not Canonical ((Grant (9, 1, 1) with delta V => (0, Key (1), 1, Hsh (1))))
+          and then Cap_Of (Grant (9, 1, 1, Cap => 77)) = 77
+          and then Cap_Of (Roster (9, 1, 5000, 7)) = 0);
 
    --  Rosters: the product order (D3).
    Check ("roster: higher gen and higher ceiling dominates", Dominates (R2, R1));
@@ -92,6 +110,19 @@ begin
           Dominates (R4, R2) and then Dominates (R4, RS) and then Dominates (R4, R3));
    Check ("roster: another signer never dominates",
           not Dominates (Roster (21, 5, 9000, 12), R1));
+   --  H1: domination is strict in gen. Two rosters of one signer at equal
+   --  gen are incomparable whatever their h and ceiling.
+   Check ("roster: equal gen, same signer: neither dominates (H1, strict gen)",
+          not Dominates (R2F, R2) and then not Dominates (R2, R2F)
+          and then not Dominates (R2F, R1) = False);
+   Check ("roster: equal gen is incomparable even with a higher ceiling",
+          not Dominates ((R2F with delta V => (9000, Key (9), 2, Hsh (19))), R2));
+   --  A2: a dominator is not lower in epoch.
+   Check ("roster: higher gen at a higher epoch dominates", Dominates (R4E, R2));
+   Check ("roster: higher gen at a lower epoch does not dominate",
+          not Dominates (R5E, R4E) and then Dominates (R5E, R2));
+   Lemma_Equal_Gen_No_Dom (R2, R2F);
+   Lemma_Equal_Gen_No_Dom (R2F, R2);
 
    --  Grants: keyed by (issuer, subject), ordered by h (D1′).
    Check ("grant: same issuer and subject, higher h dominates",
@@ -101,6 +132,14 @@ begin
           not Dominates (Grant (21, 1, 15), Grant (9, 1, 13)));
    Check ("grant: another subject never dominates",
           not Dominates (Grant (9, 2, 16), Grant (9, 1, 13)));
+   --  A1: the product order (cap, h). A higher h with a lower cap does not
+   --  dominate, so wcap never shrinks.
+   Check ("grant: higher h and higher cap dominates, higher h and lower cap does not",
+          Dominates (Grant (9, 1, 14, Cap => 200), Grant (9, 1, 13, Cap => 100))
+          and then not Dominates (Grant (9, 1, 14, Cap => 100), Grant (9, 1, 13, Cap => 200))
+          and then not Dominates (Grant (9, 1, 13, Cap => 200), Grant (9, 1, 14, Cap => 100)));
+   Lemma_Grant_Dom (Grant (9, 1, 13, Cap => 200), Grant (9, 1, 14, Cap => 100));
+   Lemma_Dominator_Keeps_Registers (Grant (9, 1, 14, Cap => 200), Grant (9, 1, 13, Cap => 100));
 
    Check ("revoke: never dominated",
           (for all X of Grid => not Dominates (X, Revoke (9, 1, 0, 17))));

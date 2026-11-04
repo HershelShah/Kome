@@ -3,19 +3,21 @@
 --  `expire`).
 --
 --  The state is the frontier F: the held records. Nothing else in the
---  state is important. Admission reads two views of F:
+--  state is important. Admission reads three views of F:
 --    * maxceil(F), the largest ceiling_t of the held rosters;
---    * W(F), the subjects of the held GRANTs.
+--    * W(F), the subjects of the held GRANTs;
+--    * wcap(F, k), the largest cap of the held GRANTs of k (AUDIT.md A1).
 --  The state keeps a copy of them in a Register_File (Kome.Registers). The
 --  invariant `Is_Frontier` includes that this copy is equal to the views
 --  (`Coherent`, exported as Lemma_Ceil_Bound, Lemma_Ceil_Witness,
---  Lemma_W_Sound and Lemma_W_Complete). The registers are derived. A
---  record that is not held never raises them: a dominated roster or grant
---  changes nothing (DESIGN.md §4, D1′). Domination does not make them
---  lose a value:
+--  Lemma_W_Sound, Lemma_W_Complete, Lemma_W_Cap_Bound and
+--  Lemma_W_Cap_Sound). The registers are derived. A record that is not
+--  held never raises them: a dominated roster or grant changes nothing
+--  (DESIGN.md §4, D1′). Domination does not make them lose a value:
 --    * a roster leaves F only under a roster of its signer with a ceiling
 --      that is at least its own ceiling;
 --    * a grant leaves F only under a grant of the same issuer and subject
+--      with a cap that is at least its own cap
 --  (T4', Kome.Headers.Lemma_Dominator_Keeps_Registers).
 --
 --  Discard model (DESIGN.md §4, §10 item 1): Apply refuses inadmissible
@@ -154,11 +156,12 @@ package Kome.Frontier with SPARK_Mode is
    ---------------------------------------------------------------------
 
    --  Admission (DESIGN.md §4; Frontier.lean `adm` plus the W register):
-   --  a data record is admitted iff t <= maxceil and author ∈ W.
-   --  Authorization records are always admitted.
+   --  a data record is admitted iff t <= maxceil, author ∈ W and
+   --  t <= wcap (author). Authorization records are always admitted.
    function Admitted (S : State; R : Header) return Boolean is
      (if Is_Data (R)
       then Data_T (R) <= Ceil (Regs (S)) and then In_W (Regs (S), Data_Author (R))
+           and then Data_T (R) <= W_Cap (Regs (S), Data_Author (R))
       else True);
 
    --  Frontier.lean `Dom` restricted to admitted held records.
@@ -265,7 +268,7 @@ package Kome.Frontier with SPARK_Mode is
                    and then Ceil (Regs (S)) = U48'Max (Ceil (Regs (S'Old)), Ceil_Of (R))
                    and then Extends (Regs (S'Old), Regs (S))
                    and then (if R.K = K_Grant
-                             then Added (Regs (S'Old), Regs (S), R.V.Author)
+                             then Added (Regs (S'Old), Regs (S), R.V.Author, Cap_Of (R))
                              else Extends (Regs (S), Regs (S'Old)))
                    --  Frontier.lean `keep`: a filter of held ++ [r].
                    and then (for all I in 1 .. Count (S) =>
@@ -454,6 +457,21 @@ package Kome.Frontier with SPARK_Mode is
      Pre  => Is_Frontier (S) and then I <= Count (S)
              and then Held (S, I).K = K_Grant,
      Post => In_W (Regs (S), Held (S, I).V.Author);
+
+   --  wcap(k) bounds the cap of each held GRANT of k ...
+   procedure Lemma_W_Cap_Bound (S : State; I : Held_Index) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (S) and then I <= Count (S)
+             and then Held (S, I).K = K_Grant,
+     Post => Held (S, I).V.T <= W_Cap (Regs (S), Held (S, I).V.Author);
+
+   --  ... and is the cap of a held GRANT of k (Frontier.lean `wcap_F`).
+   procedure Lemma_W_Cap_Sound (S : State; A : Key256) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (S) and then In_W (Regs (S), A),
+     Post => (for some I in 1 .. Count (S) =>
+                Held (S, I).K = K_Grant and then Held (S, I).V.Author = A
+                and then Held (S, I).V.T = W_Cap (Regs (S), A));
 
    procedure Lemma_Drops_Any (S : State; R : Header) with
      Ghost, Global => null,

@@ -34,9 +34,9 @@ changes the version order.
 | # | Decision |
 |---|---|
 | D1 | Every authorization record carries a *signer block*. The signer is the founding key or a root that the founding key certified (`cert_sig` over `ns ‖ signer ‖ cert_cap`). Only the founding key certifies, so only the founding key adds roots. Admission depends only on the bytes (§2, §6). |
-| D1′ | A record kind `GRANT(subject)` holds write access. Its key is `(ns, issuer, subject)`. `W(F)` is the set of `GRANT` subjects in `F`. `maxceil(F)` is the largest `ceiling_t` of the rosters in `F`. A roster leaves `F` only under a roster of the same signer with a ceiling at least equal to its own. The two registers are functions of `F`, and they never shrink (§3, §4). |
+| D1′ | A record kind `GRANT(subject)` holds write access. Its key is `(ns, issuer, subject)`, and it carries a *write cap*: `2^48 − 1` when the founding key issued it, else the issuer's `cert_cap`. `W(F)` is the set of `GRANT` subjects in `F`, and `wcap(F, k)` is the largest cap of the `GRANT`s of `k` in `F`. `maxceil(F)` is the largest `ceiling_t` of the rosters in `F`. A roster leaves `F` only under a roster of the same signer with a ceiling at least equal to its own; a `GRANT` leaves `F` only under a `GRANT` of the same issuer and subject with a cap at least equal to its own. The three registers are functions of `F`, and they never shrink (§3, §4). |
 | D2 | Only the founding key root-voids. The store ignores `from_t` for a root-void. Nobody can revoke the founding key. When a root is root-voided, all that it issued (rosters, `REVOKE`s, `GRANT`s) no longer counts in any view. Keys that only that root granted read `void` through the effective-writer view `W_eff` (§3, §6). |
-| D3 | Canonical form is a property of `Header`. Decode produces it, and the lattice requires it. A roster dominates another roster of its signer if and only if it is greater in `(gen, h)` *and* not lower in `ceiling_t` (a product order). `ROSTER_eff` is the `(gen, h)`-maximum, and the whole roster tuple breaks a tie (§3). |
+| D3 | Canonical form is a property of `Header`. Decode produces it, and the lattice requires it. A roster dominates another roster of its signer if and only if its `gen` is *strictly* greater *and* it is not lower in `ceiling_t` or in `epoch` (a product order). `h` never decides between two rosters of one signer: at equal `gen`, both stay, and the view `ROSTER_FORK` reports the pair. `ROSTER_eff` is the `(epoch, gen, h)`-maximum, and the whole roster tuple breaks a tie (§3). |
 | D4 | Signatures are RFC 8032 Ed25519 (with SHA-512 inside the signature). They come from the `monocypher-ed25519` part of monocypher. Tests check them against RFC 8032 and Wycheproof vectors. BLAKE2b is the hash for all values that Kome derives (§2, A1). |
 | D5 | There is no root X25519 key. Each `ROSTER` carries a fresh ephemeral `box_pk`, and the roster signature covers it. The secret of `box_pk` seals that roster's boxes, and then the signer wipes the secret (§2, §6). |
 | D6 | `wrap_key` hashes the DH output with `box_pk`, the two member keys, `ns` and `epoch`. The box nonce is synthetic, `BLAKE2b(wrap_key ‖ k_e)`. The member calculates it again and checks it. Bundle nonces are also synthetic (§6). |
@@ -49,13 +49,13 @@ changes the version order.
 | D13 | No register value goes on the wire. A pre-gate `OPEN` carries `ns` and the founding-issued `REVOKE`s of roots that the sender holds. The receiver applies them *before* it evaluates the gate. The post-gate `HELLO` carries counts, the digest and the sender's credential roster. That roster must list the sender's Noise key. A side sends `HELLO` only to a peer that it has already admitted. The authorization range is fully reconciled before the data range (§6, §8). |
 | D14 | The session phases are `Auth` and then `Data`. Only the initiator sends root `RANGE`s: exactly two, with fixed bounds. Replies are exact windows. Items apply in key order (§8). |
 | D15 | Prefix sums carry one more entry, the total. Any sub-range costs at most 64 additions and one subtraction, with the two-accumulator scheme (§8). |
-| E1 | Data records have one capacity. Each signer has its own *slice* of authorization capacity, and the founding key's slice is reserved. The capacity of `W` is the total of the slices, so `W` never fills on its own. A data flood cannot fill another party's space, and a stolen root cannot either. So the founding key's `REVOKE` always lands (§7). |
-| E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. The store never drops a key silently (§7). |
+| E1 | Data records have one capacity. Each signer has its own *slice* of authorization capacity, and the founding key's slice is reserved. The capacity of `W` is the total of the slices, so `W` never fills on its own. A data flood cannot fill another party's space, and a stolen root cannot either. Log bytes are a fourth class, shared by every record: the binding keeps `Log_Fits` (§7), so that a compacted log always has room for one more entry. The founding key keeps a *reserve* of 15 entries in its slice for root-voids (§10.3). Under these two duties, the founding key's `REVOKE` always lands (§7). |
+| E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. If a record that `F` can hold does not fit the log, the store refuses it with `LOG_FULL`, and the binding compacts and retries. The store never drops a key silently (§7). |
 | E3 | There is one hash chain per collection, in *segments*. Only the founding key opens a segment (on root-void, or when the chain reaches the top of a segment). Each roster carries links that let a member walk back across segments (§6). |
 | E4 | `from_t` gives protection only against a lost key, not against a key that a thief uses. For a stolen key, revoke from 0 (§6). |
 | E5 | Keys are canonical at decode: `box_pk`/`dh_pk` are reduced and not low-order, `del_ttl` is clamped, and the cert block is zero exactly for the founding key. Each record has one encoding (§2). |
 | E6 | `root_pk` must be equal to the store's founding key. The effective certificate cap is the largest cap ever certified (§6). |
-| E7 | Admission does not refuse the records of a revoked key. Instead, the design states assumption A7 (a revocation reaches a replica before the records that its subject signs after it), and the H8 bounds depend on it. A refusal would give a stolen root a permanent primitive for mass deletion, and it would give up T3 (§6, §9). |
+| E7 | Admission does not refuse the records of a revoked key. Instead, the design bounds a revoked key's reach with the write cap (`t ≤ wcap`, §4), states assumption A7 (no replica receives, from any source, a record that a revoked subject signed after its revocation), and makes the H8 bounds depend on A7. A refusal would give a stolen root a permanent primitive for mass deletion, and it would give up T3 (§6, §9). |
 | E8 | The engine has no per-author data quota. A quota refusal is a capacity refusal, and under a flood the replicas would not agree about it. It stays an application policy (§10.5). |
 | E9 | The frontier keeps one data array and one authorization row per signer slot. Its own discriminant sets the limit of each one (§7). |
 
@@ -114,7 +114,10 @@ names its signer. The record's bytes prove that the signer is a root:
   **certified root**. Its rosters must not set `ceiling_t` above `cert_cap`.
 
 Only the founding key can make a certificate, so only the founding key adds
-roots. Certification occurs out of band (in a key ceremony). Then the
+roots. A `GRANT` carries no cap of its own: its write cap (§3, §4) is its
+issuer's `cert_cap`, or `2^48 − 1` when the founding key signed it. So a
+key that a certified root granted can never write above that root's cap.
+Certification occurs out of band (in a key ceremony). Then the
 certificate goes inside every record that the root signs. Keep the founding
 key cold (offline, or in a hardware token). The founding key signs
 certificates, root revocations and an occasional roster, and nothing else.
@@ -123,8 +126,9 @@ To renew a certified root's `cert_cap`, the founding key issues a new
 certificate. Nobody can narrow or withdraw a certificate. Every certificate
 stays valid for every record, so **a root's effective cap is the largest
 `cert_cap` ever certified for it**. Only root-voiding (§6) ends what
-a certificate allows. So make caps short (some weeks ahead of the wall
-clock) and renew them regularly. The cap is also a dead-man switch: if the
+a certificate allows. So make caps short (at most `Cap_Lead` = 3 days ahead
+of the wall clock, §7 and §10.3, where the ceremony cadence allows) and
+renew them regularly. The cap is also a dead-man switch: if the
 founding device is lost, `maxceil` stops at the largest cap when wall time
 passes it (§6).
 
@@ -135,7 +139,11 @@ and only if all these conditions are true:
    `vlen` ≤ 40 960, `n_links` ≤ 15, and `n_members` ≤ 64.
 2. For `ROSTER`, `REVOKE`, `GRANT`: `ns = BLAKE2b-256(root_pk ‖ salt)[0:16]`,
    the signer block is valid as above, and a `ROSTER` that a certified root
-   signs has `ceiling_t ≤ cert_cap`.
+   signs has `ceiling_t ≤ cert_cap`. Every `ROSTER` has `gen ≤ ceiling_t`.
+   (`ceiling_t` is a millisecond clock, so an honest `gen` is always far
+   below it. The bound is byte-local, and for a certified root it caps
+   `gen` at its `cert_cap`, so a stolen root cannot use up the `gen`
+   space above 2^47: see §10.3.)
 3. For `ROSTER`: `del_ttl` ∈ [`Del_TTL_Min`, `Del_TTL_Max`] (7 days and
    3 650 days, in milliseconds). `box_pk` and every member `dh_pk` are
    reduced X25519 encodings (`u < 2^255 − 19`, bit 255 clear). None of them
@@ -171,8 +179,9 @@ dom(p, H) for PUT p    := ∃ q ∈ H : PUT, cell(q) = cell(p), q.v > p.v
                         ∨ ∃ d ∈ H : DEL, entity(d) = entity(p), d.v > p.v
 dom(d, H) for DEL d    := ∃ d' ∈ H : DEL, entity(d') = entity(d), d'.v > d.v
 dom(r, H) for ROSTER r := ∃ r' ∈ H : ROSTER, same ns, same signer,
-                            (r'.gen, r'.h) > (r.gen, r.h) ∧ r'.ceiling_t ≥ r.ceiling_t
-dom(g, H) for GRANT g  := ∃ g' ∈ H : GRANT, same ns, same issuer, same subject, g'.h > g.h
+                            r'.gen > r.gen ∧ r'.ceiling_t ≥ r.ceiling_t ∧ r'.epoch ≥ r.epoch
+dom(g, H) for GRANT g  := ∃ g' ∈ H : GRANT, same ns, same issuer, same subject,
+                            g'.cap ≥ g.cap ∧ g'.h > g.h
 dom(x, H) for REVOKE   := false
 F(H) := { x ∈ H | ¬ dom(x, H) }
 ```
@@ -184,8 +193,8 @@ that the dominator's version is greater on the record's key:
 |---|---|---|---|
 | PUT | `(t, author, seq, h)` | cell `(ns, ent, field)`; also a DEL of its entity | `v` |
 | DEL | `(t, author, seq, h)` | entity `(ns, ent)` | `v` |
-| ROSTER | `(ceiling_t, signer, gen, h)` | `(ns, signer)` | product of `(gen, h)` and `ceiling_t` |
-| GRANT | `(0, subject, 0, h)` | `(ns, issuer, subject)` | `h` |
+| ROSTER | `(ceiling_t, signer, gen, h)` | `(ns, signer)` | product of `gen` (strict), `ceiling_t` and `epoch` |
+| GRANT | `(cap, subject, 0, h)` | `(ns, issuer, subject)` | product of `cap` and `h` |
 | REVOKE | `(from_t, subject, rev_seq, h)` | none: never dominated | — |
 
 The roster clause is a product order (D3). Suppose that the order put the
@@ -195,6 +204,19 @@ or a second device that holds the same root key, can make such a roster.)
 This would roll back a member removal and the epoch. Under the product order,
 neither roster dominates, and both stay until the root issues a new roster
 above both.
+
+The clause is strict in `gen` for the same reason. A restored root issues
+`gen = 1 +` the largest `gen` that it holds, which can be the `gen` of the
+roster that the live device issued after the backup. If `h` decided
+between the two, the stale roster would evict the newer one, at every
+replica, with probability one half, and it would roll back a removal and
+the epoch. So at equal `gen` neither roster dominates. Both stay, the view
+`ROSTER_FORK` reports the pair, and `ROSTER_eff` (which puts `epoch`
+first) stays with the roster at the newer epoch. The root resolves the fork
+by reconciling and then issuing a roster above both (§10.3).
+
+The clause also never lowers the epoch: the roster that opens a new
+segment is not evicted by a roster of the old segment, whatever its `gen`.
 
 The product order is a strict partial order that the version order extends,
 and it is monotone. So T2, T2' and T3 hold exactly as for a total order.
@@ -241,13 +263,18 @@ cell(ns, ent, f)    := the unique PUT in F on (ns, ent, f)               -- Opti
 exists(ns, ent)     := ∃ f. cell(ns, ent, f) ≠ None
 maxceil(F)          := max { r.ceiling_t | r ∈ F, ROSTER }   (0 if none)
 W(F)                := { g.subject | g ∈ F, GRANT }                       -- admission
+wcap(F, k)          := max { g.cap | g ∈ F, GRANT, g.subject = k }   (0 if none)  -- admission
 root_void(k)        := k ≠ root_pk ∧ ∃ x ∈ F : REVOKE, x.subject = k, x.issuer = root_pk
 W_eff(F)            := { g.subject | g ∈ F, GRANT, ¬ root_void(g.issuer) }  -- views
 void(p)             := (∃ x ∈ F : REVOKE, x.subject = p.author, p.t ≥ x.from_t,
                           ¬ root_void(x.issuer))
                        ∨ p.author ∉ W_eff(F)
 ROSTER_eff          := the maximal ROSTER r ∈ F with ¬ root_void(r.signer), ordered by
-                       (gen, h), ties (impossible under A2) by (signer, ceiling_t, del_ttl)  -- Option
+                       (epoch, gen, h), ties (impossible under A2) by (signer, ceiling_t, del_ttl)
+                                                                                   -- Option
+revoked(k)          := ∃ x ∈ F : REVOKE, x.subject = k, ¬ root_void(x.issuer)   -- any from_t;
+                                                                                   -- the gate reads it
+ROSTER_FORK         := ∃ r, r' ∈ F : ROSTER, r ≠ r', same signer, same gen        -- advisory flag
 del_ttl_eff         := max { r.del_ttl | r ∈ F, ROSTER, ¬ root_void(r.signer) },
                        or Del_TTL_Default (180 days) if there is none
 far(p)              := p.t > now_local + slack      -- advisory flag only
@@ -268,27 +295,40 @@ the root that set it.
 There is no presence bit and no sentinel. An entity exists if and only if it
 has a live field. A deleted entity is a `DEL` and nothing else.
 
-`maxceil` and `W` lose nothing to domination. A roster leaves `F` only under
-a roster of the same signer with a ceiling at least equal to its own. A
-`GRANT` leaves `F` only under a `GRANT` of the same issuer and subject. With
-T2', each dominated record has a dominator that is not dominated. Thus
-`maxceil(F(H)) = maxceil(H)`, `W(F(H)) = W(H)` and `W_eff(F(H)) = W_eff(H)`.
+`maxceil`, `W` and `wcap` lose nothing to domination. A roster leaves `F`
+only under a roster of the same signer with a ceiling at least equal to its
+own. A `GRANT` leaves `F` only under a `GRANT` of the same issuer and subject
+with a cap at least equal to its own. With T2', each dominated record has a
+dominator that is not dominated. Thus `maxceil(F(H)) = maxceil(H)`,
+`W(F(H)) = W(H)`, `wcap(F(H), k) = wcap(H, k)` and `W_eff(F(H)) = W_eff(H)`.
 The frontier's registers are the registers of all records ever applied,
 and they never shrink (T4').
 
 Also, `ROSTER_eff(F(H)) = ROSTER_eff(H)`, because a roster that dominates
-another roster has a greater `(gen, h)` and the same signer. `ROSTER_eff` is
+another roster has the same signer, an epoch at least as high and a
+strictly greater `gen`, so it is greater in `(epoch, gen, h)`. `ROSTER_eff` is
 present when `F` holds a roster that the founding key signed. The
 collection's first roster is such a roster.
 
 ## 4. Admission
 
 Kome admits every well-formed authorization record (`ROSTER`, `REVOKE`,
-`GRANT`). Kome admits a `PUT` or `DEL` if and only if `t ≤ maxceil(F)` and
-`author ∈ W(F)`. The two registers are the derived views of §3. They are
-functions of the frontier, not separate state. They only grow, because
-admission of authorization records is unconditional and their domination
-never lowers either register (§3).
+`GRANT`). Kome admits a `PUT` or `DEL` if and only if `t ≤ maxceil(F)`,
+`author ∈ W(F)` and `t ≤ wcap(F, author)`. The three registers are the
+derived views of §3. They are functions of the frontier, not separate
+state. They only grow, because admission of authorization records is
+unconditional and their domination never lowers any register (§3).
+
+The write cap bounds what a revoked key can still do. Without it, any
+current member (a compromised read-only member, a relay) could carry the
+records of a revoked key to every replica for ever, at `t = maxceil`, and
+A7 could not be a deployment duty. With it, a key that a certified root
+granted writes at most up to that root's cap, which the founding key keeps
+short (§2, §10.3); and a key that the founding key granted is capped only by
+`maxceil`. A `GRANT` by a root with a longer cap raises the subject's
+`wcap`, and nothing lowers it (T4'). The cap is a function of the bytes of
+the `GRANT` (its signer block), so admission still depends only on bytes
+(D1).
 
 `W` sets a limit on who can occupy the store. Without `W`, a member could
 relay records under keys that it generates and that no `GRANT` names. Then
@@ -362,7 +402,8 @@ another collection on the device.
 
 ```
 floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))     -- for DEL: max over all fields and deleted_at
-t_emit       := max(now_ms, floor.t + 1 if floor exists); if t_emit > maxceil then t_emit := maxceil
+t_emit       := max(now_ms, floor.t + 1 if floor exists, low); if t_emit > maxceil then t_emit := maxceil
+                where low := maxceil − Cap_Lead for a DEL (0 if maxceil < Cap_Lead), and 0 for a PUT
 seq_emit     := seq_self(ns) + 1, and above every seq of this device's records held in F(ns);
                 at 2^48 − 1 the write fails SEQ_EXHAUSTED, no record is produced
 v_emit       := (t_emit, self_pk, seq_emit, h)
@@ -409,8 +450,9 @@ and a root revokes the old key.
 | Clock behind | It loses concurrent conflicts; its own cells still chase | its cells only; a corrected clock has an effect immediately |
 | Backup restore | It emits old `seq` values again: equivocation, ordered by `h`, flagged. Peers offer the old records again, and they are dominated unless the `DEL` has expired (§7) | The writer detects it (it holds its own record with `seq ≥ seq_self + 1`). `seq` jumps past it. The write succeeds and reports the flag `CLONE_SUSPECTED` |
 | Cloned key | Continuous equivocation; replicas still agree | flagged; the owner issues `REVOKE(old, 0)`, a `GRANT` for a fresh key and a roster |
-| Malicious | It can overwrite or delete any cell (that is what write access means). It can pin cells to `maxceil`, flood entities, and grind a public key that wins ties at the ceiling. It can force its own `seq` to `2^48 − 1` in the collections where it writes | It cannot forge, and it cannot go above `maxceil`. A flood cannot block the `REVOKE` (§7 capacity classes). Under A7: when a replica holds the `REVOKE` and the roster that removes the key, nothing that the key signs reaches that replica. So pins stop at the next roster refresh, and floods stop at the `REVOKE` plus owner `DEL`s. Without A7: a stale replica (one without the `REVOKE`) can admit the key to a session, or take its bundle under the old epoch. That replica then relays what the key signs to every replica. Each replica admits it and flags it `void`. The bytes that it overwrites or deletes are gone |
-| Root restored from backup | It issues a roster with an old `gen`. If its own held roster is above that roster in `(gen, h)` with a ceiling at least as high, the old roster is dominated on arrival (status `DOMINATED`). If not (a current clock), neither roster dominates, Kome holds both, and `ROSTER_eff` is still the newer `(gen, h)`. After sync, the root issues a new roster above both. `maxceil` never decreases, and no `REVOKE` is lost | It converges in both cases; a stale roster never becomes effective |
+| Malicious | It can overwrite or delete any cell (that is what write access means). It can pin cells to `min(maxceil, wcap)`, flood entities, and grind a public key that wins ties at the ceiling. It can force its own `seq` to `2^48 − 1` in the collections where it writes | It cannot forge, and it cannot go above `maxceil` or above its `wcap`. A flood cannot block the `REVOKE` while the binding keeps `Log_Fits` and the founding key keeps its reserve (§7, E1). Under A7: nothing that the key signs after the `REVOKE` reaches any replica. So pins stop at the first roster whose ceiling exceeds the pinned `t` (not at "the next refresh": a refresh below the pin changes nothing), and a flood's room comes back only when `min(now, maxceil) ≥ t_flood + del_ttl_eff`, after the `REVOKE` plus owner `DEL`s. Without A7: a replica that admits the key to a session, or takes its bundle, or relays what another member carried, spreads the key's later records everywhere. Each replica admits them (within `wcap`) and flags them `void`. The bytes that they overwrite or delete are gone |
+| Compromised current member (a relay, a read-only member) | It can carry the records of a revoked or root-voided key to every replica, whatever those replicas hold, because admission reads neither `REVOKE` nor `root_void` (E7) and `W` never shrinks | Each such record is admitted only within `wcap(author)` and reads `void`. The transport attributes it: when a record arrives whose author is already void in the receiver's view, it records the delivering peer's `dh_pk` and flags that peer `SUSPECT_RELAY` (§8). The owner removes the relay. This is the A7 duty stated for a member, not for a stale replica |
+| Root restored from backup | It issues a roster with an old or an equal `gen`. If its own held roster has a strictly greater `gen`, an epoch at least as high and a ceiling at least as high, the restored roster is dominated on arrival (status `DOMINATED`). If not (an equal `gen`, a current clock, or an older epoch), neither roster dominates, Kome holds both, `ROSTER_FORK` reports the pair, and `ROSTER_eff` is the roster at the newer epoch (then the greater `gen`, then `h`). `h` never evicts a roster of the same signer. After sync, the root issues a new roster above both. `maxceil` never decreases, and no `REVOKE` is lost | It converges in both cases; a stale roster never becomes effective while the newer one is held, and a removal (which raises the epoch) is never undone |
 
 `CLONE_SUSPECTED` is a flag that Kome reports next to the write's
 status. It is not a status: the write occurred.
@@ -442,9 +484,15 @@ never refuse a `REVOKE` that every other replica holds. Also, a roster never
 waits for the roster that introduced its signer.
 
 Roster domination is per signer (§3). The effective roster is the view
-`ROSTER_eff` (§3): the `(gen, h)`-maximum over the frontier rosters whose
-signer is not `root_void`. If two roots race with equal generations, `h`
-resolves the race. `REVOKE`s are grow-only, so no race can lose one.
+`ROSTER_eff` (§3): the `(epoch, gen, h)`-maximum over the frontier rosters
+whose signer is not `root_void`. Epoch comes first, so a removal (which
+raises the epoch) is never undone by a concurrent roster that still lists
+the member, and the founding roster that opens a segment beats every roster
+of the old segment whatever its `gen`. If two roots race at one epoch with
+equal generations, `h` resolves the race. Two rosters of *one* signer at
+equal `gen` are a fork (a backup restore or a second device): both stay,
+`ROSTER_FORK` reports them, and the newer epoch is effective. `REVOKE`s are
+grow-only, so no race can lose one.
 Per-field writer sets are not part of the design. If admission enforces
 them, they are not monotone. If they are a view flag, they are only a label.
 A label cannot stop an unauthorized write that frees the bytes of an
@@ -476,27 +524,44 @@ to keep. `void`, `W_eff` and `ROSTER_eff` are views, and they never feed
 admission. `root_void` is monotone in `F`. For a fixed `root_void` set, the
 `REVOKE` clause of `void` and `W_eff` are monotone in `F` (T12).
 
-**Recovery from a stolen or lost certified root `R`.** The founding key does
-these steps together:
+**Recovery from a stolen or lost certified root `R`.** The founding key
+reconciles first (so that it holds `R`'s records), and then does these
+steps together, in this order:
 
 1. It issues its own `GRANT` for each key that `R` granted and that the owner
-   wants to keep as a writer. (If not, those keys read `void` after step 2.)
-2. It issues `REVOKE(R, 0)`.
-3. It signs again each member revocation of `R` that it wants to keep.
-4. It issues a founding-signed roster that opens a new epoch segment
-   (below). It gives the new top to the other roots out of band.
+   wants to keep as a writer. (If not, those keys read `void` after step 3.)
+2. It issues `REVOKE(k, 0)` for every member `sign_pk` that the stolen device
+   holds (the device's own member entry, and any member that `R` added and
+   that the owner does not confirm). With the `REVOKE`-aware gate, these
+   devices then pass no gate anywhere, as soon as the `REVOKE` arrives.
+3. It issues `REVOKE(R, 0)`.
+4. It signs again each member revocation of `R` that it wants to keep.
+5. It issues a founding-signed roster that opens a new epoch segment
+   (below). The roster leaves out every entry revoked in step 2, and keeps
+   only the entries that the owner re-confirms. Its `ceiling_t` is
+   `max(intended, maxceil(F) + 1)`: the founding key is uncapped, so it can
+   lift `maxceil` above the largest cap that `R` ever used. Then every cell
+   that `R`'s grantees pinned at that cap is writable again at once, instead
+   of when wall time passes it. It gives the new top to the other roots out
+   of band.
 
-Keys that `R` granted and that the owner does not recognize need no action.
-`W_eff` voids them, and also each key that `R` makes later. The root
-revocation reaches captured replicas through `OPEN` (below).
+`Kome.Roster` checks steps 2 and 5: after recovery, no `ROSTER_eff` member
+has a `sign_pk` with a counting `REVOKE`, and `ROSTER_eff.ceiling_t >
+maxceil` of the state before it. The founding key's slice holds these
+records within its reserve (§10.3). Keys that `R` granted and that the
+owner does not recognize need no action. `W_eff` voids them, and also each
+key that `R` makes later. The root revocation reaches captured replicas
+through `OPEN` (below), and the quarantine flag holds them until the
+recovery roster arrives.
 
 **What a stolen certified root can do.** Until a replica holds its root
 revocation, the stolen root can do there all that a root does:
 
 - It can grant writers, who can overwrite or delete any data.
-- It can make its roster `ROSTER_eff` (with `gen = 2^48 − 1`). Then it
-  decides who passes the session gate and which epoch bundles use, and it
-  can lock honest members out.
+- It can make its roster `ROSTER_eff` (with `gen` up to its cap, §2 rule 2,
+  at the epochs of the segment whose top it holds). Then it decides who
+  passes the session gate and which epoch bundles use, and it can lock
+  honest members out, until a founding roster at a later epoch arrives.
 - It can revoke members (flag them `void`).
 - It can raise `maxceil` up to its effective cap.
 - It can make `del_ttl_eff` longer.
@@ -535,20 +600,30 @@ box, and a removed member that holds `k_e` cannot derive `k_{e+1}`. 2^16
 epochs are sufficient for the life of any collection.
 
 **Epoch segments and several roots (E3).** There is one chain per
-collection. The roots that are not `root_void` share it. A segment starts at
-epoch `s` with a fresh random top key. The top key is at an epoch `top_s`
-above `s` (for example `min(s + 4 095, 65 535)`). The roots receive the top
-of the current segment out of band (at certification, and at each new
-segment). Within a segment, each epoch key is a function of the top. So
-two roots that issue rosters at the same epoch use the same key and never
-conflict. A root never issues a roster with an epoch above `top_s`.
+collection. The roots that are not `root_void` share it. Segment boundaries
+are fixed: segment `j` covers the epochs `[4 096·j, 4 096·j + 4 095]`, so
+a segment starts at `s = 4 096·j` and its top is `top_s = s + 4 095`
+(`Kome.Epochs.Segment_Start`, `Segment_Top`; 16 segments cover the 2^16
+epochs). The founding key draws a fresh random top key for each segment.
+The roots receive the top of the current segment out of band (at
+certification, and at each new segment). Within a segment, each epoch key
+is a function of the top. So two roots that issue rosters at the same epoch
+use the same key and never conflict. A root never issues a roster with an
+epoch above `top_s`, and a certified root that holds a founding roster at an
+epoch above the segment that it knows refuses to issue until it has the new
+top.
 
 **Only the founding key opens a segment.** It opens a segment when it
 root-voids a root, or when the chain reaches the top of the current segment.
-It uses a founding-signed roster at epoch `1 +` the largest epoch of the
-rosters in `F` that are not root-voided. (Kome ignores the epochs of a
-root-voided root, so a thief cannot use up the epoch space.) A root-voided
-root never sees the new top, so it cannot derive any later key.
+It uses a founding-signed roster at epoch `s' = top_s + 1`, the start of the
+next segment. It knows `top_s`, so it needs no fresh `F` for this: a
+founding device that is behind on `F` still opens the right segment. Under
+the `(epoch, gen, h)` order, this roster beats every roster of the old
+segment whatever their `gen`, including the rosters of the root that it
+voids. (Kome ignores the epochs of a root-voided root in every view, and a
+thief cannot use up the epoch space: it can only write epochs of the
+segment whose top it holds.) A root-voided root never sees the new top, so
+it cannot derive any later key.
 
 Each roster carries `links[]` (at most 15, cumulative over the collection's
 life). Link `{from_epoch = s, nonce, box}` seals `k_{s−1}`, the last
@@ -598,11 +673,33 @@ vectors can test it. Decode refuses low-order and non-reduced peer keys
 
 **Two gates on transport, none on records.** Kome admits a peer to a session
 for `ns` if and only if its Noise static key is the `dh_pk` of a member of
-`ROSTER_eff`. Before each side evaluates the gate, it applies what the peer
-sent before the gate. The `OPEN` message carries the founding-issued
-`REVOKE`s of roots that the sender holds (signed records, admissible
-everywhere). So one honest contact releases a replica whose `ROSTER_eff` a
-root-voided thief took over (D13).
+`ROSTER_eff` whose `sign_pk` is not `revoked` (§3: a held `REVOKE` of that
+key, with any `from_t`, from an issuer that is not `root_void`). So a
+revocation closes the gate at once, before the roster that removes the
+member arrives and wins `ROSTER_eff`; the removal roster is still needed
+for the epoch. The same test applies to a `HELLO` credential (the peer's
+member entry) and to the boxes a roster seals (`Kome.Roster` seals no box
+for a revoked member). `Kome.Guard.Gate` is this test. Before each side
+evaluates the gate, it applies what the peer sent before the gate. The
+`OPEN` message carries the founding-issued `REVOKE`s of roots that the
+sender holds (signed records, admissible everywhere). So one honest contact
+releases a replica whose `ROSTER_eff` a root-voided thief took over (D13).
+
+**Quarantine after a pre-gate root-void.** An `OPEN` carries only `REVOKE`s,
+never the recovery roster that the founding key issues with them. If an
+`OPEN` root-voids the signer of the receiver's current `ROSTER_eff`,
+`ROSTER_eff` falls back to an older roster, which can list members that the
+voided root had removed. So the receiver keeps a store-local flag outside
+`F` (`Kome.Guard`): it is set when a pre-gate `OPEN` root-voids the signer
+of `ROSTER_eff`, and it clears only when a founding-signed roster is applied
+and is `ROSTER_eff`. While it is set, the replica admits a peer only through
+a `HELLO` whose credential is such a roster (so the credential itself clears
+the flag), takes no sealed bundle and seals none. The flag is not "gen or
+epoch non-regression": a thief can set `gen` or the epoch to the largest
+value, and no recovery roster could exceed it. A founding roster is
+`ROSTER_eff` as soon as it beats every roster of a signer that is not
+root-voided, whatever the voided root wrote. The flag depends on the order
+of arrival, which `F` does not record, so it lives outside `F`.
 
 The credential `HELLO` follows. A side sends its own `HELLO` only after it
 has admitted the peer, so a non-member learns no membership list. The
@@ -726,7 +823,20 @@ change, and no refusal changes anything:
    - An authorization record whose signer's slice is full and that frees
      nothing, or whose signer is new when all 16 slots are in use:
      `AUTH_FULL`.
-   - Not sufficient log bytes for the entry: `NO_SPACE`.
+   - Not sufficient log bytes for the entry: `LOG_FULL`. The binding
+     compacts and retries. Log bytes are a capacity class of their own,
+     shared by every record, so a store whose log is too small for its
+     rows can refuse the founding `REVOKE` after a flood of large values,
+     and compaction would free nothing. The binding therefore keeps
+     **`Log_Fits`**: `log_cap ≥ 80 + 7 + (data_cap + 16·slice + 1) ·
+     Entry_Max`, with `Entry_Max = 5 + 41 136` (the APPLY prefix plus the
+     largest frame). Under `Log_Fits`, a compacted log has room for one more
+     entry of any kind, so `LOG_FULL` only ever means "compact first". It is
+     a bound on `data_cap` for a given `log_cap`: with a 1 GiB log, at most
+     about 17 000 data records beside 16 full slices. `Kome.Store.Log_Fits`
+     is the test, and `Open` and `Open_From_Log` do not require it (small
+     logs are legitimate for tests and for tiny stores); a binding that
+     opens a store without it accepts that `LOG_FULL` can be permanent.
 
    The index always has room for what `F` holds. `W` (at most one subject
    per held `GRANT`) always has room.
@@ -743,8 +853,12 @@ permanently about these items:
 - the records that those data records dominate.
 
 Honest roots never reach their slice (the honest-issuer rules, §10.3), and
-the founding key certifies at most 15 roots (A1). So only a stolen root
-can cause this. It cannot touch any other signer's slice. When it is
+the founding key certifies at most 15 roots (A1). The founding key's slice
+is a lifetime budget, not a reserve by itself: `REVOKE`s are never
+dominated, so about 250 key rotations (a `REVOKE` plus a `GRANT` each) would
+fill it, and then `REVOKE(R, 0)` would get `AUTH_FULL`. So the founding key
+keeps a reserve of 15 entries for root-voids (§10.3) and does no routine
+`GRANT`s or `REVOKE`s. So only a stolen root can cause this. It cannot touch any other signer's slice. When it is
 root-voided, all that its surplus admitted reads `void`. After that,
 byte-for-byte agreement comes back only if the owner re-founds the
 collection. The slice size must be the same at each replica of a collection
@@ -770,6 +884,17 @@ clock is clamped to `maxceil`, so the roots' clocks set the limit on
 expiry, not one device's clock. A clock set far ahead (spoofed time, or
 the user) cannot expire all tombstones at once and make
 `DEL`s that arrive expire on arrival.
+
+The clamp protects tombstones only as far as the ceiling leads the wall
+clock. A clock ahead by `δ ≤ maxceil − now` expires `DEL`s `δ` early, and a
+spoofed-ahead device with `maxceil − now ≥ del_ttl_eff` would hold no
+tombstone at all. So the honest-issuer rules keep `ceiling_t ≤ now +
+Cap_Lead` with **`Cap_Lead` = 3 days `< Del_TTL_Min`** (§10.3), and every
+expiry statement below counts the window `del_ttl_eff − Cap_Lead`, measured
+against the fastest replica's horizon. A `DEL` from a slow or clockless
+writer would expire on arrival at every clocked replica and never be
+relayed; so a `DEL` is emitted at `t ≥ maxceil − Cap_Lead` (§5), and lives
+at least `del_ttl_eff − Cap_Lead` everywhere.
 
 If `horizon` is above the store's horizon, `Expire` removes from `F`
 exactly the `DEL`s with `t ≤ horizon` and sets the store's horizon. If
@@ -803,23 +928,33 @@ the entity on both.
 With apply-then-expire, a skewed pair converges on the next exchange. The
 replica that still holds the `DEL` sends it again, and the other replica
 applies and expires it again. The cost is one frame per session until the
-two replicas expire it. The only residual is the documented one. A
-straggler that never saw the `DEL` can connect again after `del_ttl`. It
-then resurrects the entity with its stale fields, and the user deletes it
-again.
-That needs a device that is offline for longer than `del_ttl` (default 180
-days). It is a liveness assumption (A4′), and the design states it as such
-and does not hide it in a safety theorem.
+two replicas expire it. The residual is this: expiry is not a
+join-endomorphism, `expire(F({d, p})) = {}` but `F(expire({d}) ∪ {p}) =
+{p}`. So any copy of a frame that `d` dominated, delivered after every
+replica expired `d`, brings the entity back: a straggler that never saw
+the `DEL`, a relay that stores an old bundle (bundles carry no freshness,
+and a synthetic nonce makes a replayed bundle identical to the original),
+a read-only member with a saved frame, or a store restored from a backup
+taken before `d`. A4′ names every one of these copies. If it fails, the
+entity comes back with its stale fields, and the user deletes it again.
+It is a liveness assumption, and the design states it as such and does
+not hide it in a safety theorem.
 
 **Why A4′ and not a sync-frequency assumption.** The assumption "every
 member syncs with some member once per `del_ttl`" is not sufficient. A
 four-member schedule can satisfy it while the `DEL` reaches two members and
 both expire it. Then a third member that never saw the `DEL` seeds the
-entity again everywhere. Expiry needs **A4′: every `DEL` reaches every
-member within `del_ttl` of `d.t`**. That is, the sync-graph diameter times
-the sync period is less than `del_ttl`. If this assumption fails, deleted
-data comes back, but live data is never destroyed. For this reason, the
-design prefers tombstone expiry to root-signed snapshots.
+entity again everywhere. Expiry needs **A4′ (§9): every `DEL` `d` is
+admitted and durable at every member within `del_ttl_eff − Cap_Lead` of
+`d.t`, and no frame of a record that `d` dominates is delivered to a
+replica after that replica expired `d`**. "Admitted", not "arrived": a
+`DEL` discarded as `INADMISSIBLE` and never offered again does not count
+(bundles are closed under admission, §8). "Durable", not "applied": a
+lost log tail counts as a backup restore (§8, the sync point). The
+sync-graph diameter times the sync period is less than the window. If
+this assumption fails, deleted data comes back, but live data is never
+destroyed. For this reason, the design prefers tombstone expiry to
+root-signed snapshots.
 
 **Chased tombstones (residual).** A `DEL` that dominates a far-future `PUT`
 must chase to `t > p.t`. So its tombstone lives for `δ + del_ttl`, where
@@ -1051,6 +1186,29 @@ of `ELEMENTS` items, sorted by element key, with a total of at most
 (authorization records first: the authorization-first pass of T4 (a)).
 Relays see ciphertext, `ns`, the epoch and the transport's routing key.
 
+**Bundles are closed under admission.** A bundle carries, ahead of its
+data records, every `GRANT` of each data author that the sender holds and
+the sender's roster with the largest ceiling (or an authorization-only
+bundle goes first). So a `DEL` in a bundle is admitted wherever the bundle
+is opened, and never discarded for a stale `maxceil` or a missing `GRANT`
+and then forgotten (`auth_first_closed` in Lean). A `DEL` that a session
+discards as `INADMISSIBLE` is offered again by the next session (§4), but
+a bundle has no next session. The quarantine flag (§6) suspends bundles.
+
+**Suspect-relay attribution.** When a record arrives, by session or
+bundle, whose author is already `void` in the receiver's view (a counting
+`REVOKE`, or a root-voided issuer), the transport records the delivering
+peer's `dh_pk` (the Noise static key, or the bundle's mailbox owner) and
+reports the flag `SUSPECT_RELAY` for that peer. Admission does not change.
+The owner decides whether to remove the relay. This is how a failure of A7
+(§9) becomes attributable instead of silent.
+
+**Durability before acknowledgement.** The log is an append-only buffer;
+the store binding writes it to its device. A session counts as `Complete`,
+and a bundle is acknowledged or deleted from a mailbox, only after the log
+is flushed to its current `Log_Length` (the sync point). Otherwise a crash
+can undo an applied `DEL` while every other replica expires it (A4′, §7).
+
 ## 9. Proof obligations
 
 Each obligation is a finite, first-order fact about sets of records. ✓ marks
@@ -1071,7 +1229,13 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
   - (b) Two passes over the same records, in any order and with any
     duplication, give the same result. (The second pass offers again what
     the first pass refused.) So two replicas that applied the same records
-    hold the same `F`.
+    hold the same `F`. This is stated for `applyD` (apply, no horizon).
+    The store expires a `DEL` on arrival at its horizon `h` (`applyH`), and
+    then the order matters when a record that an expired `DEL` dominates
+    arrives after that `DEL` (`[d, p, d, p]` gives `{p}`, `[p, d, p, d]`
+    gives `{}`). Under `NoLateDom(h, l)` (no such late arrival), the two
+    agree after an expiry at `h` (`expire_applyAllH`); A4′ excludes the
+    late arrival.
   - (c) After a complete two-phase reconciliation (§8), the two replicas
     hold `F(F_A ∪ F_B)` of the admitted records. This includes records that
     were inadmissible at one side before the session.
@@ -1080,10 +1244,11 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
   `AUTH_FULL`). Kome offers a `NO_SPACE` record again later, and `AUTH_FULL`
   is the stated residual of §7.
 - **T4' ✓ Monotone admission.** If each authorization record of `H` is in
-  `H'`, then `adm(r, H) ⇒ adm(r, H')`. Also, `maxceil(F(H)) = maxceil(H)` and
-  `W(F(H)) = W(H)`. So no register shrinks along any history, and this
-  includes rosters of lower generation or ceiling. Admission never reads
-  `REVOKE`, `root_void` or `W_eff`.
+  `H'`, then `adm(r, H) ⇒ adm(r, H')`. Also, `maxceil(F(H)) = maxceil(H)`,
+  `W(F(H)) = W(H)` and `wcap(F(H), k) = wcap(H, k)`. So no register shrinks
+  along any history, and this includes rosters of lower generation or
+  ceiling and grants of lower cap. Admission never reads `REVOKE`,
+  `root_void` or `W_eff`.
 - **T5 ✓ View determinism.** `deleted_at`, `cell`, `exists`, `maxceil`, `W`,
   `root_void`, `W_eff`, `void`, `ROSTER_eff` and `del_ttl_eff` are functions
   of `F` as a set alone (and of the constant `root_pk`). `ROSTER_eff` uses
@@ -1108,7 +1273,8 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
   Kome applies a roster with a higher ceiling, no honest write to any cell
   is shadowed.
 - **T10 ✓ Equivocation.** All replicas put two different records with equal
-  `(author, seq)` in the same order. Arrival order has no effect on `F`.
+  `(author, seq)` in the same order. Arrival order has no effect on `F`
+  (for `applyD`; with a horizon, under `NoLateDom`, as in T4 (b)).
 - **T11 (liveness) Tombstone expiry.**
   - (a) After `Expire` at a horizon, `F` holds no `DEL` with `t ≤` that
     horizon, and `|F|` meets the §7 bound. Expiry of a frontier gives a
@@ -1116,9 +1282,13 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
   - (b) Apply-then-expire: take two replicas whose held sets are different
     only because one holds a `DEL` `d` with `d.t ≤ h` and the other does
     not. After the same further records, a re-sent `d` and an `Expire` at
-    `h`, they agree on each record.
-  - (c) Under A4′, after each replica has expired `d`, no replica holds a
-    record that `d` dominated.
+    `h`, they agree on each record. (For `applyD`; the store's `applyH`
+    agrees with it under `NoLateDom`, T4 (b).)
+  - (c) Under A4′ (every copy of `d` admitted and durable within
+    `del_ttl_eff − Cap_Lead`, no late copy of what `d` dominates, and a
+    lead of at most `Cap_Lead` at every honest root), after each replica
+    has expired `d`, no replica holds a record that `d` dominated. The
+    window that it tolerates is the lead that A4′ names.
 - **T12 ✓ Revocation locality.** When Kome applies a `ROSTER`, `REVOKE` or
   `GRANT`, `F` changes only at that record and at the records of its own
   kind and key that it dominates. It never adds or removes a `PUT` or `DEL`.
@@ -1158,20 +1328,29 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
 - **A2** BLAKE2b is collision-resistant. The 4096-bit sum is k-sum hard.
 - **A3** A root device refreshes the roster within each horizon. (If not,
   writes degrade to ties at the ceiling. Convergence is not affected.)
-- **A4′** For tombstone expiry only: every `DEL` reaches every member within
-  `del_ttl` of `d.t`.
+- **A4′** For tombstone expiry only: every `DEL` `d` is admitted and
+  durably held (or durably applied, `APPLY` or `APPLY_EXPIRED`) at every
+  member within `del_ttl_eff − Cap_Lead` of `d.t`, measured against the
+  fastest replica's horizon; and no frame of a record that `d` dominates
+  (a stale replica's, a relay's stored bundle, a saved frame, a backup) is
+  delivered to a replica after that replica expired `d`. A lost log tail
+  counts as a backup restore.
 - **A5** Writers persist `seq_self` per collection (Kome detects
   violations).
 - No assumption about register values on the wire is necessary, because no
   register value goes on the wire.
-- **A7 Revocation arrives first** (E7). Each replica receives a `REVOKE`
-  before it receives any record that the subject of that `REVOKE` signed
-  after it. Each replica also receives a root revocation before any record
-  that a key granted by that root signed afterwards. Only the H8 bounds (§5)
-  and the post-revocation guarantees of §6 depend on this assumption;
-  convergence does not. If it fails, a stale replica admits such records and
-  relays them. Every replica then holds them, flagged `void`, and the bytes
-  that they overwrote or deleted are lost.
+- **A7 No record after revocation** (E7). No replica receives, from any
+  source, a record that the subject of a `REVOKE` signed after that
+  `REVOKE`, nor a record that a key granted by a root-voided root signed
+  after the root-void. This is a duty of every current member, not only of
+  stale replicas: a stale replica is the usual source, and a compromised
+  relay or read-only member is the other (H8). The gate (§6) and the
+  `SUSPECT_RELAY` attribution (§8) are the mechanisms; the write cap bounds
+  the damage when the duty fails (`t ≤ wcap`). Only the H8 bounds (§5) and
+  the post-revocation guarantees of §6 depend on this assumption;
+  convergence does not. If it fails, every replica holds the records,
+  flagged `void`, and the bytes that they overwrote or deleted are lost.
+  Kome keeps no copy.
 
 **There is no clock assumption for convergence.**
 
@@ -1185,12 +1364,17 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
    "sandwich" lemma.
 
    The model has the five record kinds, per-signer product-order roster
-   domination and per-`(issuer, subject)` grant domination. It also has
-   `maxceil` and `W` as functions of the held list, the discard model,
-   expiry, and the views `rootVoid`, `wEff`, `voided`, `rosterEff` and
-   `delTtlEff`. Certificates, capacity and the horizon's clock clamp are
-   outside the model, which assumes well-formed records. T7 is still
-   open; T14 has a paper argument only.
+   domination (strict in `gen`, with the epoch) and per-`(issuer, subject)`
+   grant domination (with the cap). It also has `maxceil`, `W` and `wcap`
+   as functions of the held list, the discard model (`applyD`), the store's
+   apply with expiry on arrival (`applyH`, related to `applyD` by
+   `expire_applyAllH` under `NoLateDom`), expiry, and the views `rootVoid`,
+   `wEff`, `voided`, `rosterEff` and `delTtlEff`. The divergence register,
+   that is, what the implementation has and the model does not: signer
+   certificates and well-formedness; `ns`; capacity (`NO_SPACE`,
+   `AUTH_FULL`, `LOG_FULL`); the horizon's clock clamp and `Cap_Lead`; `u48`
+   bounds (the model uses `Nat`); the journal; the quarantine flag; and
+   assumption A7. T7 is still open; T14 has a paper argument only.
 2. **Toolchain.** Lean comes from nixpkgs (`nix shell nixpkgs#lean4`),
    because the authors could not download `elan` in their
    environment. `lean-toolchain` gives 4.35.0 for users of `elan`.
@@ -1203,15 +1387,36 @@ the obligations that core Lean can prove; ✗ marks the two hard ones.
    - the honest-issuer rules, as follows.
 
    The honest-issuer rules are:
-   - A new roster has `gen = 1 +` the largest `gen` of the rosters in `F`
-     that are not root-voided.
+   - A root reconciles before it issues. A new roster has `gen = 1 +` the
+     largest `gen` of the rosters in `F` that are not root-voided, counting
+     only `gen ≤ G_honest = 2^47`. A root never emits `gen > G_honest`; if
+     `1 + max` would exceed it, the root refuses with
+     `STOLEN_ROOT_SUSPECTED` and waits for the founding root-void. (A
+     stolen root can issue `gen = 2^48 − 2`; the founding opener wins by
+     epoch, not by `gen`.) A restored root that holds its own roster with
+     `gen ≥` its next `gen` issues at `1 + max`, which resolves the fork
+     that `ROSTER_FORK` reports.
    - Its `ceiling_t` is at least the largest ceiling of the signer's held
-     rosters. So it dominates all of them, and the signer keeps one
-     roster.
-   - Its epoch is within the current segment and never above the top of the
-     segment.
+     rosters, and at least its `gen` (§2 rule 2). So it dominates all of
+     them, and the signer keeps one roster.
+   - Its epoch is at least the largest epoch of the rosters in `F` that are
+     not root-voided, within the current segment, and never above the top
+     of the segment. A certified root that holds a founding roster at an
+     epoch above its known segment refuses to issue until it has the new
+     top.
    - A root stays within its slice (`Slice_Max` records), and the founding
      key stays within 15 certificates.
+   - The founding key keeps a *reserve* for root-voids: it signs an
+     authorization record other than a root-void only if
+     `slot_count(1) + 1 ≤ slice − (15 − roots_already_voided)`. It does no
+     routine `GRANT`s or `REVOKE`s (E1).
+   - A certified root's `ceiling_t` and `cert_cap` are at most
+     `now + Cap_Lead` (§7: `Cap_Lead` is 3 days, below `Del_TTL_Min`), so
+     that `maxceil − now ≤ Cap_Lead` whenever every root is honest. A
+     longer `cert_cap` is a trade: fewer ceremonies against a wider window
+     for a stolen root.
+   - A recovery roster (§6 step 5), and any founding roster issued while
+     `maxceil(F) > now`, has `ceiling_t = max(intended, maxceil(F) + 1)`.
    - A member removal increases the epoch.
 4. **Conflict visibility.** This design keeps one value per cell and frees
    the losers' bytes. If an application wants visible conflicts, it

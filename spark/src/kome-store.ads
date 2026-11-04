@@ -39,7 +39,11 @@
 --  encoding.)
 --
 --  The model of the log is a bounded byte buffer. The model writes only at
---  the end of the buffer, so an OS file can replace it:
+--  the end of the buffer, so an OS file can replace it. The binding
+--  flushes the file to Log_Length (the sync point) before a session counts
+--  as Complete and before a bundle is acknowledged or deleted from a
+--  mailbox (DESIGN.md §8; A4′: a lost log tail is a backup restore).
+--  Under Log_Fits (below), a Log_Full result means "compact and retry":
 --    * Put_Frame returns the offset of the entry that it appended;
 --    * Read_Frame reads a frame back;
 --    * Log_Bytes is the file image;
@@ -70,7 +74,8 @@
 --        OK with no change. This step needs only log room.
 --    (5) Room: first the rules of Frontier (No_Space for the data row,
 --        Auth_Full for the slice of a signer, the slot table or W), then
---        the log bytes (No_Space).
+--        the log bytes (Log_Full: the binding compacts and retries; under
+--        Log_Fits a compacted log always has the room, AUDIT.md H3).
 --    (6) Apply the record, append APPLY, index the record, and remove the
 --        index entries of the records that it dominated.
 --  A refusal changes nothing (T13): the Post says Unchanged (F'Old, F)
@@ -459,19 +464,45 @@ package Kome.Store with SPARK_Mode is
    function Log_Short (S : Store; Need : Natural) return Boolean is
      (S.Log_Cap - Log_Length (S) < Need);
 
+   --  The largest log entry: the APPLY prefix and the largest frame.
+   Entry_Max : constant := Apply_Prefix + Kome.Records.Frame_Max;   --  41 141
+
+   --  Log bytes are a capacity class shared by every record (DESIGN.md §7,
+   --  E1; AUDIT.md H3). Under Log_Fits, a compacted log (the HEADER, one
+   --  APPLY per held record, one EXPIRE) has room for one more entry of
+   --  any kind, so Log_Full only ever means "compact first", and no flood
+   --  of large values can block the founding REVOKE. Open and
+   --  Open_From_Log do not require it: a small log is legitimate (tests,
+   --  tiny stores), and then Log_Full can be permanent. The binding checks
+   --  it when it chooses Log_Cap for a Cap and a Slice. It is stated as a
+   --  quotient so that it never overflows.
+   function Log_Fits (Cap : Data_Size; Slice : Slice_Count; Log_Cap : Log_Size)
+     return Boolean
+   is
+     (Log_Cap >= Header_Len + Expire_Len
+      and then (Log_Cap - Header_Len - Expire_Len) / Entry_Max
+               >= Cap + Signers_Max * Slice + 1);
+
    --  The result is No_Space only at a bound (T13), after the admission,
-   --  duplicate and domination tests. These are the cases:
-   --    * an expired DEL that drops a record and has no log room for its
-   --      APPLY_EXPIRED;
-   --    * a record that Frontier.Apply refuses for the data row;
-   --    * a record that Frontier can hold, but its APPLY does not fit the
-   --      log.
+   --  duplicate and domination tests: a record that Frontier.Apply refuses
+   --  for the data row.
    function At_Bound (S : Store; F : Frontier.State; H : Header; Len : Natural) return Boolean is
+     (not Holds (F, H) and then not Dom (F, H)
+      and then not Expired (H, Horizon (S)) and then Data_Full (F, H))
+     with Pre => Len <= Kome.Records.Frame_Max;
+
+   --  The result is Log_Full only when F can take the record but its entry
+   --  does not fit the log: an expired DEL that drops a record and has no
+   --  log room for its APPLY_EXPIRED, or a record that Frontier can hold,
+   --  but its APPLY does not fit.
+   function At_Log_Bound (S : Store; F : Frontier.State; H : Header; Len : Natural)
+     return Boolean
+   is
      (not Holds (F, H) and then not Dom (F, H)
       and then (if Expired (H, Horizon (S))
                 then Drops_Any (F, H) and then Log_Short (S, Apply_Prefix + Len)
-                else Data_Full (F, H)
-                     or else (not Auth_Rule (F, H) and then Log_Short (S, Apply_Prefix + Len))))
+                else not Data_Full (F, H) and then not Auth_Rule (F, H)
+                     and then Log_Short (S, Apply_Prefix + Len)))
      with Pre => Len <= Kome.Records.Frame_Max;
 
    --  The refinement statement of Frontier.Apply (Frontier.lean `applyA` /
@@ -669,7 +700,7 @@ package Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
-       and Result in OK | Dominated | Inadmissible | Malformed | No_Space | Auth_Full
+       and Result in OK | Dominated | Inadmissible | Malformed | No_Space | Auth_Full | Log_Full
        --  The order of DESIGN.md §7, each outcome as an iff.
        and (Result = Malformed) = Foreign_Root (S'Old, Frame)
        and (Result = Inadmissible)
@@ -683,6 +714,9 @@ package Kome.Store with SPARK_Mode is
        and (Result = No_Space)
              = (not Foreign_Root (S'Old, Frame) and then Admitted (F'Old, H)
                 and then At_Bound (S'Old, F'Old, H, Frame'Length))
+       and (Result = Log_Full)
+             = (not Foreign_Root (S'Old, Frame) and then Admitted (F'Old, H)
+                and then At_Log_Bound (S'Old, F'Old, H, Frame'Length))
        --  Nothing changes on a refusal, on a duplicate, or for an expired
        --  DEL that drops nothing (T13).
        and (if Result /= OK or else Holds (F'Old, H)
@@ -708,7 +742,7 @@ package Kome.Store with SPARK_Mode is
    --    * if it is lower, Expire sets it and logs EXPIRE;
    --    * if it is equal, Expire changes nothing.
    --  If the EXPIRE entry that Expire must log does not fit, the result is
-   --  No_Space and nothing changes.
+   --  Log_Full and nothing changes.
    procedure Expire
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -719,10 +753,10 @@ package Kome.Store with SPARK_Mode is
      Pre  => Valid (S, F),
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
-       and Result in OK | No_Space
-       and (Result = No_Space)
+       and Result in OK | Log_Full
+       and (Result = Log_Full)
              = (Logs_Expire (S'Old, F'Old, Now) and then Log_Short (S'Old, Expire_Len))
-       and (if Result = No_Space then Unchanged (F'Old, F) and then S = S'Old)
+       and (if Result = Log_Full then Unchanged (F'Old, F) and then S = S'Old)
        and Log_Extends (S'Old, S)
        and (if Result = OK then
               Horizon (S) = Horizon_At (F'Old, Now)

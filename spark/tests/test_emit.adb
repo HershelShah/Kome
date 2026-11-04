@@ -60,23 +60,24 @@ procedure Test_Emit with SPARK_Mode => Off is
 
    function Put (E : Byte; F : Character; V : Version) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => V,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    function Del (E : Byte; V : Version) return Header is
      (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => V,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    --  A founding-key roster: V = (ceiling_t, signer, gen, h).
    function Roster (Gen, Ceiling : U48; H : Byte) return Header is
      (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (T => Ceiling, Author => Key (Fnd), Seq => Gen, H => Hsh (H)),
-      Issuer => Key (Fnd), Del_TTL => Del_TTL_Default);
+      Issuer => Key (Fnd), Del_TTL => Del_TTL_Default, Epoch => 0);
 
-   --  A founding-key GRANT to Subject: V = (0, subject, 0, h).
-   function Grant (Subject : Byte) return Header is
+   --  A founding-key GRANT to Subject: V = (cap, subject, 0, h), with the
+   --  founding key's cap 2^48 - 1 unless Cap says otherwise.
+   function Grant (Subject : Byte; Cap : U48 := U48'Last) return Header is
      (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (T => 0, Author => Key (Subject), Seq => 0, H => Hsh (Subject)),
-      Issuer => Key (Fnd), Del_TTL => 0);
+      V => (T => Cap, Author => Key (Subject), Seq => 0, H => Hsh (Subject)),
+      Issuer => Key (Fnd), Del_TTL => 0, Epoch => 0);
 
    function Put_T (E : Byte; F : Character) return Target is
      (Op => W_Put, NS => NS, Ent => Ent (E), FH => Fld (F));
@@ -521,6 +522,40 @@ procedure Test_Emit with SPARK_Mode => Off is
                         Seq => 1, H => Hsh (1)));
    Lemma_Respects_Clock (70, True, 10, 100);
    Check ("lemmas evaluated", True);
+
+   --  A5: a DEL from a clockless writer (Now = 0) is emitted at least
+   --  maxceil - Cap_Lead, so it does not expire on arrival at a clocked
+   --  replica. A PUT keeps its clock. A1: a capped writer never writes
+   --  above its cap, and a floor above the cap shadows it.
+   declare
+      U    : State := New_State (32);
+      Big  : constant U48 := 30 * 86_400_000;   --  30 days
+   begin
+      Grant_Writers (U);
+      Apply (U, Roster (1, Big, 9), St);
+      Seq := 0;
+      Do_Emit (U, Del_T (9), 0, Self, HC, Seq, V, R);
+      Check ("A5: a DEL at Now = 0 is emitted at maxceil - Cap_Lead",
+             R = OK and V.T = Big - Cap_Lead and Del_Low (Big) = Big - Cap_Lead);
+      Do_Emit (U, Put_T (9, 'n'), 0, Self, HC, Seq, V, R);
+      Check ("A5: a PUT at Now = 0 keeps t = 0", R = OK and V.T = 0);
+      Do_Emit (U, Del_T (9), Big - 1000, Self, HC, Seq, V, R);
+      Check ("A5: a DEL with a clock above the bound keeps its clock",
+             R = OK and V.T = Big - 1000);
+      --  A capped writer (key 7, cap 5000).
+      Apply (U, Grant (7, Cap => 5000), St);
+      Seq := 0;
+      Do_Emit (U, Put_T (9, 'n'), Big, Key (7), HC, Seq, V, R);
+      Check ("A1: a capped writer's PUT is at its cap, below maxceil",
+             R = OK and V.T = 5000 and Eff_Ceil (U, Key (7)) = 5000);
+      Apply (U, Put (9, 'n', Ver (6000, 2, 1, 29)), St);
+      Do_Emit (U, Put_T (9, 'n'), Big, Key (7), HC, Seq, V, R);
+      Check ("A1: a floor above the writer's cap shadows it at the cap",
+             R = Shadowed and V.T = 5000);
+      Do_Emit (U, Del_T (9), 0, Key (7), HC, Seq, V, R);
+      Check ("A5/A1: a capped DEL is bounded by the cap, not by maxceil - Cap_Lead",
+             R = Shadowed and V.T = 5000);
+   end;
 
    if Failed then
       Set_Exit_Status (Failure);

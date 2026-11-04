@@ -46,29 +46,30 @@ procedure Test_Frontier with SPARK_Mode => Off is
 
    function Put (E : Byte; F : Character; Ver : Version) return Header is
      (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => Ver,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    function Del (E : Byte; Ver : Version) return Header is
      (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => Ver,
-      Issuer => Zero_Key, Del_TTL => 0);
+      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    --  V = (ceiling_t, signer, gen, h), Issuer = signer.
    function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural) return Header is
      (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (T => Ceiling, Author => Key (Signer), Seq => Gen, H => Hsh (H)),
-      Issuer => Key (Signer), Del_TTL => Del_TTL_Default);
+      Issuer => Key (Signer), Del_TTL => Del_TTL_Default, Epoch => 0);
 
-   --  V = (0, subject, 0, h), Issuer = signer.
-   function Grant (Issuer, Subject : Byte; H : Natural) return Header is
+   --  V = (cap, subject, 0, h), Issuer = signer. The cap is unbounded
+   --  unless Cap says otherwise.
+   function Grant (Issuer, Subject : Byte; H : Natural; Cap : U48 := U48'Last) return Header is
      (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (T => 0, Author => Key (Subject), Seq => 0, H => Hsh (H)),
-      Issuer => Key (Issuer), Del_TTL => 0);
+      V => (T => Cap, Author => Key (Subject), Seq => 0, H => Hsh (H)),
+      Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    --  V = (from_t, subject, rev_seq, h), Issuer = signer.
    function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (T => From_T, Author => Key (Subject), Seq => 1, H => Hsh (H)),
-      Issuer => Key (Issuer), Del_TTL => 0);
+      Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    function New_State (Cap : Data_Size := 64; Slice : Slice_Count := 8) return State is
      (Empty (NS, Key (Fnd), Cap, Slice));
@@ -257,6 +258,45 @@ begin
       Lemma_Unchanged (S, S);
       Check ("Lemma_Unchanged_Refl and Lemma_Unchanged execute (3 held)",
              Kome.Frontier.Count (S) = 3);
+   end;
+
+   --  (a') A1: the write cap. A GRANT by a certified root caps its
+   --  subject at the root's cap; a second GRANT with a larger cap raises
+   --  wcap, and a GRANT with a smaller cap and a greater h does not evict
+   --  the larger one.
+   declare
+      S   : State := New_State;
+      GC  : constant Header := Grant (21, 1, 51, Cap => 4000);
+      GC2 : constant Header := Grant (21, 1, 52, Cap => 4500);
+      GC3 : constant Header := Grant (21, 1, 53, Cap => 1000);
+      P   : constant Header := Put (1, 'n', V (4500, 1, 1, 10));
+      Q   : constant Header := Put (1, 'n', V (4000, 1, 2, 11));
+   begin
+      App (S, Roster (Fnd, 1, 5000, 1), St);
+      App (S, GC, St);
+      Check ("A1: a capped GRANT admits its subject up to the cap",
+             St = OK and then In_W (Regs (S), Key (1))
+             and then W_Cap (Regs (S), Key (1)) = 4000
+             and then Admitted (S, Q) and then not Admitted (S, P));
+      App (S, P, St);
+      Check ("A1: a PUT above the writer's cap is Inadmissible although below maxceil",
+             St = Inadmissible and then not Holds (S, P));
+      Lemma_W_Cap_Sound (S, Key (1));
+      App (S, GC2, St);
+      Check ("A1: a GRANT with a larger cap raises wcap and admits the PUT",
+             St = OK and then W_Cap (Regs (S), Key (1)) = 4500 and then Admitted (S, P)
+             and then not Holds (S, GC));
+      App (S, GC3, St);
+      Check ("A1: a GRANT with a smaller cap does not evict the larger one; wcap stays",
+             St = OK and then Holds (S, GC3) and then Holds (S, GC2)
+             and then W_Cap (Regs (S), Key (1)) = 4500);
+      for I in 1 .. Kome.Frontier.Count (S) loop
+         if Held (S, I).K = K_Grant then
+            Lemma_W_Cap_Bound (S, I);
+         end if;
+      end loop;
+      Lemma_W_Cap_Sound (S, Key (1));
+      Lemmas (S);
    end;
 
    --  (b) GRANT domination is keyed by (issuer, subject).

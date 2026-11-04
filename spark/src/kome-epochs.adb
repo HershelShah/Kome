@@ -407,4 +407,7 @@ package body Kome.Epochs with SPARK_Mode is
    pragma Warnings (GNATprove, On, "*is set by ""Wipe"" but not used*");
    pragma Warnings (GNATprove, On, "statement has no effect");
 
+
+   procedure Lemma_Segment_Bounds (E : Epoch) is null;
+
 end Kome.Epochs;

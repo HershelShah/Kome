@@ -17,9 +17,13 @@
 --                              p.t ≥ x.from_t, ¬ root_void(x.issuer))
 --                           ∨ p.author ∉ W_eff(F)
 --    ROSTER_eff          := the maximal ROSTER r ∈ F with ¬ root_void(r.issuer),
---                           by (gen, h), ties by (signer, ceiling_t, del_ttl)
+--                           by (epoch, gen, h), ties by (signer, ceiling_t, del_ttl)
 --    del_ttl_eff         := max { r.del_ttl | r ∈ F, ROSTER, ¬ root_void(r.issuer) },
 --                           or Del_TTL_Default if there is none
+--    revoked(k)          := ∃ x ∈ F : REVOKE, x.subject = k, ¬ root_void(x.issuer)
+--                           (any from_t; the session gate reads it, AUDIT.md A3)
+--    ROSTER_FORK         := ∃ r, r' ∈ F : ROSTER, r ≠ r', same signer, same gen
+--                           (a restored or cloned root; AUDIT.md H1)
 --    far(p)              := p.t > now_local + slack                -- advisory
 --
 --  Each quantified view is opaque (declared here, defined in the body).
@@ -33,7 +37,8 @@
 --  DEL. Each field that a canonical PUT or DEL uses is in its cell key or
 --  its V, so two held PUTs on one cell are one record (Lemma_Cell_Unique,
 --  Lemma_Del_Unique, unconditional). For ROSTER_eff, the order is Lean's
---  full roster tuple (gen, h, signer, ceiling_t, del_ttl) (Roster_Lt).
+--  full roster tuple (epoch, gen, h, signer, ceiling_t, del_ttl)
+--  (Roster_Lt).
 --  On a canonical roster of the collection, that tuple determines the
 --  header, so ROSTER_eff does not depend on the order on a frontier,
 --  without A2 (Lemma_Roster_Unique, Lemma_Roster_Eff_Unique). This is
@@ -77,7 +82,7 @@ package Kome.Views with SPARK_Mode is
    No_Header  : constant Header  :=
      (K => K_Put, NS => Zero_Id, Ent => Zero_Id, FH => Zero_Key,
       V => (T => 0, Author => Zero_Key, Seq => 0, H => Zero_Key),
-      Issuer => All_Ones, Del_TTL => 0);
+      Issuer => All_Ones, Del_TTL => 0, Epoch => 0);
    No_Version : constant Version := (others => <>);
 
    --  Option-like results. If Present is False, the payload is the default
@@ -131,23 +136,39 @@ package Kome.Views with SPARK_Mode is
    function Grants (X : Header; K : Key256) return Boolean is
      (X.K = K_Grant and then X.V.Author = K);
 
+   --  Two different rosters of one signer at the same gen. Neither
+   --  dominates the other (Kome.Headers.Lemma_Equal_Gen_No_Dom), so a
+   --  frontier holds both. Only a root restored from backup, or a second
+   --  device with the same root key, makes such a pair (AUDIT.md H1).
+   function Forked (X, Y : Header) return Boolean is
+     (X.K = K_Roster and then Y.K = K_Roster and then X /= Y
+      and then X.V.Author = Y.V.Author and then X.V.Seq = Y.V.Seq);
+
    --  The ROSTER_eff order: Frontier.lean `rkLt`, lexicographic on
-   --  (gen, h, signer, ceiling_t, del_ttl). The V of a roster is
-   --  (ceiling_t, signer, gen, h). Its first half is Kome.Headers.Gen_Lt
-   --  (the (gen, h) order of DESIGN.md §3). The rest is the tie-break of
-   --  DESIGN.md §3 and T5:
-   --    * only rosters that are equal in (gen, h) get to it (impossible
-   --      under A2);
+   --  (epoch, gen, h, signer, ceiling_t, del_ttl). The V of a roster is
+   --  (ceiling_t, signer, gen, h). Epoch comes first, so a roster at a
+   --  newer epoch is effective whatever its gen: a concurrent or stale
+   --  roster cannot undo a removal (which raises the epoch), and the
+   --  founding roster that opens a segment beats every roster of the old
+   --  segment (AUDIT.md A2, H6). Then Kome.Headers.Gen_Lt (the (gen, h)
+   --  order of DESIGN.md §3). The rest is the tie-break of DESIGN.md §3
+   --  and T5:
+   --    * only rosters that are equal in (epoch, gen, h) get to it
+   --      (impossible under A2);
    --    * it makes the order strict and total on that tuple
    --      (Lemma_Roster_Lt_Total).
    --  As a result, the maximum does not depend on the held array's order.
+   --  A dominating roster is greater in this order: domination needs
+   --  epoch' >= epoch and gen' > gen.
    function Roster_Lt (A, B : Header) return Boolean is
-     (Gen_Lt (A, B)
-      or else (A.V.Seq = B.V.Seq and then A.V.H = B.V.H
-        and then (Lt (A.V.Author, B.V.Author)
-          or else (A.V.Author = B.V.Author
-            and then (A.V.T < B.V.T
-              or else (A.V.T = B.V.T and then A.Del_TTL < B.Del_TTL))))));
+     (A.Epoch < B.Epoch
+      or else (A.Epoch = B.Epoch
+        and then (Gen_Lt (A, B)
+          or else (A.V.Seq = B.V.Seq and then A.V.H = B.V.H
+            and then (Lt (A.V.Author, B.V.Author)
+              or else (A.V.Author = B.V.Author
+                and then (A.V.T < B.V.T
+                  or else (A.V.T = B.V.T and then A.Del_TTL < B.Del_TTL))))))));
 
    --  far(p): an advisory flag only. The lattice never reads it (DESIGN.md
    --  §3). It does not use the sum Now + Slack, which can be more than U48.
@@ -233,6 +254,14 @@ package Kome.Views with SPARK_Mode is
    function Revoke_Void (S : State; P : Header) return Boolean with
      Global => null;
 
+   --  revoked(k): a held REVOKE of k, with any from_t, from an issuer that
+   --  is not root_void. The session gate reads it (DESIGN.md §6, AUDIT.md
+   --  A3): a member whose sign_pk is revoked passes no gate, even before
+   --  the roster that removes it arrives. Like Revoke_Void, it grows with F
+   --  for a fixed root_void set. Admission never reads it (T4').
+   function Revoked (S : State; K : Key256) return Boolean with
+     Global => null;
+
    --  void(p) := Revoke_Void (S, p) or else p.author ∉ W_eff (DESIGN.md §3).
    --
    --  What from_t can do (E4, DESIGN.md §6): with from_t > 0, a key's
@@ -276,6 +305,16 @@ package Kome.Views with SPARK_Mode is
      Global => null,
      Post   => (if Roster_Eff'Result.Present then Eligible (S, Roster_Eff'Result.Hdr)
                 else Roster_Eff'Result.Hdr = No_Header);
+
+   --  ROSTER_FORK (AUDIT.md H1): F holds two different rosters of one
+   --  signer at the same gen. It plays for rosters the role that
+   --  CLONE_SUSPECTED plays for data: the signer was restored from a
+   --  backup, or runs on two devices. The signer resolves it by issuing a
+   --  roster above both (gen = 1 + the largest gen that it holds, after it
+   --  reconciles). The flag does not depend on root_void: a fork of a
+   --  root-voided root is still a fork.
+   function Roster_Fork (S : State) return Boolean with
+     Global => null;
 
    --  del_ttl_eff (D10, DESIGN.md §3, §7): the largest del_ttl of the
    --  eligible held rosters, or Del_TTL_Default if there is none. It is a
@@ -372,8 +411,27 @@ package Kome.Views with SPARK_Mode is
           and then (for all I in 1 .. Count (S) =>
                       (if Eligible (S, Held (S, I))
                        then not Roster_Lt (Roster_Eff (S).Hdr, Held (S, I))
-                            and then not Gen_Lt (Roster_Eff (S).Hdr, Held (S, I))))
+                            and then Held (S, I).Epoch <= Roster_Eff (S).Hdr.Epoch))
         else Roster_Eff (S).Hdr = No_Header);
+
+   procedure Lemma_Revoked_Def (S : State; K : Key256) with
+     Ghost, Global => null,
+     Post => Revoked (S, K) =
+               (for some I in 1 .. Count (S) =>
+                  Revokes (Held (S, I), K)
+                  and then not Root_Void (S, Held (S, I).Issuer));
+
+   procedure Lemma_Roster_Fork_Def (S : State) with
+     Ghost, Global => null,
+     Post => Roster_Fork (S) =
+               (for some I in 1 .. Count (S) =>
+                  (for some J in 1 .. Count (S) => Forked (Held (S, I), Held (S, J))));
+
+   --  A REVOKE that voids P also makes P's author revoked.
+   procedure Lemma_Revoke_Void_Revoked (S : State; P : Header) with
+     Ghost, Global => null,
+     Pre  => Revoke_Void (S, P),
+     Post => Revoked (S, P.V.Author);
 
    procedure Lemma_Del_TTL_Eff_Def (S : State) with
      Ghost, Global => null,
@@ -407,12 +465,20 @@ package Kome.Views with SPARK_Mode is
      Ghost, Global => null,
      Post => not Canonical (No_Header);
 
-   --  Roster_Lt is a strict total order on (V, Del_TTL).
+   --  Roster_Lt is a strict total order on (Epoch, V, Del_TTL).
    procedure Lemma_Roster_Lt_Total (A, B : Header) with
      Ghost, Global => null,
      Post => Roster_Lt (A, B)
-             or else (A.V = B.V and then A.Del_TTL = B.Del_TTL)
+             or else (A.V = B.V and then A.Del_TTL = B.Del_TTL
+                      and then A.Epoch = B.Epoch)
              or else Roster_Lt (B, A);
+
+   --  A dominating roster is greater in the ROSTER_eff order (Frontier.lean
+   --  `dominates_rkLt`).
+   procedure Lemma_Dominates_Roster_Lt (P, Q : Header) with
+     Ghost, Global => null,
+     Pre  => P.K = K_Roster and then Dominates (Q, P),
+     Post => Roster_Lt (P, Q);
 
    procedure Lemma_Roster_Lt_Irrefl (A : Header) with
      Ghost, Global => null,

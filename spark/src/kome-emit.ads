@@ -151,7 +151,7 @@ package Kome.Emit with SPARK_Mode is
       FH      => (if Tgt.Op = W_Put then Tgt.FH else Key256'(others => 0)),
       V       => V,
       Issuer  => (others => 0),
-      Del_TTL => 0);
+      Del_TTL => 0, Epoch => 0);
 
    --  Option-like floor. Absent: V is Zero_Version.
    type Floor_View is record
@@ -227,6 +227,23 @@ package Kome.Emit with SPARK_Mode is
       elsif Has_Floor then U48'Min (U48'Max (Now, Floor_T + 1), Ceil)
       else U48'Min (Now, Ceil));
 
+   --  The ceiling of one writer (DESIGN.md §4, AUDIT.md A1): maxceil, and
+   --  its own write cap wcap. A write never goes above either.
+   function Eff_Ceil (S : State; Self : Key256) return U48 is
+     (U48'Min (Ceil (Regs (S)), W_Cap (Regs (S), Self)));
+
+   --  The lower bound of a DEL (DESIGN.md §5, §7; AUDIT.md A5):
+   --  maxceil - Cap_Lead, so that a DEL from a slow or clockless writer
+   --  does not expire on arrival at a replica whose clock is at most
+   --  Cap_Lead behind maxceil, and lives at least del_ttl_eff - Cap_Lead
+   --  everywhere. A PUT has no lower bound (0).
+   function Del_Low (Ceil : U48) return U48 is
+     (if Ceil >= Cap_Lead then Ceil - Cap_Lead else 0);
+
+   --  The clock that t_emit reads: Now, raised to Del_Low for a DEL.
+   function Now_Eff (Tgt : Target; Now, Ceil : U48) return U48 is
+     (if Tgt.Op = W_Del then U48'Max (Now, Del_Low (Ceil)) else Now);
+
    --  Step 1 of the write path: choose (t, seq) for one write on Tgt.
    --    Inadmissible   Self is not in W. Nothing is chosen. Seq_Self does
    --                   not change.
@@ -284,21 +301,28 @@ package Kome.Emit with SPARK_Mode is
           and then Seq_Self = Seq_Base (Seq_Self'Old, Max_Own_Seq (S, Self)) + 1
           and then Seq_Self > Seq_Self'Old
           and then (if not Clone_Suspected then Seq_Self = Seq_Self'Old + 1)
-          --  DESIGN.md §5 exactly.
-          and then T = T_Emit (Now, Floor (S, Tgt).Present, Floor (S, Tgt).V.T,
-                               Ceil (Regs (S)))
+          --  DESIGN.md §5 exactly: the formula over the writer's ceiling
+          --  (maxceil and its cap), with a DEL's clock raised to Del_Low.
+          and then T = T_Emit (Now_Eff (Tgt, Now, Ceil (Regs (S))),
+                               Floor (S, Tgt).Present, Floor (S, Tgt).V.T,
+                               Eff_Ceil (S, Self))
           --  T8 / H8: the emitted seq is more than each held own seq.
           and then
           (for all I in 1 .. Count (S) =>
              (if Own (Held (S, I), Self) then Held (S, I).V.Seq < Seq))
-          --  T9 / T13: never above the ceiling.
+          --  T9 / T13: never above the ceiling, nor above the cap.
           and then T <= Ceil (Regs (S))
+          and then T <= W_Cap (Regs (S), Self)
           --  If the real clock is below the ceiling, T obeys it.
-          and then (if Now <= Ceil (Regs (S)) then T >= Now)
+          and then (if Now <= Eff_Ceil (S, Self) then T >= Now)
+          --  A5: a DEL is at least maxceil - Cap_Lead, unless the cap is
+          --  lower.
+          and then (if Tgt.Op = W_Del
+                    then T >= U48'Min (Del_Low (Ceil (Regs (S))), Eff_Ceil (S, Self)))
           --  T8 chase: the write always goes above a floor below the
-          --  ceiling.
+          --  writer's ceiling.
           and then (if Floor (S, Tgt).Present
-                      and then Floor (S, Tgt).V.T < Ceil (Regs (S))
+                      and then Floor (S, Tgt).V.T < Eff_Ceil (S, Self)
                     then Prefix_Lt (Floor (S, Tgt).V,
                                     Stamp (T, Self, Seq, Zero_Key))
                          and then Result = OK)
@@ -316,8 +340,8 @@ package Kome.Emit with SPARK_Mode is
                       and then not Prefix_Lt (Floor (S, Tgt).V,
                                               Stamp (T, Self, Seq, Zero_Key)))
           and then (if Result = Shadowed
-                    then T = Ceil (Regs (S))
-                         and then Floor (S, Tgt).V.T = Ceil (Regs (S)))
+                    then T = Eff_Ceil (S, Self)
+                         and then Floor (S, Tgt).V.T >= Eff_Ceil (S, Self))
           --  T8 read-your-writes: on the prefix, an OK write is above each
           --  record that can dominate it, so for each h it is admitted
           --  and undominated (Lemma_OK_Undominated). Kome.Frontier.Apply
@@ -343,6 +367,7 @@ package Kome.Emit with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Is_Frontier (S)
              and then T <= Ceil (Regs (S))
+             and then T <= W_Cap (Regs (S), Self)
              and then In_W (Regs (S), Self)
              and then (for all I in 1 .. Count (S) =>
                          (if Own (Held (S, I), Self)
@@ -368,6 +393,7 @@ package Kome.Emit with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Is_Frontier (S)
              and then T <= Ceil (Regs (S))
+             and then T <= W_Cap (Regs (S), Self)
              and then In_W (Regs (S), Self)
              and then (for all I in 1 .. Count (S) =>
                          (if Own (Held (S, I), Self)

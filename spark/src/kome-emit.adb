@@ -165,7 +165,10 @@ package body Kome.Emit with SPARK_Mode is
       Clone_Suspected :    out Boolean)
    is
       F : constant Floor_View   := Floor (S, Tgt);
-      C : constant U48          := Ceil (Regs (S));
+      --  The writer's ceiling (maxceil and its cap), and the clock that a
+      --  DEL reads (raised to maxceil - Cap_Lead).
+      C : constant U48          := Eff_Ceil (S, Self);
+      Nw : constant U48         := Now_Eff (Tgt, Now, Ceil (Regs (S)));
       O : constant Own_Seq_View := Max_Own_Seq (S, Self);
       B : constant U48          := Seq_Base (Seq_Self, O);
    begin
@@ -187,8 +190,11 @@ package body Kome.Emit with SPARK_Mode is
 
       Seq_Self := B + 1;
       Seq := Seq_Self;
-      T := T_Emit (Now, F.Present, F.V.T, C);
-      Lemma_Emit_Bounded (Now, F.Present, F.V.T, C);
+      T := T_Emit (Nw, F.Present, F.V.T, C);
+      Lemma_Emit_Bounded (Nw, F.Present, F.V.T, C);
+      pragma Assert (T <= Ceil (Regs (S)) and then T <= W_Cap (Regs (S), Self));
+      --  A DEL: Nw >= Del_Low, and t_emit >= min (Nw, C).
+      pragma Assert (if Tgt.Op = W_Del then T >= U48'Min (Del_Low (Ceil (Regs (S))), C));
 
       --  H8: each own held record has seq <= O.Seq <= B < Seq.
       pragma Assert
@@ -197,7 +203,7 @@ package body Kome.Emit with SPARK_Mode is
 
       if F.Present then
          Lemma_Floor_Admitted (S, Tgt);
-         pragma Assert (F.V.T <= C);
+         pragma Assert (F.V.T <= Ceil (Regs (S)));
          --  The floor is a held data record: by a different author, or by
          --  Self with a smaller seq. In the two cases, its prefix is
          --  different (D8).
@@ -225,10 +231,18 @@ package body Kome.Emit with SPARK_Mode is
       end if;
 
       if F.Present and then F.V.T < C then
-         Lemma_Chase (Now, C, F.V, Stamp (T, Self, Seq, Zero_Key));
+         Lemma_Chase (Nw, C, F.V, Stamp (T, Self, Seq, Zero_Key));
       end if;
       if Now <= C then
-         Lemma_Respects_Clock (Now, F.Present, F.V.T, C);
+         --  Nw >= Now. If Nw is within the ceiling, t_emit >= Nw. If a
+         --  DEL's bound took Nw above the ceiling, t_emit is the ceiling.
+         if Nw <= C then
+            Lemma_Respects_Clock (Nw, F.Present, F.V.T, C);
+            pragma Assert (T >= Nw and then Nw >= Now);
+         else
+            pragma Assert (T = C);
+         end if;
+         pragma Assert (T >= Now);
       end if;
    end Choose;
 

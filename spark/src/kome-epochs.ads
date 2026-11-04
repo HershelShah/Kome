@@ -85,8 +85,12 @@
 --    link box = XChaCha20-Poly1305 (link_key, nonce, AD = ns ‖ u16 (s),
 --                                   k_{s-1}).
 --  Within a segment, the chain step k_e = BLAKE2b-256 (k_{e+1} ‖ "prev")
---  does not change. Kome.Roster (phase 8) opens segments (founding key
---  only), chooses segment tops and delivers them. This package does not.
+--  does not change. Segment boundaries are fixed (AUDIT.md H6): segment j
+--  covers the epochs [Segment_Len * j, Segment_Len * j + Segment_Len - 1],
+--  so its top is Segment_Top (j), and the founding key opens segment j + 1
+--  at Segment_Top (j) + 1 without a fresh F. Kome.Roster (phase 8) opens
+--  segments (founding key only), draws the top keys and delivers them.
+--  This package gives only the arithmetic of the boundaries.
 --  The wrap key contains ns, the epoch and the two member keys, so two
 --  boxes for one member at epochs 5 and 6 never share a key, also under a
 --  reused eph_sk. A removed member that holds k5 learns nothing about k6
@@ -133,6 +137,36 @@ package Kome.Epochs with SPARK_Mode, Preelaborate is
 
    --  The label hashed after the key: ASCII "prev" (DESIGN.md §6).
    Prev_Label_Len : constant := 4;
+
+   --  Fixed segment boundaries (DESIGN.md §6 "Epoch segments", AUDIT.md
+   --  H6). Segment j covers [Segment_Start (j), Segment_Top (j)], and the
+   --  last segment ends at the last epoch. The founding key opens segment
+   --  j + 1 at Segment_Top (j) + 1 = Segment_Start (j + 1). So a founding
+   --  device that is behind on F still knows where the next segment
+   --  starts: it needs only the top of the segment that it is in.
+   Segment_Len  : constant := 4096;
+   Segments_Max : constant := (Epoch'Last + 1) / Segment_Len;   --  16
+   subtype Segment_Index is Natural range 0 .. Segments_Max - 1;
+
+   function Segment_Of (E : Epoch) return Segment_Index is
+     (Natural (E) / Segment_Len);
+
+   function Segment_Start (J : Segment_Index) return Epoch is
+     (Epoch (J * Segment_Len));
+
+   function Segment_Top (J : Segment_Index) return Epoch is
+     (Epoch (J * Segment_Len + Segment_Len - 1));
+
+   --  The epoch of a roster is in the segment of the newest segment start
+   --  that it knows (a link's from_epoch), and the roster that opens
+   --  segment j + 1 carries a link with from_epoch = Segment_Start (j + 1).
+   procedure Lemma_Segment_Bounds (E : Epoch) with
+     Ghost, Global => null,
+     Post => Segment_Start (Segment_Of (E)) <= E
+             and then E <= Segment_Top (Segment_Of (E))
+             and then (if Segment_Of (E) < Segments_Max - 1
+                       then Segment_Top (Segment_Of (E)) + 1
+                            = Segment_Start (Segment_Of (E) + 1));
 
    --  One link: Step (k_{e+1}) = k_e = BLAKE2b-256 (k_{e+1} ‖ "prev"). The
    --  32 bytes of the key are in the big-endian order of Kome.Keys. Step is

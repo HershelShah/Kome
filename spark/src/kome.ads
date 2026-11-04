@@ -94,12 +94,23 @@ package Kome with SPARK_Mode, Pure is
    Writers_Max : constant := Signers_Max * Slice_Max;   --  8_192
 
    --  Tombstone lifetime del_ttl, in milliseconds (DESIGN.md §2 rule 3,
-   --  §3 del_ttl_eff, §7). Decode clamps the del_ttl of a ROSTER to
-   --  [Del_TTL_Min, Del_TTL_Max]. If there is no roster, the default
-   --  applies.
+   --  §3 del_ttl_eff, §7). Decode refuses (Malformed) a ROSTER whose
+   --  del_ttl is outside [Del_TTL_Min, Del_TTL_Max]. If there is no
+   --  roster, the default applies.
    Del_TTL_Min     : constant := 604_800_000;        --  7 days
    Del_TTL_Default : constant := 15_552_000_000;     --  180 days
    Del_TTL_Max     : constant := 315_360_000_000;    --  3 650 days
+
+   --  The ceiling lead (DESIGN.md §7, §10.3; AUDIT.md H14, A5): an honest
+   --  root sets ceiling_t at most Cap_Lead ahead of its clock, so that
+   --  maxceil - now <= Cap_Lead while every root is honest. The expiry
+   --  clamp then protects a tombstone for at least del_ttl_eff - Cap_Lead
+   --  at every replica, and a DEL is emitted at t >= maxceil - Cap_Lead
+   --  (Kome.Emit), so it never expires on arrival at a clocked replica.
+   --  Cap_Lead must stay below Del_TTL_Min.
+   Cap_Lead : constant := 259_200_000;               --  3 days
+   pragma Compile_Time_Error (Cap_Lead >= Del_TTL_Min,
+                              "DESIGN.md §7: Cap_Lead must be below Del_TTL_Min");
 
    --  Signed 64-bit time for the expiry horizon (DESIGN.md §7). The code
    --  computes horizon := min (now_local, maxceil) - del_ttl_eff in 64 bits,
@@ -125,7 +136,9 @@ package Kome with SPARK_Mode, Pure is
       Shadowed,         --  write emitted at the ceiling; the floor beats it
       Seq_Exhausted,    --  seq would go above 2**48 - 1; nothing emitted
       No_Space,         --  bounded store is full; nothing changed
-      Auth_Full);       --  the signer's authorization slice, or the slot
+      Auth_Full,        --  the signer's authorization slice, or the slot
                         --  table, is full; nothing changed (DESIGN.md §7)
+      Log_Full);        --  the record fits F but not the log; nothing
+                        --  changed: compact and retry (DESIGN.md §7, E2)
 
 end Kome;
