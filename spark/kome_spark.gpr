@@ -1,4 +1,4 @@
---  Kome SPARK mirror. To build the closure of one test main, use
+--  Kome SPARK implementation. To build the closure of one test main, use
 --    gprbuild -p -P kome_spark.gpr tests/test_<module>.adb -XKOME_OBJ=<module>
 --  (check.sh does this). KOME_OBJ gives each module its own object
 --  directory. Thus several modules can build at the same time, and they do
@@ -11,17 +11,35 @@ project Kome_Spark is
    for Create_Missing_Dirs use "True";
 
    package Compiler is
+      --  -ffunction-sections and -fdata-sections put each function and
+      --  each object in its own section, so that the linker (Linker below)
+      --  drops the ones that nothing reaches: in particular the monocypher
+      --  functions that Kome.Crypto does not bind. The monocypher sources
+      --  stay unmodified (third_party/monocypher/README pins them).
+      --  There is no -fPIC: nothing builds a shared library until the
+      --  phase-9 library project exists.
       for Default_Switches ("Ada") use
         ("-gnat2022", "-gnata", "-gnatwa", "-gnatw.P", "-gnatf", "-g", "-O1",
-         "-gnatVa", "-gnato");
-      for Default_Switches ("C") use ("-O2", "-std=c99", "-fPIC");
+         "-gnatVa", "-gnato", "-ffunction-sections", "-fdata-sections");
+      for Default_Switches ("C") use
+        ("-O2", "-std=c99", "-ffunction-sections", "-fdata-sections");
    end Compiler;
 
    package Binder is
       for Default_Switches ("Ada") use ("-Es");
    end Binder;
 
+   package Linker is
+      --  Drop the unreached sections (see Compiler). check.sh checks with
+      --  nm that the unbound monocypher functions are gone from each test
+      --  binary.
+      for Default_Switches ("Ada") use ("-Wl,--gc-sections");
+   end Linker;
+
    package Prove is
-      for Proof_Switches ("Ada") use ("--level=2", "--mode=all", "-j0");
+      --  The single source of the proof switches. check.sh adds only the
+      --  unit (-u), --report=fail and --warnings=continue. CI runs one
+      --  module per job, so -j0 (all cores) is right there too.
+      for Proof_Switches ("Ada") use ("--level=3", "--mode=all", "-j0");
    end Prove;
 end Kome_Spark;
