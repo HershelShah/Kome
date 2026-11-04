@@ -831,15 +831,20 @@ package body Kome.Frontier with SPARK_Mode is
       for K in Slot_Index loop
          for J in 1 .. SC (Upd, K) loop
             if K /= K0 then
+               pragma Assert (SC (Upd, K) = SC (Old, K));
+               pragma Assert (J <= SC (Old, K));
                pragma Assert (Upd.H (K, J) = Old.H (K, J));
                if Upd.H (K, J).K = K_Grant then
+                  pragma Assert (Old.H (K, J).K = K_Grant);
                   pragma Assert (In_W (Old_RG, Old.H (K, J).V.Author));
                   pragma Assert (Old.H (K, J).V.T <= W_Cap (Old_RG, Old.H (K, J).V.Author));
                   Lemma_Extends_In_W (Old_RG, Upd_RG, Upd.H (K, J).V.Author);
                end if;
             elsif J < N then
+               pragma Assert (Src (J) in 1 .. SC (Old, K));
                pragma Assert (Upd.H (K, J) = Old.H (K, Src (J)));
                if Upd.H (K, J).K = K_Grant then
+                  pragma Assert (Old.H (K, Src (J)).K = K_Grant);
                   pragma Assert (In_W (Old_RG, Old.H (K, Src (J)).V.Author));
                   pragma Assert (Old.H (K, Src (J)).V.T
                                  <= W_Cap (Old_RG, Old.H (K, Src (J)).V.Author));
@@ -1205,6 +1210,14 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert
         (for all K in Slot_Index =>
            (for all J in 1 .. Slot_Count (Old, K) => Upd.A.H (K, J) = Old.A.H (K, J)));
+      pragma Assert (for all K in Slot_Index => SC (Upd.A, K) = SC (Old.A, K));
+      for K in Slot_Index loop
+         pragma Assert
+           (for all J in 1 .. Row_Count (Old, K) => Row_At (Upd, K, J) = Row_At (Old, K, J));
+         pragma Loop_Invariant
+           (for all K2 in 1 .. K =>
+              (for all J in 1 .. Row_Count (Old, K2) => Row_At (Upd, K2, J) = Row_At (Old, K2, J)));
+      end loop;
       pragma Assert
         (for all K in Slot_Index =>
            (for all J in 1 .. Row_Count (Old, K) => Row_At (Upd, K, J) = Row_At (Old, K, J)));
@@ -1830,7 +1843,9 @@ package body Kome.Frontier with SPARK_Mode is
       Cap   : constant Data_Size := S.Cap;
       N     : constant Data_Size := S.ND;
    begin
-      if not (R.V.T <= Ceil (S.RG) and then In_W (S.RG, R.V.Author)) then
+      if not (R.V.T <= Ceil (S.RG) and then In_W (S.RG, R.V.Author)
+              and then R.V.T <= W_Cap (S.RG, R.V.Author))
+      then
          Result := Inadmissible;
          return;
       end if;
