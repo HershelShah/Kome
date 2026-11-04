@@ -1,8 +1,9 @@
 --  Test main for Kome.Headers. It tests the wire codes, the canonical form,
 --  domination for each kind, and expiry. Domination follows the DESIGN.md
---  §3 table: the roster product order D3, grants keyed by (issuer, subject)
---  D1′, and REVOKE never dominated. The test evaluates the ghost lemmas at
---  run time (-gnata) on each pair of a grid.
+--  §3 table: the roster product order D3 (ceiling_t, epoch, gen strictly,
+--  del_ttl; AUDIT.md H1, H15), grants keyed by (issuer, subject) D1′, and
+--  REVOKE never dominated. The test evaluates the ghost lemmas at run time
+--  (-gnata) on each pair of a grid.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -36,10 +37,10 @@ procedure Test_Headers with SPARK_Mode => Off is
       V => (T, Key (A), Seq, Hsh (H)), Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
    function Roster (Signer : Byte; Gen, Ceiling : U48; H : Natural;
-                    E : Kome.Epoch := 0) return Header is
+                    E : Kome.Epoch := 0; TTL : U48 := Del_TTL_Min) return Header is
      (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
       V => (Ceiling, Key (Signer), Gen, Hsh (H)), Issuer => Key (Signer),
-      Del_TTL => Del_TTL_Min, Epoch => E);
+      Del_TTL => TTL, Epoch => E);
 
    --  V = (cap, subject, 0, h). The founding key's cap is 2^48 - 1.
    function Grant (Issuer, Subject : Byte; H : Natural; Cap : U48 := U48'Last) return Header is
@@ -59,6 +60,7 @@ procedure Test_Headers with SPARK_Mode => Off is
       Roster (9, 3, 5500, 10), Roster (9, 4, 9000, 11), Roster (21, 5, 9000, 12),
       Roster (9, 2, 6000, 19), Roster (9, 4, 9000, 20, E => 3),
       Roster (9, 5, 9000, 21, E => 2),
+      Roster (9, 2, 6000, 23, TTL => Del_TTL_Max), Roster (9, 3, 9000, 24, TTL => Del_TTL_Max),
       Grant (9, 1, 13), Grant (9, 1, 14), Grant (21, 1, 15), Grant (9, 2, 16),
       Revoke (9, 1, 0, 17), Revoke (9, 1, 0, 18)];
 
@@ -72,6 +74,10 @@ procedure Test_Headers with SPARK_Mode => Off is
    --  R4 at epoch 3, and gen 5 at the lower epoch 2.
    R4E : constant Header := Roster (9, 4, 9000, 20, E => 3);
    R5E : constant Header := Roster (9, 5, 9000, 21, E => 2);
+   --  R2 with the longest del_ttl (the only long value, AUDIT.md H15), and
+   --  a gen-3 refresh that keeps it.
+   R2L : constant Header := Roster (9, 2, 6000, 23, TTL => Del_TTL_Max);
+   R3L : constant Header := Roster (9, 3, 9000, 24, TTL => Del_TTL_Max);
 begin
    Check ("Kind'Pos is the wire tag",
           Kind'Pos (K_Roster) = 0 and then Kind'Pos (K_Revoke) = 1
@@ -123,6 +129,22 @@ begin
           not Dominates (R5E, R4E) and then Dominates (R5E, R2));
    Lemma_Equal_Gen_No_Dom (R2, R2F);
    Lemma_Equal_Gen_No_Dom (R2F, R2);
+   --  H15: a dominator is not lower in del_ttl. A thief's roster (gen + 1,
+   --  ceiling >=, a short del_ttl) does not dominate the long-ttl roster,
+   --  and neither dominates the other.
+   Check ("roster: higher gen and ceiling but lower del_ttl does not dominate (H15)",
+          not Dominates (R4, R2L) and then not Dominates (R2L, R4)
+          and then not Dominates (R3, R2L));
+   Check ("roster: higher gen and equal del_ttl dominates",
+          Dominates (R4, R2) and then Dominates (R3L, R2L)
+          and then Dominates ((R4 with delta Del_TTL => Del_TTL_Max), R2L));
+   Check ("roster: higher gen and higher del_ttl dominates",
+          Dominates (R3L, R2) and then Dominates (R3L, R1) and then Dominates (R3L, RS));
+   Check ("roster: equal gen is incomparable whatever del_ttl",
+          not Dominates (R2L, R2) and then not Dominates (R2, R2L));
+   Lemma_Roster_Dom (R2L, R4);
+   Lemma_Roster_Dom (R2L, R3L);
+   Lemma_Dominator_Keeps_Registers (R3L, R2);
 
    --  Grants: keyed by (issuer, subject), ordered by h (D1′).
    Check ("grant: same issuer and subject, higher h dominates",
