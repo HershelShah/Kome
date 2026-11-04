@@ -13,7 +13,8 @@ The work starts with the design and the proofs. The code comes after them:
 | The problem and the constraints | `docs/design/REQUIREMENTS.md` | fixed |
 | The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
 | Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T5, T8, T9, T11, T12, T13, T18 proved (136 theorems in `Frontier.lean`, no `sorry`); T7 open |
-| The implementation, in SPARK, proved against the Lean model | `spark/` | 15 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). All 1,023 tests pass, and gnatprove proves all 15,128 checks with 0 unproved. The Known gaps section of the plan lists the remaining gaps |
+| The implementation, in SPARK, proved against the Lean model | `spark/` | 15 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). All 1,018 tests pass, and gnatprove proves all 15,128 checks with 0 unproved. The Known gaps section of the plan lists the remaining gaps |
+| The design audit: holes, removable assumptions, residue | `docs/design/AUDIT.md` | 160 confirmed findings at 2be1260, none applied yet |
 
 ## The design in one paragraph
 
@@ -37,7 +38,7 @@ anywhere and at any time, no future state changes.
 ## Layout
 
 ```
-docs/design/          REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md
+docs/design/          REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md, AUDIT.md
 lean/                 Lean 4 model: lean/Kome/Frontier.lean and its theorems
 spark/                SPARK implementation: src/, tests/, vectors/, check.sh
 third_party/          monocypher, the only cryptographic dependency
@@ -75,7 +76,7 @@ SPARK contracts state that the bounded, in-place code implements exactly the
 functions that those theorems are about. gnatprove discharges these contracts.
 
 The counts come from the clean per-module runs in CI (gnatprove 14,
-`--level=3`, cvc5 and z3): 1,023 tests pass and 15,128 checks prove, with
+`--level=3`, cvc5 and z3): 1,018 tests pass and 15,128 checks prove, with
 0 failures and 0 unproved. "Checks" is the total from gnatprove.
 No package uses `pragma Assume`, `pragma Annotate` or justified checks.
 
@@ -87,8 +88,8 @@ No package uses `pragma Assume`, `pragma Annotate` or justified checks.
 | `Kome.Registers` | `maxCeil`, `isWriter`, T4' | Both registers only grow, and a writer stays a writer | 6 PASS | 82 | 0 |
 | `Kome.Frontier` | `adm`, `applyD`, `expire`, `maxCeil_F`, `isWriter_F`, T4', T11 | `Apply` keeps exactly the undominated admitted records. The Post states each outcome (OK, Dominated, Inadmissible, No_Space, Auth_Full) as an iff. A refusal leaves the state `Unchanged`. The register cache equals maxceil(F) and W(F) (`Coherent`). `Expire` removes exactly the expired DELs | 44 PASS | 1515 | 0 |
 | `Kome.Keys` | — | Key and id word records: big-endian round trips, injectivity, and `Lt`/`Id_Lt` as byte-lexicographic order | 32 PASS | 800 | 0 |
-| `Kome.Crypto` | — | Monocypher binding (RFC 8032 Ed25519, X25519, BLAKE2b, ChaCha20-Poly1305) with `SPARK_Mode Off` bodies: spec-level run-time checks, data dependencies and refusal preconditions. The Posts and the BLAKE2b congruence axiom are assumptions. RFC 8032, Wycheproof and other known-answer vectors check them | 64 PASS | 35 | 0 |
-| `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Signer certificates (`Cert_OK`) for ROSTER, REVOKE and GRANT. `Decode` gives only canonical headers. `Make_Put` and `Make_Del` state their headers | 172 PASS | 2622 | 0 |
+| `Kome.Crypto` | — | Monocypher binding (RFC 8032 Ed25519, X25519, BLAKE2b, ChaCha20-Poly1305) with `SPARK_Mode Off` bodies: spec-level run-time checks, data dependencies and refusal preconditions. The Posts and the BLAKE2b congruence axiom are assumptions. RFC 8032, Wycheproof and other known-answer vectors check them | 60 PASS | 35 | 0 |
+| `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Signer certificates (`Cert_OK`) for ROSTER, REVOKE and GRANT. `Decode` gives only canonical headers. `Make_Put` and `Make_Del` state their headers | 171 PASS | 2622 | 0 |
 | `Kome.Store` | T11, T18 (`auth_first`, tested) | `Valid` relates the index, the journal log and F. Each outcome of `Put_Frame` is an iff in D11 order. A refusal changes nothing. `Expire` is at `Horizon_At` (T11 (a)). `Compact` writes authorization records first. gnatprove proves `Open_From_Log` for HEADER-only logs | 109 PASS | 4504 | 0 |
 | `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13, `lt_iff_prefix` | `Choose` picks (t, seq) without h, and the outcome does not depend on h. Also: `V.T <= maxceil`, no `seq` wrap, the H8 jump, SHADOWED exactly as in §5, and an OK write is admitted and undominated | 55 PASS | 313 | 0 |
 | `Kome.Views` | T5 (`rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_F`), T12 | `cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `far`, `ROSTER_eff` and `del_ttl_eff` are functions of F. Each cell has one value on every frontier | 131 PASS | 1117 | 0 |

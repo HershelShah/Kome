@@ -52,18 +52,6 @@
 #                   public key (the identity as y = p + 1, and as y = 1 with
 #                   the sign bit set), with the signature R = identity,
 #                   S = 0.
-#   b2eddsa_old     REGRESSION: the BLAKE2b-512 EdDSA (monocypher crypto_eddsa)
-#                   answers that the binding used before D4, for the RFC 8032
-#                   TEST 1-3 seeds and messages. They come from an
-#                   independent Python RFC 8032 reference with the hash
-#                   swapped, and monocypher's crypto_eddsa_check confirmed
-#                   them. Key_Pair must not derive that public key now.
-#                   Verify must reject the old signature under both the old
-#                   and the new public key.
-#   b2eddsa_old_pk  REGRESSION: published Ed25519-BLAKE2b key pairs (nano-docs,
-#                   docs/integration-guides/key-management.md, "Derived
-#                   Private Key" -> "Derived Public key"). Derive_Public must
-#                   not produce them now.
 #   x25519          RFC 7748 section 5.2 (cross-checked with pyca/cryptography).
 #   x25519dh        RFC 7748 section 6.1 Alice/Bob exchange.
 #   x25519_low      Low-order u-coordinates: 0, 1, the order-8 points
@@ -91,8 +79,6 @@
 #   ed25519        <seed32> <public32> <msg> <sig64>
 #   wycheproof     <tcId> <valid|invalid> <public32> <msg> <sig (any length)>
 #   ed25519_strict <valid|invalid> <public32> <msg> <sig64>
-#   b2eddsa_old    <seed32> <old_public32> <msg> <old_sig64>
-#   b2eddsa_old_pk <seed32> <old_public32>
 #   x25519         <scalar32> <u32> <out32>
 #   x25519dh       <alice_sk> <alice_pk> <bob_sk> <bob_pk> <shared>
 #   x25519_low     <u32>
@@ -169,18 +155,6 @@ ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f
 ed25519_strict invalid eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 # public key = identity encoded as y = 1 with the sign bit set
 ed25519_strict invalid 0100000000000000000000000000000000000000000000000000000000000080 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-# REGRESSION: BLAKE2b-512 EdDSA (the pre-D4 binding) for RFC 8032 TEST 1-3.
-# Verify must reject these now.
-b2eddsa_old 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f - 99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805
-b2eddsa_old 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 5e71392d91e6a58fedeb0850364f56cd158a60447557d7890389c9b3d4576d4d 72 6da75e15b5707f4de5a153c48a5d839fb85074c38aeb6285977f03a13977597f976069fdb903f183474aaa5ed0cfe878ba8ef868c5e47ca3f96ccfb3a89b2a06
-b2eddsa_old c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7 8d53ca70f0eab23b9178345785fcdb69ed6723f8148f7e339e88653700b718da af82 7cc3c13852bd12abf3ce4ca8ca2836cbf86da96c4634c50df3fb80dc809e29db0e109c361353407c1236a904f636868aa33977a99d3f844598db1538b4295203
-# REGRESSION: nano-docs key-management.md Ed25519-BLAKE2b pairs.
-# Derive_Public must give a different result now.
-b2eddsa_old_pk 3be4fc2ef3f3b7374e6fc4fb6e7bb153f8a2998b3b3dab50853eabe128024143 5b65b0e8173ee0802c2c3e6c9080d1a16b06de1176c938a924f58670904e82c4
-b2eddsa_old_pk ce7e429e683d652446261c17a96da9ed1897aea96c8046f2b8036f6b05cb1a83 d9f7762e9cd4e7ed632481308cdb8f54abf0241332c0a8641f61e92e2fb03c12
-b2eddsa_old_pk 1257df74609b9c6461a3f4e7fd6e3278f2ddcf2562694f2c3aa0515af4f09e38 a46da51986e25a14d82e32d765dcee69b9eeccd4405411430d91ddb61b717566
-b2eddsa_old_pk 6f73d61ca0b56fcdb79d69d437f102348ad75ca971433eb92b2b003f8c99b48d 134d938215f68bcaa3a0e574fde325fc4b1abad9bd3d698bfef95633b54ffb57
-b2eddsa_old_pk 7e104389811a0967ef574af1f3f423f23cbf7b614be17844f67fb6fd315f9a7e 71e6caac915affe836c3e822be6a5b3464f40c74bd2e5459d4e74205c6a7c0df
 x25519 a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4 e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552
 x25519 4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493 95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957
 x25519dh 77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a 5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742

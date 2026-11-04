@@ -19,7 +19,7 @@
 --    Erasure          crypto_wipe, on byte buffers, signing keys and hash
 --                     contexts.
 --
---  SIGNATURE SCHEME (DECIDED: DESIGN.md §1 D4, §2, A1). Signatures are
+--  SIGNATURE SCHEME (DESIGN.md §1 D4, §2, A1). Signatures are
 --  RFC 8032 Ed25519 (PureEd25519), from the optional monocypher-ed25519.c
 --  of monocypher (crypto_ed25519_*). Only the signature uses SHA-512. It
 --  uses SHA-512 to expand the seed into the secret scalar and the nonce
@@ -29,8 +29,8 @@
 --  derivation.
 --
 --  This package does not bind monocypher's core crypto_eddsa_* (EdDSA
---  with BLAKE2b-512, the scheme of Nano). Its signatures do not verify
---  here, and the test main checks this (regression vectors).
+--  with BLAKE2b-512, the scheme of Nano). That scheme is not RFC 8032,
+--  and its signatures do not verify here.
 --
 --  STRICT VERIFICATION (DESIGN.md §2 "strict: S < L"). Verify accepts a
 --  signature only if these conditions are true, and crypto_ed25519_check

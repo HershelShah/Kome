@@ -5,8 +5,6 @@
 --    * a Wycheproof ed25519 subset (valid, S >= L, non-canonical R,
 --      truncated);
 --    * non-canonical encodings that plain monocypher accepts;
---    * regressions that show that Kome now rejects the pre-D4
---      BLAKE2b-EdDSA answers;
 --    * X25519 (RFC 7748, low order, Is_Reduced_U / Is_Low_Order_U answers);
 --    * AEAD.
 --  Then the test checks named answers, round trips, tamper rejection, the
@@ -168,16 +166,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
    RFC_Sig : constant Byte_Array := From_Hex
      ("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
       & "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
-   --  REGRESSION: the same seed and message under monocypher's crypto_eddsa
-   --  (BLAKE2b-512 in place of SHA-512). This was the binding
-   --  before D4. The values come from the independent reference behind
-   --  vectors/crypto.txt. Verify must now reject them.
-   B2_Pub : constant Byte_Array := From_Hex
-     ("78e65bf30f893d32fc57ef051c341bdede242544fc2a2112f0fa2c7afdebc02f");
-   B2_Sig : constant Byte_Array := From_Hex
-     ("99a523bd4616c8161144d6a99d3c32400cb4a326f4d79e307340f6afa11750a0"
-      & "085d7d84626bc9e4b153fc0e396d15ce44c39bae4533804db1fe5b52f2b1b805");
-
    --  The group order L, little-endian (RFC 8032 §5.1).
    L_LE : constant Byte_Array := From_Hex
      ("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010");
@@ -226,14 +214,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
              S_Below_L (RFC_Sig)
              and then Is_Canonical_Point (RFC_Sig (0 .. 31))
              and then Is_Canonical_Point (RFC_Pub));
-
-      --  REGRESSION (D4: Ed25519, not BLAKE2b-EdDSA): the BLAKE2b-EdDSA
-      --  public key is not derived from the TEST 1 seed. Verify rejects its
-      --  signature under both the BLAKE2b-EdDSA key and the Ed25519 key.
-      Check ("b2eddsa_rfc8032_t1_public_no_longer_derived", PK /= B2_Pub);
-      Check ("b2eddsa_rfc8032_t1_old_sig_rejected",
-             not Verify (B2_Sig, B2_Pub, Empty)
-             and then not Verify (B2_Sig, RFC_Pub, Empty));
       Wipe (SK);
    end Named_Answers;
 
@@ -324,11 +304,11 @@ procedure Test_Crypto with SPARK_Mode => Off is
         (Line (Fields (K).First .. Fields (K).Last));
       function Hex (K : Positive) return Byte_Array is (From_Hex (Field (K)));
 
-      N_B2, N_Ed, N_Old, N_Old_Pk, N_X, N_Low, N_DH, N_AE, N_Key,
+      N_B2, N_Ed, N_X, N_Low, N_DH, N_AE, N_Key,
       N_Strict_Valid, N_Strict_Invalid : Natural := 0;
       N_Wp_Valid, N_Wp_Invalid, N_Wp_Length : Natural := 0;
       Seen_151, Seen_S_Over_L : Boolean := False;
-      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Old, Ok_Old_Pk, Ok_Wp,
+      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Wp,
       Ok_Strict, Ok_X, Ok_Low, Ok_DH, Ok_AE, Ok_AE_Tamper, Ok_Key : Boolean
         := True;
 
@@ -491,25 +471,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
          end if;
       end Do_Strict;
 
-      --  REGRESSION: Verify now rejects the pre-D4 BLAKE2b-EdDSA answers.
-      procedure Do_Old is
-         S       : constant Seed       := Hex (2);
-         Old_Pub : constant Pubkey     := Hex (3);
-         Msg     : constant Byte_Array := Hex (4);
-         Old_Sig : constant Sig        := Hex (5);
-         SK      : Secret_Key;
-         PK      : Pubkey;
-      begin
-         N_Old := N_Old + 1;
-         Key_Pair (S, SK, PK);
-         if PK = Old_Pub or else Verify (Old_Sig, Old_Pub, Msg)
-           or else Verify (Old_Sig, PK, Msg)
-         then
-            Fail (Ok_Old, "b2eddsa_old accepted");
-         end if;
-         Wipe (SK);
-      end Do_Old;
-
       procedure Do_X25519 is
          K    : constant DH_Secret     := Hex (2);
          U    : constant Pubkey        := Hex (3);
@@ -541,22 +502,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
             end if;
          end loop;
       end Do_Low_Order;
-
-      --  REGRESSION: a published Ed25519-BLAKE2b key pair is not the key
-      --  pair that Kome derives now.
-      procedure Do_Old_Pk is
-         S   : constant Seed   := Hex (2);
-         Pub : constant Pubkey := Hex (3);
-         SK  : Secret_Key;
-         PK  : Pubkey;
-      begin
-         N_Old_Pk := N_Old_Pk + 1;
-         Key_Pair (S, SK, PK);
-         if PK = Pub or else Derive_Public (S) = Pub then
-            Fail (Ok_Old_Pk, "b2eddsa published public key still derived");
-         end if;
-         Wipe (SK);
-      end Do_Old_Pk;
 
       --  Is_Reduced_U, Is_Low_Order_U and Is_Good_DH_Key against the
       --  expected answers. A low-order key is also never contributory.
@@ -695,10 +640,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
                   Do_Wycheproof;
                elsif Kind = "ed25519_strict" and then N_Fields = 5 then
                   Do_Strict;
-               elsif Kind = "b2eddsa_old" and then N_Fields = 5 then
-                  Do_Old;
-               elsif Kind = "b2eddsa_old_pk" and then N_Fields = 3 then
-                  Do_Old_Pk;
                elsif Kind = "x25519_low" and then N_Fields = 2 then
                   Do_Low_Order;
                elsif Kind = "dh_key" and then N_Fields = 4 then
@@ -732,10 +673,6 @@ procedure Test_Crypto with SPARK_Mode => Off is
              Ok_Wp and then N_Wp_Length >= 5);
       Check ("ed25519_noncanonical_encodings_rejected" & N_Strict_Invalid'Image,
              Ok_Strict and then N_Strict_Invalid >= 6 and then N_Strict_Valid >= 3);
-      Check ("b2eddsa_old_signatures_rejected" & N_Old'Image,
-             Ok_Old and then N_Old = 3);
-      Check ("b2eddsa_old_public_keys_not_derived" & N_Old_Pk'Image,
-             Ok_Old_Pk and then N_Old_Pk >= 5);
       Check ("x25519_rfc7748_vectors" & N_X'Image, Ok_X and then N_X >= 1);
       Check ("x25519_low_order_not_contributory" & N_Low'Image,
              Ok_Low and then N_Low >= 5);

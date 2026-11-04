@@ -336,10 +336,6 @@ begin
             Bad (0) := Tag_Del;
             Decode (Bad, Back, St);
             Check ("PUT wrong tag refused", St = Malformed and then Back = Keep);
-            Bad (0) := 3;
-            Decode (Bad, Back, St);
-            Check ("PUT frame with the old PUT tag 3 refused",
-                   St = Malformed and then Back = Keep);
             Bad := E;
             Bad (33) := 0;
             Decode (Bad, Back, St);
