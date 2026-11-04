@@ -4,8 +4,19 @@
 --
 --    floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))
 --                    -- for DEL: max over all fields and deleted_at
---    t_emit       := max(now_ms, floor.t + 1 if floor exists);
+--    floor.t      := max(floor.t, mark)
+--                    -- mark: the store's expire mark, the largest t of a
+--                    -- DEL that this store expired (AUDIT.md H28). An
+--                    -- absent floor has t = 0, so the floor term always
+--                    -- exists, and a write is above the mark whenever the
+--                    -- mark is below the writer's ceiling.
+--    t_emit       := max(now_ms, floor.t + 1);
 --                    if t_emit > maxceil then t_emit := maxceil
+--    clamped      := t_emit < max(now_ms, floor.t + 1)
+--                    -- the write was back-dated to the ceiling (H22)
+--    born_expired := DEL and t_emit + del_ttl_eff <= now_ms
+--                    -- the DEL expires on arrival at a replica with this
+--                    -- clock (H22); the caller syncs before it writes it
 --    seq_emit     := seq_self(ns) + 1, and above every seq of this device's
 --                    records held in F(ns); at 2^48 - 1 the write fails
 --                    SEQ_EXHAUSTED
@@ -17,12 +28,34 @@
 --  contains t and seq, so h cannot be an input to the step that chooses
 --  them:
 --
---    1. Choose (this package): (t_emit, seq_emit, status, clone_suspected)
---       from the frontier, the target, now_ms, the device key and
---       seq_self(ns). No h.
+--    1. Choose (this package): (t_emit, seq_emit, status, clone_suspected,
+--       clamped, born_expired) from the frontier, the target, now_ms, the
+--       store's expire mark, del_ttl_eff, the device key and seq_self(ns).
+--       No h.
 --    2. Build the PUT or DEL content with that (t, seq) and hash it:
 --       Kome.Records.Make_Put or Make_Del (h is the record's hash).
 --    3. Sign and apply (Kome.Frontier.Apply). Persist seq_self(ns) (A5).
+--
+--  The target of step 1 is built with Put_Target or Del_Target from the
+--  inputs of step 2 (AUDIT.md G21): the field hash is
+--  To_Key256 (Blake2b_256 (field)), as Kome.Records.To_Header computes it.
+--  Lemma_Put_Target_Matches and Lemma_Del_Target_Matches state that the
+--  header of the built record is To_Header (target, Stamp (t, self, seq, h)),
+--  so the cell that Choose looks at is the cell that the record occupies.
+--
+--  Two flags come next to Clone_Suspected (AUDIT.md H22):
+--    * Clamped: t_emit is below max (now_ms, floor.t + 1). The ceiling held
+--      the write back. Under a stale maxceil the caller syncs first.
+--    * Born_Expired: the write is a DEL and t_emit + del_ttl_eff <= now_ms.
+--      A replica with this clock expires it on arrival and does not hold
+--      it, so the caller syncs before it writes such a DEL.
+--  Both are flags, not statuses: the write occurred.
+--
+--  H18: Clone_Detected sees a clone that is ahead of seq_self. A clone that
+--  writes at the owner's pace leaves pairs in F: two own records with equal
+--  seq and different h (Clone_Pair). The caller shows CLONE_SUSPECTED for
+--  either. The apply-side flag (an admitted own-key record that was not
+--  held before) belongs to the write path, Kome.Write.
 --
 --  The outcome of step 1 does not depend on h
 --  (Lemma_Outcome_Independent_Of_H, from
@@ -100,6 +133,9 @@
 pragma Ada_2022;
 with Kome.Versions; use Kome.Versions;
 with Kome.Headers;  use Kome.Headers;
+with Kome.Keys;     use Kome.Keys;
+with Kome.Crypto;
+with Kome.Records;
 with Kome.Registers; use Kome.Registers;
 with Kome.Frontier;  use Kome.Frontier;
 package Kome.Emit with SPARK_Mode is
@@ -127,6 +163,23 @@ package Kome.Emit with SPARK_Mode is
       Ent : Id128;
       FH  : Key256;
    end record;
+
+   --  G21: the target of a PUT on field Field of (NS, Ent). FH is the
+   --  field hash that Kome.Records.To_Header computes for a PUT record
+   --  with this field, To_Key256 (BLAKE2b-256 (field)). A caller builds
+   --  its target here, from the inputs it gives to Make_Put, so the cell
+   --  that Choose looks at is the cell that the record occupies
+   --  (Lemma_Put_Target_Matches).
+   function Put_Target (NS, Ent : Id128; Field : Byte_Array) return Target is
+     (Op => W_Put, NS => NS, Ent => Ent,
+      FH => To_Key256 (Kome.Crypto.Blake2b_256 (Field)))
+   with Pre => Field'Length in 1 .. Field_Max;
+
+   --  G21: the target of a DEL of (NS, Ent). A DEL has no field: FH is zero,
+   --  the value that Kome.Records.To_Header gives a DEL record
+   --  (Lemma_Del_Target_Matches).
+   function Del_Target (NS, Ent : Id128) return Target is
+     (Op => W_Del, NS => NS, Ent => Ent, FH => (others => 0));
 
    --  X is one of the records whose versions make the floor of Tgt
    --  (DESIGN.md §5):
@@ -218,6 +271,28 @@ package Kome.Emit with SPARK_Mode is
    function Clone_Detected (Seq_Self : U48; O : Own_Seq_View) return Boolean is
      (O.Present and then O.Seq > Seq_Self);
 
+   --  H18: X and Y are two records of this device with equal seq and
+   --  different h. An honest device never emits one seq twice, so a pair
+   --  means a clone (or a restored backup) that wrote at the owner's pace.
+   --  No quantifier, so it is public.
+   function Pair (X, Y : Header; Self : Key256) return Boolean is
+     (Own (X, Self) and then Own (Y, Self)
+      and then X.V.Seq = Y.V.Seq and then X.V.H /= Y.V.H);
+
+   --  H18: F holds a Pair (AUDIT.md H18, the pace-matching clone). It is a
+   --  function of F, in the style of Kome.Views: the quantified definition
+   --  is in Lemma_Clone_Pair_Def. The caller shows CLONE_SUSPECTED when
+   --  Clone_Suspected or Clone_Pair holds.
+   function Clone_Pair (S : State; Self : Key256) return Boolean with
+     Global => null;
+
+   procedure Lemma_Clone_Pair_Def (S : State; Self : Key256) with
+     Ghost, Global => null,
+     Post => Clone_Pair (S, Self) =
+               (for some I in 1 .. Count (S) =>
+                  (for some J in 1 .. Count (S) =>
+                     Pair (Held (S, I), Held (S, J), Self)));
+
    --  t_emit (DESIGN.md §5). It does not form floor.t + 1 if that value
    --  can wrap. It has no quantifier, so it is public.
    function T_Emit (Now : U48; Has_Floor : Boolean; Floor_T, Ceil : U48)
@@ -244,6 +319,27 @@ package Kome.Emit with SPARK_Mode is
    function Now_Eff (Tgt : Target; Now, Ceil : U48) return U48 is
      (if Tgt.Op = W_Del then U48'Max (Now, Del_Low (Ceil)) else Now);
 
+   --  H28: the floor time of a write, with the store's expire mark as a
+   --  floor term: max (floor.t, mark). An absent floor has Zero_Version,
+   --  so its t is 0 and the term is the mark alone. The floor term always
+   --  exists (T_Emit is called with Has_Floor = True).
+   function Floor_Time (S : State; Tgt : Target; Mark : U48) return U48 is
+     (U48'Max (Floor (S, Tgt).V.T, Mark));
+
+   --  H22: T is below u = max (Now, Floor_T + 1). This is the same as
+   --  T < Now or T <= Floor_T, which does not form Floor_T + 1 (2^48 is
+   --  possible). Lemma_Clamped_Formula states the equality.
+   function Is_Clamped (T, Now, Floor_T : U48) return Boolean is
+     (T < Now or else T <= Floor_T);
+
+   --  H22: the write is a DEL and T + Del_TTL <= Now, so a replica with
+   --  this clock expires it on arrival. Stated without forming T + Del_TTL.
+   --  Lemma_Born_Expired_Formula states the equality.
+   function Is_Born_Expired (Tgt : Target; T, Del_TTL, Now : U48)
+     return Boolean
+   is
+     (Tgt.Op = W_Del and then Now >= Del_TTL and then T <= Now - Del_TTL);
+
    --  Step 1 of the write path: choose (t, seq) for one write on Tgt.
    --    Inadmissible   Self is not in W. Nothing is chosen. Seq_Self does
    --                   not change.
@@ -256,6 +352,10 @@ package Kome.Emit with SPARK_Mode is
    --  Clone_Suspected gives the H8 condition in all cases: a held data
    --  record by Self has seq > Seq_Self (the caller shows the
    --  CLONE_SUSPECTED flag next to the status, DESIGN.md §5, §10.6).
+   --  Mark is the store's expire mark (Kome.Store.Expire_Mark, H28): the
+   --  largest t of a DEL that this store expired, 0 if none. Del_TTL is
+   --  del_ttl_eff of the state (Kome.Views.Del_TTL_Eff), which only
+   --  Born_Expired reads. Clamped and Born_Expired are False on a refusal.
    --  The Post gives each order fact on the prefix
    --  Stamp (T, Self, Seq, Zero_Key) with Prefix_Lt.
    --  Lemma_Outcome_Independent_Of_H carries them to the version with the
@@ -264,15 +364,20 @@ package Kome.Emit with SPARK_Mode is
      (S               : in     State;
       Tgt             : in     Target;
       Now             : in     U48;
+      Mark            : in     U48;
+      Del_TTL         : in     U48;
       Self            : in     Key256;
       Seq_Self        : in out U48;
       T               :    out U48;
       Seq             :    out U48;
       Result          :    out Status;
-      Clone_Suspected :    out Boolean)
+      Clone_Suspected :    out Boolean;
+      Clamped         :    out Boolean;
+      Born_Expired    :    out Boolean)
    with
      Global => null,
-     Pre  => Is_Frontier (S) and then Tgt.NS = Collection (S),
+     Pre  => Is_Frontier (S) and then Tgt.NS = Collection (S)
+             and then Del_TTL in Del_TTL_Min .. Del_TTL_Max,
      Post =>
        Result in OK | Shadowed | Seq_Exhausted | Inadmissible
        --  H8: the restore/clone condition, always given.
@@ -287,9 +392,10 @@ package Kome.Emit with SPARK_Mode is
        and then (Result = Seq_Exhausted) =
                   (In_W (Regs (S), Self)
                    and Seq_Base (Seq_Self'Old, Max_Own_Seq (S, Self)) = U48'Last)
-       --  A refusal has no side effect.
+       --  A refusal has no side effect, and no flag but the clone flag.
        and then (if Result in Inadmissible | Seq_Exhausted
-                 then Seq_Self = Seq_Self'Old and then T = 0 and then Seq = 0)
+                 then Seq_Self = Seq_Self'Old and then T = 0 and then Seq = 0
+                      and then not Clamped and then not Born_Expired)
        --  The cases below are per Result, not an if/elsif on In_W. GNAT
        --  14.4 crashes (decl.cc:464) under -gnatVa on Seq_Self'Old in
        --  branches of a condition known on entry.
@@ -302,9 +408,10 @@ package Kome.Emit with SPARK_Mode is
           and then Seq_Self > Seq_Self'Old
           and then (if not Clone_Suspected then Seq_Self = Seq_Self'Old + 1)
           --  DESIGN.md §5 exactly: the formula over the writer's ceiling
-          --  (maxceil and its cap), with a DEL's clock raised to Del_Low.
+          --  (maxceil and its cap), with a DEL's clock raised to Del_Low
+          --  and the expire mark as a floor term (H28).
           and then T = T_Emit (Now_Eff (Tgt, Now, Ceil (Regs (S))),
-                               Floor (S, Tgt).Present, Floor (S, Tgt).V.T,
+                               True, Floor_Time (S, Tgt, Mark),
                                Eff_Ceil (S, Self))
           --  T8 / H8: the emitted seq is more than each held own seq.
           and then
@@ -313,6 +420,15 @@ package Kome.Emit with SPARK_Mode is
           --  T9 / T13: never above the ceiling, nor above the cap.
           and then T <= Ceil (Regs (S))
           and then T <= W_Cap (Regs (S), Self)
+          --  H28: above the expire mark, unless the mark is at or above
+          --  the writer's ceiling (then T is the ceiling, and Clamped).
+          and then (if Mark < Eff_Ceil (S, Self) then T > Mark)
+          --  H22: Clamped iff T < max (Now, floor.t + 1): the ceiling held
+          --  the write back. Then T is the ceiling.
+          and then Clamped = Is_Clamped (T, Now, Floor_Time (S, Tgt, Mark))
+          and then (if Clamped then T = Eff_Ceil (S, Self))
+          --  H22: Born_Expired iff a DEL with T + Del_TTL <= Now.
+          and then Born_Expired = Is_Born_Expired (Tgt, T, Del_TTL, Now)
           --  If the real clock is below the ceiling, T obeys it.
           and then (if Now <= Eff_Ceil (S, Self) then T >= Now)
           --  A5: a DEL is at least maxceil - Cap_Lead, unless the cap is
@@ -411,6 +527,85 @@ package Kome.Emit with SPARK_Mode is
              (for all I in 1 .. Count (S) =>
                 not Dominates (Held (S, I), To_Header (Tgt, Stamp (T, Self, Seq, H))))
              and then not Dom (S, To_Header (Tgt, Stamp (T, Self, Seq, H)));
+
+   ---------------------------------------------------------------------------
+   --  G21: the record of step 2 occupies the cell of the target of step 1.
+   ---------------------------------------------------------------------------
+
+   --  The header of Kome.Records.Make_Put (NS, Ent, Field, T, Seq, Author,
+   --  Value) is To_Header (Put_Target (ns, ent, Field), Stamp (T, author,
+   --  Seq, h)), where ns, ent and author are the Id128 / Key256 forms of
+   --  the byte arguments and h is the hash of the built content. The Post
+   --  of Make_Put gives the header; this lemma states it in Emit's terms.
+   procedure Lemma_Put_Target_Matches
+     (NS     : NS_Id;
+      Ent    : Ent_Id;
+      Field  : Byte_Array;
+      T, Seq : U48;
+      Author : Pubkey;
+      Value  : Byte_Array)
+   with
+     Ghost, Global => null,
+     Pre  => Field'Length in 1 .. Field_Max and then Value'Length <= Value_Max,
+     Post =>
+       Kome.Records.To_Header
+         (Kome.Records.Make_Put (NS, Ent, Field, T, Seq, Author, Value))
+       = To_Header
+           (Put_Target (To_Id128 (NS), To_Id128 (Ent), Field),
+            Stamp (T, To_Key256 (Author), Seq,
+                   To_Key256
+                     (Kome.Records.Hash
+                        (Kome.Records.Make_Put
+                           (NS, Ent, Field, T, Seq, Author, Value).C))));
+
+   --  The DEL counterpart: the header of Kome.Records.Make_Del (NS, Ent,
+   --  T, Seq, Author) is To_Header (Del_Target (ns, ent), Stamp (T, author,
+   --  Seq, h)).
+   procedure Lemma_Del_Target_Matches
+     (NS     : NS_Id;
+      Ent    : Ent_Id;
+      T, Seq : U48;
+      Author : Pubkey)
+   with
+     Ghost, Global => null,
+     Post =>
+       Kome.Records.To_Header (Kome.Records.Make_Del (NS, Ent, T, Seq, Author))
+       = To_Header
+           (Del_Target (To_Id128 (NS), To_Id128 (Ent)),
+            Stamp (T, To_Key256 (Author), Seq,
+                   To_Key256
+                     (Kome.Records.Hash
+                        (Kome.Records.Make_Del (NS, Ent, T, Seq, Author).C))));
+
+   ---------------------------------------------------------------------------
+   --  Laws of the flags (H22).
+   ---------------------------------------------------------------------------
+
+   --  Is_Clamped is T < max (Now, Floor_T + 1) over the integers.
+   procedure Lemma_Clamped_Formula (T, Now, Floor_T : U48) with
+     Ghost, Global => null,
+     Post => Is_Clamped (T, Now, Floor_T) =
+               (Long_Long_Integer (T) <
+                  Long_Long_Integer'Max (Long_Long_Integer (Now),
+                                         Long_Long_Integer (Floor_T) + 1));
+
+   --  Is_Born_Expired is "a DEL with T + Del_TTL <= Now" over the integers.
+   procedure Lemma_Born_Expired_Formula
+     (Tgt : Target; T, Del_TTL, Now : U48)
+   with
+     Ghost, Global => null,
+     Post => Is_Born_Expired (Tgt, T, Del_TTL, Now) =
+               (Tgt.Op = W_Del
+                and then Long_Long_Integer (T) + Long_Long_Integer (Del_TTL)
+                           <= Long_Long_Integer (Now));
+
+   --  H28 / T8: with the floor term below the ceiling, t_emit is above it
+   --  for every value of Now; otherwise t_emit is the ceiling.
+   procedure Lemma_Above_Floor (Now, Floor_T, Ceil : U48) with
+     Ghost, Global => null,
+     Post => (if Floor_T < Ceil
+              then T_Emit (Now, True, Floor_T, Ceil) > Floor_T
+              else T_Emit (Now, True, Floor_T, Ceil) = Ceil);
 
    ---------------------------------------------------------------------------
    --  Laws of t_emit. T_Emit refines Frontier.lean `emitT`

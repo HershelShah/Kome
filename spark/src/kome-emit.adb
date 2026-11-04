@@ -149,6 +149,45 @@ package body Kome.Emit with SPARK_Mode is
       return R;
    end Max_Own_Seq;
 
+   ---------------
+   -- Find_Pair --
+   ---------------
+
+   --  H18: the search for a Pair. Its Post is the quantified definition,
+   --  visible only in this body (Clone_Pair exports it through
+   --  Lemma_Clone_Pair_Def).
+   function Find_Pair (S : State; Self : Key256) return Boolean with
+     Global => null,
+     Post => Find_Pair'Result =
+               (for some I in 1 .. Count (S) =>
+                  (for some J in 1 .. Count (S) =>
+                     Pair (Held (S, I), Held (S, J), Self)))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         if Own (Held (S, I), Self) then
+            for J in 1 .. Count (S) loop
+               if Pair (Held (S, I), Held (S, J), Self) then
+                  return True;
+               end if;
+               pragma Loop_Invariant
+                 (for all L in 1 .. J =>
+                    not Pair (Held (S, I), Held (S, L), Self));
+            end loop;
+         end if;
+         pragma Loop_Invariant
+           (for all K in 1 .. I =>
+              (for all L in 1 .. Count (S) =>
+                 not Pair (Held (S, K), Held (S, L), Self)));
+      end loop;
+      return False;
+   end Find_Pair;
+
+   function Clone_Pair (S : State; Self : Key256) return Boolean is
+     (Find_Pair (S, Self));
+
+   procedure Lemma_Clone_Pair_Def (S : State; Self : Key256) is null;
+
    ------------
    -- Choose --
    ------------
@@ -157,14 +196,21 @@ package body Kome.Emit with SPARK_Mode is
      (S               : in     State;
       Tgt             : in     Target;
       Now             : in     U48;
+      Mark            : in     U48;
+      Del_TTL         : in     U48;
       Self            : in     Key256;
       Seq_Self        : in out U48;
       T               :    out U48;
       Seq             :    out U48;
       Result          :    out Status;
-      Clone_Suspected :    out Boolean)
+      Clone_Suspected :    out Boolean;
+      Clamped         :    out Boolean;
+      Born_Expired    :    out Boolean)
    is
       F : constant Floor_View   := Floor (S, Tgt);
+      --  The floor term: the held floor's t (0 if absent) raised to the
+      --  expire mark (H28).
+      FT : constant U48         := Floor_Time (S, Tgt, Mark);
       --  The writer's ceiling (maxceil and its cap), and the clock that a
       --  DEL reads (raised to maxceil - Cap_Lead).
       C : constant U48          := Eff_Ceil (S, Self);
@@ -173,6 +219,8 @@ package body Kome.Emit with SPARK_Mode is
       B : constant U48          := Seq_Base (Seq_Self, O);
    begin
       Clone_Suspected := Clone_Detected (Seq_Self, O);
+      Clamped := False;
+      Born_Expired := False;
 
       if not In_W (Regs (S), Self) then
          T := 0;
@@ -190,11 +238,26 @@ package body Kome.Emit with SPARK_Mode is
 
       Seq_Self := B + 1;
       Seq := Seq_Self;
-      T := T_Emit (Nw, F.Present, F.V.T, C);
-      Lemma_Emit_Bounded (Nw, F.Present, F.V.T, C);
+      T := T_Emit (Nw, True, FT, C);
+      Lemma_Emit_Bounded (Nw, True, FT, C);
       pragma Assert (T <= Ceil (Regs (S)) and then T <= W_Cap (Regs (S), Self));
       --  A DEL: Nw >= Del_Low, and t_emit >= min (Nw, C).
       pragma Assert (if Tgt.Op = W_Del then T >= U48'Min (Del_Low (Ceil (Regs (S))), C));
+      --  H28: the floor term is at least the mark. Below the ceiling, T is
+      --  above the floor term; otherwise T is the ceiling.
+      Lemma_Above_Floor (Nw, FT, C);
+      pragma Assert (FT >= Mark and then (F.Present or else FT = Mark));
+      pragma Assert (if Mark < C then T > Mark);
+      --  T8: the held floor is at most the floor term, so T is above it
+      --  when it is below the ceiling.
+      pragma Assert (if F.Present and then F.V.T < C then T > F.V.T);
+
+      --  H22: the flags.
+      Clamped := Is_Clamped (T, Now, FT);
+      Born_Expired := Is_Born_Expired (Tgt, T, Del_TTL, Now);
+      --  Clamped means the ceiling held the write back: T < Now <= Nw, or
+      --  T <= FT. In both cases T_Emit gave the ceiling.
+      pragma Assert (if Clamped then T = C);
 
       --  H8: each own held record has seq <= O.Seq <= B < Seq.
       pragma Assert
@@ -220,6 +283,7 @@ package body Kome.Emit with SPARK_Mode is
          --  Only at the ceiling: below the ceiling, t_emit > floor.t.
          pragma Assert (T <= F.V.T);
          pragma Assert (F.V.T >= C);
+         pragma Assert (T = C);
          Result := Shadowed;
       else
          Result := OK;
@@ -231,13 +295,15 @@ package body Kome.Emit with SPARK_Mode is
       end if;
 
       if F.Present and then F.V.T < C then
-         Lemma_Chase (Nw, C, F.V, Stamp (T, Self, Seq, Zero_Key));
+         --  T8 chase: T > F.V.T, so the prefix of the floor is below.
+         pragma Assert (Prefix_Lt (F.V, Stamp (T, Self, Seq, Zero_Key)));
+         pragma Assert (Result = OK);
       end if;
       if Now <= C then
          --  Nw >= Now. If Nw is within the ceiling, t_emit >= Nw. If a
          --  DEL's bound took Nw above the ceiling, t_emit is the ceiling.
          if Nw <= C then
-            Lemma_Respects_Clock (Nw, F.Present, F.V.T, C);
+            Lemma_Respects_Clock (Nw, True, FT, C);
             pragma Assert (T >= Nw and then Nw >= Now);
          else
             pragma Assert (T = C);
@@ -321,6 +387,32 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Respects_Clock
      (Now : U48; Has_Floor : Boolean; Floor_T, Ceil : U48) is null;
+
+   procedure Lemma_Clamped_Formula (T, Now, Floor_T : U48) is null;
+
+   procedure Lemma_Born_Expired_Formula
+     (Tgt : Target; T, Del_TTL, Now : U48) is null;
+
+   procedure Lemma_Above_Floor (Now, Floor_T, Ceil : U48) is null;
+
+   ---------------------------------------------------------------------------
+   --  G21: the Post of Make_Put / Make_Del gives the header as the
+   --  aggregate that To_Header (Put_Target / Del_Target, Stamp) unfolds to.
+   ---------------------------------------------------------------------------
+
+   procedure Lemma_Put_Target_Matches
+     (NS     : NS_Id;
+      Ent    : Ent_Id;
+      Field  : Byte_Array;
+      T, Seq : U48;
+      Author : Pubkey;
+      Value  : Byte_Array) is null;
+
+   procedure Lemma_Del_Target_Matches
+     (NS     : NS_Id;
+      Ent    : Ent_Id;
+      T, Seq : U48;
+      Author : Pubkey) is null;
 
    --------------------------
    -- Lemma_Floor_Admitted --
