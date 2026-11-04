@@ -68,8 +68,10 @@ run_one() {
     # crash with "failed to open semaphore", and orphan gnatwhy3 processes
     # continue to spin. A private TMPDIR is not sufficient, so serialize
     # the prove step.
+    # The lock file is machine-wide (KOME_PROVE_LOCK), not per checkout,
+    # because the semaphore is machine-wide too.
     mkdir -p obj
-    exec 9>obj/.prove.lock
+    exec 9>"${KOME_PROVE_LOCK:-/tmp/kome-prove.lock}"
     if command -v flock >/dev/null 2>&1; then flock 9; fi
     gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -u "kome-$m.adb" \
       --level=3 --mode=all --report=fail --warnings=continue
