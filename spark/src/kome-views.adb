@@ -252,6 +252,30 @@ package body Kome.Views with SPARK_Mode is
       return 0;
    end Find_Void;
 
+   --  An eligible rival of the roster E (A22).
+   function Find_Rival (S : State; E : Header) return Held_Count with
+     Global => null,
+     Post =>
+       Find_Rival'Result <= Count (S)
+       and then
+       (if Find_Rival'Result = 0 then
+          (for all I in 1 .. Count (S) =>
+             not (Eligible (S, Held (S, I)) and then Rivals (Held (S, I), E)))
+        else Eligible (S, Held (S, Find_Rival'Result))
+             and then Rivals (Held (S, Find_Rival'Result), E))
+   is
+   begin
+      for I in 1 .. Count (S) loop
+         if Rivals (Held (S, I), E) and then not Root_Void (S, Held (S, I).Issuer) then
+            return I;
+         end if;
+         pragma Loop_Invariant
+           (for all J in 1 .. I =>
+              not (Eligible (S, Held (S, J)) and then Rivals (Held (S, J), E)));
+      end loop;
+      return 0;
+   end Find_Rival;
+
    --  The Roster_Lt-maximal eligible roster. The root_void scan runs only
    --  for a roster that is better than the best roster found before it.
    function Find_Roster (S : State) return Held_Count with
@@ -368,7 +392,7 @@ package body Kome.Views with SPARK_Mode is
      (Find_Grant (S, K) /= 0);
 
    function Revoke_Void (S : State; P : Header) return Boolean is
-     (Find_Void (S, P) /= 0);
+     (Is_Data (P) and then Find_Void (S, P) /= 0);
 
    function Revoked (S : State; K : Key256) return Boolean is
      (Find_Revoked (S, K) /= 0);
@@ -377,7 +401,7 @@ package body Kome.Views with SPARK_Mode is
      (Find_Fork (S) /= 0);
 
    function Is_Void (S : State; P : Header) return Boolean is
-     (Revoke_Void (S, P) or else not W_Eff (S, P.V.Author));
+     (Is_Data (P) and then (Revoke_Void (S, P) or else not W_Eff (S, P.V.Author)));
 
    function Roster_Eff (S : State) return Header_View is
      (declare
@@ -385,6 +409,12 @@ package body Kome.Views with SPARK_Mode is
       begin
         (if I = 0 then (Present => False, Hdr => No_Header)
          else (Present => True, Hdr => Held (S, I))));
+
+   function Contested (S : State) return Boolean is
+     (declare
+        E : constant Header_View := Roster_Eff (S);
+      begin
+        E.Present and then Find_Rival (S, E.Hdr) /= 0);
 
    function Del_TTL_Eff (S : State) return U48 is
      (declare
@@ -423,6 +453,8 @@ package body Kome.Views with SPARK_Mode is
    procedure Lemma_Revoked_Def (S : State; K : Key256) is null;
 
    procedure Lemma_Roster_Fork_Def (S : State) is null;
+
+   procedure Lemma_Contested_Def (S : State) is null;
 
    procedure Lemma_Revoke_Void_Revoked (S : State; P : Header) is
       I : constant Held_Count := Find_Void (S, P);
@@ -937,6 +969,158 @@ package body Kome.Views with SPARK_Mode is
          end;
       end if;
    end Lemma_Roster_Local;
+
+   procedure Lemma_Dominates_Del_TTL (P, Q : Header) is
+   begin
+      Lemma_Roster_Dom (P, Q);
+   end Lemma_Dominates_Del_TTL;
+
+   --  To apply a record that is not a REVOKE keeps root_void: each REVOKE
+   --  of Before is in After (nothing dominates a REVOKE), and each REVOKE
+   --  of After is in Before (R is not one).
+   procedure Lemma_Root_Void_Apply (Before, After : State; R : Header; K : Key256) with
+     Ghost, Global => null,
+     Pre  => R.K /= K_Revoke
+             and then Founding (After) = Founding (Before)
+             and then (for all I in 1 .. Count (After) =>
+                         Holds (Before, Held (After, I)) or else Held (After, I) = R)
+             and then (for all I in 1 .. Count (Before) =>
+                         Holds (After, Held (Before, I))
+                         or else Dominates (R, Held (Before, I))),
+     Post => Root_Void (After, K) = Root_Void (Before, K)
+   is
+      I1 : constant Held_Count := Find_Root_Revoke (Before, K);
+      I2 : constant Held_Count := Find_Root_Revoke (After, K);
+   begin
+      if I1 /= 0 then
+         pragma Assert (Held (Before, I1).K = K_Revoke);
+         pragma Assert (not Dominates (R, Held (Before, I1)));
+         pragma Assert (Holds (After, Held (Before, I1)));
+         declare
+            J : constant Held_Count := Index_Of (After, Held (Before, I1));
+         begin
+            pragma Assert (Root_Revokes (Held (After, J), Founding (After), K));
+            pragma Assert (I2 /= 0);
+         end;
+      end if;
+      if I2 /= 0 then
+         pragma Assert (Held (After, I2).K = K_Revoke);
+         pragma Assert (Held (After, I2) /= R);
+         pragma Assert (Holds (Before, Held (After, I2)));
+         declare
+            J : constant Held_Count := Index_Of (Before, Held (After, I2));
+         begin
+            pragma Assert (Root_Revokes (Held (Before, J), Founding (Before), K));
+            pragma Assert (I1 /= 0);
+         end;
+      end if;
+      pragma Assert ((I1 = 0) = (I2 = 0));
+   end Lemma_Root_Void_Apply;
+
+   procedure Lemma_Del_TTL_Eff_Apply (Before, After : State; R : Header) is
+      IB : constant Held_Count := Find_TTL (Before);
+      IA : constant Held_Count := Find_TTL (After);
+      JR : constant Held_Count := Index_Of (After, R);
+   begin
+      --  R, if eligible, is at most the maximum of After.
+      if Eligible (After, R) then
+         pragma Assert (Eligible (After, Held (After, JR)));
+         pragma Assert (IA /= 0);
+         pragma Assert (R.Del_TTL <= Held (After, IA).Del_TTL);
+         pragma Assert (R.Del_TTL <= Del_TTL_Eff (After));
+      end if;
+
+      --  (1) Each eligible roster of Before is at most the maximum of
+      --  After: it is held in After and eligible there (root_void is the
+      --  same), or R dominates it, and then R has the same signer, so R is
+      --  eligible, and R is not lower in del_ttl.
+      for I in 1 .. Count (Before) loop
+         --  The invariant comes first: gnatprove 14 does not support a
+         --  non-scalar object (X below) declared before it.
+         pragma Loop_Invariant
+           (for all J in 1 .. I - 1 =>
+              (if Eligible (Before, Held (Before, J))
+               then IA /= 0
+                    and then Held (Before, J).Del_TTL <= Held (After, IA).Del_TTL));
+         if Eligible (Before, Held (Before, I)) then
+            declare
+               X : constant Header := Held (Before, I);
+            begin
+               Lemma_Root_Void_Apply (Before, After, R, X.Issuer);
+               if Holds (After, X) then
+                  declare
+                     J : constant Held_Count := Index_Of (After, X);
+                  begin
+                     pragma Assert (Eligible (After, Held (After, J)));
+                     pragma Assert (IA /= 0);
+                     pragma Assert (X.Del_TTL <= Held (After, IA).Del_TTL);
+                  end;
+               else
+                  pragma Assert (Dominates (R, X));
+                  Lemma_Dominates_Del_TTL (X, R);
+                  Lemma_Frontier_Held (Before, I);
+                  Lemma_Frontier_Held (After, JR);
+                  pragma Assert (Canonical (X) and then Canonical (R));
+                  pragma Assert (R.Issuer = R.V.Author and then X.Issuer = X.V.Author);
+                  pragma Assert (R.V.Author = X.V.Author);
+                  pragma Assert (R.Issuer = X.Issuer);
+                  pragma Assert (Eligible (After, R));
+                  pragma Assert (IA /= 0);
+                  pragma Assert (X.Del_TTL <= R.Del_TTL);
+                  pragma Assert (X.Del_TTL <= Held (After, IA).Del_TTL);
+               end if;
+            end;
+         end if;
+         pragma Assert
+           (if Eligible (Before, Held (Before, I))
+            then IA /= 0
+                 and then Held (Before, I).Del_TTL <= Held (After, IA).Del_TTL);
+      end loop;
+      pragma Assert
+        (for all J in 1 .. Count (Before) =>
+           (if Eligible (Before, Held (Before, J))
+            then IA /= 0
+                 and then Held (Before, J).Del_TTL <= Del_TTL_Eff (After)));
+
+      --  (2) If Before has an eligible roster, its maximum is one of them.
+      if IB /= 0 then
+         pragma Assert (Eligible (Before, Held (Before, IB)));
+         pragma Assert (IA /= 0);
+         pragma Assert (Held (Before, IB).Del_TTL <= Held (After, IA).Del_TTL);
+         pragma Assert (Del_TTL_Eff (Before) <= Del_TTL_Eff (After));
+      end if;
+
+      --  (3) The maximum of After is R, or a roster of Before that was
+      --  already its maximum there.
+      if IA = 0 then
+         --  No eligible roster in After, so none in Before (1), so both
+         --  values are the default.
+         pragma Assert (IB = 0);
+         pragma Assert (Del_TTL_Eff (After) = Del_TTL_Eff (Before));
+      else
+         declare
+            X : constant Header := Held (After, IA);
+         begin
+            if X = R then
+               pragma Assert (Eligible (After, R));
+               pragma Assert (Del_TTL_Eff (After) = R.Del_TTL);
+            else
+               pragma Assert (Holds (Before, X));
+               declare
+                  J : constant Held_Count := Index_Of (Before, X);
+               begin
+                  Lemma_Root_Void_Apply (Before, After, R, X.Issuer);
+                  pragma Assert (Eligible (Before, Held (Before, J)));
+                  pragma Assert (IB /= 0);
+                  pragma Assert (X.Del_TTL <= Held (Before, IB).Del_TTL);
+                  pragma Assert (Held (Before, IB).Del_TTL <= Held (After, IA).Del_TTL);
+                  pragma Assert (Held (Before, IB).Del_TTL = X.Del_TTL);
+                  pragma Assert (Del_TTL_Eff (After) = Del_TTL_Eff (Before));
+               end;
+            end if;
+         end;
+      end if;
+   end Lemma_Del_TTL_Eff_Apply;
 
    procedure Lemma_Del_TTL_Local (S1, S2 : State) is
       I1 : constant Held_Count := Find_TTL (S1);
