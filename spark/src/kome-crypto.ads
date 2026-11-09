@@ -219,7 +219,9 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    ---------------------------------------------------------------------------
 
    --  crypto_blake2b (hash, 32, data, len). DESIGN.md §2: h = BLAKE2b-256
-   --  (tag ‖ content), and ns = BLAKE2b-256 (root_pk ‖ salt)[0:16]. A2.
+   --  (tag ‖ content) of an authorization record, h = BLAKE2b-256 (tag ‖
+   --  cid ‖ content) of a data record, cid = BLAKE2b-256 (root_pk ‖ salt)
+   --  and ns = cid[0:16] (AUDIT.md A26). A2.
    --  There is no Post. The result subtype Hash256 fixes the output length.
    --  This is a static fact, and GNAT flags it as a vacuous Post. This spec
    --  cannot check other properties of a hash: collision resistance is A2.

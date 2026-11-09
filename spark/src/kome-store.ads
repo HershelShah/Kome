@@ -30,6 +30,11 @@
 --
 --  The HEADER is the first entry, and the log has exactly one HEADER. Its
 --  ns is BLAKE2b-256 (root_pk ‖ salt)[0:16], which fixes the founding key.
+--  Open and Open_From_Log compute the collection context cid =
+--  BLAKE2b-256 (root_pk ‖ salt) once from the root_pk and salt (Cid), and
+--  every data frame is verified under it (AUDIT.md A26): a data record's
+--  h is BLAKE2b-256 (tag ‖ cid ‖ content), so a data frame of another
+--  collection whose ns collides with this one does not verify here.
 --  Its data_cap is the data capacity of the open that wrote it, and its
 --  slice is a check (see Capacities below). A frame is tag ‖ content ‖ sig, exactly as
 --  Kome.Records encodes it. The horizon u48 2**48 - 1 encodes "no
@@ -126,7 +131,9 @@
 --      the t of every DEL applied for its effect.
 --
 --  Replay (T18): Open_From_Log does these steps:
---    1. It checks the HEADER (bytes, and the slice of this open).
+--    1. It checks the HEADER (bytes, and the slice of this open), and it
+--       computes Cid from the HEADER's root_pk and salt. Every frame of
+--       the log is decoded and verified under it.
 --    2. It starts from Frontier.Empty with the logged founding key and the
 --       capacities of this open.
 --    3. It performs the entries in order:
@@ -315,31 +322,39 @@ package Kome.Store with SPARK_Mode is
                   when K_Revoke => Kome.Records.Is_Revoke_Frame (Frame),
                   when K_Grant  => Kome.Records.Is_Grant_Frame (Frame)));
 
-   --  Frame is a well-formed record: exactly what Kome.Records.Decode_Verified
-   --  accepts for its kind (DESIGN.md §2 items 1-5).
-   function Verified (Frame : Byte_Array) return Boolean is
+   --  Frame is a well-formed record in the collection of Cid: exactly what
+   --  Kome.Records.Decode_Verified accepts for its kind (DESIGN.md §2 items
+   --  1-5). Cid is the collection context of a data record's h (AUDIT.md
+   --  A26); a store passes its own, Cid (S). An authorization record
+   --  carries root_pk and salt, so its check does not read Cid.
+   function Verified (Cid : Hash256; Frame : Byte_Array) return Boolean is
      (Is_Record_Frame (Frame)
       and then (case Kome.Records.Kind_Of (Frame) is
-                  when K_Put    => Kome.Records.Well_Formed (Kome.Records.Parse_Put (Frame)),
-                  when K_Del    => Kome.Records.Well_Formed (Kome.Records.Parse_Del (Frame)),
+                  when K_Put    =>
+                    Kome.Records.Well_Formed (Cid, Kome.Records.Parse_Put (Frame)),
+                  when K_Del    =>
+                    Kome.Records.Well_Formed (Cid, Kome.Records.Parse_Del (Frame)),
                   when K_Roster => Kome.Records.Well_Formed (Kome.Records.Parse_Roster (Frame)),
                   when K_Revoke => Kome.Records.Well_Formed (Kome.Records.Parse_Revoke (Frame)),
                   when K_Grant  => Kome.Records.Well_Formed (Kome.Records.Parse_Grant (Frame))));
 
-   --  The lattice header of a record frame (Kome.Records.To_Header of the
-   --  parse result). Lemma_Header_Of gives the full definition.
-   function Header_Of (Frame : Byte_Array) return Header with
+   --  The lattice header of a record frame in the collection of Cid
+   --  (Kome.Records.To_Header of the parse result; a data record's h is
+   --  under Cid). Lemma_Header_Of gives the full definition.
+   function Header_Of (Cid : Hash256; Frame : Byte_Array) return Header with
      Global => null,
      Pre    => Is_Record_Frame (Frame);
 
-   procedure Lemma_Header_Of (Frame : Byte_Array) with
+   procedure Lemma_Header_Of (Cid : Hash256; Frame : Byte_Array) with
      Ghost, Global => null,
      Pre  => Is_Record_Frame (Frame),
-     Post => Header_Of (Frame).K = Kome.Records.Kind_Of (Frame)
-       and then Header_Of (Frame) =
+     Post => Header_Of (Cid, Frame).K = Kome.Records.Kind_Of (Frame)
+       and then Header_Of (Cid, Frame) =
                (case Kome.Records.Kind_Of (Frame) is
-                  when K_Put    => Kome.Records.To_Header (Kome.Records.Parse_Put (Frame)),
-                  when K_Del    => Kome.Records.To_Header (Kome.Records.Parse_Del (Frame)),
+                  when K_Put    =>
+                    Kome.Records.To_Header (Cid, Kome.Records.Parse_Put (Frame)),
+                  when K_Del    =>
+                    Kome.Records.To_Header (Cid, Kome.Records.Parse_Del (Frame)),
                   when K_Roster => Kome.Records.To_Header (Kome.Records.Parse_Roster (Frame)),
                   when K_Revoke => Kome.Records.To_Header (Kome.Records.Parse_Revoke (Frame)),
                   when K_Grant  => Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
@@ -347,11 +362,11 @@ package Kome.Store with SPARK_Mode is
    --  The header of a verified frame is canonical (D3; Kome.Records
    --  Lemma_Header_Canonical, and the del_ttl clamp of the roster from
    --  Well_Formed).
-   procedure Lemma_Verified_Canonical (Frame : Byte_Array) with
+   procedure Lemma_Verified_Canonical (Cid : Hash256; Frame : Byte_Array) with
      Ghost, Global => null,
-     Pre  => Verified (Frame),
-     Post => Canonical (Header_Of (Frame))
-             and then Header_Of (Frame).K = Kome.Records.Kind_Of (Frame);
+     Pre  => Verified (Cid, Frame),
+     Post => Canonical (Header_Of (Cid, Frame))
+             and then Header_Of (Cid, Frame).K = Kome.Records.Kind_Of (Frame);
 
    ---------------------------------------------------------------------------
    --  The store.
@@ -381,6 +396,12 @@ package Kome.Store with SPARK_Mode is
    function Founding (S : Store) return Key256 with Global => null;
    function Root_Key (S : Store) return Pubkey with Global => null;
    function Salt_Of (S : Store) return Salt with Global => null;
+   --  The collection context cid = BLAKE2b-256 (root_pk ‖ salt) (AUDIT.md
+   --  A26), computed once by Open and Open_From_Log from the root_pk and
+   --  salt of the HEADER, and kept. The store verifies every data frame
+   --  under it (Verified (Cid (S), Frame), the Pre of Put_Frame, and the
+   --  replay of Open_From_Log), and Kome.Write signs under it.
+   function Cid (S : Store) return Hash256 with Global => null;
    --  The capacities logged in the HEADER.
    function Logged_Cap (S : Store) return Data_Size with Global => null;
    function Logged_Slice (S : Store) return Slice_Count with Global => null;
@@ -451,6 +472,7 @@ package Kome.Store with SPARK_Mode is
       and then Founding (New_S) = Founding (Old_S)
       and then Root_Key (New_S) = Root_Key (Old_S)
       and then Salt_Of (New_S) = Salt_Of (Old_S)
+      and then Cid (New_S) = Cid (Old_S)
       and then Logged_Cap (New_S) = Logged_Cap (Old_S)
       and then Logged_Slice (New_S) = Logged_Slice (Old_S));
 
@@ -794,7 +816,9 @@ package Kome.Store with SPARK_Mode is
 
    --  A new store for the collection of (Root_PK, Salt), beside the empty
    --  lattice state F (Frontier.Empty (ns, To_Key256 (Root_PK), Cap,
-   --  Slice)). It writes the HEADER with the capacities of F. The
+   --  Slice)). It writes the HEADER with the capacities of F, and it
+   --  computes the collection context Cid (S) = Cid_Of (Root_PK, Salt)
+   --  once (AUDIT.md A26). The
    --  precondition connects F to the founding key, so the decoder, the
    --  capacity rows and root_void agree on the founding key (DESIGN.md §7
    --  step 0, and E6 of §1). The founding key is a usable signing key:
@@ -815,6 +839,7 @@ package Kome.Store with SPARK_Mode is
        and then Founding (S) = Frontier.Founding (F)
        and then Root_Key (S) = Root_PK
        and then Salt_Of (S) = Salt
+       and then Cid (S) = Kome.Records.Cid_Of (Root_PK, Salt)
        and then Logged_Cap (S) = F.Cap
        and then Logged_Slice (S) = F.Slice
        and then Entries (S) = 0
@@ -841,8 +866,8 @@ package Kome.Store with SPARK_Mode is
      Global => null,
      Pre  => Valid (S, F)
        and then Frame'Length in Frame_Size
-       and then Verified (Frame)
-       and then Header_Of (Frame) = H
+       and then Verified (Cid (S), Frame)
+       and then Header_Of (Cid (S), Frame) = H
        and then Kome.Records.Kind_Of (Frame) = H.K
        and then Canonical (H)
        and then H.NS = Collection (S),
@@ -1167,6 +1192,7 @@ package Kome.Store with SPARK_Mode is
        and then Founding (S) = Kome.Keys.To_Key256 (Root_Key (S))
        and then Collection (S) =
                   Kome.Keys.To_Id128 (Kome.Records.Collection_Id (Root_Key (S), Salt_Of (S)))
+       and then Cid (S) = Kome.Records.Cid_Of (Root_Key (S), Salt_Of (S))
        and then Logged_Slice (S) = F.Slice
        and then S.Cap >= F.Cap + Signers_Max * F.Slice
        and then Log_Length (S) >= Header_Len;
@@ -1276,6 +1302,7 @@ private
       Fnd  : Key256;
       Root : Pubkey        := [others => 0];
       Slt  : Salt          := [others => 0];
+      Cid  : Hash256       := [others => 0];   --  Cid_Of (Root, Slt) (A26)
       DCap : Data_Size     := 0;
       Slc  : Slice_Count   := 0;
       Hz   : Horizon_Value := No_Horizon;
@@ -1293,6 +1320,7 @@ private
    function Founding (S : Store) return Key256 is (S.Fnd);
    function Root_Key (S : Store) return Pubkey is (S.Root);
    function Salt_Of (S : Store) return Salt is (S.Slt);
+   function Cid (S : Store) return Hash256 is (S.Cid);
    function Logged_Cap (S : Store) return Data_Size is (S.DCap);
    function Logged_Slice (S : Store) return Slice_Count is (S.Slc);
    function Horizon (S : Store) return Horizon_Value is (S.Hz);
@@ -1308,10 +1336,10 @@ private
      (if S.NB <= S.Log_Cap and then S.NB <= S.Bnd_Cap then S.NB else 0);
    function Entry_Start (S : Store; K : Positive) return Log_Size is (S.Bnd (K));
 
-   function Header_Of (Frame : Byte_Array) return Header is
+   function Header_Of (Cid : Hash256; Frame : Byte_Array) return Header is
      (case Kome.Records.Kind_Of (Frame) is
-        when K_Put    => Kome.Records.To_Header (Kome.Records.Parse_Put (Frame)),
-        when K_Del    => Kome.Records.To_Header (Kome.Records.Parse_Del (Frame)),
+        when K_Put    => Kome.Records.To_Header (Cid, Kome.Records.Parse_Put (Frame)),
+        when K_Del    => Kome.Records.To_Header (Cid, Kome.Records.Parse_Del (Frame)),
         when K_Roster => Kome.Records.To_Header (Kome.Records.Parse_Roster (Frame)),
         when K_Revoke => Kome.Records.To_Header (Kome.Records.Parse_Revoke (Frame)),
         when K_Grant  => Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
@@ -1483,6 +1511,7 @@ private
       and then S.Fnd = Kome.Keys.To_Key256 (S.Root)
       and then S.NS = Kome.Keys.To_Id128 (S.NSb)
       and then S.NSb = Kome.Records.Collection_Id (S.Root, S.Slt)
+      and then S.Cid = Kome.Records.Cid_Of (S.Root, S.Slt)
       and then S.Slc = F.Slice
       and then S.Cap >= F.Cap + Signers_Max * F.Slice
       and then Head_OK (S.Log, S.LL, S.NSb, S.Root, S.Slt, S.DCap, S.Slc)

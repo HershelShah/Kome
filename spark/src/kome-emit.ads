@@ -538,13 +538,15 @@ package Kome.Emit with SPARK_Mode is
    --  G21: the record of step 2 occupies the cell of the target of step 1.
    ---------------------------------------------------------------------------
 
-   --  The header of Kome.Records.Make_Put (NS, Ent, Field, T, Seq, Author,
-   --  Value) is To_Header (Put_Target (ns, ent, Field), Stamp (T, author,
-   --  Seq, h)), where ns, ent and author are the Id128 / Key256 forms of
-   --  the byte arguments and h is the hash of the built content. The Post
-   --  of Make_Put gives the header; this lemma states it in Emit's terms.
+   --  The header of Kome.Records.Make_Put (Cid, NS, Ent, Field, T, Seq,
+   --  Author, Value) in the collection of Cid is To_Header (Put_Target (ns,
+   --  ent, Field), Stamp (T, author, Seq, h)), where ns, ent and author are
+   --  the Id128 / Key256 forms of the byte arguments and h is the hash of
+   --  the built content under Cid (AUDIT.md A26). The Post of Make_Put
+   --  gives the header; this lemma states it in Emit's terms.
    procedure Lemma_Put_Target_Matches
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -555,33 +557,35 @@ package Kome.Emit with SPARK_Mode is
      Pre  => Field'Length in 1 .. Field_Max and then Value'Length <= Value_Max,
      Post =>
        Kome.Records.To_Header
-         (Kome.Records.Make_Put (NS, Ent, Field, T, Seq, Author, Value))
+         (Cid, Kome.Records.Make_Put (Cid, NS, Ent, Field, T, Seq, Author, Value))
        = To_Header
            (Put_Target (To_Id128 (NS), To_Id128 (Ent), Field),
             Stamp (T, To_Key256 (Author), Seq,
                    To_Key256
                      (Kome.Records.Hash
-                        (Kome.Records.Make_Put
-                           (NS, Ent, Field, T, Seq, Author, Value).C))));
+                        (Cid,
+                         Kome.Records.Make_Put
+                           (Cid, NS, Ent, Field, T, Seq, Author, Value).C))));
 
-   --  The DEL counterpart: the header of Kome.Records.Make_Del (NS, Ent,
-   --  T, Seq, Author) is To_Header (Del_Target (ns, ent), Stamp (T, author,
-   --  Seq, h)).
+   --  The DEL counterpart: the header of Kome.Records.Make_Del (Cid, NS,
+   --  Ent, T, Seq, Author) is To_Header (Del_Target (ns, ent), Stamp (T,
+   --  author, Seq, h)), h under Cid.
    procedure Lemma_Del_Target_Matches
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey)
    with
      Ghost, Global => null,
      Post =>
-       Kome.Records.To_Header (Kome.Records.Make_Del (NS, Ent, T, Seq, Author))
+       Kome.Records.To_Header (Cid, Kome.Records.Make_Del (Cid, NS, Ent, T, Seq, Author))
        = To_Header
            (Del_Target (To_Id128 (NS), To_Id128 (Ent)),
             Stamp (T, To_Key256 (Author), Seq,
                    To_Key256
                      (Kome.Records.Hash
-                        (Kome.Records.Make_Del (NS, Ent, T, Seq, Author).C))));
+                        (Cid, Kome.Records.Make_Del (Cid, NS, Ent, T, Seq, Author).C))));
 
    ---------------------------------------------------------------------------
    --  Laws of the flags (H22).

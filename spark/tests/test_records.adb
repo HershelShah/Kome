@@ -78,6 +78,14 @@ procedure Test_Records with SPARK_Mode => Off is
    function H_Of (Frame : Byte_Array) return Key256 is
      (To_Key256 (Kome.Crypto.Blake2b_256 (Frame (Frame'First .. Frame'Last - Sig_Len))));
 
+   --  The h of a data frame (DEL, PUT) under the collection context Cid
+   --  (AUDIT.md A26): BLAKE2b-256 (tag ‖ cid ‖ content), written here from
+   --  the frame bytes, independently of Kome.Records.With_Cid.
+   function H_Of_D (Frame : Byte_Array; Cid : Hash256) return Key256 is
+     (To_Key256 (Kome.Crypto.Blake2b_256
+        (Frame (Frame'First .. Frame'First) & Cid
+         & Frame (Frame'First + 1 .. Frame'Last - Sig_Len))));
+
    function From_Hex (S : String) return Byte_Array is
       function Nib (C : Character) return Byte is
         (case C is
@@ -111,6 +119,8 @@ procedure Test_Records with SPARK_Mode => Off is
    Salt_B : constant Salt := Salt (Fill (Salt_Len, 91));
    NS_A   : NS_Id;
    NS_B   : NS_Id;
+   Cid_A  : Hash256;   --  the collection contexts of (Root_PK, Salt_A / Salt_B)
+   Cid_B  : Hash256;
    Ent_A  : constant Ent_Id := Ent_Id (Fill (Ent_Len, 40));
 
    Max_U48 : constant U48 := U48'Last;
@@ -139,6 +149,16 @@ begin
    Kome.Crypto.Key_Pair (Seed_Of (3), Root_SK, Root_PK);
    NS_A := Collection_Id (Root_PK, Salt_A);
    NS_B := Collection_Id (Root_PK, Salt_B);
+   Cid_A := Cid_Of (Root_PK, Salt_A);
+   Cid_B := Cid_Of (Root_PK, Salt_B);
+   Check ("A26: cid = BLAKE2b-256 (root_pk ‖ salt), ns = cid[0:16]",
+          Cid_A = Kome.Crypto.Blake2b_256 (Root_PK & Salt_A)
+          and then NS_A = Cid_A (0 .. NS_Len - 1)
+          and then NS_B = Cid_B (0 .. NS_Len - 1)
+          and then Cid_A /= Cid_B);
+   Check ("A26: With_Cid puts the cid after the tag",
+          With_Cid (Cid_A, [1, 2, 3]) = [Byte'(1)] & Cid_A & [Byte'(2), 3]
+          and then With_Cid (Cid_A, [Byte'(9)]) = [Byte'(9)] & Cid_A);
    Cert_2 := Make_Cert (Root_SK, NS_A, Other_PK, Cap_2);
 
    ---------------------------------------------------------------------------
@@ -227,11 +247,11 @@ begin
    ---------------------------------------------------------------------------
    declare
       Field_N : constant Byte_Array := [Character'Pos ('n')];
-      Small   : Put_Record := Make_Put (NS_A, Ent_A, Field_N, 0, 0, Author_PK, []);
+      Small   : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, Field_N, 0, 0, Author_PK, []);
       Back    : Put_Record;
       St      : Status;
    begin
-      Sign (Small, Author_SK);
+      Sign (Cid_A, Small, Author_SK);
       declare
          E : constant Byte_Array := Encode (Small);
       begin
@@ -242,7 +262,7 @@ begin
                 and then E (79) = 0 and then E (80) = 0);
          Decode (E, Back, St);
          Check ("PUT minimal: decode OK and equal", St = OK and then Back = Small);
-         Check ("PUT minimal: well-formed", Well_Formed (Back));
+         Check ("PUT minimal: well-formed", Well_Formed (Cid_A, Back));
          Lemma_Decode_Encode (Small);
          Lemma_Encode_Decode_Put (E);
          Check ("PUT minimal: Encode (Decode (frame)) = frame", Encode (Back) = E);
@@ -254,15 +274,15 @@ begin
       Field_32 : constant Byte_Array := Fill (Field_Max, 200);
       Value_M  : constant Byte_Array := Fill (Value_Max, 3);
       Big      : Put_Record :=
-        Make_Put (NS_A, Ent_A, Field_32, Max_U48, Max_U48, Author_PK, Value_M);
+        Make_Put (Cid_A, NS_A, Ent_A, Field_32, Max_U48, Max_U48, Author_PK, Value_M);
       Before   : Header;
       Back     : Put_Record;
       Keep     : Put_Record;
       St       : Status;
    begin
-      Before := To_Header (Big);
-      Sign (Big, Author_SK);
-      Check ("PUT: signing changes neither h nor the header", To_Header (Big) = Before);
+      Before := To_Header (Cid_A, Big);
+      Sign (Cid_A, Big, Author_SK);
+      Check ("PUT: signing changes neither h nor the header", To_Header (Cid_A, Big) = Before);
       declare
          E  : constant Byte_Array := Encode (Big);
          L  : constant Natural    := E'Length;
@@ -282,7 +302,7 @@ begin
                 and then E (L - 64 .. L - 1) = Big.Signature);
          Decode (E, Back, St);
          Check ("PUT max: decode OK and equal", St = OK and then Back = Big);
-         Check ("PUT max: well-formed", Well_Formed (Back));
+         Check ("PUT max: well-formed", Well_Formed (Cid_A, Back));
          Lemma_Decode_Encode (Big);
          Lemma_Encode_Decode_Put (E);
 
@@ -297,7 +317,7 @@ begin
 
          --  Header (DESIGN.md §3 / Kome.Headers).
          declare
-            H : constant Header := To_Header (Big);
+            H : constant Header := To_Header (Cid_A, Big);
          begin
             Check ("PUT header: kind, ns, ent",
                    H.K = K_Put and then H.NS = To_Id128 (NS_A)
@@ -306,12 +326,12 @@ begin
                    H.FH = To_Key256 (Kome.Crypto.Blake2b_256 (Field_32)));
             Check ("PUT header: V = (t, author, seq, h)",
                    H.V.T = Max_U48 and then H.V.Author = To_Key256 (Author_PK)
-                   and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E));
+                   and then H.V.Seq = Max_U48 and then H.V.H = H_Of_D (E, Cid_A));
             Check ("PUT header: no issuer, del_ttl 0",
                    H.Issuer = Zero_Key and then H.Del_TTL = 0);
             Check ("PUT header: h = BLAKE2b-256 (frame minus sig)",
-                   To_Key256 (Hash (Big.C)) = H_Of (E));
-            Lemma_Header_Canonical (Big);
+                   To_Key256 (Hash (Cid_A, Big.C)) = H_Of_D (E, Cid_A));
+            Lemma_Header_Canonical (Cid_A, Big);
             Check ("PUT header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          end;
 
@@ -362,22 +382,22 @@ begin
             Bad (L - 1) := Bad (L - 1) xor 1;
             Decode (Bad, R2, St);
             Check ("PUT tampered signature: decodes", St = OK);
-            Check ("PUT tampered signature: not well-formed", not Well_Formed (R2));
-            Decode_Verified (Bad, R2, St);
+            Check ("PUT tampered signature: not well-formed", not Well_Formed (Cid_A, R2));
+            Decode_Verified (Cid_A, Bad, R2, St);
             Check ("PUT tampered signature: Decode_Verified refuses", St = Malformed);
             Bad := E;
             Bad (80 + FL + 100) := Bad (80 + FL + 100) xor 16#80#;   --  value byte 100
             Decode (Bad, R2, St);
             Check ("PUT tampered value byte: decodes to the changed value, not well-formed",
                    St = OK and then R2.C.Value (100) /= Big.C.Value (100)
-                   and then not Well_Formed (R2));
+                   and then not Well_Formed (Cid_A, R2));
             Bad := E;
             Bad (46 + FL + 3) := Bad (46 + FL + 3) xor 1;   --  author byte 3
             Decode (Bad, R2, St);
             Check ("PUT tampered author byte: not well-formed",
                    St = OK and then R2.C.Author /= Big.C.Author
-                   and then not Well_Formed (R2));
-            Decode_Verified (E, R2, St);
+                   and then not Well_Formed (Cid_A, R2));
+            Decode_Verified (Cid_A, E, R2, St);
             Check ("PUT Decode_Verified accepts the genuine frame",
                    St = OK and then R2 = Big);
          end;
@@ -388,26 +408,26 @@ begin
          Forged : Put_Record := Big;
       begin
          Forged.C.Author := Other_PK;
-         Sign (Forged, Other_SK);
+         Sign (Cid_A, Forged, Other_SK);
          Forged.C.Author := Author_PK;
          Check ("PUT signed by a non-author key is not well-formed",
-                not Well_Formed (Forged));
+                not Well_Formed (Cid_A, Forged));
       end;
 
       --  Non-canonical padding.
       declare
-         Pad : Put_Record := Make_Put (NS_A, Ent_A, [1, 2], 5, 6, Author_PK, [7]);
+         Pad : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [1, 2], 5, 6, Author_PK, [7]);
       begin
-         Sign (Pad, Author_SK);
+         Sign (Cid_A, Pad, Author_SK);
          Check ("PUT canonical record is well-formed",
-                Canonical (Pad) and then Well_Formed (Pad));
+                Canonical (Pad) and then Well_Formed (Cid_A, Pad));
          Pad.C.Field (5) := 1;
          Check ("PUT nonzero field padding is not canonical / well-formed",
-                not Canonical (Pad) and then not Well_Formed (Pad));
+                not Canonical (Pad) and then not Well_Formed (Cid_A, Pad));
          Pad.C.Field (5) := 0;
          Pad.C.Value (9) := 1;
          Check ("PUT nonzero value padding is not canonical / well-formed",
-                not Canonical (Pad) and then not Well_Formed (Pad));
+                not Canonical (Pad) and then not Well_Formed (Cid_A, Pad));
       end;
    end;
 
@@ -415,17 +435,17 @@ begin
    --  the length agrees (with a 1-byte field, Put_Frame_Max has space for
    --  it).
    declare
-      V  : Put_Record := Make_Put (NS_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
+      V  : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
       R2 : Put_Record;
       K2 : Put_Record;
       St : Status;
    begin
-      Sign (V, Author_SK);
+      Sign (Cid_A, V, Author_SK);
       declare
          E   : constant Byte_Array := Encode (V);
          Big : Byte_Array := E (0 .. E'Last - Sig_Len) & Byte'(16#5A#) & V.Signature;
       begin
-         Decode_Verified (E, R2, St);
+         Decode_Verified (Cid_A, E, R2, St);
          Check ("PUT vlen 40960 (1-byte field): length 41105, OK",
                 E'Length = 144 + 1 + 40_960 and then E (79) = 16#A0# and then E (80) = 0
                 and then St = OK and then R2 = V);
@@ -437,7 +457,7 @@ begin
          Decode (Big, R2, St);
          Check ("PUT vlen 40961: Malformed, record unchanged",
                 St = Malformed and then R2 = K2 and then not Is_Put_Frame (Big));
-         Decode_Verified (Big, R2, St);
+         Decode_Verified (Cid_A, Big, R2, St);
          Check ("PUT vlen 40961: Decode_Verified Malformed",
                 St = Malformed and then R2 = K2);
       end;
@@ -448,7 +468,7 @@ begin
    ---------------------------------------------------------------------------
    declare
       R : constant Put_Record :=
-        Make_Put (NS_A, Ent_A, [16#61#, 16#62#], 16#0102_0304_0506#, 16#0A0B_0C0D_0E0F#,
+        Make_Put (Cid_A, NS_A, Ent_A, [16#61#, 16#62#], 16#0102_0304_0506#, 16#0A0B_0C0D_0E0F#,
                   Author_PK, [16#AA#, 16#BB#, 16#CC#]);
       E : constant Byte_Array := Encode (R);
    begin
@@ -465,27 +485,27 @@ begin
    --  (both Posts execute here under -gnata).
    ---------------------------------------------------------------------------
    declare
-      D    : Del_Record := Make_Del (NS_A, Ent_A, 1234, Max_U48, Author_PK);
+      D    : Del_Record := Make_Del (Cid_A, NS_A, Ent_A, 1234, Max_U48, Author_PK);
       Hand : constant Del_Record :=
         (C => (NS => NS_A, Ent => Ent_A, T => 1234, Seq => Max_U48, Author => Author_PK),
          Signature => [others => 0]);
       P    : constant Put_Record :=
-        Make_Put (NS_A, Ent_A, [16#61#, 16#62#], 7, 8, Author_PK, [1]);
+        Make_Put (Cid_A, NS_A, Ent_A, [16#61#, 16#62#], 7, 8, Author_PK, [1]);
       Back : Del_Record;
       St   : Status;
    begin
       Check ("Make_Del equals the hand-built DEL", D = Hand);
-      Sign (D, Author_SK);
-      Decode_Verified (Encode (D), Back, St);
+      Sign (Cid_A, D, Author_SK);
+      Decode_Verified (Cid_A, Encode (D), Back, St);
       Check ("Make_Del then Sign: verified decode, same header, h = hash of content",
-             St = OK and then Back = D and then To_Header (Back) = To_Header (D)
-             and then To_Header (D).V.H = H_Of (Encode (D))
-             and then To_Header (D).V.T = 1234 and then To_Header (D).V.Seq = Max_U48);
+             St = OK and then Back = D and then To_Header (Cid_A, Back) = To_Header (Cid_A, D)
+             and then To_Header (Cid_A, D).V.H = H_Of_D (Encode (D), Cid_A)
+             and then To_Header (Cid_A, D).V.T = 1234 and then To_Header (Cid_A, D).V.Seq = Max_U48);
       Check ("Make_Put header: FH = BLAKE2b (field), V from the arguments",
-             To_Header (P).FH = To_Key256 (Kome.Crypto.Blake2b_256 ([16#61#, 16#62#]))
-             and then To_Header (P).V.T = 7 and then To_Header (P).V.Seq = 8
-             and then To_Header (P).V.Author = To_Key256 (Author_PK)
-             and then To_Header (P).V.H = H_Of (Encode (P)));
+             To_Header (Cid_A, P).FH = To_Key256 (Kome.Crypto.Blake2b_256 ([16#61#, 16#62#]))
+             and then To_Header (Cid_A, P).V.T = 7 and then To_Header (Cid_A, P).V.Seq = 8
+             and then To_Header (Cid_A, P).V.Author = To_Key256 (Author_PK)
+             and then To_Header (Cid_A, P).V.H = H_Of_D (Encode (P), Cid_A));
    end;
 
    ---------------------------------------------------------------------------
@@ -499,18 +519,18 @@ begin
       Keep : Del_Record;
       St   : Status;
    begin
-      Sign (D, Author_SK);
+      Sign (Cid_A, D, Author_SK);
       declare
          E    : constant Byte_Array := Encode (D);
          Want : constant Byte_Array :=
            [Byte'(3)] & NS_A & Ent_A & BE48 (1234) & BE48 (Max_U48) & Author_PK & D.Signature;
-         H    : constant Header := To_Header (D);
+         H    : constant Header := To_Header (Cid_A, D);
       begin
          Check ("DEL: length 141 and bytes equal the hand-built layout (tag 3)",
                 E'Length = 141 and then E = Want);
          Decode (E, Back, St);
          Check ("DEL: decode OK and equal", St = OK and then Back = D);
-         Check ("DEL: well-formed", Well_Formed (Back));
+         Check ("DEL: well-formed", Well_Formed (Cid_A, Back));
          Lemma_Decode_Encode (D);
          Lemma_Encode_Decode_Del (E);
          Check ("DEL header: V = (t, author, seq, h), FH 0, no issuer, del_ttl 0",
@@ -518,9 +538,9 @@ begin
                 and then H.Ent = To_Id128 (Ent_A)
                 and then H.FH = Zero_Key
                 and then H.V.T = 1234 and then H.V.Author = To_Key256 (Author_PK)
-                and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E)
+                and then H.V.Seq = Max_U48 and then H.V.H = H_Of_D (E, Cid_A)
                 and then H.Issuer = Zero_Key and then H.Del_TTL = 0);
-         Lemma_Header_Canonical (D);
+         Lemma_Header_Canonical (Cid_A, D);
          Check ("DEL header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          Keep := Back;
          Decode (E (0 .. 139), Back, St);
@@ -536,9 +556,9 @@ begin
             Decode (Bad, Back, St);
             Check ("DEL tampered signature: decodes, not well-formed",
                    St = OK and then Back.C = D.C and then Back.Signature /= D.Signature
-                   and then not Well_Formed (Back));
+                   and then not Well_Formed (Cid_A, Back));
             Keep := Back;
-            Decode_Verified (Bad, Back, St);
+            Decode_Verified (Cid_A, Bad, Back, St);
             Check ("DEL tampered signature: Decode_Verified refuses, record unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
@@ -547,9 +567,9 @@ begin
             Check ("DEL tampered author: decodes, not well-formed",
                    St = OK and then Back.C.Author /= D.C.Author
                    and then Back.Signature = D.Signature
-                   and then not Well_Formed (Back));
+                   and then not Well_Formed (Cid_A, Back));
             Keep := Back;
-            Decode_Verified (Bad, Back, St);
+            Decode_Verified (Cid_A, Bad, Back, St);
             Check ("DEL tampered author: Decode_Verified refuses, record unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
@@ -568,6 +588,67 @@ begin
             Check ("DEL frame refused as PUT", St = Malformed and then P = P0);
          end;
          Check ("Kind_Of reads the tag", Has_Kind (E) and then Kind_Of (E) = K_Del);
+      end;
+   end;
+
+   ---------------------------------------------------------------------------
+   --  A26: the collection context. The same data record bytes under two
+   --  (root_pk, salt) pairs have two different h, and a frame signed under
+   --  one cid does not verify under the other. (NS_A and NS_B differ here;
+   --  the point is that h binds the full cid, not only the ns bytes in the
+   --  frame, so the check holds whatever ns the frame carries.)
+   ---------------------------------------------------------------------------
+   declare
+      P    : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [16#61#], 9, 10, Author_PK, [5, 6]);
+      D    : Del_Record := Make_Del (Cid_A, NS_A, Ent_A, 11, 12, Author_PK);
+      PB   : Put_Record;
+      DB   : Del_Record;
+      St   : Status;
+   begin
+      Sign (Cid_A, P, Author_SK);
+      Sign (Cid_A, D, Author_SK);
+      Check ("A26 PUT: one record, two cids, two h (and two headers)",
+             Hash (Cid_A, P.C) /= Hash (Cid_B, P.C)
+             and then To_Key256 (Hash (Cid_A, P.C)) = H_Of_D (Encode (P), Cid_A)
+             and then To_Key256 (Hash (Cid_B, P.C)) = H_Of_D (Encode (P), Cid_B)
+             and then To_Header (Cid_A, P).V.H /= To_Header (Cid_B, P).V.H
+             and then To_Header (Cid_A, P).NS = To_Header (Cid_B, P).NS);
+      Check ("A26 PUT: h is not BLAKE2b-256 (tag ‖ content) any more",
+             To_Key256 (Hash (Cid_A, P.C)) /= H_Of (Encode (P)));
+      Check ("A26 PUT: well-formed under its cid only",
+             Well_Formed (Cid_A, P) and then not Well_Formed (Cid_B, P));
+      PB := P;
+      PB.C.T := 0;
+      Decode_Verified (Cid_B, Encode (P), PB, St);
+      Check ("A26 PUT: Decode_Verified under the other cid refuses, record unchanged",
+             St = Malformed and then PB.C.T = 0);
+      Decode_Verified (Cid_A, Encode (P), PB, St);
+      Check ("A26 PUT: Decode_Verified under its cid accepts", St = OK and then PB = P);
+      Check ("A26 DEL: one record, two cids, two h",
+             Hash (Cid_A, D.C) /= Hash (Cid_B, D.C)
+             and then To_Key256 (Hash (Cid_B, D.C)) = H_Of_D (Encode (D), Cid_B)
+             and then To_Header (Cid_A, D).V.H /= To_Header (Cid_B, D).V.H);
+      Check ("A26 DEL: well-formed under its cid only",
+             Well_Formed (Cid_A, D) and then not Well_Formed (Cid_B, D));
+      DB := D;
+      DB.C.T := 0;
+      Decode_Verified (Cid_B, Encode (D), DB, St);
+      Check ("A26 DEL: Decode_Verified under the other cid refuses, record unchanged",
+             St = Malformed and then DB.C.T = 0);
+      --  Same ns bytes, two cids (the 2^64 collision of A26, simulated):
+      --  a record whose ns is NS_A, signed under a cid other than Cid_A,
+      --  does not verify under Cid_A.
+      declare
+         Other_Cid : Hash256 := Cid_A;
+         Q         : Put_Record :=
+           Make_Put (Cid_A, NS_A, Ent_A, [16#62#], 1, 2, Author_PK, []);
+      begin
+         Other_Cid (31) := Other_Cid (31) xor 1;   --  same first 16 bytes (ns)
+         Q := Make_Put (Other_Cid, NS_A, Ent_A, [16#62#], 1, 2, Author_PK, []);
+         Sign (Other_Cid, Q, Author_SK);
+         Check ("A26: same ns, other cid: well-formed there, refused here",
+                Other_Cid (0 .. NS_Len - 1) = NS_A
+                and then Well_Formed (Other_Cid, Q) and then not Well_Formed (Cid_A, Q));
       end;
    end;
 
@@ -1409,11 +1490,12 @@ begin
       Line  : String (1 .. 32_768);
       Last  : Natural;
       N     : Natural := 0;
-      NS_V  : constant NS_Id  := NS_Id (Fill (16, 1));
       Ent_V : constant Ent_Id := Ent_Id (Fill (16, 2));
       Au_V  : constant Pubkey := Pubkey (Fill (32, 4));
       Rt_V  : constant Pubkey := Pubkey (Fill (32, 8));
       Sa_V  : constant Salt   := Salt (Fill (16, 9));
+      Cid_V : constant Hash256 := Cid_Of (Rt_V, Sa_V);
+      NS_V  : constant NS_Id  := Collection_Id (Rt_V, Sa_V);
       Sg_V  : constant Pubkey := Pubkey (Fill (32, 10));
 
       procedure One (Name : String; Content, H : Byte_Array) is
@@ -1423,11 +1505,11 @@ begin
             declare
                R : constant Put_Record :=
                  (if Name = "put1"
-                  then Make_Put (NS_V, Ent_V, Fill (5, 3), 16#0102_0304_0506#, 7, Au_V,
-                                 Fill (10, 5))
-                  else Make_Put (NS_V, Ent_V, Fill (32, 6), 0, Max_U48, Au_V, []));
+                  then Make_Put (Cid_V, NS_V, Ent_V, Fill (5, 3), 16#0102_0304_0506#, 7,
+                                 Au_V, Fill (10, 5))
+                  else Make_Put (Cid_V, NS_V, Ent_V, Fill (32, 6), 0, Max_U48, Au_V, []));
             begin
-               Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
+               Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
          elsif Name = "del1" then
@@ -1436,7 +1518,7 @@ begin
                  (C => (NS => NS_V, Ent => Ent_V, T => 1234, Seq => Max_U48, Author => Au_V),
                   Signature => [others => 0]);
             begin
-               Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
+               Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
          elsif Name = "roster1" or else Name = "roster2" or else Name = "roster3" then
@@ -1478,6 +1560,9 @@ begin
                Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
+         elsif Name = "cid1" then
+            Ok := Content = Rt_V & Sa_V and then Cid_Of (Rt_V, Sa_V) = H
+                  and then Collection_Id (Rt_V, Sa_V) = H (0 .. NS_Len - 1);
          elsif Name = "cert1" then
             Ok := Cert_Input (Collection_Id (Rt_V, Sa_V), Sg_V, 16#0000_0102_0304#) = Content
                   and then Cert_Hash (Collection_Id (Rt_V, Sa_V), Sg_V, 16#0000_0102_0304#) = H;
@@ -1517,7 +1602,7 @@ begin
             end if;
          end loop;
          Close (F);
-         Check ("vectors: all nine present", N = 9);
+         Check ("vectors: all ten present", N = 10);
       end if;
    end;
 

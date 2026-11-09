@@ -33,7 +33,9 @@
 --        misses it; Receive flags the other's record; Clone_Pair and
 --        Clone_View hold;
 --    (i) Receive does not flag a duplicate own record, a dominated own
---        record, an expired own DEL or a record by another key.
+--        record, an expired own DEL or a record by another key;
+--    (j) A26: Prepare signs under the store's cid, and a PUT signed under
+--        another cid with this ns does not verify here.
 --  The build uses -gnata, so every Pre / Post runs on these stores.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -89,6 +91,7 @@ procedure Test_Write with SPARK_Mode => Off is
    Root_PK, Dev_PK, Peer_PK, Stranger_PK : Pubkey;
    Salt_A : constant Salt := Salt (Fill (Salt_Len, 90));
    NS_A   : NS_Id;
+   Cid_A  : Hash256;   --  the collection context of (Root_PK, Salt_A) (A26)
    NS     : Id128;
    Fnd    : Key256;
 
@@ -116,22 +119,22 @@ procedure Test_Write with SPARK_Mode => Off is
       SK  : Kome.Crypto.Secret_Key; PK : Pubkey) return Byte_Array
    is
       R : Put_Record :=
-        Make_Put (NS_A, Ent_B (Ent), [Character'Pos (Field)], T, Seq, PK, Value);
+        Make_Put (Cid_A, NS_A, Ent_B (Ent), [Character'Pos (Field)], T, Seq, PK, Value);
    begin
-      Sign (R, SK);
+      Sign (Cid_A, R, SK);
       return Encode (R);
    end Put_Of;
 
    function Del_Of (Ent : Byte; T, Seq : U48; SK : Kome.Crypto.Secret_Key; PK : Pubkey)
      return Byte_Array
    is
-      R : Del_Record := Make_Del (NS_A, Ent_B (Ent), T, Seq, PK);
+      R : Del_Record := Make_Del (Cid_A, NS_A, Ent_B (Ent), T, Seq, PK);
    begin
-      Sign (R, SK);
+      Sign (Cid_A, R, SK);
       return Encode (R);
    end Del_Of;
 
-   function Hdr (F : Byte_Array) return Header is (Header_Of (F));
+   function Hdr (F : Byte_Array) return Header is (Header_Of (Cid_A, F));
 
    Cap   : constant := 32;
    Slice : constant := 8;
@@ -215,6 +218,7 @@ procedure Test_Write with SPARK_Mode => Off is
    Kome.Crypto.Key_Pair (Seed_Of (3), Root_SK, Root_PK);
    Kome.Crypto.Key_Pair (Seed_Of (5), Peer_SK, Peer_PK);
    NS_A := Collection_Id (Root_PK, Salt_A);
+   Cid_A := Cid_Of (Root_PK, Salt_A);
    NS := To_Id128 (NS_A);
    Fnd := To_Key256 (Root_PK);
 
@@ -233,10 +237,11 @@ procedure Test_Write with SPARK_Mode => Off is
       Setup (S, L);
       Prep (S, L, W_Put, 1, 'a', [1, 2, 3], 10 * Day, Dev_SK, 0, P, Seq_P, St);
       Check ("(a) Prepare PUT: OK, Ready, Seq_Persist = seq_self + 1, no flag",
-             St = OK and then Ready (P) and then Seq_P = 1 and then not Cl
+             St = OK and then Ready (P, Cid (S)) and then Seq_P = 1 and then not Cl
              and then not Cm and then not Bx);
       Check ("(a) the frame verifies and decodes to Rec (P), with t = now and the device key",
-             Verified (Frame_Of (P)) and then Hdr (Frame_Of (P)) = Rec (P)
+             Verified (Cid_A, Frame_Of (P)) and then Hdr (Frame_Of (P)) = Rec (P)
+             and then Cid (S) = Cid_A
              and then Rec (P).V.T = 10 * Day and then Rec (P).V.Seq = 1
              and then Rec (P).V.Author = Self_Of (Dev_SK) and then Rec (P).K = K_Put);
       Check ("(a) Prepare changes nothing (the record is not held yet)",
@@ -255,7 +260,7 @@ procedure Test_Write with SPARK_Mode => Off is
              St = OK and then Holds (L, Rec (P2)) and then not Holds (L, Rec (P)));
       Prep (S, L, W_Del, 1, 'x', [], 20 * Day, Dev_SK, Seq_P, P, Seq_P, St);
       Check ("(a) Prepare DEL: OK, a DEL at t >= maxceil - Cap_Lead",
-             St = OK and then Ready (P) and then Rec (P).K = K_Del and then Seq_P = 3
+             St = OK and then Ready (P, Cid (S)) and then Rec (P).K = K_Del and then Seq_P = 3
              and then Rec (P).V.T = Ceil_T - Cap_Lead);
       Commit (S, L, P, Off, St);
       Check ("(a) Commit DEL: held, and the PUT of the entity is gone",
@@ -288,10 +293,10 @@ procedure Test_Write with SPARK_Mode => Off is
       Setup (S, L);
       Prep (S, L, W_Put, 2, 'a', [1], Day, Stranger_SK, 0, P, Seq_P, St);
       Check ("(c) a key not in W: Inadmissible, not Ready, seq_self unchanged",
-             St = Inadmissible and then not Ready (P) and then Seq_P = 0);
+             St = Inadmissible and then not Ready (P, Cid (S)) and then Seq_P = 0);
       Prep (S, L, W_Put, 2, 'a', [1], Day, Dev_SK, U48'Last, P, Seq_P, St);
       Check ("(c) seq_self at 2^48 - 1: Seq_Exhausted, not Ready, nothing persisted",
-             St = Seq_Exhausted and then not Ready (P) and then Seq_P = U48'Last);
+             St = Seq_Exhausted and then not Ready (P, Cid (S)) and then Seq_P = U48'Last);
       Prep (S, L, W_Put, 2, 'a', [1], 2**40, Dev_SK, 2**40, P, Seq_P, St);
       Check ("(f) no refusal of a large seq jump: seq_self 2^40 gives 2^40 + 1",
              St = OK and then Seq_P = 2**40 + 1);
@@ -318,7 +323,7 @@ procedure Test_Write with SPARK_Mode => Off is
             Prep (S, L, W_Put, 3, 'a', [1], Ceil_T + Day, Dev_SK, 5, P, Seq_P, St);
          end if;
          Check ("(c) Shadowed: the floor at the ceiling has a larger key; Ready, seq persisted",
-                St = Shadowed and then Ready (P) and then Seq_P = 6
+                St = Shadowed and then Ready (P, Cid (S)) and then Seq_P = 6
                 and then Rec (P).V.T = Ceil_T and then Lt (Rec (P).V, Hdr (F_Big).V));
          Commit (S, L, P, Off, St);
          Check ("(d) Commit of a Shadowed write: Dominated, not held",
@@ -372,6 +377,33 @@ procedure Test_Write with SPARK_Mode => Off is
          Check ("(d) Commit on a store without the grant: Inadmissible, nothing changes",
                 St = Inadmissible and then Log_Length (S2) = LL
                 and then not Holds (L2, Rec (P)));
+      end;
+      --  (j) A26: a peer's PUT with this collection's ns bytes, signed
+      --  under another cid (a collection whose ns collides), is not
+      --  Verified under Cid (S): the binding's decode refuses it, so it
+      --  never reaches Receive. Prepare makes P Ready under Cid (S).
+      declare
+         Other : Hash256 := Cid_A;
+      begin
+         Other (31) := Other (31) xor 1;
+         declare
+            X : Put_Record :=
+              Make_Put (Other, NS_A, Ent_B (7), [Character'Pos ('a')], 10 * Day, 1,
+                        Peer_PK, [1]);
+         begin
+            Sign (Other, X, Peer_SK);
+            Check ("(j) A26: a PUT signed under another cid with this ns is not Verified",
+                   Other (0 .. NS_Len - 1) = NS_A
+                   and then Verified (Other, Encode (X))
+                   and then not Verified (Cid (S), Encode (X))
+                   and then Verified (Cid (S), Put_Of (7, 'a', 10 * Day, 1, [1], Peer_SK,
+                                                      Peer_PK)));
+         end;
+         Prep (S, L, W_Put, 6, 'a', [1], 10 * Day, Dev_SK, 1, P, Seq_P, St);
+         Check ("(j) A26: Prepare signs under Cid (S)",
+                Ready (P, Cid (S)) and then Cid (S) = Cid_A
+                and then Verified (Cid_A, Frame_Of (P))
+                and then not Verified (Other, Frame_Of (P)));
       end;
    end;
 

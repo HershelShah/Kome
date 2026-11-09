@@ -63,7 +63,9 @@ version order.
 
 **Identifiers.** A collection `ns` is 16 bytes and self-certifying:
 `ns = BLAKE2b-256(root_pk ‖ salt)[0:16]`. `root_pk` is the collection's
-**founding key**. An entity `ent` is 16 bytes. A field name is 1–32 bytes.
+**founding key**. The full 32-byte hash `cid = BLAKE2b-256(root_pk ‖
+salt)` is the collection's **context**: `ns` is its first 16 bytes, and
+the `h` of every data record binds it (Records below; AUDIT.md A26). An entity `ent` is 16 bytes. A field name is 1–32 bytes.
 A value is 0–40 960 bytes. Blob chunks of 32 KiB fit, and a layer above the
 engine cuts larger payloads into chunks. This bound makes every frame fit in
 one reconciliation message (§8). An empty value is a value: it does not
@@ -79,9 +81,20 @@ compares versions lexicographically, with `author` and `h` as unsigned
 records never compare equal, and the order is total by construction.
 `t = 0` and `seq = 0` are ordinary values.
 
-**Records.** A frame is `tag:u8 ‖ content ‖ sig[64]`, and `h = BLAKE2b-256(tag
-‖ content)`. `sig` is an Ed25519 signature (RFC 8032) by the record's
-signer over the 32 bytes of `h`. The verification predicate is normative
+**Records.** A frame is `tag:u8 ‖ content ‖ sig[64]`. For an authorization
+record (`ROSTER`, `REVOKE`, `GRANT`), `h = BLAKE2b-256(tag ‖ content)`; for
+a data record (`DEL`, `PUT`), `h = BLAKE2b-256(tag ‖ cid ‖ content)`. The
+`cid` is *implicit context*: it is not on the wire, and the frame bytes do
+not change. An authorization record carries `root_pk` and `salt`, so its
+`h` already binds the whole `cid`; a data record carries only `ns`, and
+without the `cid` in `h` two collections whose `ns` collide (about 2^64
+work) could exchange data records. So a verifier of a data record needs
+the collection's `(root_pk, salt)` (or its `cid`), not only `ns`:
+`Kome.Records.Well_Formed`, `Decode_Verified`, `To_Header` and `Sign` of
+`PUT` and `DEL` take the `cid` as a parameter, and `Kome.Store` passes its
+own (§7). `sig` is an Ed25519 signature (RFC 8032) by the record's
+signer over the 32 bytes of `h`; a data record's signature binds the
+`cid` through `h`. The verification predicate is normative
 (§10.9): a signature `R ‖ S` under the public key `A` over the message `m`
 is valid if and only if `A` and `R` are canonical point encodings (each
 decodes to a point, with the `y` coordinate below `p`), `A` is not one of
@@ -1065,7 +1078,13 @@ EXPIRE         op = 3 ‖ horizon:u48            Frontier.Expire at this horizon
 
 The log starts with exactly one `HEADER` (`version = 1`; 80 bytes). Its `ns`
 must be equal to `BLAKE2b-256(root_pk ‖ salt)[0:16]`. This fixes the
-founding key for all the store's operations. Its `slice` field is a check:
+founding key for all the store's operations. `Store.Open` and
+`Open_From_Log` compute the collection context `cid = BLAKE2b-256(root_pk
+‖ salt)` once, from the `root_pk` and `salt` that they are given or that
+the `HEADER` holds, and keep it (`Kome.Store.Cid`). Every data frame is
+verified under it: `Put_Frame` requires `Verified(Cid(S), frame)`, replay
+decodes each entry under it, and `Kome.Write` signs under it (§2,
+AUDIT.md A26). Its `slice` field is a check:
 the binding opens every store with the constant `Slice_Max` (a binding
 duty; `Kome.Store.Open` does not require it), and replay refuses a
 `HEADER` whose `slice` is not the slice of the open with `NO_SPACE`. Its
@@ -1115,6 +1134,8 @@ second copy of the log (§10.10 (c)).
 1. It checks the `HEADER`: its op, magic and version, its `ns` against
    `root_pk` and `salt`, its `data_cap` in range (`MALFORMED` otherwise),
    and its `slice` against the slice of this open (`NO_SPACE` otherwise).
+   It computes `cid` from the `HEADER`'s `root_pk` and `salt`, and it
+   decodes and verifies every later frame under that `cid`.
 2. It takes the capacities of this open. A larger or a smaller `data_cap`
    than the logged one is allowed when the replayed `F` fits in it. An
    `APPLY` that the data row of this open refuses gives `NO_SPACE`, and
@@ -1176,7 +1197,10 @@ change, and no refusal changes anything:
    store's founding key: `MALFORMED`. (Two key pairs can share a
    128-bit `ns` at approximately 2^64 work. This check makes the decoder,
    the capacity rows and `root_void` agree on which key is the founding
-   key.)
+   key. A data record of such a colliding collection does not get this
+   far: its `h` binds the other collection's `cid`, so its signature does
+   not verify under this store's `cid`, and the decode before step 0
+   refuses it; §2.)
 1. A data record that is not admitted: `INADMISSIBLE`.
 2. Already held: `OK`, no change.
 3. Dominated by a held record: `DOMINATED`. It needs no room in the
@@ -2166,8 +2190,12 @@ clock, and A3 and A4 are the assumptions that bound it.
    protocol runs as before.
 9. **Interoperability residue.** Kome never encodes a record's frame again,
    so a second implementation can check Kome records with BLAKE2b and an
-   Ed25519 verifier that computes exactly the **cofactored verification
-   equation** of §2: canonical `A` and `R`, `A` not small-order, `S < L`,
+   Ed25519 verifier. It needs the collection's `(root_pk, salt)`, not
+   only `ns`: a data record's `h` is `BLAKE2b-256(tag ‖ cid ‖ content)`
+   with `cid = BLAKE2b-256(root_pk ‖ salt)`, which the frame does not
+   carry (§2; `spark/vectors/records.txt` has the `cid1`, `put` and `del`
+   known answers). The verifier must compute exactly the **cofactored
+   verification equation** of §2: canonical `A` and `R`, `A` not small-order, `S < L`,
    and `[8][S]B = [8]R + [8][k]A`. "RFC 8032" alone is not enough: the RFC
    permits both the cofactored and the cofactorless equation, and the two
    disagree on signatures that a malicious author can make (an `R` with a

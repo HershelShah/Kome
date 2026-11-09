@@ -124,6 +124,7 @@ procedure Test_Store with SPARK_Mode => Off is
    Root_PK, Root2_PK, RootX_PK, Author_PK, Author2_PK, Stranger_PK : Pubkey;
    Salt_A : constant Salt := Salt (Fill (Salt_Len, 90));
    NS_A   : NS_Id;
+   Cid_A  : Hash256;   --  the collection context of (Root_PK, Salt_A) (A26)
    NS     : Id128;
    Fnd    : Key256;
 
@@ -178,10 +179,10 @@ procedure Test_Store with SPARK_Mode => Off is
       SK  : Kome.Crypto.Secret_Key; PK : Pubkey) return Byte_Array
    is
       R : Put_Record :=
-        Make_Put (NS_A, Ent_Id (Fill (Ent_Len, Natural (Ent))),
+        Make_Put (Cid_A, NS_A, Ent_Id (Fill (Ent_Len, Natural (Ent))),
                   [Character'Pos (Field)], T, Seq, PK, Value);
    begin
-      Sign (R, SK);
+      Sign (Cid_A, R, SK);
       return Encode (R);
    end Put_Of;
 
@@ -193,11 +194,11 @@ procedure Test_Store with SPARK_Mode => Off is
    begin
       R.C := (NS => NS_A, Ent => Ent_Id (Fill (Ent_Len, Natural (Ent))),
               T => T, Seq => Seq, Author => Author_PK);
-      Sign (R, Author_SK);
+      Sign (Cid_A, R, Author_SK);
       return Encode (R);
    end Del_Of;
 
-   function Hdr (F : Byte_Array) return Header is (Header_Of (F));
+   function Hdr (F : Byte_Array) return Header is (Header_Of (Cid_A, F));
 
    function Cell_Of (Field : Character) return Key256 is
      (To_Key256 (Kome.Crypto.Blake2b_256 ([Character'Pos (Field)])));
@@ -213,10 +214,10 @@ procedure Test_Store with SPARK_Mode => Off is
      (S : in out Store_T; L : in out Lattice; F : Byte_Array; Off : out Log_Size;
       St : out Status) is
    begin
-      if not Verified (F) then
+      if not Verified (Cid (S), F) then
          raise Program_Error with "test frame not well-formed";
       end if;
-      Put_Frame (S, L, F, Hdr (F), Off, St);
+      Put_Frame (S, L, F, Header_Of (Cid (S), F), Off, St);
    end Put;
 
    procedure Put (S : in out Store_T; L : in out Lattice; F : Byte_Array; St : out Status) is
@@ -414,6 +415,7 @@ procedure Test_Store with SPARK_Mode => Off is
    Kome.Crypto.Key_Pair (Seed_Of (5), Author2_SK, Author2_PK);
    Kome.Crypto.Key_Pair (Seed_Of (6), RootX_SK, RootX_PK);
    NS_A := Collection_Id (Root_PK, Salt_A);
+   Cid_A := Cid_Of (Root_PK, Salt_A);
    NS := To_Id128 (NS_A);
    Fnd := To_Key256 (Root_PK);
    Cert2a := Make_Cert (Root_SK, NS_A, Root2_PK, Cap2);
@@ -517,6 +519,10 @@ procedure Test_Store with SPARK_Mode => Off is
              and then Collection (S) = NS and then Founding (S) = Fnd
              and then Auth_Gen (S) = 0 and then Expire_Mark (S) = 0
              and then not Compact_Due (S));
+      Check ("open: Cid = BLAKE2b-256 (root_pk ‖ salt), and ns is its first 16 bytes (A26)",
+             Cid (S) = Cid_Of (Root_PK, Salt_A)
+             and then Cid (S) = Kome.Crypto.Blake2b_256 (Root_PK & Salt_A)
+             and then Cid (S) (0 .. NS_Len - 1) = NS_A);
       Lemma_Log_Header (S, SL);
       Lemma_Valid_Facts (S, SL);
       Check ("open: the HEADER bytes (op, magic, version, ns, root_pk, salt, caps)",
@@ -613,7 +619,7 @@ procedure Test_Store with SPARK_Mode => Off is
             GX := Encode (G);
          end;
          Check ("foreign root_pk: Foreign_Root, and its ns is not the collection's",
-                Verified (GX) and then Foreign_Root (S, GX)
+                Verified (Cid (S), GX) and then Foreign_Root (S, GX)
                 and then Hdr (GX).NS /= Collection (S)
                 and then not Foreign_Root (S, G1) and then not Foreign_Root (S, P1));
          declare
@@ -626,6 +632,81 @@ procedure Test_Store with SPARK_Mode => Off is
                    St = Malformed and then VL = Log_Length (S) and then Valid (R, RL)
                    and then Log_Bytes (R) = Log_Bytes (S) and then Same_Set (SL, RL));
          end;
+      end;
+
+      ------------------------------------------------------------------------
+      --  A26: a data record binds the full cid, not only its ns bytes.
+      --  Collection B has the same founding key and another salt. A PUT
+      --  that carries B's ns but was signed under A's cid (the frame that
+      --  a 2^64 ns collision would let A's writers hand to B) does not
+      --  verify in B, and a log of B that carries it is Malformed. The
+      --  same PUT signed under B's cid verifies and replays.
+      ------------------------------------------------------------------------
+      declare
+         Salt_B : constant Salt    := Salt (Fill (Salt_Len, 91));
+         Cid_B  : constant Hash256 := Cid_Of (Root_PK, Salt_B);
+         NS_B   : constant NS_Id   := Collection_Id (Root_PK, Salt_B);
+         SB     : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
+         LB     : Lattice (Cap, Slice);
+         R      : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
+         RL     : Lattice (Cap, Slice);
+         VL     : Log_Size;
+
+         function Put_In (C : Hash256) return Byte_Array is
+            X : Put_Record :=
+              Make_Put (C, NS_B, Ent_Id (Fill (Ent_Len, 9)), [Character'Pos ('n')],
+                        10 * Day, 1, Author_PK, [7]);
+         begin
+            Sign (C, X, Author_SK);
+            return Encode (X);
+         end Put_In;
+
+         function Roster_B return Byte_Array is
+            X : Roster_Record :=
+              Make_Roster (Root_PK, Salt_B, Root_PK, 0, Zero_Sig, Good_DH (77), 1, 100 * Day,
+                           TTL, 0, [], Member (Author_PK, 11));
+         begin
+            Sign (X, Root_SK);
+            return Encode (X);
+         end Roster_B;
+
+         function Grant_B return Byte_Array is
+            X : Grant_Record := Make_Grant (Root_PK, Salt_B, Root_PK, 0, Zero_Sig, Author_PK);
+         begin
+            Sign (X, Root_SK);
+            return Encode (X);
+         end Grant_B;
+
+         XA : constant Byte_Array := Put_In (Cid_A);
+         XB : constant Byte_Array := Put_In (Cid_B);
+      begin
+         LB := Empty (To_Id128 (NS_B), Fnd, LB.Cap, LB.Slice);
+         Open (Root_PK, Salt_B, LB, SB);
+         Put (SB, LB, Roster_B);
+         Put (SB, LB, Grant_B);
+         Check ("A26: two salts of one root give two cids and two stores",
+                Cid (SB) = Cid_B and then Cid (SB) /= Cid (S)
+                and then Collection (SB) = To_Id128 (NS_B));
+         Check ("A26: one PUT's bytes, two cids, two h",
+                XA'Length = XB'Length
+                and then Header_Of (Cid_A, XA).V.H /= Header_Of (Cid_B, XA).V.H
+                and then Header_Of (Cid_A, XA).NS = Collection (SB));
+         Check ("A26: a PUT with B's ns signed under A's cid is not Verified in B",
+                Verified (Cid_A, XA) and then not Verified (Cid (SB), XA));
+         Check ("A26: A's own frame P1 is not Verified in B, B's XB not in A",
+                Verified (Cid (S), P1) and then not Verified (Cid (SB), P1)
+                and then Verified (Cid (SB), XB) and then not Verified (Cid (S), XB));
+         Open_From_Log (Log_Bytes (SB) & Apply_Entry (XA), RL, R, VL, St);
+         Check ("A26: a log of B carrying the PUT signed under A's cid is Malformed",
+                St = Malformed and then VL = Log_Length (SB) and then Valid (R, RL)
+                and then Cid (R) = Cid_B);
+         Open_From_Log (Log_Bytes (SB) & Apply_Entry (XB), RL, R, VL, St);
+         Check ("A26: the same PUT signed under B's cid replays in B",
+                St = OK and then Entries (R) = 3 and then Cid (R) = Cid_B
+                and then Holds (RL, Header_Of (Cid_B, XB)));
+         Put (SB, LB, XB, St);
+         Check ("A26: Put_Frame in B holds the PUT signed under B's cid",
+                St = OK and then Holds (LB, Header_Of (Cid (SB), XB)));
       end;
 
       ------------------------------------------------------------------------

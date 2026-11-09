@@ -38,7 +38,7 @@ package body Kome.Write with SPARK_Mode is
    -- Lemma_Ready --
    -----------------
 
-   procedure Lemma_Ready (P : Prepared) is null;
+   procedure Lemma_Ready (P : Prepared; Cid : Hash256) is null;
 
    --  A Prepared that is not Ready (Len = 0).
    Blank : constant Prepared :=
@@ -98,10 +98,10 @@ package body Kome.Write with SPARK_Mode is
       if Op = W_Put then
          declare
             R : Kome.Records.Put_Record :=
-              Kome.Records.Make_Put (NS_B, Ent, Field, T, Seq,
+              Kome.Records.Make_Put (Cid (S), NS_B, Ent, Field, T, Seq,
                                      Kome.Crypto.Public_Of (SK), Value);
          begin
-            Kome.Records.Sign (R, SK);
+            Kome.Records.Sign (Cid (S), R, SK);
             declare
                Fr : constant Byte_Array := Kome.Records.Encode (R);
             begin
@@ -112,9 +112,10 @@ package body Kome.Write with SPARK_Mode is
       else
          declare
             R : Kome.Records.Del_Record :=
-              Kome.Records.Make_Del (NS_B, Ent, T, Seq, Kome.Crypto.Public_Of (SK));
+              Kome.Records.Make_Del (Cid (S), NS_B, Ent, T, Seq,
+                                     Kome.Crypto.Public_Of (SK));
          begin
-            Kome.Records.Sign (R, SK);
+            Kome.Records.Sign (Cid (S), R, SK);
             declare
                Fr : constant Byte_Array := Kome.Records.Encode (R);
             begin
@@ -126,15 +127,15 @@ package body Kome.Write with SPARK_Mode is
 
       --  The self check (see the header): the bytes verify, and they
       --  decode to the record of the choice.
-      if P.Len in Frame_Size and then Verified (Frame_Of (P)) then
+      if P.Len in Frame_Size and then Verified (Cid (S), Frame_Of (P)) then
          declare
-            H : constant Header := Header_Of (Frame_Of (P));
+            H : constant Header := Header_Of (Cid (S), Frame_Of (P));
          begin
-            Lemma_Header_Of (Frame_Of (P));
-            Lemma_Verified_Canonical (Frame_Of (P));
+            Lemma_Header_Of (Cid (S), Frame_Of (P));
+            Lemma_Verified_Canonical (Cid (S), Frame_Of (P));
             if H = Kome.Emit.To_Header (Tgt, Stamp (T, Self, Seq, H.V.H)) then
                P.H := H;
-               pragma Assert (Ready (P));
+               pragma Assert (Ready (P, Cid (S)));
                if Res = OK then
                   Lemma_OK_Undominated (F, Tgt, T, Self, Seq, H.V.H);
                end if;
@@ -167,7 +168,7 @@ package body Kome.Write with SPARK_Mode is
       Result :    out Status)
    is
    begin
-      Lemma_Ready (P);
+      Lemma_Ready (P, Cid (S));
       Put_Frame (S, F, Frame_Of (P), Rec (P), Off, Result);
    end Commit;
 

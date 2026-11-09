@@ -61,7 +61,8 @@ package body Kome.Records with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    function Make_Put
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -88,7 +89,7 @@ package body Kome.Records with SPARK_Mode is
       --  FH: the first FL bytes of the stored field are the argument bytes.
       pragma Assert (for all K in 0 .. FL - 1 => R.C.Field (K) = Field (Field'First + K));
       Kome.Crypto.Lemma_Blake2b_Congruent (R.C.Field (0 .. FL - 1), Field);
-      Lemma_Header_Canonical (R);
+      Lemma_Header_Canonical (Cid, R);
       return R;
    end Make_Put;
 
@@ -145,14 +146,14 @@ package body Kome.Records with SPARK_Mode is
    end Decode;
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Put_Record; Result : out Status) is
+     (Cid : Hash256; Frame : Byte_Array; R : in out Put_Record; Result : out Status) is
    begin
       Result := Malformed;
       if Is_Put_Frame (Frame) then
          declare
             P : constant Put_Record := Parse_Put (Frame);
          begin
-            if Well_Formed (P) then
+            if Well_Formed (Cid, P) then
                R := P;
                Result := OK;
             end if;
@@ -160,12 +161,12 @@ package body Kome.Records with SPARK_Mode is
       end if;
    end Decode_Verified;
 
-   procedure Sign (R : in out Put_Record; SK : Kome.Crypto.Secret_Key) is
+   procedure Sign (Cid : Hash256; R : in out Put_Record; SK : Kome.Crypto.Secret_Key) is
    begin
-      R.Signature := Kome.Crypto.Sign (SK, Hash (R.C));
+      R.Signature := Kome.Crypto.Sign (SK, Hash (Cid, R.C));
    end Sign;
 
-   procedure Lemma_Header_Canonical (R : Put_Record) is null;
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Put_Record) is null;
 
    --  Lemma_Decode_Encode (PUT) has one helper for each field. So each VC
    --  holds only the Posts of Encode and Parse_Put and the steps for one
@@ -386,7 +387,8 @@ package body Kome.Records with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    function Make_Del
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey) return Del_Record
@@ -395,7 +397,7 @@ package body Kome.Records with SPARK_Mode is
         (C         => (NS => NS, Ent => Ent, T => T, Seq => Seq, Author => Author),
          Signature => [others => 0]);
    begin
-      Lemma_Header_Canonical (R);
+      Lemma_Header_Canonical (Cid, R);
       return R;
    end Make_Del;
 
@@ -439,14 +441,14 @@ package body Kome.Records with SPARK_Mode is
    end Decode;
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Del_Record; Result : out Status) is
+     (Cid : Hash256; Frame : Byte_Array; R : in out Del_Record; Result : out Status) is
    begin
       Result := Malformed;
       if Is_Del_Frame (Frame) then
          declare
             P : constant Del_Record := Parse_Del (Frame);
          begin
-            if Well_Formed (P) then
+            if Well_Formed (Cid, P) then
                R := P;
                Result := OK;
             end if;
@@ -454,12 +456,12 @@ package body Kome.Records with SPARK_Mode is
       end if;
    end Decode_Verified;
 
-   procedure Sign (R : in out Del_Record; SK : Kome.Crypto.Secret_Key) is
+   procedure Sign (Cid : Hash256; R : in out Del_Record; SK : Kome.Crypto.Secret_Key) is
    begin
-      R.Signature := Kome.Crypto.Sign (SK, Hash (R.C));
+      R.Signature := Kome.Crypto.Sign (SK, Hash (Cid, R.C));
    end Sign;
 
-   procedure Lemma_Header_Canonical (R : Del_Record) is null;
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Del_Record) is null;
 
    procedure Lemma_Decode_Encode (R : Del_Record) is
       E : constant Byte_Array := Encode (R);

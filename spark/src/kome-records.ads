@@ -23,10 +23,22 @@
 --
 --    SIGNER = signer[32] cert_cap:u48 cert_sig[64]
 --
---  A frame is  tag:u8 ‖ content ‖ sig[64];  h = BLAKE2b-256 (tag ‖ content);
---  sig = Ed25519 (RFC 8032, D4) over the 32 bytes of h. The author signs a
---  PUT or a DEL. The signer signs a ROSTER, a REVOKE or a GRANT. The tag is
---  the reconciliation-order code of the Kind (Kome.Headers.Kind'Pos).
+--  A frame is  tag:u8 ‖ content ‖ sig[64]. For an authorization record
+--  (ROSTER, REVOKE, GRANT), h = BLAKE2b-256 (tag ‖ content). For a data
+--  record (DEL, PUT), h = BLAKE2b-256 (tag ‖ cid ‖ content), where cid =
+--  BLAKE2b-256 (root_pk ‖ salt) is the collection context (Cid_Of; AUDIT.md
+--  A26). The cid is implicit: it is not on the wire, and the frame bytes
+--  are the same as without it. An authorization record carries root_pk and
+--  salt in its content, so its h already binds the full cid; a data record
+--  carries only ns, the first 16 bytes of cid, and without the cid in h two
+--  collections whose ns collide (about 2^64 work) could exchange data
+--  records. So every function of a data record that reads h (Hash,
+--  To_Header, Well_Formed, Decode_Verified, Sign, Make_Put, Make_Del) takes
+--  the cid as its first parameter; Parse, Decode and Encode do not.
+--  sig = Ed25519 (RFC 8032, D4) over the 32 bytes of h, so the signature of
+--  a data record binds the cid through h. The author signs a PUT or a DEL.
+--  The signer signs a ROSTER, a REVOKE or a GRANT. The tag is the
+--  reconciliation-order code of the Kind (Kome.Headers.Kind'Pos).
 --
 --  Roots (D1, DESIGN.md §2 "The signer block and root certificates").
 --  root_pk is the founding key of the collection. ns = BLAKE2b-256 (root_pk
@@ -54,7 +66,8 @@
 --  What is proved, for each kind (T13):
 --    * The length of Encode is the layout (Frame_Len). Every byte of the
 --      frame is Frame_Byte, the layout read position by position. The
---      frame without its signature is Content_Bytes, and Hash hashes it.
+--      frame without its signature is Content_Bytes. Hash hashes it, for
+--      a data record with the cid after the tag (With_Cid).
 --    * Decode accepts exactly the frames that Is_<Kind>_Frame describes
 --      (exact length, tag, flen in 1..32, vlen <= 40 960, n_links <= 15,
 --      n_members <= 64). Decode never reads out of bounds. On success, it
@@ -63,7 +76,9 @@
 --      So Decode (Encode (R)) returns OK and R.
 --    * Lemma_Encode_Decode_<Kind>: Encode (Parse (B)) = B for every
 --      accepted B. Each record has exactly one encoding, so h is a function
---      of the record (with A2, h is then injective on records).
+--      of the record and, for a data record, of the cid (with A2, h is then
+--      injective on records, and a data record's h differs between two
+--      collections).
 --    * Lemma_Header_Canonical: To_Header (R) is a canonical header
 --      (Kome.Headers.Canonical, D3). For a ROSTER, this needs del_ttl in
 --      the clamp, and Well_Formed implies that. So decode makes only
@@ -199,6 +214,19 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  Kome.Store.Open checks its log HEADER with it (§7).
    function Collection_Id (Root_PK : Pubkey; Salt : Kome.Salt) return NS_Id is
      (Kome.Crypto.Blake2b_256 (Root_PK & Salt) (0 .. NS_Len - 1));
+
+   --  cid = BLAKE2b-256 (root_pk ‖ salt), the collection context of a data
+   --  record (AUDIT.md A26). ns (Collection_Id) is its first 16 bytes.
+   --  Kome.Store computes it once, at Open and Open_From_Log, from the
+   --  root_pk and salt of its HEADER (Kome.Store.Cid).
+   function Cid_Of (Root_PK : Pubkey; Salt : Kome.Salt) return Hash256 is
+     (Kome.Crypto.Blake2b_256 (Root_PK & Salt));
+
+   --  The hash input of a data record: tag ‖ cid ‖ content, from TC = tag
+   --  ‖ content (Content_Bytes). The cid goes right after the tag.
+   function With_Cid (Cid : Hash256; TC : Byte_Array) return Byte_Array is
+     (TC (TC'First .. TC'First) & Cid & TC (TC'First + 1 .. TC'Last))
+     with Pre => TC'Length >= 1 and then TC'Last < Natural'Last - Hash_Len;
 
    --  No frame is longer than this: a PUT with a 32-byte field and a
    --  40 960-byte value, 176 + Value_Max = 41 136 bytes (D12, §2 table).
@@ -347,9 +375,12 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  quantifier, so its completion is in the private part.
    function Canonical (R : Put_Record) return Boolean with Global => null;
 
-   --  A canonical PUT with a zero signature (sign it with Sign).
+   --  A canonical PUT with a zero signature (sign it with Sign). Cid is
+   --  the collection context of its h (A26); it is not stored in the
+   --  record, and the Post gives the header under it.
    function Make_Put
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -375,7 +406,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           --  chose, and h is the hash of the record). This is the
           --  To_Header (Tgt, Stamp (T, Author, Seq, h)) of Kome.Emit for
           --  Tgt = (K_Put, NS, Ent, FH).
-          and then To_Header (Make_Put'Result) =
+          and then To_Header (Cid, Make_Put'Result) =
                      (K       => K_Put,
                       NS      => To_Id128 (NS),
                       Ent     => To_Id128 (Ent),
@@ -383,13 +414,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                       V       => (T      => T,
                                   Author => To_Key256 (Author),
                                   Seq    => Seq,
-                                  H      => To_Key256 (Hash (Make_Put'Result.C))),
+                                  H      => To_Key256 (Hash (Cid, Make_Put'Result.C))),
                       Issuer  => Zero_Key,
                       Del_TTL => 0,
                       Epoch   => 0)
-          and then Kome.Headers.Canonical (To_Header (Make_Put'Result));
+          and then Kome.Headers.Canonical (To_Header (Cid, Make_Put'Result));
 
-   --  tag ‖ content, the bytes h is computed over.
+   --  tag ‖ content, the frame without its signature.
    function Content_Bytes (C : Put_Content) return Byte_Array
    with Global => null,
         Post => Content_Bytes'Result'First = 0
@@ -397,9 +428,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then (for all J in 0 .. Content_Len (C) - 1 =>
                       Content_Bytes'Result (J) = Content_Byte (C, J));
 
-   --  h = BLAKE2b-256 (tag ‖ content) (DESIGN.md §2).
-   function Hash (C : Put_Content) return Hash256 is
-     (Kome.Crypto.Blake2b_256 (Content_Bytes (C)));
+   --  h = BLAKE2b-256 (tag ‖ cid ‖ content) (DESIGN.md §2; AUDIT.md A26).
+   function Hash (Cid : Hash256; C : Put_Content) return Hash256 is
+     (Kome.Crypto.Blake2b_256 (With_Cid (Cid, Content_Bytes (C))));
 
    --  The frame. T13: its length is the layout, every byte is the layout.
    function Encode (R : Put_Record) return Byte_Array
@@ -471,36 +502,38 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Put (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  Well-formed (DESIGN.md §2): the bounds (by type), canonical padding,
-   --  and the signature over h verifies under author.
-   function Well_Formed (R : Put_Record) return Boolean is
+   --  Well-formed in the collection of Cid (DESIGN.md §2): the bounds (by
+   --  type), canonical padding, and the signature over h (which binds Cid)
+   --  verifies under author.
+   function Well_Formed (Cid : Hash256; R : Put_Record) return Boolean is
      (Canonical (R)
-      and then Kome.Crypto.Verify (R.Signature, R.C.Author, Hash (R.C)));
+      and then Kome.Crypto.Verify (R.Signature, R.C.Author, Hash (Cid, R.C)));
 
-   --  Decode, then refuse the record if it is not well-formed. On refusal,
-   --  R does not change.
+   --  Decode, then refuse the record if it is not well-formed in the
+   --  collection of Cid. On refusal, R does not change.
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Put_Record; Result : out Status)
+     (Cid : Hash256; Frame : Byte_Array; R : in out Put_Record; Result : out Status)
    with Global => null,
-        Post => (if Is_Put_Frame (Frame) and then Well_Formed (Parse_Put (Frame))
+        Post => (if Is_Put_Frame (Frame) and then Well_Formed (Cid, Parse_Put (Frame))
                  then Result = OK and then R = Parse_Put (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  sig := Ed25519 (h) with the key of the author. Only the signature
-   --  changes, so h and the header do not change.
-   procedure Sign (R : in out Put_Record; SK : Kome.Crypto.Secret_Key)
+   --  sig := Ed25519 (h) with the key of the author, h under Cid. Only the
+   --  signature changes, so h and the header do not change.
+   procedure Sign (Cid : Hash256; R : in out Put_Record; SK : Kome.Crypto.Secret_Key)
    with Global => null,
         Pre  => Canonical (R)
                 and then Kome.Crypto.Is_Valid (SK)
                 and then Kome.Crypto.Public_Of (SK) = R.C.Author,
         Post => Canonical (R)
           and then R.C = R'Old.C
-          and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
-          and then Hash (R.C) = Hash (R'Old.C);
+          and then R.Signature = Kome.Crypto.Sign (SK, Hash (Cid, R'Old.C))
+          and then Hash (Cid, R.C) = Hash (Cid, R'Old.C);
 
-   --  The lattice header (Kome.Headers): V = (t, author, seq, h),
-   --  FH = BLAKE2b-256 (field name), no issuer, del_ttl 0.
-   function To_Header (R : Put_Record) return Header is
+   --  The lattice header (Kome.Headers) in the collection of Cid:
+   --  V = (t, author, seq, h), FH = BLAKE2b-256 (field name), no issuer,
+   --  del_ttl 0.
+   function To_Header (Cid : Hash256; R : Put_Record) return Header is
      (K       => K_Put,
       NS      => To_Id128 (R.C.NS),
       Ent     => To_Id128 (R.C.Ent),
@@ -508,15 +541,16 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       V       => (T      => R.C.T,
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
-                  H      => To_Key256 (Hash (R.C))),
+                  H      => To_Key256 (Hash (Cid, R.C))),
       Issuer  => Zero_Key,
       Del_TTL => 0,
       Epoch   => 0);
 
    --  D3: the header is canonical.
-   procedure Lemma_Header_Canonical (R : Put_Record) with
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Put_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Put and then Kome.Headers.Canonical (To_Header (R));
+     Post => To_Header (Cid, R).K = K_Put
+             and then Kome.Headers.Canonical (To_Header (Cid, R));
 
    --  Round trip (T13): Parse (Encode (R)) = R. So Decode (Encode (R))
    --  returns OK and R.
@@ -578,8 +612,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then (for all J in 0 .. Del_Content_Len - 1 =>
                       Content_Bytes'Result (J) = Content_Byte (C, J));
 
-   function Hash (C : Del_Content) return Hash256 is
-     (Kome.Crypto.Blake2b_256 (Content_Bytes (C)));
+   --  h = BLAKE2b-256 (tag ‖ cid ‖ content) (DESIGN.md §2; AUDIT.md A26).
+   function Hash (Cid : Hash256; C : Del_Content) return Hash256 is
+     (Kome.Crypto.Blake2b_256 (With_Cid (Cid, Content_Bytes (C))));
 
    function Encode (R : Del_Record) return Byte_Array
    with Global => null,
@@ -614,27 +649,29 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Del (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   function Well_Formed (R : Del_Record) return Boolean is
-     (Kome.Crypto.Verify (R.Signature, R.C.Author, Hash (R.C)));
+   --  Well-formed in the collection of Cid: the signature over h (which
+   --  binds Cid) verifies under author.
+   function Well_Formed (Cid : Hash256; R : Del_Record) return Boolean is
+     (Kome.Crypto.Verify (R.Signature, R.C.Author, Hash (Cid, R.C)));
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Del_Record; Result : out Status)
+     (Cid : Hash256; Frame : Byte_Array; R : in out Del_Record; Result : out Status)
    with Global => null,
-        Post => (if Is_Del_Frame (Frame) and then Well_Formed (Parse_Del (Frame))
+        Post => (if Is_Del_Frame (Frame) and then Well_Formed (Cid, Parse_Del (Frame))
                  then Result = OK and then R = Parse_Del (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   procedure Sign (R : in out Del_Record; SK : Kome.Crypto.Secret_Key)
+   procedure Sign (Cid : Hash256; R : in out Del_Record; SK : Kome.Crypto.Secret_Key)
    with Global => null,
         Pre  => Kome.Crypto.Is_Valid (SK)
                 and then Kome.Crypto.Public_Of (SK) = R.C.Author,
         Post => R.C = R'Old.C
-          and then R.Signature = Kome.Crypto.Sign (SK, Hash (R'Old.C))
-          and then Hash (R.C) = Hash (R'Old.C);
+          and then R.Signature = Kome.Crypto.Sign (SK, Hash (Cid, R'Old.C))
+          and then Hash (Cid, R.C) = Hash (Cid, R'Old.C);
 
-   --  V = (t, author, seq, h). A DEL has no field (FH 0), no issuer and
-   --  del_ttl 0.
-   function To_Header (R : Del_Record) return Header is
+   --  The header in the collection of Cid: V = (t, author, seq, h). A DEL
+   --  has no field (FH 0), no issuer and del_ttl 0.
+   function To_Header (Cid : Hash256; R : Del_Record) return Header is
      (K       => K_Del,
       NS      => To_Id128 (R.C.NS),
       Ent     => To_Id128 (R.C.Ent),
@@ -642,22 +679,24 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       V       => (T      => R.C.T,
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
-                  H      => To_Key256 (Hash (R.C))),
+                  H      => To_Key256 (Hash (Cid, R.C))),
       Issuer  => Zero_Key,
       Del_TTL => 0,
       Epoch   => 0);
 
-   procedure Lemma_Header_Canonical (R : Del_Record) with
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Del_Record) with
      Ghost, Global => null,
-     Post => To_Header (R).K = K_Del and then Kome.Headers.Canonical (To_Header (R));
+     Post => To_Header (Cid, R).K = K_Del
+             and then Kome.Headers.Canonical (To_Header (Cid, R));
 
    --  A DEL with a zero signature (sign it with Sign). This is the DEL
    --  counterpart of Make_Put, for step 2 of the write path (DESIGN.md §5).
    --  Its lattice header is the To_Header (Tgt, Stamp (T, Author, Seq, h))
    --  of Kome.Emit for Tgt = (K_Del, NS, Ent, 0), where h is the hash of the
-   --  record.
+   --  record under the collection context Cid (A26).
    function Make_Del
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey) return Del_Record
@@ -668,7 +707,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Make_Del'Result.C.Seq = Seq
           and then Make_Del'Result.C.Author = Author
           and then (for all I in Sig'Range => Make_Del'Result.Signature (I) = 0)
-          and then To_Header (Make_Del'Result) =
+          and then To_Header (Cid, Make_Del'Result) =
                      (K       => K_Del,
                       NS      => To_Id128 (NS),
                       Ent     => To_Id128 (Ent),
@@ -676,11 +715,11 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                       V       => (T      => T,
                                   Author => To_Key256 (Author),
                                   Seq    => Seq,
-                                  H      => To_Key256 (Hash (Make_Del'Result.C))),
+                                  H      => To_Key256 (Hash (Cid, Make_Del'Result.C))),
                       Issuer  => Zero_Key,
                       Del_TTL => 0,
                       Epoch   => 0)
-          and then Kome.Headers.Canonical (To_Header (Make_Del'Result));
+          and then Kome.Headers.Canonical (To_Header (Cid, Make_Del'Result));
 
    procedure Lemma_Decode_Encode (R : Del_Record) with
      Ghost, Global => null,

@@ -1656,6 +1656,7 @@ package body Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and then S.NS = S.NS'Old and then S.Fnd = S.Fnd'Old
        and then S.Root = S.Root'Old and then S.Slt = S.Slt'Old
+       and then S.Cid = S.Cid'Old
        and then S.DCap = S.DCap'Old and then S.Slc = S.Slc'Old
        and then S.Hz = S.Hz'Old
        and then S.AG = (if Is_Auth (H) then S.AG'Old + 1 else S.AG'Old)
@@ -1762,6 +1763,7 @@ package body Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and then S.NS = S.NS'Old and then S.Fnd = S.Fnd'Old
        and then S.Root = S.Root'Old and then S.Slt = S.Slt'Old
+       and then S.Cid = S.Cid'Old
        and then S.DCap = S.DCap'Old and then S.Slc = S.Slc'Old
        and then S.Hz = S.Hz'Old
        and then S.AG = S.AG'Old
@@ -1966,6 +1968,7 @@ package body Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and then S.NS = S.NS'Old and then S.Fnd = S.Fnd'Old
        and then S.Root = S.Root'Old and then S.Slt = S.Slt'Old
+       and then S.Cid = S.Cid'Old
        and then S.DCap = S.DCap'Old and then S.Slc = S.Slc'Old
        and then S.Hz = Hn
        and then S.AG = S.AG'Old
@@ -2047,6 +2050,8 @@ package body Kome.Store with SPARK_Mode is
      Post => S.NS = Kome.Keys.To_Id128 (Kome.Records.Collection_Id (Root, Slt))
        and then S.NS = Kome.Keys.To_Id128 (S.NSb)
        and then S.NSb = Kome.Records.Collection_Id (S.Root, S.Slt)
+       and then S.Cid = Kome.Records.Cid_Of (S.Root, S.Slt)
+       and then S.Cid = Kome.Records.Cid_Of (Root, Slt)
        and then S.Fnd = Kome.Keys.To_Key256 (Root)
        and then S.Fnd = Kome.Keys.To_Key256 (S.Root)
        and then S.Root = Root and then S.Slt = Slt
@@ -2075,6 +2080,7 @@ package body Kome.Store with SPARK_Mode is
       S.Fnd  := Kome.Keys.To_Key256 (Root);
       S.Root := Root;
       S.Slt  := Slt;
+      S.Cid  := Kome.Records.Cid_Of (Root, Slt);   --  once, at open (A26)
       S.DCap := DCap;
       S.Slc  := Slc;
       S.Hz   := No_Horizon;
@@ -2126,6 +2132,7 @@ package body Kome.Store with SPARK_Mode is
        and then S.Fnd = Kome.Keys.To_Key256 (S.Root)
        and then S.NS = Kome.Keys.To_Id128 (S.NSb)
        and then S.NSb = Kome.Records.Collection_Id (S.Root, S.Slt)
+       and then S.Cid = Kome.Records.Cid_Of (S.Root, S.Slt)
        and then S.Slc = F.Slice
        and then S.Cap >= F.Cap + Signers_Max * F.Slice
        and then Head_OK (S.Log, S.LL, S.NSb, S.Root, S.Slt, S.DCap, S.Slc)
@@ -2263,8 +2270,8 @@ package body Kome.Store with SPARK_Mode is
      Global => null,
      Pre  => Valid (S, F)
        and then Frame'Length in Frame_Size
-       and then Verified (Frame)
-       and then Header_Of (Frame) = H
+       and then Verified (S.Cid, Frame)
+       and then Header_Of (S.Cid, Frame) = H
        and then Canonical (H)
        and then H.NS = S.NS
        and then not Foreign_Root (S, Frame)
@@ -2316,8 +2323,8 @@ package body Kome.Store with SPARK_Mode is
      Global => null,
      Pre  => Valid (S, F)
        and then Frame'Length in Frame_Size
-       and then Verified (Frame)
-       and then Header_Of (Frame) = H
+       and then Verified (S.Cid, Frame)
+       and then Header_Of (S.Cid, Frame) = H
        and then Kome.Records.Kind_Of (Frame) = H.K
        and then Canonical (H)
        and then H.NS = S.NS
@@ -2386,7 +2393,7 @@ package body Kome.Store with SPARK_Mode is
      Global => null,
      Pre  => Valid (S, F)
        and then Frame'Length in Frame_Size
-       and then Verified (Frame)
+       and then Verified (S.Cid, Frame)
        and then Foreign_Root (S, Frame),
      Post => Put_Post (S'Old, S, F'Old, F, Frame, H, Off, Result);
 
@@ -3869,11 +3876,11 @@ package body Kome.Store with SPARK_Mode is
 
    --  Decode_Verified for the frame's kind: OK iff the frame is a
    --  well-formed record.
-   procedure Decode_Frame (Frame : Byte_Array; Accepted : out Boolean) with
+   procedure Decode_Frame (Cid : Hash256; Frame : Byte_Array; Accepted : out Boolean) with
      Global => null,
-     Post => Accepted = Verified (Frame);
+     Post => Accepted = Verified (Cid, Frame);
 
-   procedure Decode_Frame (Frame : Byte_Array; Accepted : out Boolean) is
+   procedure Decode_Frame (Cid : Hash256; Frame : Byte_Array; Accepted : out Boolean) is
       St : Status;
    begin
       if not Kome.Records.Has_Kind (Frame) then
@@ -3885,13 +3892,13 @@ package body Kome.Store with SPARK_Mode is
             declare
                R : Kome.Records.Put_Record;
             begin
-               Kome.Records.Decode_Verified (Frame, R, St);
+               Kome.Records.Decode_Verified (Cid, Frame, R, St);
             end;
          when K_Del =>
             declare
                R : Kome.Records.Del_Record;
             begin
-               Kome.Records.Decode_Verified (Frame, R, St);
+               Kome.Records.Decode_Verified (Cid, Frame, R, St);
             end;
          when K_Roster =>
             declare
@@ -4026,6 +4033,7 @@ package body Kome.Store with SPARK_Mode is
        and then Off = S.LL'Old
        and then S.NS = S.NS'Old and then S.Fnd = S.Fnd'Old
        and then S.Root = S.Root'Old and then S.Slt = S.Slt'Old
+       and then S.Cid = S.Cid'Old
        and then S.DCap = S.DCap'Old and then S.Slc = S.Slc'Old
        and then S.Hz = S.Hz'Old
        and then S.AG = S.AG'Old and then S.EM = S.EM'Old
@@ -4095,24 +4103,24 @@ package body Kome.Store with SPARK_Mode is
    function Replay_Accepts
      (S : Store; F : Frontier.State; Op : Byte; Frame : Byte_Array) return Boolean
    is
-     (Verified (Frame)
-      and then Canonical (Header_Of (Frame))
-      and then Header_Of (Frame).K = Kome.Records.Kind_Of (Frame)
-      and then Header_Of (Frame).NS = S.NS
+     (Verified (S.Cid, Frame)
+      and then Canonical (Header_Of (S.Cid, Frame))
+      and then Header_Of (S.Cid, Frame).K = Kome.Records.Kind_Of (Frame)
+      and then Header_Of (S.Cid, Frame).NS = S.NS
       and then not (Kome.Records.Is_Auth_Frame (Frame)
                     and then Kome.Records.Root_Key_Of (Frame) /= S.Fnd)
-      and then Admitted (F, Header_Of (Frame))
+      and then Admitted (F, Header_Of (S.Cid, Frame))
       and then
         (if Op = Op_Apply then
-           Holds (F, Header_Of (Frame))
-           or else (not Dom (F, Header_Of (Frame))
-                    and then not Expired (Header_Of (Frame), S.Hz)
-                    and then not Data_Full (F, Header_Of (Frame))
-                    and then not Auth_Rule (F, Header_Of (Frame))
-                    and then not Gen_Full (S, Header_Of (Frame)))
-         else Header_Of (Frame).K = K_Del
-              and then not Holds (F, Header_Of (Frame))
-              and then not Dom (F, Header_Of (Frame))))
+           Holds (F, Header_Of (S.Cid, Frame))
+           or else (not Dom (F, Header_Of (S.Cid, Frame))
+                    and then not Expired (Header_Of (S.Cid, Frame), S.Hz)
+                    and then not Data_Full (F, Header_Of (S.Cid, Frame))
+                    and then not Auth_Rule (F, Header_Of (S.Cid, Frame))
+                    and then not Gen_Full (S, Header_Of (S.Cid, Frame)))
+         else Header_Of (S.Cid, Frame).K = K_Del
+              and then not Holds (F, Header_Of (S.Cid, Frame))
+              and then not Dom (F, Header_Of (S.Cid, Frame))))
    with Pre => Is_Frontier (F);
 
    --  The checks of replay for one APPLY or APPLY_EXPIRED entry. S and F
@@ -4143,13 +4151,13 @@ package body Kome.Store with SPARK_Mode is
       H        : Header;
    begin
       Result := Malformed;
-      Decode_Frame (Frame, Accepted);
+      Decode_Frame (S.Cid, Frame, Accepted);
       if not Accepted then
          return;
       end if;
-      H := Header_Of (Frame);
-      Lemma_Header_Of (Frame);
-      Lemma_Verified_Canonical (Frame);
+      H := Header_Of (S.Cid, Frame);
+      Lemma_Header_Of (S.Cid, Frame);
+      Lemma_Verified_Canonical (S.Cid, Frame);
       if H.NS /= S.NS
         or else (Kome.Records.Is_Auth_Frame (Frame)
                  and then Kome.Records.Root_Key_Of (Frame) /= S.Fnd)
@@ -4284,12 +4292,12 @@ package body Kome.Store with SPARK_Mode is
       Frame  : Byte_Array)
    is
       Saved : constant Store := S with Ghost;
-      H     : constant Header := Header_Of (Frame);
+      H     : constant Header := Header_Of (S.Cid, Frame);
       Off   : Log_Size;
       St    : Status;
    begin
-      Lemma_Header_Of (Frame);
-      Lemma_Verified_Canonical (Frame);
+      Lemma_Header_Of (S.Cid, Frame);
+      Lemma_Verified_Canonical (S.Cid, Frame);
       pragma Assert (H.NS = Collection (S));
       if Op = Op_Apply then
          if Holds (F, H) then
@@ -4657,6 +4665,7 @@ package body Kome.Store with SPARK_Mode is
       S.Fnd  := Zero_Key;
       S.Root := [others => 0];
       S.Slt  := [others => 0];
+      S.Cid  := [others => 0];
       S.DCap := 0;
       S.Slc  := 0;
       S.Hz   := No_Horizon;
@@ -4828,13 +4837,37 @@ package body Kome.Store with SPARK_Mode is
    --  The invariant, unpacked.
    ---------------------------------------------------------------------------
 
-   procedure Lemma_Header_Of (Frame : Byte_Array) is null;
+   procedure Lemma_Header_Of (Cid : Hash256; Frame : Byte_Array) is
+   begin
+      --  One kind per branch (the data kinds' h is under Cid, A26).
+      case Kome.Records.Kind_Of (Frame) is
+         when K_Put    =>
+            pragma Assert
+              (Header_Of (Cid, Frame) = Kome.Records.To_Header (Cid, Kome.Records.Parse_Put (Frame)));
+            pragma Assert (Header_Of (Cid, Frame).K = K_Put);
+         when K_Del    =>
+            pragma Assert
+              (Header_Of (Cid, Frame) = Kome.Records.To_Header (Cid, Kome.Records.Parse_Del (Frame)));
+            pragma Assert (Header_Of (Cid, Frame).K = K_Del);
+         when K_Roster =>
+            pragma Assert
+              (Header_Of (Cid, Frame) = Kome.Records.To_Header (Kome.Records.Parse_Roster (Frame)));
+         when K_Revoke =>
+            pragma Assert
+              (Header_Of (Cid, Frame) = Kome.Records.To_Header (Kome.Records.Parse_Revoke (Frame)));
+         when K_Grant  =>
+            pragma Assert
+              (Header_Of (Cid, Frame) = Kome.Records.To_Header (Kome.Records.Parse_Grant (Frame)));
+      end case;
+   end Lemma_Header_Of;
 
-   procedure Lemma_Verified_Canonical (Frame : Byte_Array) is
+   procedure Lemma_Verified_Canonical (Cid : Hash256; Frame : Byte_Array) is
    begin
       case Kome.Records.Kind_Of (Frame) is
-         when K_Put    => Kome.Records.Lemma_Header_Canonical (Kome.Records.Parse_Put (Frame));
-         when K_Del    => Kome.Records.Lemma_Header_Canonical (Kome.Records.Parse_Del (Frame));
+         when K_Put    =>
+            Kome.Records.Lemma_Header_Canonical (Cid, Kome.Records.Parse_Put (Frame));
+         when K_Del    =>
+            Kome.Records.Lemma_Header_Canonical (Cid, Kome.Records.Parse_Del (Frame));
          when K_Roster => Kome.Records.Lemma_Header_Canonical (Kome.Records.Parse_Roster (Frame));
          when K_Revoke => Kome.Records.Lemma_Header_Canonical (Kome.Records.Parse_Revoke (Frame));
          when K_Grant  => Kome.Records.Lemma_Header_Canonical (Kome.Records.Parse_Grant (Frame));

@@ -686,6 +686,8 @@ procedure Test_Emit with SPARK_Mode => Off is
    declare
       G      : State := New_State (16);
       NS_B   : constant Id_Bytes  := To_Bytes (NS);
+      --  A collection context (A26): any 32 bytes do for G21.
+      Cid_B  : constant Hash256   := [others => 16#5C#];
       E1_B   : constant Id_Bytes  := To_Bytes (Ent (1));
       Self_B : constant Key_Bytes := To_Bytes (Self);
       Fn     : constant Byte_Array := Fbytes ('n');
@@ -706,11 +708,11 @@ procedure Test_Emit with SPARK_Mode => Off is
               R, Cl, Cm, Bx);
       declare
          P  : constant Kome.Records.Put_Record :=
-           Kome.Records.Make_Put (NS_B, E1_B, Fn, T, Sq, Self_B, Val);
-         HV : constant Key256 := To_Key256 (Kome.Records.Hash (P.C));
+           Kome.Records.Make_Put (Cid_B, NS_B, E1_B, Fn, T, Sq, Self_B, Val);
+         HV : constant Key256 := To_Key256 (Kome.Records.Hash (Cid_B, P.C));
       begin
-         HP := Kome.Records.To_Header (P);
-         Lemma_Put_Target_Matches (NS_B, E1_B, Fn, T, Sq, Self_B, Val);
+         HP := Kome.Records.To_Header (Cid_B, P);
+         Lemma_Put_Target_Matches (Cid_B, NS_B, E1_B, Fn, T, Sq, Self_B, Val);
          Check ("G21: Make_Put's header is To_Header (Put_Target, Stamp)",
                 R = OK and T = 9_001 and Sq = 1
                 and HP = To_Header (Put_T (1, 'n'), Stamp (T, Self, Sq, HV)));
@@ -724,11 +726,11 @@ procedure Test_Emit with SPARK_Mode => Off is
               R, Cl, Cm, Bx);
       declare
          D  : constant Kome.Records.Del_Record :=
-           Kome.Records.Make_Del (NS_B, E1_B, T, Sq, Self_B);
-         HD : constant Header := Kome.Records.To_Header (D);
-         HV : constant Key256 := To_Key256 (Kome.Records.Hash (D.C));
+           Kome.Records.Make_Del (Cid_B, NS_B, E1_B, T, Sq, Self_B);
+         HD : constant Header := Kome.Records.To_Header (Cid_B, D);
+         HV : constant Key256 := To_Key256 (Kome.Records.Hash (Cid_B, D.C));
       begin
-         Lemma_Del_Target_Matches (NS_B, E1_B, T, Sq, Self_B);
+         Lemma_Del_Target_Matches (Cid_B, NS_B, E1_B, T, Sq, Self_B);
          Check ("G21: Make_Del's header is To_Header (Del_Target, Stamp)",
                 R = OK and T = 9_002 and Sq = 2
                 and HD = To_Header (Del_T (1), Stamp (T, Self, Sq, HV)));

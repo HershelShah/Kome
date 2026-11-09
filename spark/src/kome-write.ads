@@ -167,17 +167,20 @@ package Kome.Write with SPARK_Mode is
    --  The lattice header of the prepared record.
    function Rec (P : Prepared) return Header with Global => null;
 
-   --  The frame is a verified data frame whose header is Rec (P): what
-   --  Put_Frame requires (except the collection, which Commit checks
-   --  against the store).
-   function Ready (P : Prepared) return Boolean with Global => null;
+   --  The frame is a verified data frame in the collection of Cid (its h
+   --  and its signature are under Cid, AUDIT.md A26) whose header is
+   --  Rec (P): what Put_Frame requires of a store whose Cid (S) is Cid
+   --  (except the collection, which Commit checks against the store).
+   --  Prepare makes P Ready under the Cid (S) of the store it read, and
+   --  Commit requires Ready (P, Cid (S)) of the store it writes.
+   function Ready (P : Prepared; Cid : Hash256) return Boolean with Global => null;
 
-   procedure Lemma_Ready (P : Prepared) with
+   procedure Lemma_Ready (P : Prepared; Cid : Hash256) with
      Ghost, Global => null,
-     Pre  => Ready (P),
+     Pre  => Ready (P, Cid),
      Post => Length (P) in Frame_Size
-       and then Verified (Frame_Of (P))
-       and then Header_Of (Frame_Of (P)) = Rec (P)
+       and then Verified (Cid, Frame_Of (P))
+       and then Header_Of (Cid, Frame_Of (P)) = Rec (P)
        and then Kome.Records.Kind_Of (Frame_Of (P)) = Rec (P).K
        and then Canonical (Rec (P))
        and then Is_Data (Rec (P));
@@ -223,7 +226,8 @@ package Kome.Write with SPARK_Mode is
        and then (Result = Seq_Exhausted)
                   = (In_W (Regs (F), Self_Of (SK))
                      and then Seq_Base (Seq_Self, Max_Own_Seq (F, Self_Of (SK))) = U48'Last)
-       and then (Ready (P)) = (Result in OK | Shadowed)
+       --  A26: Ready under the store's collection context Cid (S).
+       and then (Ready (P, Cid (S))) = (Result in OK | Shadowed)
        and then
        (if Result in OK | Shadowed then
           --  The record of step 2: the target of step 1, the chosen
@@ -280,7 +284,7 @@ package Kome.Write with SPARK_Mode is
       Result :    out Status)
    with
      Global => null,
-     Pre  => Valid (S, F) and then Ready (P) and then Rec (P).NS = Collection (S),
+     Pre  => Valid (S, F) and then Ready (P, Cid (S)) and then Rec (P).NS = Collection (S),
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
@@ -339,8 +343,8 @@ package Kome.Write with SPARK_Mode is
      Global => null,
      Pre  => Valid (S, F)
        and then Frame'Length in Frame_Size
-       and then Verified (Frame)
-       and then Header_Of (Frame) = H
+       and then Verified (Cid (S), Frame)
+       and then Header_Of (Cid (S), Frame) = H
        and then Kome.Records.Kind_Of (Frame) = H.K
        and then Canonical (H)
        and then H.NS = Collection (S),
@@ -420,10 +424,10 @@ private
 
    function Rec (P : Prepared) return Header is (P.H);
 
-   function Ready (P : Prepared) return Boolean is
+   function Ready (P : Prepared; Cid : Hash256) return Boolean is
      (P.Len in Frame_Size
-      and then Verified (Frame_Of (P))
-      and then Header_Of (Frame_Of (P)) = P.H
+      and then Verified (Cid, Frame_Of (P))
+      and then Header_Of (Cid, Frame_Of (P)) = P.H
       and then Kome.Records.Kind_Of (Frame_Of (P)) = P.H.K
       and then Canonical (P.H)
       and then Is_Data (P.H));

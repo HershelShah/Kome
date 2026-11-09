@@ -401,7 +401,8 @@ package body Kome.Emit with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    procedure Lemma_Put_Target_Matches
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -409,7 +410,8 @@ package body Kome.Emit with SPARK_Mode is
       Value  : Byte_Array) is null;
 
    procedure Lemma_Del_Target_Matches
-     (NS     : NS_Id;
+     (Cid    : Hash256;
+      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey) is null;
