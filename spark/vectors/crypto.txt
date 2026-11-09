@@ -22,11 +22,22 @@
 #   blake2b256_keyed
 #                   Python hashlib.blake2b(msg, key=key, digest_size=32)
 #                   (RFC 7693 §2.10 keyed hashing, 32-byte key): the PRF
-#                   f (key, msg) of DESIGN.md §6 (chain step, message
-#                   "kome/prev") and §8 (bundle key, message "kome/bundle"
-#                   ‖ ns); AUDIT.md G5. Lengths 127/128/129 cross the block
-#                   boundary. The test main also requires that the keyed
-#                   digest is not BLAKE2b-256 (key ‖ msg).
+#                   f (key, msg) of SIMPLIFY.md S4 (eph_sk, box nonce, wrap
+#                   key, bundle key); AUDIT.md G5. Lengths 127/128/129
+#                   cross the block boundary. The test main also requires
+#                   that the keyed digest is not BLAKE2b-256 (key ‖ msg).
+#                   (The messages of lines 3-5 are the labels "kome/prev"
+#                   and "kome/bundle" || ns of an earlier design; they are
+#                   kept as plain keyed-hash inputs.)
+#   hedge           Python hashlib.blake2b(label || ctx || rnd, key=seed,
+#                   digest_size=32): Kome.Crypto.Hedge (AUDIT.md A6,
+#                   SIMPLIFY.md S4 k_g), keyed by the 32-byte Ed25519 seed
+#                   of the signing key. The test main makes the key with
+#                   Key_Pair (seed) and requires Hedge = digest, and that a
+#                   changed rnd or key changes it. The first three lines are
+#                   k_g inputs "kome/key" || cid || u48 (gen) || rnd (the
+#                   first equals vectors/epochs.txt's first key line); the
+#                   last uses the RFC 8032 TEST 1 seed.
 #   ed25519         RFC 8032 section 7.1 TEST 1, TEST 2 and TEST 3 verbatim
 #                   (https://www.rfc-editor.org/rfc/rfc8032.txt, fetched
 #                   2026-11-02, file SHA-256
@@ -134,6 +145,7 @@
 # Formats:
 #   blake2b256     <msg> <digest32>
 #   blake2b256_keyed <key32> <msg> <digest32>
+#   hedge          <seed32> <label> <ctx> <rnd32> <digest32>
 #   ed25519        <seed32> <public32> <msg> <sig64>
 #   wycheproof     <tcId> <valid|invalid> <public32> <msg> <sig (any length)>
 #   ed25519_strict <valid|invalid> <public32> <msg> <sig64>
@@ -167,6 +179,11 @@ blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d60636
 blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366 02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b50555a5f64696e73787d 585af24b25b63ff43126364c6e8ba632120443adb4d9cbb19d1a4892d946e005
 blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366 02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b50555a5f64696e73787d82 23fc10db010a9498f117cf7f39160c4a6a33265c8120acaa41cc8e8d8760ea68
 blake2b256_keyed 0000000000000000000000000000000000000000000000000000000000000000 78 0ae5fc20067072f427801f3cea7ace608525b9def0b185a4cb103a72b0abc1a4
+# Hedge (keyed BLAKE2b-256 under an Ed25519 seed): seed, label, ctx, rnd, digest.
+hedge 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 6b6f6d652f6b6579 0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9a000000000001 1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e ce62b1d7499266a49013e6fe17b1d36af1df5b9c2004757b54c8c6284812e4a0
+hedge 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 6b6f6d652f6b6579 0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9a000000000001 0000000000000000000000000000000000000000000000000000000000000000 804960afe5e6ce8ea58949985f71866682fd07217ccf1cdceadb7bb2e2c8468f
+hedge 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 6b6f6d652f6b6579 0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9affffffffffff 1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e 3a2e833d641c8b2249d82d90c78c1dce92d50abddffce3b6e6f78ae96cb8d2f7
+hedge 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 78 - 0000000000000000000000000000000000000000000000000000000000000000 726e178a5c17b5e4f09518e49ed07b1f19bbe1b6e4b28d03e7c0b6e128d9196e
 # RFC 8032 section 7.1, TEST 1, TEST 2, TEST 3.
 ed25519 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a - e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b
 ed25519 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c 72 92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00

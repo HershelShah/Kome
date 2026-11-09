@@ -156,6 +156,23 @@ package body Kome.Crypto with SPARK_Mode => Off is
                        Addr (Data), Len (Data));
    end Blake2b_256_Keyed;
 
+   --  keyed BLAKE2b-256 keyed by the seed half of SK, read in place (the
+   --  first Seed_Len bytes of SK.Raw), over Label ‖ Ctx ‖ Rnd. The message
+   --  holds Rnd, so it is wiped.
+   procedure Hedge
+     (SK     : Secret_Key;
+      Label  : Byte_Array;
+      Ctx    : Byte_Array;
+      Rnd    : Random_Bytes;
+      Digest : out Hash256)
+   is
+      Msg : Byte_Array := Label & Ctx & Rnd;
+   begin
+      C_Blake2b_Keyed (Digest'Address, Hash_Len, SK.Raw'Address, Seed_Len,
+                       Addr (Msg), Len (Msg));
+      Wipe (Msg);
+   end Hedge;
+
    --  An axiom (see the spec): there is nothing to execute. Under
    --  -gnata, the Pre and the Post are evaluated. This checks the axiom on
    --  the caller's data.

@@ -4,17 +4,20 @@
 --  "Cryptography": bind it, do not implement it again).
 --
 --    BLAKE2b-256      crypto_blake2b, crypto_blake2b_init/update/final with
---                     hash_size = 32. DESIGN.md §2 `ns`, `h`, the root
---                     certificate; §6 the box keys; §8 the accumulator
---                     and the bundle nonce. Assumption A2.
+--                     hash_size = 32. SIMPLIFY.md §2 `cid`, `h`, the root
+--                     certificate; §8 the accumulator and the bundle
+--                     nonce. Assumption A2.
 --    keyed BLAKE2b    crypto_blake2b_keyed with hash_size = key_size = 32:
---                     the PRF f of DESIGN.md §6 (the epoch chain step) and
---                     §8 (the bundle key). AUDIT.md G5.
+--                     the PRF f (k, m) of SIMPLIFY.md S4 (eph_sk, the box
+--                     nonce, the wrap key and the bundle key under the
+--                     collection key k_g) and the hedge (Hedge, keyed by the
+--                     seed of a signing key: k_g itself). AUDIT.md G5, A6.
 --    Ed25519          crypto_ed25519_key_pair / _sign / _check, from the
 --                     optional monocypher-ed25519.c. DESIGN.md §2 `sig`,
 --                     `cert_sig`. Assumption A1.
 --    X25519           crypto_x25519_public_key, crypto_x25519. DESIGN.md §6
---                     (the epoch key wrapped to each member's `dh_pk`).
+--                     (the collection key k_g wrapped to each member's
+--                     `dh_pk`).
 --    XChaCha20-       crypto_aead_lock / _unlock: 32-byte key, 24-byte nonce,
 --    Poly1305         16-byte tag. DESIGN.md §2 `nonce[24] box[48]`, §8
 --                     sealed bundles. T14 (paper) depends on it.
@@ -191,7 +194,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  owns only its own files. It is not derived from Value_Max. The design
    --  gives this package these inputs:
    --    * DESIGN.md §2: the largest hashed or signed input is a frame, at
-   --      most 41_136 bytes (a PUT with a 32-byte field and a 40_960-byte
+   --      most 41_120 bytes (a PUT with a 32-byte field and a 40_960-byte
    --      value). A signature covers only the 32 bytes of h;
    --    * §8: a sealed-bundle plaintext is a list of ELEMENTS items with a
    --      total of at most Max_Message_Len = 48 KiB. It is the AEAD
@@ -218,10 +221,9 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  BLAKE2b-256 (RFC 7693, 32-byte digest)
    ---------------------------------------------------------------------------
 
-   --  crypto_blake2b (hash, 32, data, len). DESIGN.md §2: h = BLAKE2b-256
-   --  (tag ‖ content) of an authorization record, h = BLAKE2b-256 (tag ‖
-   --  cid ‖ content) of a data record, cid = BLAKE2b-256 (root_pk ‖ salt)
-   --  and ns = cid[0:16] (AUDIT.md A26). A2.
+   --  crypto_blake2b (hash, 32, data, len). SIMPLIFY.md S1: h = BLAKE2b-256
+   --  (tag ‖ cid ‖ content) of every record, cid = BLAKE2b-256 (root_pk ‖
+   --  salt ‖ u48 (del_ttl)) and ns = cid[0:16]. A2.
    --  There is no Post. The result subtype Hash256 fixes the output length.
    --  This is a static fact, and GNAT flags it as a vacuous Post. This spec
    --  cannot check other properties of a hash: collision resistance is A2.
@@ -241,8 +243,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  The body is SPARK_Mode Off like each other body here, so the Post is
    --  an AXIOM (assumed, like the other Posts of the binding). The test main
    --  checks it under -gnata on slices with different bounds. Clients use it
-   --  to carry a hash across a copy or a re-slice (the wrap key of
-   --  Kome.Epochs).
+   --  to carry a hash across a copy or a re-slice.
    procedure Lemma_Blake2b_Congruent (A, B : Byte_Array)
      with Ghost, Global => null, Always_Terminates,
           Pre  => A'Length = B'Length
@@ -265,21 +266,23 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  Keyed BLAKE2b-256 (RFC 7693 §2.10 and §3.3: the key is padded to one
    --  128-byte block and hashed first, with the key length in the
    --  parameter block), crypto_blake2b_keyed (hash, 32, key, 32, data, len).
-   --  It is the PRF f (key, msg) of DESIGN.md §6 and §8 (AUDIT.md G5): the
-   --  epoch chain step k_e = f (k_{e+1}, "kome/prev") and the bundle key
-   --  k_b = f (k_e, "kome/bundle" ‖ ns) are both instances of one keyed
-   --  BLAKE2b assumption, not of an unkeyed hash of key ‖ label. The key is
-   --  32 bytes (Mac_Key). There is no Post, as for Blake2b_256; the test
-   --  main checks hashlib's keyed answers.
+   --  It is the PRF f (key, msg) of SIMPLIFY.md S4 (AUDIT.md G5): eph_sk =
+   --  f (k_g, "kome/eph" ‖ ...), the box nonce f (k_g, "kome/box" ‖ dh_pk),
+   --  the bundle key f (k_g, "kome/bundle") and the wrap key (keyed by the
+   --  X25519 output) are all instances of one keyed BLAKE2b assumption,
+   --  not of an unkeyed hash of key ‖ label. The key is 32 bytes (Mac_Key).
+   --  There is no Post, as for Blake2b_256; the test main checks hashlib's
+   --  keyed answers.
    subtype Mac_Key is Byte_Array (0 .. Hash_Len - 1);
 
    function Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array) return Hash256
      with Global => null,
           Pre    => Data'Length <= Max_Data_Len;
 
-   --  The same, written into the caller's buffer, for a secret digest (the
-   --  next epoch key). The caller wipes Digest. Always_Terminates, so that
-   --  Kome.Epochs.Step (a function) can call it.
+   --  The same, written into the caller's buffer, for a secret digest (an
+   --  eph_sk, a wrap key, a bundle key). The caller wipes Digest.
+   --  Always_Terminates, so that a function (Kome.Epochs.Bundle_Key_Of)
+   --  can call it.
    procedure Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array; Digest : out Hash256)
      with Global => null, Always_Terminates,
           Pre    => Data'Length <= Max_Data_Len,
@@ -346,7 +349,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  Discard a context and make no digest. This does crypto_wipe over the
    --  C state. The state holds the chaining value and up to one block of
-   --  absorbed input, which is a secret when the input is an epoch key. Wipe
+   --  absorbed input, which is a secret when the input is a collection key. Wipe
    --  is allowed in any state. If a caller hashes secrets incrementally and
    --  can stop early, it calls Wipe.
    procedure Wipe (Ctx : in out Blake2b_Context)
@@ -548,6 +551,36 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
           Post   => not Is_Valid (SK)
                     and then (for all B of Seed_Of (SK) => B = 0)
                     and then (for all B of Public_Of (SK) => B = 0);
+
+   --  The hedge (AUDIT.md A6; SIMPLIFY.md S4): a secret derived from
+   --  caller randomness AND a long-term secret, so that a weak RNG (a VM
+   --  snapshot, early boot, a WASM shim) alone does not reveal it.
+   --    Hedge (SK, label, ctx, rnd) = keyed BLAKE2b-256 (key = Seed_Of (SK),
+   --                                  msg = label ‖ ctx ‖ rnd)
+   --  The seed never leaves the key object: the C call reads the first 32
+   --  bytes of the secret key in place, and the message buffer (which
+   --  holds rnd) is wiped. Digest is a secret (the collection key k_g of
+   --  Kome.Epochs.Key_For_Gen), so the caller wipes it. The Post names the
+   --  ghost Seed_Of, so a client can state what it derived; the test main
+   --  checks it under -gnata and against hashlib (vectors/crypto.txt
+   --  "hedge"). Always_Terminates (one C call).
+   Rnd_Len : constant := 32;
+   subtype Random_Bytes is Byte_Array (0 .. Rnd_Len - 1);
+   Hedge_Data_Max : constant := 1024;   --  label ‖ ctx, at most
+
+   procedure Hedge
+     (SK     : Secret_Key;
+      Label  : Byte_Array;
+      Ctx    : Byte_Array;
+      Rnd    : Random_Bytes;
+      Digest : out Hash256)
+     with Global => null, Always_Terminates,
+          Pre    => Is_Valid (SK)
+                    and then Label'First = 0
+                    and then Label'Length >= 1
+                    and then Ctx'Length <= Hedge_Data_Max
+                    and then Label'Length <= Hedge_Data_Max - Ctx'Length,
+          Post   => Digest = Blake2b_256_Keyed (Seed_Of (SK), Label & Ctx & Rnd);
 
    --  S < L for the scalar half of a signature. L = 2**252 +
    --  27742317777372353535851937790883648493 is the group order, and S is
@@ -755,8 +788,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  The same shared secret as a function, for contracts only (Ghost).
    --  It lets a client's Post name a key derived from the exchange
-   --  (Kome.Epochs: the wrap key and the synthetic nonce of a member box,
-   --  DESIGN.md §6 D6). Because it is Ghost, executable code never holds the
+   --  (a wrap key of a member box, DESIGN.md §6 D6). Because it is Ghost, executable code never holds the
    --  secret in a function-result temporary. Under -gnata it runs the same
    --  C call as X25519, and the Post above checks that both agree.
    function X25519_Shared (Secret : DH_Secret; Their_Public : Pubkey) return Shared_Secret
@@ -769,7 +801,7 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  Lemma_Blake2b_Congruent): a secret computed into a buffer and the
    --  ghost term that models it are different terms with equal elements.
    --  Kome.Epochs uses it to carry the derived eph_sk (a wiped buffer) to
-   --  its ghost model Eph_Secret_Of (AUDIT.md A6, G7).
+   --  its ghost model Eph_SK_Of (AUDIT.md A6, G7).
    --
    --  The body is SPARK_Mode Off like each other body here, so the Post is
    --  an AXIOM of the same kind as Lemma_Blake2b_Congruent. The test main
@@ -829,8 +861,8 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  Erasure
    ---------------------------------------------------------------------------
 
-   --  crypto_wipe (buf, len): set a secret (a seed, a shared secret, an
-   --  epoch key, a plaintext) to zero in a way that the C compiler does not
+   --  crypto_wipe (buf, len): set a secret (a seed, a shared secret, a
+   --  collection key, a plaintext) to zero in a way that the C compiler does not
    --  elide. The Ada compiler cannot elide the call either, because the
    --  package is not Pure (see the header).
    --

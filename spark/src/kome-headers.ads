@@ -39,13 +39,10 @@ package Kome.Headers with SPARK_Mode, Pure is
 
    type Header is record
       K       : Kind   := K_Put;
-      NS      : Id128;
       Ent     : Id128;                 --  PUT, DEL
       FH      : Key256;                --  PUT: BLAKE2b-256 of the field name
       V       : Version;
       Issuer  : Key256;                --  ROSTER, REVOKE, GRANT: the signer
-      Del_TTL : U48    := 0;           --  ROSTER: del_ttl (milliseconds)
-      Epoch   : Kome.Epoch := 0;       --  ROSTER: the epoch of its boxes
    end record;
 
    function Is_Data (R : Header) return Boolean is (R.K in K_Put | K_Del);
@@ -84,17 +81,15 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  expression has no quantifier, so it can be public at no proof cost to
    --  other units.
    function Dominates (Q, P : Header) return Boolean is
-     (Q.NS = P.NS
-      and then Lt (P.V, Q.V)
+     (Lt (P.V, Q.V)
       and then
       (case P.K is
          when K_Put    => (Q.K = K_Put and then Q.Ent = P.Ent and then Q.FH = P.FH)
                           or else (Q.K = K_Del and then Q.Ent = P.Ent),
          when K_Del    => Q.K = K_Del and then Q.Ent = P.Ent,
          when K_Roster => Q.K = K_Roster and then Q.V.Author = P.V.Author
-                          and then P.V.T <= Q.V.T and then P.Epoch <= Q.Epoch
-                          and then P.V.Seq < Q.V.Seq
-                          and then P.Del_TTL <= Q.Del_TTL,
+                          and then P.V.T <= Q.V.T
+                          and then P.V.Seq < Q.V.Seq,
          when K_Grant  => Q.K = K_Grant and then Q.V.Author = P.V.Author
                           and then Q.Issuer = P.Issuer
                           and then P.V.T <= Q.V.T and then Lt (P.V.H, Q.V.H),
@@ -122,19 +117,14 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  The V of a grant is (cap, subject, 0, h). Only a roster has an epoch.
    function Canonical (X : Header) return Boolean is
      (case X.K is
-        when K_Put    => X.Issuer = Zero_Key and then X.Del_TTL = 0
-                         and then X.Epoch = 0,
-        when K_Del    => X.FH = Zero_Key and then X.Issuer = Zero_Key
-                         and then X.Del_TTL = 0 and then X.Epoch = 0,
+        when K_Put    => X.Issuer = Zero_Key,
+        when K_Del    => X.FH = Zero_Key and then X.Issuer = Zero_Key,
         when K_Roster => X.Ent = Zero_Id and then X.FH = Zero_Key
                          and then X.Issuer = X.V.Author
-                         and then X.Del_TTL in Del_TTL_Min .. Del_TTL_Max
                          and then X.V.Seq <= X.V.T,
-        when K_Revoke => X.Ent = Zero_Id and then X.FH = Zero_Key
-                         and then X.Del_TTL = 0 and then X.Epoch = 0,
+        when K_Revoke => X.Ent = Zero_Id and then X.FH = Zero_Key,
         when K_Grant  => X.Ent = Zero_Id and then X.FH = Zero_Key
-                         and then X.V.Seq = 0
-                         and then X.Del_TTL = 0 and then X.Epoch = 0);
+                         and then X.V.Seq = 0);
 
    --  True if X is a tombstone that is expired at Horizon (DESIGN.md §7 drop
    --  rule, second clause). With No_Horizon (-1), no record is expired.
@@ -184,11 +174,10 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  dominator never lowers del_ttl_eff (AUDIT.md H15).
    procedure Lemma_Roster_Dom (P, Q : Header) with
      Ghost, Global => null,
-     Pre  => P.K = K_Roster and then Q.K = K_Roster and then P.NS = Q.NS,
+     Pre  => P.K = K_Roster and then Q.K = K_Roster,
      Post => Dominates (Q, P)
              = (Q.V.Author = P.V.Author and then P.V.T <= Q.V.T
-                and then P.Epoch <= Q.Epoch and then P.V.Seq < Q.V.Seq
-                and then P.Del_TTL <= Q.Del_TTL);
+                and then P.V.Seq < Q.V.Seq);
 
    --  Two rosters of one signer at equal gen never dominate each other.
    procedure Lemma_Equal_Gen_No_Dom (P, Q : Header) with
@@ -202,8 +191,7 @@ package Kome.Headers with SPARK_Mode, Pure is
    procedure Lemma_Grant_Dom (P, Q : Header) with
      Ghost, Global => null,
      Pre  => P.K = K_Grant and then Q.K = K_Grant
-             and then Canonical (P) and then Canonical (Q)
-             and then P.NS = Q.NS,
+             and then Canonical (P) and then Canonical (Q),
      Post => Dominates (Q, P)
              = (Q.V.Author = P.V.Author and then Q.Issuer = P.Issuer
                 and then P.V.T <= Q.V.T and then Lt (P.V.H, Q.V.H));
@@ -220,7 +208,6 @@ package Kome.Headers with SPARK_Mode, Pure is
              and then (if Is_Data (P) then Is_Data (Q))
              and then (if P.K = K_Roster
                        then Ceil_Of (Q) >= Ceil_Of (P)
-                            and then Q.Epoch >= P.Epoch
                             and then Q.V.Author = P.V.Author)
              and then (if P.K = K_Grant
                        then Q.V.Author = P.V.Author

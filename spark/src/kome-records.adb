@@ -62,7 +62,6 @@ package body Kome.Records with SPARK_Mode is
 
    function Make_Put
      (Cid    : Hash256;
-      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -73,8 +72,7 @@ package body Kome.Records with SPARK_Mode is
       VL : constant Value_Len := Value'Length;
       R  : constant Put_Record :=
         (C         =>
-           (NS     => NS,
-            Ent    => Ent,
+           (Ent    => Ent,
             FLen   => FL,
             Field  => [for I in Field_Bytes'Range =>
                          (if I < FL then Field (Field'First + I) else 0)],
@@ -121,8 +119,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS     => [for I in NS_Id'Range => Frame (F + Put_O_NS + I)],
-            Ent    => [for I in Ent_Id'Range => Frame (F + Put_O_Ent + I)],
+           (Ent    => [for I in Ent_Id'Range => Frame (F + Put_O_Ent + I)],
             FLen   => FL,
             Field  => [for I in Field_Bytes'Range =>
                          (if I < FL then Frame (F + Put_O_Field + I) else 0)],
@@ -235,15 +232,12 @@ package body Kome.Records with SPARK_Mode is
    procedure Lemma_Put_Ids (R : Put_Record) with
      Ghost, Global => null,
      Pre  => Put_Shape_OK (R),
-     Post => Parse_Put (Encode (R)).C.NS = R.C.NS
-             and then Parse_Put (Encode (R)).C.Ent = R.C.Ent;
+     Post => Parse_Put (Encode (R)).C.Ent = R.C.Ent;
 
    procedure Lemma_Put_Ids (R : Put_Record) is
       E : constant Byte_Array := Encode (R);
       P : constant Put_Record := Parse_Put (E);
    begin
-      pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = E (Put_O_NS + I));
-      pragma Assert (for all I in NS_Id'Range => E (Put_O_NS + I) = R.C.NS (I));
       pragma Assert (for all I in Ent_Id'Range => P.C.Ent (I) = E (Put_O_Ent + I));
       pragma Assert (for all I in Ent_Id'Range => E (Put_O_Ent + I) = R.C.Ent (I));
    end Lemma_Put_Ids;
@@ -353,7 +347,6 @@ package body Kome.Records with SPARK_Mode is
          Frame (F + OQ + 3), Frame (F + OQ + 4), Frame (F + OQ + 5));
       pragma Assert (E'First = 0 and then E'Length = Frame'Length);
       pragma Assert (E (0) = Frame (F));
-      pragma Assert (for all J in Put_O_NS .. Put_O_Ent - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Put_O_Ent .. Put_O_FLen - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Put_O_FLen) = Frame (F + Put_O_FLen));
       pragma Assert (for all J in Put_O_Field .. OT - 1 => E (J) = Frame (F + J));
@@ -388,13 +381,12 @@ package body Kome.Records with SPARK_Mode is
 
    function Make_Del
      (Cid    : Hash256;
-      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey) return Del_Record
    is
       R : constant Del_Record :=
-        (C         => (NS => NS, Ent => Ent, T => T, Seq => Seq, Author => Author),
+        (C         => (Ent => Ent, T => T, Seq => Seq, Author => Author),
          Signature => [others => 0]);
    begin
       Lemma_Header_Canonical (Cid, R);
@@ -422,8 +414,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS     => [for I in NS_Id'Range => Frame (F + Del_O_NS + I)],
-            Ent    => [for I in Ent_Id'Range => Frame (F + Del_O_Ent + I)],
+           (Ent    => [for I in Ent_Id'Range => Frame (F + Del_O_Ent + I)],
             T      => U48_At (Frame, F + Del_O_T),
             Seq    => U48_At (Frame, F + Del_O_Seq),
             Author => [for I in Pubkey'Range => Frame (F + Del_O_Author + I)]),
@@ -493,7 +484,6 @@ package body Kome.Records with SPARK_Mode is
       begin
          pragma Assert (P.C.T = R.C.T);
          pragma Assert (P.C.Seq = R.C.Seq);
-         pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = R.C.NS (I));
          pragma Assert (for all I in Ent_Id'Range => P.C.Ent (I) = R.C.Ent (I));
          pragma Assert (for all I in Pubkey'Range => P.C.Author (I) = R.C.Author (I));
          pragma Assert (for all I in Sig'Range => P.Signature (I) = R.Signature (I));
@@ -517,7 +507,6 @@ package body Kome.Records with SPARK_Mode is
          Frame (F + OQ + 3), Frame (F + OQ + 4), Frame (F + OQ + 5));
       pragma Assert (E'First = 0 and then E'Length = Frame'Length);
       pragma Assert (E (0) = Frame (F));
-      pragma Assert (for all J in Del_O_NS .. Del_O_Ent - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Del_O_Ent .. Del_O_T - 1 => E (J) = Frame (F + J));
       pragma Assert (E (OT)     = Frame (F + OT));
       pragma Assert (E (OT + 1) = Frame (F + OT + 1));
@@ -557,16 +546,14 @@ package body Kome.Records with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    function Make_Cert
-     (Founding : Kome.Crypto.Secret_Key; NS : NS_Id; Signer : Pubkey; Cap : U48) return Sig is
+     (Founding : Kome.Crypto.Secret_Key; Cid : Hash256; Signer : Pubkey; Cap : U48) return Sig is
    begin
-      return Kome.Crypto.Sign (Founding, Cert_Hash (NS, Signer, Cap));
+      return Kome.Crypto.Sign (Founding, Cert_Hash (Cid, Signer, Cap));
    end Make_Cert;
 
    ---------------------------------------------------------------------------
    --  ROSTER
    ---------------------------------------------------------------------------
-
-   procedure Lemma_Link_Bytes (C : Roster_Content; I : Link_Index) is null;
 
    procedure Lemma_Member_Bytes (C : Roster_Content; I : Member_Index) is null;
 
@@ -581,38 +568,25 @@ package body Kome.Records with SPARK_Mode is
    procedure Lemma_Member_Keys_OK (C : Roster_Content; I : Member_Index) is null;
 
    function Make_Roster
-     (Root_PK   : Pubkey;
-      S         : Salt;
+     (Cid       : Hash256;
       Signer    : Pubkey;
       Cert_Cap  : U48;
       Cert_Sig  : Sig;
       Box_PK    : Pubkey;
       Gen       : U48;
       Ceiling_T : U48;
-      Del_TTL   : U48;
-      E         : Epoch;
-      Links     : Byte_Array;
       Members   : Byte_Array) return Roster_Record
    is
-      LL : constant Natural := Links'Length;
       LM : constant Natural := Members'Length;
    begin
       return
         (C         =>
-           (NS        => Collection_Id (Root_PK, S),
-            Root_PK   => Root_PK,
-            Salt      => S,
-            Signer    => Signer,
+           (Signer    => Signer,
             Cert_Cap  => Cert_Cap,
             Cert_Sig  => Cert_Sig,
             Box_PK    => Box_PK,
             Gen       => Gen,
             Ceiling_T => Ceiling_T,
-            Del_TTL   => Del_TTL,
-            Epoch     => E,
-            N_Links   => LL / Link_Len,
-            Links     => [for I in Links_Bytes'Range =>
-                            (if I < LL then Links (Links'First + I) else 0)],
             N_Members => LM / Member_Len,
             Members   => [for I in Members_Bytes'Range =>
                             (if I < LM then Members (Members'First + I) else 0)]),
@@ -639,28 +613,18 @@ package body Kome.Records with SPARK_Mode is
 
    function Parse_Roster (Frame : Byte_Array) return Roster_Record is
       F  : constant Natural      := Frame'First;
-      NL : constant Link_Count   := Roster_NL (Frame);
       NM : constant Member_Count := Roster_NM (Frame);
-      OM : constant Natural      := F + Roster_O_Members (NL);
+      OM : constant Natural      := F + Roster_O_Members;
       OS : constant Natural      := OM + Member_Len * NM;
    begin
       return
         (C         =>
-           (NS        => [for I in NS_Id'Range => Frame (F + Roster_O_NS + I)],
-            Root_PK   => [for I in Pubkey'Range => Frame (F + Roster_O_Root_PK + I)],
-            Salt      => [for I in Salt'Range => Frame (F + Roster_O_Salt + I)],
-            Signer    => [for I in Pubkey'Range => Frame (F + Roster_O_Signer + I)],
+           (Signer    => [for I in Pubkey'Range => Frame (F + Roster_O_Signer + I)],
             Cert_Cap  => U48_At (Frame, F + Roster_O_Cert_Cap),
             Cert_Sig  => [for I in Sig'Range => Frame (F + Roster_O_Cert_Sig + I)],
             Box_PK    => [for I in Pubkey'Range => Frame (F + Roster_O_Box_PK + I)],
             Gen       => U48_At (Frame, F + Roster_O_Gen),
             Ceiling_T => U48_At (Frame, F + Roster_O_Ceiling),
-            Del_TTL   => U48_At (Frame, F + Roster_O_TTL),
-            Epoch     => Epoch (U16_At (Frame, F + Roster_O_Epoch)),
-            N_Links   => NL,
-            Links     => [for I in Links_Bytes'Range =>
-                            (if I < Link_Len * NL
-                             then Frame (F + Roster_O_Links + I) else 0)],
             N_Members => NM,
             Members   => [for I in Members_Bytes'Range =>
                             (if I < Member_Len * NM then Frame (OM + I) else 0)]),
@@ -678,14 +642,15 @@ package body Kome.Records with SPARK_Mode is
    end Decode;
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Roster_Record; Result : out Status) is
+     (Cid : Hash256; Root_PK : Pubkey; Frame : Byte_Array; R : in out Roster_Record;
+      Result : out Status) is
    begin
       Result := Malformed;
       if Is_Roster_Frame (Frame) then
          declare
             P : constant Roster_Record := Parse_Roster (Frame);
          begin
-            if Well_Formed (P) then
+            if Well_Formed (Cid, Root_PK, P) then
                R := P;
                Result := OK;
             end if;
@@ -693,12 +658,12 @@ package body Kome.Records with SPARK_Mode is
       end if;
    end Decode_Verified;
 
-   procedure Sign (R : in out Roster_Record; SK : Kome.Crypto.Secret_Key) is
+   procedure Sign (Cid : Hash256; R : in out Roster_Record; SK : Kome.Crypto.Secret_Key) is
    begin
-      R.Signature := Kome.Crypto.Sign (SK, Hash (R.C));
+      R.Signature := Kome.Crypto.Sign (SK, Hash (Cid, R.C));
    end Sign;
 
-   procedure Lemma_Header_Canonical (R : Roster_Record) is null;
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Roster_Record) is null;
 
    --  Lemma_Decode_Encode (ROSTER) has one helper for each group of fields,
    --  as for PUT. So each VC holds only the Posts of Encode and
@@ -707,7 +672,6 @@ package body Kome.Records with SPARK_Mode is
    function Roster_Shape_OK (R : Roster_Record) return Boolean is
      (Canonical (R)
       and then Is_Roster_Frame (Encode (R))
-      and then Roster_NL (Encode (R)) = R.C.N_Links
       and then Roster_NM (Encode (R)) = R.C.N_Members)
    with Ghost;
 
@@ -718,14 +682,11 @@ package body Kome.Records with SPARK_Mode is
 
    procedure Lemma_Roster_Shape (R : Roster_Record) is
       E  : constant Byte_Array   := Encode (R);
-      NL : constant Link_Count   := R.C.N_Links;
       NM : constant Member_Count := R.C.N_Members;
    begin
       pragma Assert (E'First = 0 and then E'Length = Frame_Len (R));
       pragma Assert (E (0) = Tag_Roster);
-      pragma Assert (E (Roster_O_NL) = Byte (NL));
-      pragma Assert (Roster_NL (E) = NL);
-      pragma Assert (E (Roster_O_NM (NL)) = Byte (NM));
+      pragma Assert (E (Roster_O_NM) = Byte (NM));
       pragma Assert (Roster_NM (E) = NM);
       pragma Assert (Is_Roster_Frame (E));
    end Lemma_Roster_Shape;
@@ -760,13 +721,10 @@ package body Kome.Records with SPARK_Mode is
    procedure Lemma_Roster_Ints_B (R : Roster_Record) with
      Ghost, Global => null,
      Pre  => Roster_Shape_OK (R),
-     Post => Parse_Roster (Encode (R)).C.Ceiling_T = R.C.Ceiling_T
-             and then Parse_Roster (Encode (R)).C.Del_TTL = R.C.Del_TTL
-             and then Parse_Roster (Encode (R)).C.Epoch = R.C.Epoch;
+     Post => Parse_Roster (Encode (R)).C.Ceiling_T = R.C.Ceiling_T;
 
    procedure Lemma_Roster_Ints_B (R : Roster_Record) is
-      E  : constant Byte_Array := Encode (R);
-      EP : constant U16_Value  := Natural (R.C.Epoch);
+      E : constant Byte_Array := Encode (R);
    begin
       pragma Assert (E (Roster_O_Ceiling) = Byte_Of_U48 (R.C.Ceiling_T, 0));
       pragma Assert (E (Roster_O_Ceiling + 1) = Byte_Of_U48 (R.C.Ceiling_T, 1));
@@ -776,41 +734,17 @@ package body Kome.Records with SPARK_Mode is
       pragma Assert (E (Roster_O_Ceiling + 5) = Byte_Of_U48 (R.C.Ceiling_T, 5));
       Lemma_U48_Round_Trip (R.C.Ceiling_T);
       pragma Assert (U48_At (E, Roster_O_Ceiling) = R.C.Ceiling_T);
-      pragma Assert (E (Roster_O_TTL) = Byte_Of_U48 (R.C.Del_TTL, 0));
-      pragma Assert (E (Roster_O_TTL + 1) = Byte_Of_U48 (R.C.Del_TTL, 1));
-      pragma Assert (E (Roster_O_TTL + 2) = Byte_Of_U48 (R.C.Del_TTL, 2));
-      pragma Assert (E (Roster_O_TTL + 3) = Byte_Of_U48 (R.C.Del_TTL, 3));
-      pragma Assert (E (Roster_O_TTL + 4) = Byte_Of_U48 (R.C.Del_TTL, 4));
-      pragma Assert (E (Roster_O_TTL + 5) = Byte_Of_U48 (R.C.Del_TTL, 5));
-      Lemma_U48_Round_Trip (R.C.Del_TTL);
-      pragma Assert (U48_At (E, Roster_O_TTL) = R.C.Del_TTL);
-      pragma Assert (E (Roster_O_Epoch)     = Byte_Of_U16 (EP, 0));
-      pragma Assert (E (Roster_O_Epoch + 1) = Byte_Of_U16 (EP, 1));
-      Lemma_U16_Round_Trip (EP);
-      pragma Assert (U16_At (E, Roster_O_Epoch) = EP);
    end Lemma_Roster_Ints_B;
 
    procedure Lemma_Roster_Ids (R : Roster_Record) with
      Ghost, Global => null,
      Pre  => Roster_Shape_OK (R),
-     Post => Parse_Roster (Encode (R)).C.NS = R.C.NS
-             and then Parse_Roster (Encode (R)).C.Root_PK = R.C.Root_PK
-             and then Parse_Roster (Encode (R)).C.Salt = R.C.Salt
-             and then Parse_Roster (Encode (R)).C.Signer = R.C.Signer;
+     Post => Parse_Roster (Encode (R)).C.Signer = R.C.Signer;
 
    procedure Lemma_Roster_Ids (R : Roster_Record) is
       E : constant Byte_Array    := Encode (R);
       P : constant Roster_Record := Parse_Roster (E);
    begin
-      pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = E (Roster_O_NS + I));
-      pragma Assert (for all I in NS_Id'Range => E (Roster_O_NS + I) = R.C.NS (I));
-      pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = R.C.NS (I));
-      pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = E (Roster_O_Root_PK + I));
-      pragma Assert (for all I in Pubkey'Range => E (Roster_O_Root_PK + I) = R.C.Root_PK (I));
-      pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = R.C.Root_PK (I));
-      pragma Assert (for all I in Salt'Range => P.C.Salt (I) = E (Roster_O_Salt + I));
-      pragma Assert (for all I in Salt'Range => E (Roster_O_Salt + I) = R.C.Salt (I));
-      pragma Assert (for all I in Salt'Range => P.C.Salt (I) = R.C.Salt (I));
       pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = E (Roster_O_Signer + I));
       pragma Assert (for all I in Pubkey'Range => E (Roster_O_Signer + I) = R.C.Signer (I));
       pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = R.C.Signer (I));
@@ -834,25 +768,6 @@ package body Kome.Records with SPARK_Mode is
       pragma Assert (for all I in Pubkey'Range => P.C.Box_PK (I) = R.C.Box_PK (I));
    end Lemma_Roster_Keys;
 
-   procedure Lemma_Roster_Links (R : Roster_Record) with
-     Ghost, Global => null,
-     Pre  => Roster_Shape_OK (R),
-     Post => Parse_Roster (Encode (R)).C.Links = R.C.Links;
-
-   procedure Lemma_Roster_Links (R : Roster_Record) is
-      E  : constant Byte_Array    := Encode (R);
-      P  : constant Roster_Record := Parse_Roster (E);
-      NL : constant Link_Count    := R.C.N_Links;
-   begin
-      pragma Assert (for all I in 0 .. Link_Len * NL - 1 =>
-                       P.C.Links (I) = E (Roster_O_Links + I));
-      pragma Assert (for all I in 0 .. Link_Len * NL - 1 =>
-                       E (Roster_O_Links + I) = R.C.Links (I));
-      pragma Assert (for all I in Link_Len * NL .. Links_Bytes_Len - 1 => P.C.Links (I) = 0);
-      pragma Assert (for all I in Link_Len * NL .. Links_Bytes_Len - 1 => R.C.Links (I) = 0);
-      pragma Assert (for all I in Links_Bytes'Range => P.C.Links (I) = R.C.Links (I));
-   end Lemma_Roster_Links;
-
    procedure Lemma_Roster_Members (R : Roster_Record) with
      Ghost, Global => null,
      Pre  => Roster_Shape_OK (R),
@@ -862,7 +777,7 @@ package body Kome.Records with SPARK_Mode is
       E  : constant Byte_Array    := Encode (R);
       P  : constant Roster_Record := Parse_Roster (E);
       NM : constant Member_Count  := R.C.N_Members;
-      OM : constant Natural       := Roster_O_Members (R.C.N_Links);
+      OM : constant Natural       := Roster_O_Members;
    begin
       pragma Assert (for all I in 0 .. Member_Len * NM - 1 => P.C.Members (I) = E (OM + I));
       pragma Assert (for all I in 0 .. Member_Len * NM - 1 => E (OM + I) = R.C.Members (I));
@@ -883,7 +798,7 @@ package body Kome.Records with SPARK_Mode is
       P  : constant Roster_Record := Parse_Roster (E);
       OS : constant Natural       := Content_Len (R.C);
    begin
-      pragma Assert (OS = Roster_O_Members (R.C.N_Links) + Member_Len * R.C.N_Members);
+      pragma Assert (OS = Roster_O_Members + Member_Len * R.C.N_Members);
       pragma Assert (for all I in Sig'Range => P.Signature (I) = E (OS + I));
       pragma Assert (for all I in Sig'Range => E (OS + I) = R.Signature (I));
    end Lemma_Roster_Sig;
@@ -895,21 +810,19 @@ package body Kome.Records with SPARK_Mode is
       Lemma_Roster_Ints_B (R);
       Lemma_Roster_Ids (R);
       Lemma_Roster_Keys (R);
-      Lemma_Roster_Links (R);
       Lemma_Roster_Members (R);
       Lemma_Roster_Sig (R);
       declare
          P : constant Roster_Record := Parse_Roster (Encode (R));
       begin
-         pragma Assert (P.C.N_Links = R.C.N_Links);
          pragma Assert (P.C.N_Members = R.C.N_Members);
          pragma Assert (P.C = R.C);
          pragma Assert (P = R);
       end;
    end Lemma_Decode_Encode;
 
-   --  Lemma_Encode_Decode_Roster has five parts: the fixed head (in two
-   --  halves), the link block, the member block and the signature.
+   --  Lemma_Encode_Decode_Roster has four parts: the fixed head (in two
+   --  halves), the member block (with n_members) and the signature.
 
    procedure Lemma_Roster_ED_Head1 (Frame : Byte_Array) with
      Ghost, Global => null,
@@ -929,9 +842,6 @@ package body Kome.Records with SPARK_Mode is
          Frame (F + Roster_O_Cert_Cap + 3), Frame (F + Roster_O_Cert_Cap + 4), Frame (F + Roster_O_Cert_Cap + 5));
       pragma Assert (E'First = 0 and then E'Length = Frame'Length);
       pragma Assert (E (0) = Frame (F));
-      pragma Assert (for all J in Roster_O_NS .. Roster_O_Root_PK - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Roster_O_Root_PK .. Roster_O_Salt - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Roster_O_Salt .. Roster_O_Signer - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Roster_O_Signer .. Roster_O_Cert_Cap - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Roster_O_Cert_Cap) = Frame (F + Roster_O_Cert_Cap));
       pragma Assert (E (Roster_O_Cert_Cap + 1) = Frame (F + Roster_O_Cert_Cap + 1));
@@ -949,23 +859,19 @@ package body Kome.Records with SPARK_Mode is
              and then Encode (Parse_Roster (Frame))'First = 0
              and then Encode (Parse_Roster (Frame))'Length = Frame'Length,
      Post => Same_At (Frame, Encode (Parse_Roster (Frame)),
-                      Roster_O_Box_PK, Roster_O_NL - 1);
+                      Roster_O_Box_PK, Roster_O_NM - 1);
 
    procedure Lemma_Roster_ED_Head2 (Frame : Byte_Array) is
       F : constant Natural       := Frame'First;
       P : constant Roster_Record := Parse_Roster (Frame);
       E : constant Byte_Array    := Encode (P);
    begin
-      Lemma_U16_Bytes_Round_Trip (Frame (F + Roster_O_Epoch), Frame (F + Roster_O_Epoch + 1));
       Lemma_U48_Bytes_Round_Trip
         (Frame (F + Roster_O_Gen), Frame (F + Roster_O_Gen + 1), Frame (F + Roster_O_Gen + 2),
          Frame (F + Roster_O_Gen + 3), Frame (F + Roster_O_Gen + 4), Frame (F + Roster_O_Gen + 5));
       Lemma_U48_Bytes_Round_Trip
         (Frame (F + Roster_O_Ceiling), Frame (F + Roster_O_Ceiling + 1), Frame (F + Roster_O_Ceiling + 2),
          Frame (F + Roster_O_Ceiling + 3), Frame (F + Roster_O_Ceiling + 4), Frame (F + Roster_O_Ceiling + 5));
-      Lemma_U48_Bytes_Round_Trip
-        (Frame (F + Roster_O_TTL), Frame (F + Roster_O_TTL + 1), Frame (F + Roster_O_TTL + 2),
-         Frame (F + Roster_O_TTL + 3), Frame (F + Roster_O_TTL + 4), Frame (F + Roster_O_TTL + 5));
       pragma Assert (for all J in Roster_O_Box_PK .. Roster_O_Gen - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Roster_O_Gen) = Frame (F + Roster_O_Gen));
       pragma Assert (E (Roster_O_Gen + 1) = Frame (F + Roster_O_Gen + 1));
@@ -979,41 +885,8 @@ package body Kome.Records with SPARK_Mode is
       pragma Assert (E (Roster_O_Ceiling + 3) = Frame (F + Roster_O_Ceiling + 3));
       pragma Assert (E (Roster_O_Ceiling + 4) = Frame (F + Roster_O_Ceiling + 4));
       pragma Assert (E (Roster_O_Ceiling + 5) = Frame (F + Roster_O_Ceiling + 5));
-      pragma Assert (E (Roster_O_TTL) = Frame (F + Roster_O_TTL));
-      pragma Assert (E (Roster_O_TTL + 1) = Frame (F + Roster_O_TTL + 1));
-      pragma Assert (E (Roster_O_TTL + 2) = Frame (F + Roster_O_TTL + 2));
-      pragma Assert (E (Roster_O_TTL + 3) = Frame (F + Roster_O_TTL + 3));
-      pragma Assert (E (Roster_O_TTL + 4) = Frame (F + Roster_O_TTL + 4));
-      pragma Assert (E (Roster_O_TTL + 5) = Frame (F + Roster_O_TTL + 5));
-      pragma Assert (E (Roster_O_Epoch)     = Frame (F + Roster_O_Epoch));
-      pragma Assert (E (Roster_O_Epoch + 1) = Frame (F + Roster_O_Epoch + 1));
-      pragma Assert (for all J in Roster_O_Box_PK .. Roster_O_NL - 1 => E (J) = Frame (F + J));
+      pragma Assert (for all J in Roster_O_Box_PK .. Roster_O_NM - 1 => E (J) = Frame (F + J));
    end Lemma_Roster_ED_Head2;
-
-   procedure Lemma_Roster_ED_Links (Frame : Byte_Array) with
-     Ghost, Global => null,
-     Pre  => Is_Roster_Frame (Frame)
-             and then Encode (Parse_Roster (Frame))'First = 0
-             and then Encode (Parse_Roster (Frame))'Length = Frame'Length,
-     Post => Same_At (Frame, Encode (Parse_Roster (Frame)),
-                      Roster_O_NL, Roster_O_Members (Roster_NL (Frame)) - 1);
-
-   procedure Lemma_Roster_ED_Links (Frame : Byte_Array) is
-      F  : constant Natural       := Frame'First;
-      P  : constant Roster_Record := Parse_Roster (Frame);
-      E  : constant Byte_Array    := Encode (P);
-      NL : constant Link_Count    := P.C.N_Links;
-      ON : constant Natural       := Roster_O_NM (NL);
-   begin
-      pragma Assert (NL = Roster_NL (Frame));
-      pragma Assert (E (Roster_O_NL) = Frame (F + Roster_O_NL));
-      pragma Assert (for all J in Roster_O_Links .. ON - 1 => E (J) = P.C.Links (J - Roster_O_Links));
-      pragma Assert (for all I in 0 .. Link_Len * NL - 1 =>
-                       P.C.Links (I) = Frame (F + Roster_O_Links + I));
-      pragma Assert (for all J in Roster_O_Links .. ON - 1 => E (J) = Frame (F + J));
-      pragma Assert (E (ON) = Frame (F + ON));
-      pragma Assert (for all J in Roster_O_NL .. ON => E (J) = Frame (F + J));
-   end Lemma_Roster_ED_Links;
 
    procedure Lemma_Roster_ED_Members (Frame : Byte_Array) with
      Ghost, Global => null,
@@ -1021,25 +894,25 @@ package body Kome.Records with SPARK_Mode is
              and then Encode (Parse_Roster (Frame))'First = 0
              and then Encode (Parse_Roster (Frame))'Length = Frame'Length,
      Post => Same_At (Frame, Encode (Parse_Roster (Frame)),
-                      Roster_O_Members (Roster_NL (Frame)),
-                      Frame'Length - Sig_Len - 1);
+                      Roster_O_NM, Frame'Length - Sig_Len - 1);
 
    procedure Lemma_Roster_ED_Members (Frame : Byte_Array) is
       F  : constant Natural       := Frame'First;
       P  : constant Roster_Record := Parse_Roster (Frame);
       E  : constant Byte_Array    := Encode (P);
-      NL : constant Link_Count    := P.C.N_Links;
       NM : constant Member_Count  := P.C.N_Members;
-      OM : constant Natural       := Roster_O_Members (NL);
+      OM : constant Natural       := Roster_O_Members;
       OS : constant Natural       := OM + Member_Len * NM;
    begin
-      pragma Assert (NL = Roster_NL (Frame) and then NM = Roster_NM (Frame));
+      pragma Assert (NM = Roster_NM (Frame));
       pragma Assert (Content_Len (P.C) = OS);
       pragma Assert (OS = Frame'Length - Sig_Len);
+      pragma Assert (E (Roster_O_NM) = Frame (F + Roster_O_NM));
       pragma Assert (for all J in OM .. OS - 1 => E (J) = P.C.Members (J - OM));
       pragma Assert (for all I in 0 .. Member_Len * NM - 1 =>
                        P.C.Members (I) = Frame (F + OM + I));
       pragma Assert (for all J in OM .. OS - 1 => E (J) = Frame (F + J));
+      pragma Assert (for all J in Roster_O_NM .. OS - 1 => E (J) = Frame (F + J));
    end Lemma_Roster_ED_Members;
 
    procedure Lemma_Roster_ED_Sig (Frame : Byte_Array) with
@@ -1054,11 +927,10 @@ package body Kome.Records with SPARK_Mode is
       F  : constant Natural       := Frame'First;
       P  : constant Roster_Record := Parse_Roster (Frame);
       E  : constant Byte_Array    := Encode (P);
-      NL : constant Link_Count    := P.C.N_Links;
       NM : constant Member_Count  := P.C.N_Members;
-      OS : constant Natural       := Roster_O_Members (NL) + Member_Len * NM;
+      OS : constant Natural       := Roster_O_Members + Member_Len * NM;
    begin
-      pragma Assert (NL = Roster_NL (Frame) and then NM = Roster_NM (Frame));
+      pragma Assert (NM = Roster_NM (Frame));
       pragma Assert (Content_Len (P.C) = OS);
       pragma Assert (OS = Frame'Length - Sig_Len);
       pragma Assert (for all J in OS .. OS + Sig_Len - 1 => E (J) = P.Signature (J - OS));
@@ -1071,19 +943,16 @@ package body Kome.Records with SPARK_Mode is
    begin
       Lemma_Roster_ED_Head1 (Frame);
       Lemma_Roster_ED_Head2 (Frame);
-      Lemma_Roster_ED_Links (Frame);
       Lemma_Roster_ED_Members (Frame);
       Lemma_Roster_ED_Sig (Frame);
       declare
-         E  : constant Byte_Array := Encode (Parse_Roster (Frame));
-         OM : constant Natural    := Roster_O_Members (Roster_NL (Frame));
-         L  : constant Natural    := Frame'Length;
+         E : constant Byte_Array := Encode (Parse_Roster (Frame));
+         L : constant Natural    := Frame'Length;
       begin
          pragma Assert (for all J in 0 .. Roster_O_Box_PK - 1 => E (J) = Frame (F + J));
-         pragma Assert (for all J in Roster_O_Box_PK .. Roster_O_NL - 1 =>
+         pragma Assert (for all J in Roster_O_Box_PK .. Roster_O_NM - 1 =>
                           E (J) = Frame (F + J));
-         pragma Assert (for all J in Roster_O_NL .. OM - 1 => E (J) = Frame (F + J));
-         pragma Assert (for all J in OM .. L - Sig_Len - 1 => E (J) = Frame (F + J));
+         pragma Assert (for all J in Roster_O_NM .. L - Sig_Len - 1 => E (J) = Frame (F + J));
          pragma Assert (for all J in L - Sig_Len .. L - 1 => E (J) = Frame (F + J));
          pragma Assert (for all J in E'Range => E (J) = Frame (F + J));
       end;
@@ -1094,8 +963,7 @@ package body Kome.Records with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    function Make_Revoke
-     (Root_PK  : Pubkey;
-      S        : Salt;
+     (Cid      : Hash256;
       Signer   : Pubkey;
       Cert_Cap : U48;
       Cert_Sig : Sig;
@@ -1104,10 +972,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS       => Collection_Id (Root_PK, S),
-            Root_PK  => Root_PK,
-            Salt     => S,
-            Signer   => Signer,
+           (Signer   => Signer,
             Cert_Cap => Cert_Cap,
             Cert_Sig => Cert_Sig,
             Sign_PK  => Sign_PK,
@@ -1136,10 +1001,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS       => [for I in NS_Id'Range => Frame (F + Revoke_O_NS + I)],
-            Root_PK  => [for I in Pubkey'Range => Frame (F + Revoke_O_Root_PK + I)],
-            Salt     => [for I in Salt'Range => Frame (F + Revoke_O_Salt + I)],
-            Signer   => [for I in Pubkey'Range => Frame (F + Revoke_O_Signer + I)],
+           (Signer   => [for I in Pubkey'Range => Frame (F + Revoke_O_Signer + I)],
             Cert_Cap => U48_At (Frame, F + Revoke_O_Cert_Cap),
             Cert_Sig => [for I in Sig'Range => Frame (F + Revoke_O_Cert_Sig + I)],
             Sign_PK  => [for I in Pubkey'Range => Frame (F + Revoke_O_Sign_PK + I)],
@@ -1158,14 +1020,15 @@ package body Kome.Records with SPARK_Mode is
    end Decode;
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Revoke_Record; Result : out Status) is
+     (Cid : Hash256; Root_PK : Pubkey; Frame : Byte_Array; R : in out Revoke_Record;
+      Result : out Status) is
    begin
       Result := Malformed;
       if Is_Revoke_Frame (Frame) then
          declare
             P : constant Revoke_Record := Parse_Revoke (Frame);
          begin
-            if Well_Formed (P) then
+            if Well_Formed (Cid, Root_PK, P) then
                R := P;
                Result := OK;
             end if;
@@ -1173,12 +1036,12 @@ package body Kome.Records with SPARK_Mode is
       end if;
    end Decode_Verified;
 
-   procedure Sign (R : in out Revoke_Record; SK : Kome.Crypto.Secret_Key) is
+   procedure Sign (Cid : Hash256; R : in out Revoke_Record; SK : Kome.Crypto.Secret_Key) is
    begin
-      R.Signature := Kome.Crypto.Sign (SK, Hash (R.C));
+      R.Signature := Kome.Crypto.Sign (SK, Hash (Cid, R.C));
    end Sign;
 
-   procedure Lemma_Header_Canonical (R : Revoke_Record) is null;
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Revoke_Record) is null;
 
    procedure Lemma_Revoke_Ints (R : Revoke_Record) with
      Ghost, Global => null,
@@ -1217,15 +1080,6 @@ package body Kome.Records with SPARK_Mode is
          E : constant Byte_Array    := Encode (R);
          P : constant Revoke_Record := Parse_Revoke (E);
       begin
-         pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = E (Revoke_O_NS + I));
-         pragma Assert (for all I in NS_Id'Range => E (Revoke_O_NS + I) = R.C.NS (I));
-         pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = R.C.NS (I));
-         pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = E (Revoke_O_Root_PK + I));
-         pragma Assert (for all I in Pubkey'Range => E (Revoke_O_Root_PK + I) = R.C.Root_PK (I));
-         pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = R.C.Root_PK (I));
-         pragma Assert (for all I in Salt'Range => P.C.Salt (I) = E (Revoke_O_Salt + I));
-         pragma Assert (for all I in Salt'Range => E (Revoke_O_Salt + I) = R.C.Salt (I));
-         pragma Assert (for all I in Salt'Range => P.C.Salt (I) = R.C.Salt (I));
          pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = E (Revoke_O_Signer + I));
          pragma Assert (for all I in Pubkey'Range => E (Revoke_O_Signer + I) = R.C.Signer (I));
          pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = R.C.Signer (I));
@@ -1262,9 +1116,6 @@ package body Kome.Records with SPARK_Mode is
          Frame (F + Revoke_O_Cert_Cap + 3), Frame (F + Revoke_O_Cert_Cap + 4), Frame (F + Revoke_O_Cert_Cap + 5));
       pragma Assert (E'First = 0 and then E'Length = Frame'Length);
       pragma Assert (E (0) = Frame (F));
-      pragma Assert (for all J in Revoke_O_NS .. Revoke_O_Root_PK - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Revoke_O_Root_PK .. Revoke_O_Salt - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Revoke_O_Salt .. Revoke_O_Signer - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Revoke_O_Signer .. Revoke_O_Cert_Cap - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Revoke_O_Cert_Cap) = Frame (F + Revoke_O_Cert_Cap));
       pragma Assert (E (Revoke_O_Cert_Cap + 1) = Frame (F + Revoke_O_Cert_Cap + 1));
@@ -1323,8 +1174,7 @@ package body Kome.Records with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    function Make_Grant
-     (Root_PK  : Pubkey;
-      S        : Salt;
+     (Cid      : Hash256;
       Signer   : Pubkey;
       Cert_Cap : U48;
       Cert_Sig : Sig;
@@ -1332,10 +1182,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS       => Collection_Id (Root_PK, S),
-            Root_PK  => Root_PK,
-            Salt     => S,
-            Signer   => Signer,
+           (Signer   => Signer,
             Cert_Cap => Cert_Cap,
             Cert_Sig => Cert_Sig,
             Subject  => Subject),
@@ -1363,10 +1210,7 @@ package body Kome.Records with SPARK_Mode is
    begin
       return
         (C         =>
-           (NS       => [for I in NS_Id'Range => Frame (F + Grant_O_NS + I)],
-            Root_PK  => [for I in Pubkey'Range => Frame (F + Grant_O_Root_PK + I)],
-            Salt     => [for I in Salt'Range => Frame (F + Grant_O_Salt + I)],
-            Signer   => [for I in Pubkey'Range => Frame (F + Grant_O_Signer + I)],
+           (Signer   => [for I in Pubkey'Range => Frame (F + Grant_O_Signer + I)],
             Cert_Cap => U48_At (Frame, F + Grant_O_Cert_Cap),
             Cert_Sig => [for I in Sig'Range => Frame (F + Grant_O_Cert_Sig + I)],
             Subject  => [for I in Pubkey'Range => Frame (F + Grant_O_Subject + I)]),
@@ -1384,14 +1228,15 @@ package body Kome.Records with SPARK_Mode is
    end Decode;
 
    procedure Decode_Verified
-     (Frame : Byte_Array; R : in out Grant_Record; Result : out Status) is
+     (Cid : Hash256; Root_PK : Pubkey; Frame : Byte_Array; R : in out Grant_Record;
+      Result : out Status) is
    begin
       Result := Malformed;
       if Is_Grant_Frame (Frame) then
          declare
             P : constant Grant_Record := Parse_Grant (Frame);
          begin
-            if Well_Formed (P) then
+            if Well_Formed (Cid, Root_PK, P) then
                R := P;
                Result := OK;
             end if;
@@ -1399,12 +1244,12 @@ package body Kome.Records with SPARK_Mode is
       end if;
    end Decode_Verified;
 
-   procedure Sign (R : in out Grant_Record; SK : Kome.Crypto.Secret_Key) is
+   procedure Sign (Cid : Hash256; R : in out Grant_Record; SK : Kome.Crypto.Secret_Key) is
    begin
-      R.Signature := Kome.Crypto.Sign (SK, Hash (R.C));
+      R.Signature := Kome.Crypto.Sign (SK, Hash (Cid, R.C));
    end Sign;
 
-   procedure Lemma_Header_Canonical (R : Grant_Record) is null;
+   procedure Lemma_Header_Canonical (Cid : Hash256; R : Grant_Record) is null;
 
    procedure Lemma_Decode_Encode (R : Grant_Record) is
       E : constant Byte_Array := Encode (R);
@@ -1424,15 +1269,6 @@ package body Kome.Records with SPARK_Mode is
          P : constant Grant_Record := Parse_Grant (E);
       begin
          pragma Assert (P.C.Cert_Cap = R.C.Cert_Cap);
-         pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = E (Grant_O_NS + I));
-         pragma Assert (for all I in NS_Id'Range => E (Grant_O_NS + I) = R.C.NS (I));
-         pragma Assert (for all I in NS_Id'Range => P.C.NS (I) = R.C.NS (I));
-         pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = E (Grant_O_Root_PK + I));
-         pragma Assert (for all I in Pubkey'Range => E (Grant_O_Root_PK + I) = R.C.Root_PK (I));
-         pragma Assert (for all I in Pubkey'Range => P.C.Root_PK (I) = R.C.Root_PK (I));
-         pragma Assert (for all I in Salt'Range => P.C.Salt (I) = E (Grant_O_Salt + I));
-         pragma Assert (for all I in Salt'Range => E (Grant_O_Salt + I) = R.C.Salt (I));
-         pragma Assert (for all I in Salt'Range => P.C.Salt (I) = R.C.Salt (I));
          pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = E (Grant_O_Signer + I));
          pragma Assert (for all I in Pubkey'Range => E (Grant_O_Signer + I) = R.C.Signer (I));
          pragma Assert (for all I in Pubkey'Range => P.C.Signer (I) = R.C.Signer (I));
@@ -1461,9 +1297,6 @@ package body Kome.Records with SPARK_Mode is
          Frame (F + Grant_O_Cert_Cap + 3), Frame (F + Grant_O_Cert_Cap + 4), Frame (F + Grant_O_Cert_Cap + 5));
       pragma Assert (E'First = 0 and then E'Length = Frame'Length);
       pragma Assert (E (0) = Frame (F));
-      pragma Assert (for all J in Grant_O_NS .. Grant_O_Root_PK - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Grant_O_Root_PK .. Grant_O_Salt - 1 => E (J) = Frame (F + J));
-      pragma Assert (for all J in Grant_O_Salt .. Grant_O_Signer - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Grant_O_Signer .. Grant_O_Cert_Cap - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Grant_O_Cert_Cap) = Frame (F + Grant_O_Cert_Cap));
       pragma Assert (E (Grant_O_Cert_Cap + 1) = Frame (F + Grant_O_Cert_Cap + 1));
@@ -1484,9 +1317,8 @@ package body Kome.Records with SPARK_Mode is
    procedure Lemma_Roster_Lists_DH (Frame : Byte_Array; DH : Pubkey) is
       F  : constant Natural       := Frame'First;
       P  : constant Roster_Record := Parse_Roster (Frame);
-      NL : constant Link_Count    := Roster_NL (Frame);
       NM : constant Member_Count  := Roster_NM (Frame);
-      OM : constant Natural       := F + Roster_O_Members (NL);
+      OM : constant Natural       := F + Roster_O_Members;
    begin
       pragma Assert (P.C.N_Members = NM);
       for I in 1 .. NM loop
