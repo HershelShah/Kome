@@ -1050,7 +1050,9 @@ not only a caller's: after an append, when the entry count passes
 `2·|F| + c` (a small constant `c`), the store runs `Compact` itself. So
 the log holds at most `2·|F| + c` entries after every operation, which
 bounds the dominated bytes that a deleted value leaves behind and bounds
-the cost of the next open.
+the cost of the next open. Compaction builds the new log in the buffer
+that becomes the new file and reads the old log in place, so it holds no
+second copy of the log (§10.10 (c)).
 
 **Replay** (when a store opens) does these steps:
 
@@ -2048,7 +2050,7 @@ clock, and A3 and A4 are the assumptions that bound it.
    accumulator's byte order (§8) is the other place where a second
    implementation must be careful.
 
-10. **Two log decisions made in the SPARK store.**
+10. **Three log decisions made in the SPARK store.**
     - (a) Capacities: the slice is the constant `Slice_Max` at every
       replica, and the `HEADER`'s `slice` field is a check, not a
       parameter. The data capacity in force is a parameter of the open,
@@ -2066,3 +2068,14 @@ clock, and A3 and A4 are the assumptions that bound it.
       `Log_Cap` is below `Log_Fits`, with every record held, where
       compaction frees nothing. The reopened replica then has a lower
       horizon, and T18 allows this.
+    - (c) Memory: a store holds its log (`log_cap` bytes), the entry
+      boundaries of the log and its index. Every entry is at least 6
+      bytes long, so the boundaries take `log_cap / 6` slots of 4 bytes
+      (a discriminant `Bnd_Cap` of the store, at least `log_cap / 6`),
+      and a store is about `1.7 · log_cap` bytes beside its index.
+      `Compact` writes the new log into a buffer of `log_cap` bytes that
+      the binding supplies (the image of the new file) and then makes it
+      the store's log; it keeps no copy of the old log, only of the
+      index. `Open_From_Log` replays against its input in place, so the
+      input (the file, which a binding can map) and the store's log are
+      both resident while a store opens.

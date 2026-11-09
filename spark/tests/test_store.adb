@@ -243,6 +243,23 @@ procedure Test_Store with SPARK_Mode => Off is
       end if;
    end Exp;
 
+   --  Compact into a binding buffer (AUDIT.md G15). The buffer starts
+   --  with bytes that are in no log; on return its first Log_Length bytes
+   --  must be the new log. Buf_Calls counts the calls, Buf_Images the
+   --  calls where the buffer was the image.
+   Buf_Calls  : Natural := 0;
+   Buf_Images : Natural := 0;
+
+   procedure Compact (S : in out Store_T; L : Lattice) is
+      Buf : Byte_Array (0 .. S.Log_Cap) := [others => 16#EE#];
+   begin
+      Kome.Store.Compact (S, L, Buf);
+      Buf_Calls := Buf_Calls + 1;
+      if Buf (0 .. Log_Length (S) - 1) = Log_Bytes (S) then
+         Buf_Images := Buf_Images + 1;
+      end if;
+   end Compact;
+
    function Frame_Of (S : Store_T; I : Positive) return Byte_Array is
      (Read_Frame (S, Entry_At (S, I).Off));
 
@@ -439,7 +456,7 @@ procedure Test_Store with SPARK_Mode => Off is
                   SC  : constant Natural := Natural'Value (Field (5));
                   Exp : constant Byte_Array := Hex (Field (6));
                   VL  : Lattice (DC, SC);
-                  VS  : Store_T (DC + Signers_Max * SC, 128);
+                  VS  : Store_T (DC + Signers_Max * SC, 128, Bnd_Cap_For (128));
                begin
                   VL := Empty (To_Id128 (Collection_Id (RK, SL)), To_Key256 (RK), DC, SC);
                   Open (RK, SL, VL, VS);
@@ -480,9 +497,9 @@ procedure Test_Store with SPARK_Mode => Off is
       D2  : constant Byte_Array := Del_Of (3, 25 * Day, 7);
       PX  : constant Byte_Array := Put_Of (4, 'n', 10 * Day, 1, [1], Stranger_SK, Stranger_PK);
       PH  : constant Byte_Array := Put_Of (5, 'n', 200 * Day, 8, [1]);
-      S       : Store_T (ICap, LCap);
+      S       : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL      : Lattice (Cap, Slice);
-      Raw     : Store_T (ICap, LCap);   --  the log before compaction
+      Raw     : Store_T (ICap, LCap, Bnd_Cap_For (LCap));   --  the log before compaction
       RawL    : Lattice (Cap, Slice);
       Off     : Log_Size;
       St      : Status;
@@ -600,7 +617,7 @@ procedure Test_Store with SPARK_Mode => Off is
                 and then Hdr (GX).NS /= Collection (S)
                 and then not Foreign_Root (S, G1) and then not Foreign_Root (S, P1));
          declare
-            R  : Store_T (ICap, LCap);
+            R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
             RL : Lattice (Cap, Slice);
             VL : Log_Size;
          begin
@@ -619,7 +636,7 @@ procedure Test_Store with SPARK_Mode => Off is
          Room   : constant Natural :=
            Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
            + Apply_Prefix + P2'Length + 3;
-         Sm     : Store_T (ICap, Room);
+         Sm     : Store_T (ICap, Room, Bnd_Cap_For (Room));
          SmL    : Lattice (Cap, Slice);
          Stale  : constant Byte_Array := Founding_Roster (0, 50 * Day);
          R2     : constant Byte_Array := Founding_Roster (2, 200 * Day);
@@ -674,7 +691,7 @@ procedure Test_Store with SPARK_Mode => Off is
 
       declare
          --  A data row of 2.
-         Tiny  : Store_T (2 + Signers_Max * Slice, LCap);
+         Tiny  : Store_T (2 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
          TinyL : Lattice (2, Slice);
       begin
          TinyL := Empty (NS, Fnd, 2, Slice);
@@ -699,7 +716,7 @@ procedure Test_Store with SPARK_Mode => Off is
 
       declare
          --  A slice of 2: the founding roster and one GRANT fill it.
-         Sl   : Store_T (Cap + Signers_Max * 2, LCap);
+         Sl   : Store_T (Cap + Signers_Max * 2, LCap, Bnd_Cap_For (LCap));
          SlL  : Lattice (Cap, 2);
          G2   : constant Byte_Array := Founding_Grant (Author2_PK);
          R2   : constant Byte_Array := Founding_Roster (2, 100 * Day);
@@ -821,7 +838,7 @@ procedure Test_Store with SPARK_Mode => Off is
          Room : constant Natural :=
            Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
            + Apply_Prefix + D1'Length + 3;
-         Sm   : Store_T (ICap, Room);
+         Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
          SmL  : Lattice (Cap, Slice);
       begin
          SmL := Empty (NS, Fnd, Cap, Slice);
@@ -846,7 +863,7 @@ procedure Test_Store with SPARK_Mode => Off is
       declare
          Before  : constant Store_T := S;
          BeforeL : constant Lattice := SL;
-         R       : Store_T (ICap, LCap);
+         R       : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL      : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -885,7 +902,7 @@ procedure Test_Store with SPARK_Mode => Off is
                 Found and then Read_Frame (S, Entry_At (S, I).Off) = P4);
       end;
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -897,7 +914,7 @@ procedure Test_Store with SPARK_Mode => Off is
                 and then Auth_Gen (R) = 2);
       end;
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Kome.Store.Expire (Raw, RawL, 37 * Day, St);
@@ -910,16 +927,16 @@ procedure Test_Store with SPARK_Mode => Off is
       --  H23). The compacted log holds 2 authorization records and 2 data
       --  records, then EXPIRE.
       declare
-         R   : Store_T (ICap, LCap);
+         R   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RLs : Lattice (Cap - 1, Slice);
          RL1 : Lattice (1, Slice);
-         R1s : Store_T (1 + Signers_Max * Slice, LCap);
+         R1s : Store_T (1 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
          RLt : Lattice (Cap, Slice - 1);
          RLu : Lattice (Cap, Slice + 1);
-         Ru  : Store_T (Cap + Signers_Max * (Slice + 1), LCap);
+         Ru  : Store_T (Cap + Signers_Max * (Slice + 1), LCap, Bnd_Cap_For (LCap));
          RLb : Lattice (Cap + 4, Slice);
-         Rb  : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2);
-         Rs  : Store_T (ICap, 200);
+         Rb  : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2, Bnd_Cap_For (LCap * 2));
+         Rs  : Store_T (ICap, 200, Bnd_Cap_For (200));
          RL  : Lattice (Cap, Slice);
          Img : constant Byte_Array := Log_Bytes (S);
          VL  : Log_Size;
@@ -948,7 +965,7 @@ procedure Test_Store with SPARK_Mode => Off is
                 St = OK and then T18 (S, SL, Rb, RLb) and then Logged_Cap (Rb) = Cap);
          declare
             Img_B : constant Byte_Array := Log_Bytes (Rb);
-            R2    : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2);
+            R2    : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2, Bnd_Cap_For (LCap * 2));
             RL2   : Lattice (Cap + 4, Slice);
          begin
             Open_From_Log (Img_B, RL, R, VL, St);
@@ -1037,7 +1054,7 @@ procedure Test_Store with SPARK_Mode => Off is
       --  del_ttl_eff of the frontier at that point.
       declare
          Img : constant Byte_Array := Log_Bytes (S);
-         R   : Store_T (ICap, LCap);
+         R   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL  : Lattice (Cap, Slice);
          VL  : Log_Size;
       begin
@@ -1075,7 +1092,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  incomparable roster, a GRANT, data, Compact, open again.
    ---------------------------------------------------------------------------
    declare
-      S   : Store_T (ICap, LCap);
+      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL  : Lattice (Cap, Slice);
       R1  : constant Byte_Array := Founding_Roster (1, 200 * Day);
       R2  : constant Byte_Array := Founding_Roster (2, 200 * Day);
@@ -1116,7 +1133,7 @@ procedure Test_Store with SPARK_Mode => Off is
              & "not the dominated one",
              Auth_Gen (S) = 5);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1128,7 +1145,7 @@ procedure Test_Store with SPARK_Mode => Off is
              Auth_First (S) and then Position_Of (S, Hdr (R2)) < Position_Of (S, Hdr (PA))
              and then Auth_Gen (S) = 5);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1144,7 +1161,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  never after Compact.
    ---------------------------------------------------------------------------
    declare
-      S  : Store_T (ICap, LCap);
+      S  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL : Lattice (Cap, Slice);
       St : Status;
       --  Overwrites of one cell: 3 held records, and the HEADER, so the log
@@ -1166,7 +1183,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("after Compact: not due, 3 APPLYs and the HEADER",
              not Compact_Due (S) and then Log_Entries (S) = 4);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1178,7 +1195,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  T18: a member revoke and a roster that drops a member.
    ---------------------------------------------------------------------------
    declare
-      S   : Store_T (ICap, LCap);
+      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL  : Lattice (Cap, Slice);
       R2  : constant Byte_Array :=
         Roster_Of (Root_SK, Root_PK, 0, Zero_Sig, 2, 100 * Day, TTL, Member (Author_PK, 11));
@@ -1197,7 +1214,7 @@ procedure Test_Store with SPARK_Mode => Off is
              Kome.Frontier.Count (SL) = 7 and then Index_Is_F (S, SL));
       Compact (S, SL);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1209,7 +1226,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  T18: a GRANT that arrives after a PUT that it admits.
    ---------------------------------------------------------------------------
    declare
-      S    : Store_T (ICap, LCap);
+      S    : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL   : Lattice (Cap, Slice);
       RR2  : constant Byte_Array :=
         Roster_Of (Root2_SK, Root2_PK, Cap2, Cert2a, 1, 100 * Day, TTL, Member (Author2_PK, 31));
@@ -1241,7 +1258,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("Compact writes the GRANT before the PUT it admits",
              Auth_First (S) and then Position_Of (S, Hdr (GHi)) < Position_Of (S, Hdr (PG)));
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1255,7 +1272,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  frontier does not stay full.
    ---------------------------------------------------------------------------
    declare
-      W   : Store_T (4 + Signers_Max * Slice, LCap);
+      W   : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
       WL  : Lattice (4, Slice);
       P8  : constant Byte_Array := Put_Of (8, 'n', 50 * Day, 9, [8]);
       St  : Status;
@@ -1277,7 +1294,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("so a new PUT is held (formerly No_Space for good)", St = OK);
       Compact (W, WL);
       declare
-         R  : Store_T (4 + Signers_Max * Slice, LCap);
+         R  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (4, Slice);
       begin
          Reopen (W, R, RL, St);
@@ -1292,13 +1309,13 @@ procedure Test_Store with SPARK_Mode => Off is
    --  the fifth data record does not fit (No_Space, Valid_Length there),
    --  and it replays at 8, before and after Compact.
    declare
-      S4  : Store_T (4 + Signers_Max * Slice, LCap);
+      S4  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
       L4  : Lattice (4, Slice);
-      S8  : Store_T (8 + Signers_Max * Slice, LCap);
+      S8  : Store_T (8 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
       L8  : Lattice (8, Slice);
-      R4  : Store_T (4 + Signers_Max * Slice, LCap);
+      R4  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
       RL4 : Lattice (4, Slice);
-      R8  : Store_T (8 + Signers_Max * Slice, LCap);
+      R8  : Store_T (8 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
       RL8 : Lattice (8, Slice);
       VL  : Log_Size;
       St  : Status;
@@ -1340,7 +1357,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Room : constant Natural :=
         Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
         + Apply_Prefix + P1'Length + 3;
-      Sm   : Store_T (ICap, Room);
+      Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
       SmL  : Lattice (Cap, Slice);
       St   : Status;
    begin
@@ -1365,7 +1382,7 @@ procedure Test_Store with SPARK_Mode => Off is
              Horizon (Sm) = Time64 (43 * Day)
              and then Log_Entries (Sm) = Entries (Sm) + 1);
       declare
-         R  : Store_T (ICap, Room);
+         R  : Store_T (ICap, Room, Bnd_Cap_For (Room));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (Sm, R, RL, St);
@@ -1377,7 +1394,7 @@ procedure Test_Store with SPARK_Mode => Off is
    --  Compact, then more operations (an APPLY_EXPIRED, a lowered EXPIRE, a
    --  DEL that is held again), then open again.
    declare
-      S   : Store_T (ICap, LCap);
+      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
       SL  : Lattice (Cap, Slice);
       St  : Status;
       DA  : constant Byte_Array := Del_Of (50, 20 * Day, 2);
@@ -1395,7 +1412,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("after Compact: an expired DEL applied for its effect; the mark (23 d) stays",
              St = OK and then not Holds (SL, Hdr (DA)) and then Expire_Mark (S) = 23 * Day);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1407,7 +1424,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("after a lowered horizon the DEL is held again",
              St = OK and then Holds (SL, Hdr (DA)) and then Horizon (S) = Time64 (19 * Day));
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1416,7 +1433,7 @@ procedure Test_Store with SPARK_Mode => Off is
       end;
       Compact (S, SL);
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -1424,6 +1441,53 @@ procedure Test_Store with SPARK_Mode => Off is
                 St = OK and then T18 (S, SL, R, RL) and then Horizon (R) = Horizon (S));
       end;
    end;
+
+   ---------------------------------------------------------------------------
+   --  AUDIT.md G15: the entry boundaries need Log_Cap / Min_Entry slots.
+   --  A log of 7-byte EXPIRE entries (the smallest entry that an operation
+   --  appends) fills to Log_Full inside Bnd_Cap_For (Log_Cap), and it
+   --  replays.
+   ---------------------------------------------------------------------------
+   declare
+      R1   : constant Byte_Array := Founding_Roster (1, 100 * Day);
+      Room : constant Natural := Header_Len + Apply_Prefix + R1'Length + 40 * Expire_Len + 3;
+      Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
+      SmL  : Lattice (Cap, Slice);
+      St   : Status;
+      Logs : Natural := 0;
+   begin
+      SmL := Empty (NS, Fnd, Cap, Slice);
+      Open (Root_PK, Salt_A, SmL, Sm);
+      Put (Sm, SmL, R1);
+      loop
+         Kome.Store.Expire (Sm, SmL, 32 * Day, St);   --  a raise: removes nothing, not logged
+         exit when St /= OK;
+         Kome.Store.Expire (Sm, SmL, 31 * Day, St);   --  a lower: logged
+         exit when St /= OK;
+         Logs := Logs + 1;
+         exit when Logs > 100;
+      end loop;
+      Check ("G15: EXPIREs fill the log to Log_Full, the chain fits Bnd_Cap_For (Log_Cap)",
+             St = Log_Full and then Logs = 40 and then Valid (Sm, SmL)
+             and then Log_Entries (Sm) = 2 + Logs
+             and then Log_Entries (Sm) <= Sm.Bnd_Cap
+             and then Sm.Bnd_Cap = Room / Min_Entry
+             and then Sm.Bnd_Cap < Room);
+      declare
+         R  : Store_T (ICap, Room, Bnd_Cap_For (Room));
+         RL : Lattice (Cap, Slice);
+      begin
+         Reopen (Sm, R, RL, St);
+         Check ("G15: the log of EXPIREs reopens (T18)",
+                St = OK and then T18 (Sm, SmL, R, RL) and then Log_Entries (R) = Log_Entries (Sm));
+      end;
+      Compact (Sm, SmL);
+      Check ("G15: compact the log of EXPIREs: HEADER, the roster, one EXPIRE",
+             Valid (Sm, SmL) and then Log_Entries (Sm) = 3);
+   end;
+
+   Check ("G15: after every Compact the binding buffer is the new log image",
+          Buf_Calls >= 10 and then Buf_Images = Buf_Calls);
 
    if Failed then
       Set_Exit_Status (Failure);

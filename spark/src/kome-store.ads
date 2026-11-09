@@ -157,11 +157,18 @@
 --  the open that wrote it, so the log is never rewritten in place: the
 --  only writes are appends at Log_Length and the rename of Compact.
 --
---  Footprint (for a file binding): Open_From_Log replays against its
---  input in place. Compact copies the full log buffer before it writes
---  the log again, so it needs stack or memory for one more log image (up
---  to Log_Max bytes). For this reason, the test main runs in a task with
---  a large stack.
+--  Footprint (for a file binding; AUDIT.md G15): a store holds its log
+--  (Log_Cap + 1 bytes), the entry boundaries (Bnd_Cap_For (Log_Cap) =
+--  Log_Cap / 6 slots of 4 bytes, so about 0.67 * Log_Cap bytes) and its
+--  index (Cap entries), so about 1.7 * Log_Cap bytes beside the index.
+--  Compact keeps no copy of the log: it builds the new log in the
+--  binding's buffer (Buf, Log_Cap + 1 bytes, which the binding needs for
+--  the new file anyway) and copies only the index (Cap entries).
+--  Open_From_Log replays against its input in place, so during replay
+--  the input image (the file, Log_Length bytes) and the store's log are
+--  both resident; a binding can map the file for Input. The test main
+--  declares its stores on the stack, so it runs in a task with a large
+--  stack.
 --
 --  gnatprove proves these facts about Open_From_Log:
 --    * the result is Valid and its HEADER is well formed;
@@ -256,6 +263,12 @@ package Kome.Store with SPARK_Mode is
    Apply_Prefix : constant := 5;   --  op ‖ len:u32
    Expire_Len   : constant := 7;   --  op ‖ horizon:u48
    Min_Entry    : constant := Apply_Prefix + 1;
+
+   --  The most entries that a log of Log_Cap bytes holds: every entry is
+   --  at least Min_Entry bytes long (an APPLY of a 1-byte frame), so the
+   --  entry boundaries of the store need Log_Cap / Min_Entry slots, not
+   --  Log_Cap (AUDIT.md G15). A store's Bnd_Cap is at least this value.
+   function Bnd_Cap_For (Log_Cap : Log_Size) return Log_Size is (Log_Cap / Min_Entry);
 
    subtype Frame_Size is Positive range 1 .. Kome.Records.Frame_Max;
 
@@ -356,8 +369,13 @@ package Kome.Store with SPARK_Mode is
    function End_Of (E : Index_Entry) return Natural is
      (E.Off + Apply_Prefix + E.Len);
 
-   --  Cap index entries, Log_Cap bytes of log.
-   type Store (Cap : Held_Count; Log_Cap : Log_Size) is private;
+   --  Cap index entries, Log_Cap bytes of log, and Bnd_Cap slots for the
+   --  entry boundaries of the log (AUDIT.md G15). Open and Open_From_Log
+   --  require Bnd_Cap >= Bnd_Cap_For (Log_Cap), and Valid includes it; a
+   --  binding declares a store as Store (Cap, Log_Cap, Bnd_Cap_For
+   --  (Log_Cap)). (Ada does not allow Log_Cap / Min_Entry as a component
+   --  bound, RM 3.8 (12), hence the third discriminant.)
+   type Store (Cap : Held_Count; Log_Cap : Log_Size; Bnd_Cap : Log_Size) is private;
 
    function Collection (S : Store) return Id128 with Global => null;
    function Founding (S : Store) return Key256 with Global => null;
@@ -402,7 +420,7 @@ package Kome.Store with SPARK_Mode is
    --  and the K-th entry is at offset Entry_Start (S, K) (Lemma_Scan).
    function Log_Entries (S : Store) return Natural with
      Global => null,
-     Post => Log_Entries'Result <= S.Log_Cap;
+     Post => Log_Entries'Result <= S.Log_Cap and then Log_Entries'Result <= S.Bnd_Cap;
    function Entry_Start (S : Store; K : Positive) return Log_Size with
      Global => null,
      Pre => K <= Log_Entries (S);
@@ -790,6 +808,7 @@ package Kome.Store with SPARK_Mode is
        and then Kome.Keys.To_Key256 (Root_PK) = Frontier.Founding (F)
        and then S.Cap >= F.Cap + Signers_Max * F.Slice
        and then S.Log_Cap >= Header_Len
+       and then S.Bnd_Cap >= Bnd_Cap_For (S.Log_Cap)
        and then Kome.Records.Sign_Key_OK (Root_PK),
      Post => Valid (S, F)
        and then Collection (S) = Collection (F)
@@ -931,9 +950,14 @@ package Kome.Store with SPARK_Mode is
    --  (first all authorization records, then all data records, each part
    --  in index order); and one EXPIRE (Horizon (S)) if the store has a
    --  horizon and the log has room for it. The frontier does not change.
-   procedure Compact (S : in out Store; F : Frontier.State) with
+   --  Compact builds the new log in Buf, the binding's buffer for the new
+   --  file (AUDIT.md G15): it reads the old log in place and keeps no copy
+   --  of it, and then makes Buf the log of the store. On return,
+   --  Buf (0 .. Log_Length (S) - 1) is the image of the new file, which
+   --  the binding writes and renames over the old one.
+   procedure Compact (S : in out Store; F : Frontier.State; Buf : in out Byte_Array) with
      Global => null,
-     Pre  => Valid (S, F),
+     Pre  => Valid (S, F) and then Buf'First = 0 and then Buf'Last = S.Log_Cap,
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
@@ -945,7 +969,9 @@ package Kome.Store with SPARK_Mode is
        and Compact_Index (S'Old, S)
        and Compact_Layout (S'Old, S)
        --  AUDIT.md H26: a compacted log is never due for compaction.
-       and not Compact_Due (S);
+       and not Compact_Due (S)
+       --  The new file image (AUDIT.md G15).
+       and (for all J in 0 .. Log_Length (S) - 1 => Buf (J) = Log_Byte (S, J));
 
    --  The capacities that the HEADER of a log records.
    function Header_Cap (Input : Byte_Array) return Word is
@@ -1080,7 +1106,8 @@ package Kome.Store with SPARK_Mode is
      Pre  => Input'First = 0
        and then F.Slice >= 1
        and then F.Cap + Signers_Max * F.Slice <= Held_Max
-       and then S.Cap >= F.Cap + Signers_Max * F.Slice,
+       and then S.Cap >= F.Cap + Signers_Max * F.Slice
+       and then S.Bnd_Cap >= Bnd_Cap_For (S.Log_Cap),
      Post => Result in OK | Malformed | No_Space
        and (if Input'Last >= S.Log_Cap then Result = No_Space)
        --  Part of completeness: a log that is only a well-formed HEADER,
@@ -1237,12 +1264,13 @@ private
    --  the framing of the file (a file binding finds them with a scan). Only
    --  the discriminant sets the size (Ada allows nothing else in a
    --  component constraint). The store uses at most Log_Cap / Min_Entry of
-   --  them.
+   --  them, so Bnd has Bnd_Cap >= Log_Cap / Min_Entry slots (AUDIT.md
+   --  G15; Chain proves NB <= LL / Min_Entry).
    type Offset_Array is array (Positive range <>) of Log_Size;
 
    --  No Dynamic_Predicate: the bounds of the counters are part of Valid,
    --  and the accessors clamp, so clients can assign a Store.
-   type Store (Cap : Held_Count; Log_Cap : Log_Size) is record
+   type Store (Cap : Held_Count; Log_Cap : Log_Size; Bnd_Cap : Log_Size) is record
       NS   : Id128;
       NSb  : NS_Id         := [others => 0];   --  ns as bytes, for the HEADER
       Fnd  : Key256;
@@ -1258,7 +1286,7 @@ private
       LL   : Log_Size      := 0;
       Log  : Byte_Array (0 .. Log_Cap);   --  bytes 0 .. LL - 1 are the log
       NB   : Log_Size      := 0;
-      Bnd  : Offset_Array (1 .. Log_Cap);  --  Bnd (1 .. NB) are its entries
+      Bnd  : Offset_Array (1 .. Bnd_Cap);  --  Bnd (1 .. NB) are its entries
    end record;
 
    function Collection (S : Store) return Id128 is (S.NS);
@@ -1277,7 +1305,7 @@ private
      (if S.LL <= S.Log_Cap then S.LL else S.Log_Cap);
    function Log_Byte (S : Store; J : Natural) return Byte is (S.Log (J));
    function Log_Entries (S : Store) return Natural is
-     (if S.NB <= S.Log_Cap then S.NB else S.Log_Cap);
+     (if S.NB <= S.Log_Cap and then S.NB <= S.Bnd_Cap then S.NB else 0);
    function Entry_Start (S : Store; K : Positive) return Log_Size is (S.Bnd (K));
 
    function Header_Of (Frame : Byte_Array) return Header is
@@ -1447,6 +1475,8 @@ private
      (S.NI <= S.Cap
       and then S.LL <= S.Log_Cap
       and then S.NB <= S.Log_Cap
+      and then S.NB <= S.Bnd_Cap
+      and then S.Bnd_Cap >= Bnd_Cap_For (S.Log_Cap)
       and then Is_Frontier (F)
       and then Collection (F) = S.NS
       and then Frontier.Founding (F) = S.Fnd
