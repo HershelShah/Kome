@@ -505,7 +505,17 @@ status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit 
    cell that the built record does not have, so the cell that *Choose*
    looks at is the cell that *Build* writes.
 2. *Build* the `PUT` or `DEL` content with that `(t, seq)`, and hash it.
-3. *Sign* and apply. Persist `seq_self(ns) := seq_emit` (A5).
+3. *Sign* and apply. Persist `seq_self(ns) := seq_emit` durably right
+   after *Choose* and before the `APPLY` is appended; send the frame only
+   after its `APPLY` is durable (A5). `Kome.Write` is this path:
+   `Prepare` (*Choose*, *Build*, *Sign*; it changes nothing and returns
+   the frame and the `seq_self` to persist), then the binding persists
+   `seq_self`, then `Commit` (`Store.Put_Frame`). On open,
+   `seq_self(ns) := max(stored, the largest seq of this device's records
+   held in F(ns))`. A seq store that cannot be read is reported as
+   `SEQ_CORRUPT`, apart from `SEQ_EXHAUSTED`, and the path starts from
+   the held records alone. Neither step refuses a large jump of `seq`:
+   own records leave `F` when they are dominated.
 
 `CLAMPED` means that the ceiling `min(maxceil, wcap)` held the write
 back: `t_emit` is below the clock, or not above the cell's floor (the
@@ -557,7 +567,14 @@ and a root revokes the old key.
 | Root restored from backup | It issues a roster with an old or an equal `gen`. If its own held roster has a strictly greater `gen`, an epoch at least as high and a ceiling at least as high, the restored roster is dominated on arrival (status `DOMINATED`). If not (an equal `gen`, a current clock, or an older epoch), neither roster dominates, Kome holds both, `ROSTER_FORK` reports the pair, and `ROSTER_eff` is the roster at the newer epoch (then the greater `gen`, then `h`). `h` never evicts a roster of the same signer. After sync, the root issues a new roster above both. `maxceil` never decreases, and no `REVOKE` is lost | It converges in both cases; a stale roster never becomes effective while the newer one is held, and a removal (which raises the epoch) is never undone |
 
 `CLONE_SUSPECTED` is a flag that Kome reports next to the write's
-status. It is not a status: the write occurred.
+status. It is not a status: the write occurred. It is also raised on the
+apply side (H18): a record signed by the device's own key that arrives
+from a peer and changes `F` (not a duplicate, not dominated, not an
+expired `DEL`) sets it, and so does `F` holding two of the device's own
+records with equal `seq` and different `h`. A clone that writes at the
+owner's pace is flagged this way. With A5 (a frame leaves only after its
+`APPLY` is durable), a crash never makes the device's own lost frame come
+back from a peer, so the apply-side flag raises no false alarm.
 
 This is the honest statement of the residual risk: **LWW cannot undo the
 effect of a wall clock that was ahead**. If a writer pushed a cell's floor
@@ -1028,7 +1045,9 @@ wrote the log; the capacity in force is a parameter of the open, kept
 outside the log or appended as a `CAPS` entry, and a reopen at a smaller
 `data_cap` is allowed whenever the replay fits in it (§10.10 (a)). "No
 horizon" is an entry of its own (`EXPIRE_NONE`), not a reserved horizon
-value (H6). Kome persists nothing else. The registers are functions of `F`
+value (H6). Kome persists nothing else in the log; the one other durable
+value is `seq_self(ns)`, which the binding keeps beside the store (§5,
+A5). The registers are functions of `F`
 (§4), and refused or dominated records changed nothing.
 
 **Deletion is not erasure.** A `DEL` frees the bytes of its entity in `F`,
@@ -1799,8 +1818,9 @@ its ID, and a new one takes the next free number.
   (a stale replica's, a relay's stored bundle, a saved frame, a backup) is
   delivered to a replica after that replica expired `d`. A lost log tail
   counts as a backup restore.
-- **A5** Writers persist `seq_self` per collection (Kome detects
-  violations).
+- **A5** Writers persist `seq_self` per collection, durably, after
+  *Choose* and before the `APPLY` is appended, and send a frame only after
+  its `APPLY` is durable (Kome detects violations: `CLONE_SUSPECTED`).
 - **A7 No record after revocation** (E7). No replica receives, from any
   source, a record that the subject of a `REVOKE` signed after that
   `REVOKE`, nor a record that a key granted by a root-voided root signed
@@ -2017,8 +2037,8 @@ clock, and A3 and A4 are the assumptions that bound it.
    `session_*` over Kome.Reconcile, and a digest whose value is equal to
    the sync fingerprint. There is no field-level delete; an item that must
    be removable on its own is its own entity. Statuses are Kome's
-   `Status`, including `AUTH_FULL`, `LOG_FULL` and, from the storage
-   binding, `DEGRADED` (§7). `CLONE_SUSPECTED`, `CLAMPED` and
+   `Status`, including `AUTH_FULL`, `LOG_FULL`, `SEQ_CORRUPT` (§5) and,
+   from the storage binding, `DEGRADED` (§7). `CLONE_SUSPECTED`, `CLAMPED` and
    `BORN_EXPIRED` are out flags next to a write's status (§5).
    `Ceiling_Stale` and `Horizon_Frozen` are replica statuses (§7), as is
    a `NO_SPACE` refusal of a peer-offered record. The key API generates

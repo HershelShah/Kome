@@ -28,6 +28,7 @@ built.
 | 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 60 tests, 35 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 173 tests, 2,623 checks, 0 unproved |
 | 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first, expiry at `Horizon_At`) | §7 | T11, T18 | done. 109 tests, 4,511 checks, 0 unproved |
 | 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 61 tests, 322 checks, 0 unproved |
+| 4 | `Kome.Write` (the write path: `Prepare` = Choose, Make, Sign; the binding persists `seq_self`; `Commit` = `Store.Put_Frame`; `Seq_Self_At_Open`, `Open_Seq` with SEQ_CORRUPT; `Receive` with the apply-side CLONE_SUSPECTED, AUDIT.md A10, H18) | §5, §7 | T8 (through `Kome.Emit`) | done. 42 tests, 123 checks, 0 unproved |
 | 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `revoked`, `far`, `ROSTER_eff` by `(epoch, gen, h)`, `ROSTER_FORK`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 141 tests, 1,190 checks, 0 unproved |
 | 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
 | 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range; `Snapshot_Of (F)`; `Start` takes the peer's Noise key, `Receive (HELLO)` checks the credential, `Admit` has the gate as `Pre`; the obligation FIFO, D15 prefix sums in `Range_Fp`) | §8 | T7 (open) | done. 142 tests, 2,134 checks, 0 unproved |
@@ -81,6 +82,11 @@ No package has an unproved check. In this section, a gap is one of these:
     one (AUDIT.md A11);
   - the replica statuses `Ceiling_Stale` and `Horizon_Frozen` (AUDIT.md
     N4).
+- **Write: the self check of `Prepare`.** `Kome.Crypto` does not state
+  `Verify (Sign (M))` (A1), so `Prepare` verifies its own signed frame at
+  run time and gives `Malformed` if the check fails. With a key from
+  `Key_Pair` the check never fails: `test_write.adb` checks that every
+  Ready frame verifies; the `Malformed` branch is not reached in a test.
 - **Emit: the `CLAMPED` and `BORN_EXPIRED` flags** of DESIGN.md §5 are not
   built. `Choose` reports `CLONE_SUSPECTED` only (AUDIT.md H22).
 - **Views: `rivals (F)`** ("membership contested", DESIGN.md §3, §6) and
@@ -198,6 +204,15 @@ only as far as their formats and checks go.
   - These duties are stated against T18: every entry-boundary prefix of a
     log that the store wrote replays OK, and the binding only ever hands
     the store such a prefix.
+  - The write path (AUDIT.md A10; A5 restated): after
+    `Kome.Write.Prepare`, persist `Seq_Persist` as `seq_self(ns)` durably
+    (write and `fsync`) before `Kome.Write.Commit`; after `Commit`, make
+    the log durable to `Log_Length` before the frame is sent or put in a
+    bundle. On open, read the seq store and call `Kome.Write.Open_Seq`;
+    a seq store that does not read back (torn, bad checksum) is
+    `SEQ_CORRUPT`. Apply every frame from a peer with `Kome.Write.Receive`
+    and show `CLONE_SUSPECTED` when its flag, the `Prepare` flag or
+    `Kome.Write.Clone_View` holds (AUDIT.md H18).
 - **`Kome.Roster` (phase 8):**
   - `Build (epoch key, root_pk, salt, e, signer, gen, members)` computes
     `eph_sk` and `box_pk` and seals the boxes from one secret, then wipes

@@ -78,7 +78,9 @@ SPARK contracts state that the bounded, in-place code implements exactly
 the functions that those theorems are about. gnatprove discharges these
 contracts. The other packages implement encodings (`Kome.Byteorder`,
 `Kome.Keys`), cryptography (`Kome.Crypto`, `Kome.Epochs`) and protocols
-(`Kome.Accumulator`, `Kome.Digest`, `Kome.Reconcile`, `Kome.Guard`).
+(`Kome.Accumulator`, `Kome.Digest`, `Kome.Reconcile`, `Kome.Guard`), and
+`Kome.Write` joins `Kome.Emit`, `Kome.Records` and `Kome.Store` into the
+write path.
 
 The per-package test and proof counts come from the clean per-module runs
 in CI (gnatprove 14, `--level=3`, cvc5 and z3), and the Phases table of
@@ -97,6 +99,7 @@ in CI (gnatprove 14, `--level=3`, cvc5 and z3), and the Phases table of
 | `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Signer certificates (`Cert_OK`) for ROSTER, REVOKE and GRANT; `gen ≤ ceiling_t`; a GRANT's header carries its issuer's cap. `Decode` gives only canonical headers. `Make_Put` and `Make_Del` state their headers |
 | `Kome.Store` | T11, T18 (`auth_first`, tested) | `Valid` relates the index, the journal log and F. Each outcome of `Put_Frame` is an iff in D11 order, with `Log_Full` for the log bytes (`Log_Fits` is the binding's bound). A refusal changes nothing. `Expire` is at `Horizon_At` (T11 (a)). `Compact` writes authorization records first. gnatprove proves `Open_From_Log` for HEADER-only logs |
 | `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13, `lt_iff_prefix` | `Choose` picks (t, seq) without h, and the outcome does not depend on h. Also: `V.T <= min(maxceil, wcap)`, a DEL at `t ≥ maxceil − Cap_Lead`, no `seq` wrap, the H8 jump, SHADOWED exactly as in §5, and an OK write is admitted and undominated |
+| `Kome.Write` | `chase` T8 (through `Kome.Emit`) | The write path (AUDIT.md A10): `Prepare` (Choose, Make, Sign; T8 from `Choose`, the record's header is the target and the chosen version) returns the `seq_self` that the binding persists before `Commit` (`Store.Put_Frame`, `Valid` kept). `Seq_Self_At_Open` is max (stored, own held seq); `Open_Seq` reports `SEQ_CORRUPT`. `Receive` is `Put_Frame` plus the apply-side `CLONE_SUSPECTED` (H18): an own record that was not held and is held now sets it |
 | `Kome.Views` | T5 (`rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_F`), T12 | `cell`, `exists`, `deleted_at`, `maxceil`, `W`, `root_void`, `W_eff`, `void`, `revoked`, `ROSTER_eff` (by `(epoch, gen, h)`), `ROSTER_FORK` and `del_ttl_eff` are functions of F (T5). `far` is a per-replica advisory predicate that reads the local clock, not a function of F. Each cell has one value on every frontier |
 | `Kome.Accumulator` | T6 (DESIGN.md §8) | 4096-bit `Add`/`Sub` modulo 2^4096 against an exact integer model. Commutative and associative, `Add_Sub`, the byte bijection and congruence |
 | `Kome.Digest` | T6 (DESIGN.md §8) | The layouts of `acc(e)` and `fp`, incremental add/remove and order independence. `Range_Sum` over D15 prefix sums is exact, with the cost formula of at most 64 Adds |

@@ -2,8 +2,10 @@
 --  the size bounds that all packages share. docs/design/DESIGN.md gives the
 --  design. Eight child packages refine the proved model in
 --  lean/Kome/Frontier.lean: Kome.Versions, Kome.Headers, Kome.Registers,
---  Kome.Frontier, Kome.Records, Kome.Store, Kome.Emit and Kome.Views. The
---  others implement encodings, cryptography and protocols. Each DESIGN.md
+--  Kome.Frontier, Kome.Records, Kome.Store, Kome.Emit and Kome.Views.
+--  Kome.Write joins Emit, Records and Store into the write path (DESIGN.md
+--  §5 steps 1-3, AUDIT.md A10) and gives the apply-side clone flag (H18).
+--  The others implement encodings, cryptography and protocols. Each DESIGN.md
 --  concept is one child package Kome.<Name>, in kome-<name>.ads and
 --  kome-<name>.adb. spark/CONVENTIONS.md gives the rules that each child
 --  follows.
@@ -141,7 +143,11 @@ package Kome with SPARK_Mode, Pure is
       No_Space,         --  bounded store is full; nothing changed
       Auth_Full,        --  the signer's authorization slice, or the slot
                         --  table, is full; nothing changed (DESIGN.md §7)
-      Log_Full);        --  the record fits F but not the log; nothing
+      Log_Full,         --  the record fits F but not the log; nothing
                         --  changed: compact and retry (DESIGN.md §7, E2)
+      Seq_Corrupt);     --  the binding cannot read the persisted seq_self
+                        --  (torn, bad checksum); a report, apart from
+                        --  Seq_Exhausted: the write path starts from
+                        --  Max_Own_Seq (Kome.Write.Open_Seq, AUDIT.md A10)
 
 end Kome;

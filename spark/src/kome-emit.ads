@@ -34,7 +34,9 @@
 --       No h.
 --    2. Build the PUT or DEL content with that (t, seq) and hash it:
 --       Kome.Records.Make_Put or Make_Del (h is the record's hash).
---    3. Sign and apply (Kome.Frontier.Apply). Persist seq_self(ns) (A5).
+--    3. Sign and apply (Kome.Write: Prepare, then the binding persists
+--       seq_self(ns), then Commit through Kome.Store.Put_Frame; A5,
+--       AUDIT.md A10).
 --
 --  The target of step 1 is built with Put_Target or Del_Target from the
 --  inputs of step 2 (AUDIT.md G21): the field hash is
@@ -76,7 +78,9 @@
 --
 --  seq_self is per collection (D8, DESIGN.md §5). Seq_Self is the counter
 --  of (device key, Collection (S)). The caller keeps it next to that
---  collection's store and persists it (A5). A thief can force a jump to
+--  collection's store and persists it before the APPLY (A5;
+--  Kome.Write.Prepare returns it as Seq_Persist, and
+--  Kome.Write.Seq_Self_At_Open gives it on open). A thief can force a jump to
 --  2^48 - 1 in one collection. This exhausts only that collection's
 --  counter for that key.
 --
