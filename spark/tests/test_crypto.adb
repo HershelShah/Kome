@@ -3,8 +3,13 @@
 --    * BLAKE2b;
 --    * RFC 8032 Ed25519 TESTs 1-3;
 --    * a Wycheproof ed25519 subset (valid, S >= L, non-canonical R,
---      truncated);
+--      truncated, small-order public keys);
 --    * non-canonical encodings that plain monocypher accepts;
+--    * the ed25519-speccheck cases ("Taming the many EdDSAs"): the
+--      normative predicate on both sides (cofactored, small-order A
+--      refused);
+--    * the 8 small-order encodings (Is_Small_Order_Point, Verify refuses
+--      the universal forgery R = identity, S = 0);
 --    * X25519 (RFC 7748, low order, Is_Reduced_U / Is_Low_Order_U answers);
 --    * AEAD.
 --  Then the test checks named answers, round trips, tamper rejection, the
@@ -304,13 +309,16 @@ procedure Test_Crypto with SPARK_Mode => Off is
         (Line (Fields (K).First .. Fields (K).Last));
       function Hex (K : Positive) return Byte_Array is (From_Hex (Field (K)));
 
-      N_B2, N_Ed, N_X, N_Low, N_DH, N_AE, N_Key,
+      N_B2, N_B2K, N_Ed, N_X, N_Low, N_DH, N_AE, N_Key,
       N_Strict_Valid, N_Strict_Invalid : Natural := 0;
-      N_Wp_Valid, N_Wp_Invalid, N_Wp_Length : Natural := 0;
+      Ok_B2K : Boolean := True;
+      N_Wp_Valid, N_Wp_Invalid, N_Wp_Length, N_Wp_Small : Natural := 0;
+      N_Tor_Valid, N_Tor_Invalid, N_Small : Natural := 0;
       Seen_151, Seen_S_Over_L : Boolean := False;
-      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Wp,
+      Ok_B2, Ok_B2_Inc, Ok_Ed, Ok_Ed_Tamper, Ok_Wp, Ok_Tor, Ok_Small,
       Ok_Strict, Ok_X, Ok_Low, Ok_DH, Ok_AE, Ok_AE_Tamper, Ok_Key : Boolean
         := True;
+      Small_Seen : array (1 .. 8) of Pubkey := [others => [others => 16#EE#]];
 
       procedure Fail (Flag : in out Boolean; What : String) is
       begin
@@ -344,6 +352,29 @@ procedure Test_Crypto with SPARK_Mode => Off is
             end if;
          end loop;
       end Do_Blake2b;
+
+      --  Keyed BLAKE2b-256 (RFC 7693 §2.10; the PRF of the chain step and
+      --  the bundle key, G5) against hashlib. A different key or message
+      --  gives a different digest, and the keyed digest is not the unkeyed
+      --  digest of key ‖ msg.
+      procedure Do_Blake2b_Keyed is
+         Key  : constant Mac_Key    := Hex (2);
+         Msg  : constant Byte_Array := Hex (3);
+         Want : constant Byte_Array := Hex (4);
+         D    : Hash256;
+         K2   : Mac_Key := Key;
+      begin
+         N_B2K := N_B2K + 1;
+         Blake2b_256_Keyed (Key, Msg, D);
+         K2 (31) := K2 (31) xor 1;
+         if Blake2b_256_Keyed (Key, Msg) /= Want or else D /= Want
+           or else Blake2b_256_Keyed (K2, Msg) = Want
+           or else Blake2b_256_Keyed (Key, Msg & Byte (0)) = Want
+           or else Blake2b_256 (Key & Msg) = Want
+         then
+            Fail (Ok_B2K, "blake2b256_keyed");
+         end if;
+      end Do_Blake2b_Keyed;
 
       --  RFC 8032 §7.1: seed -> public key, sign, verify, and tamper checks.
       procedure Do_Ed25519 is
@@ -439,6 +470,18 @@ procedure Test_Crypto with SPARK_Mode => Off is
                if not S_Below_L (S) then
                   Seen_S_Over_L := True;
                end if;
+               --  tcIds 152-159: the small-order public keys (H13). Each
+               --  is canonical and small-order, and refused for that
+               --  reason alone (its R and S are canonical).
+               if Is_Small_Order_Point (Pub) then
+                  N_Wp_Small := N_Wp_Small + 1;
+                  if Valid or else not Is_Canonical_Point (Pub)
+                    or else not S_Below_L (S)
+                    or else not Is_Canonical_Point (S (0 .. 31))
+                  then
+                     Fail (Ok_Wp, "wycheproof small-order tcId " & Id);
+                  end if;
+               end if;
             end;
          else
             N_Wp_Length := N_Wp_Length + 1;
@@ -470,6 +513,74 @@ procedure Test_Crypto with SPARK_Mode => Off is
             Fail (Ok_Strict, "ed25519_strict");
          end if;
       end Do_Strict;
+
+      --  ed25519-speccheck: Verify agrees with the expected answer of the
+      --  normative predicate on each case (the header of the vector file).
+      procedure Do_Torsion is
+         Id    : constant String     := Field (2);
+         Valid : constant Boolean    := Field (3) = "valid";
+         Pub   : constant Pubkey     := Hex (4);
+         Msg   : constant Byte_Array := Hex (5);
+         S     : constant Sig        := Hex (6);
+      begin
+         if Valid then
+            N_Tor_Valid := N_Tor_Valid + 1;
+         else
+            N_Tor_Invalid := N_Tor_Invalid + 1;
+         end if;
+         if Verify (S, Pub, Msg) /= Valid then
+            Fail (Ok_Tor, "ed25519_torsion case " & Id);
+         end if;
+         --  Cases 0 and 1: a small-order A under canonical R and S.
+         if (Id = "0" or else Id = "1")
+           and then not (Is_Small_Order_Point (Pub) and then Is_Canonical_Point (Pub)
+                         and then Is_Canonical_Point (S (0 .. 31)) and then S_Below_L (S))
+         then
+            Fail (Ok_Tor, "ed25519_torsion small-order A case " & Id);
+         end if;
+         --  Case 2: a small-order R is allowed.
+         if Id = "2" and then not Is_Small_Order_Point (S (0 .. 31)) then
+            Fail (Ok_Tor, "ed25519_torsion small-order R case 2");
+         end if;
+      end Do_Torsion;
+
+      --  The 8 small-order encodings: canonical, Is_Small_Order_Point, and
+      --  Verify refuses the forgery (R = identity, S = 0) that satisfies
+      --  the cofactored equation for every such key, on any message.
+      procedure Do_Small_Order is
+         Pub    : constant Pubkey := Hex (3);
+         Forge  : constant Sig := [0 => 1, others => 0];
+         Msgs   : constant array (1 .. 3) of Byte_Array (0 .. 7) :=
+           [[others => 0], Pattern (8, 1, 0), Pattern (8, 7, 13)];
+      begin
+         N_Small := N_Small + 1;
+         if N_Small <= Small_Seen'Last then
+            Small_Seen (N_Small) := Pub;
+         end if;
+         if not Is_Small_Order_Point (Pub) or else not Is_Canonical_Point (Pub)
+           or else Is_Zero_Seed_Public (Pub)
+         then
+            Fail (Ok_Small, "ed25519_small_order predicate");
+         end if;
+         for M of Msgs loop
+            if Verify (Forge, Pub, M) or else Verify (Forge, Pub, M (0 .. -1)) then
+               Fail (Ok_Small, "ed25519_small_order forgery accepted");
+            end if;
+         end loop;
+         --  With the sign bit flipped, the same y: the twin (order 4 and
+         --  8 points) is also small-order; the identity and the order-2
+         --  point become non-canonical.
+         declare
+            Twin : Pubkey := Pub;
+         begin
+            Twin (31) := Twin (31) xor 16#80#;
+            if Is_Canonical_Point (Twin) /= Is_Small_Order_Point (Twin)
+              or else Verify (Forge, Twin, Msgs (1))
+            then
+               Fail (Ok_Small, "ed25519_small_order sign twin");
+            end if;
+         end;
+      end Do_Small_Order;
 
       procedure Do_X25519 is
          K    : constant DH_Secret     := Hex (2);
@@ -634,12 +745,18 @@ procedure Test_Crypto with SPARK_Mode => Off is
             begin
                if Kind = "blake2b256" and then N_Fields = 3 then
                   Do_Blake2b;
+               elsif Kind = "blake2b256_keyed" and then N_Fields = 4 then
+                  Do_Blake2b_Keyed;
                elsif Kind = "ed25519" and then N_Fields = 5 then
                   Do_Ed25519;
                elsif Kind = "wycheproof" and then N_Fields = 6 then
                   Do_Wycheproof;
                elsif Kind = "ed25519_strict" and then N_Fields = 5 then
                   Do_Strict;
+               elsif Kind = "ed25519_torsion" and then N_Fields = 6 then
+                  Do_Torsion;
+               elsif Kind = "ed25519_small_order" and then N_Fields = 3 then
+                  Do_Small_Order;
                elsif Kind = "x25519_low" and then N_Fields = 2 then
                   Do_Low_Order;
                elsif Kind = "dh_key" and then N_Fields = 4 then
@@ -659,6 +776,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
       Close (F);
       Check ("blake2b256_vectors" & N_B2'Image, Ok_B2 and then N_B2 >= 2);
       Check ("blake2b256_incremental_every_split", Ok_B2_Inc and then N_B2 >= 2);
+      Check ("blake2b256_keyed_vectors" & N_B2K'Image, Ok_B2K and then N_B2K >= 9);
       Check ("ed25519_rfc8032_vectors" & N_Ed'Image, Ok_Ed and then N_Ed = 3);
       Check ("ed25519_tampered_rejected", Ok_Ed_Tamper and then N_Ed = 3);
       Check ("wycheproof_valid_accepted" & N_Wp_Valid'Image,
@@ -673,6 +791,16 @@ procedure Test_Crypto with SPARK_Mode => Off is
              Ok_Wp and then N_Wp_Length >= 5);
       Check ("ed25519_noncanonical_encodings_rejected" & N_Strict_Invalid'Image,
              Ok_Strict and then N_Strict_Invalid >= 6 and then N_Strict_Valid >= 3);
+      Check ("wycheproof_small_order_public_keys_rejected" & N_Wp_Small'Image,
+             Ok_Wp and then N_Wp_Small = 8);
+      Check ("ed25519_speccheck_cases_match_normative_predicate"
+             & N_Tor_Valid'Image & N_Tor_Invalid'Image,
+             Ok_Tor and then N_Tor_Valid = 4 and then N_Tor_Invalid = 8);
+      Check ("ed25519_small_order_points_refused" & N_Small'Image,
+             Ok_Small and then N_Small = 8
+             and then (for all I in 1 .. 8 =>
+                         (for all J in 1 .. 8 =>
+                            (if I /= J then Small_Seen (I) /= Small_Seen (J)))));
       Check ("x25519_rfc7748_vectors" & N_X'Image, Ok_X and then N_X >= 1);
       Check ("x25519_low_order_not_contributory" & N_Low'Image,
              Ok_Low and then N_Low >= 5);
@@ -819,10 +947,45 @@ procedure Test_Crypto with SPARK_Mode => Off is
       begin
          for K in 0 .. 15 loop
             if not Is_Canonical_Point (Derive_Public (Pattern (Seed_Len, 23, K)))
+              or else Is_Small_Order_Point (Derive_Public (Pattern (Seed_Len, 23, K)))
+              or else Is_Zero_Seed_Public (Derive_Public (Pattern (Seed_Len, 23, K)))
             then
                Ok_Keys := False;
             end if;
          end loop;
+         --  A derived key has order L, never small order; the RFC 8032 key
+         --  and the 8 named constants answer as they must. The all-zero
+         --  key is the order-4 point (H13).
+         Check ("small_order_point_answers",
+                Ok_Keys
+                and then not Is_Small_Order_Point (RFC_Pub)
+                and then Is_Small_Order_Point ([others => 0])
+                and then Is_Small_Order_Point (Zero_S)
+                and then Is_Small_Order_Point (One)
+                and then Is_Small_Order_Point (P_Minus_1)
+                and then Is_Small_Order_Point (Torsion_8_A)
+                and then Is_Small_Order_Point (Torsion_8_B)
+                and then Is_Small_Order_Point (Identity_Point)
+                and then Is_Small_Order_Point (Order_2_Point)
+                and then Is_Small_Order_Point (Order_4_Point)
+                and then not Is_Small_Order_Point (One_S)
+                and then not Is_Small_Order_Point (P_Minus_1_S)
+                and then not Is_Small_Order_Point (Two_S)
+                and then not Is_Small_Order_Point (P_Enc)
+                and then not Is_Small_Order_Point (Max_Enc));
+         --  The named public keys of the all-zero secrets (A27) are what
+         --  the live functions give, and only they answer Is_Zero_*_Public.
+         Check ("zero_seed_public_is_derive_public_of_zero",
+                Derive_Public ([others => 0]) = Zero_Seed_Public
+                and then Is_Zero_Seed_Public (Zero_Seed_Public)
+                and then not Is_Zero_Seed_Public (RFC_Pub)
+                and then not Is_Small_Order_Point (Zero_Seed_Public)
+                and then Is_Canonical_Point (Zero_Seed_Public));
+         Check ("zero_secret_dh_public_is_x25519_public_of_zero",
+                X25519_Public ([others => 0]) = Zero_Secret_DH_Public
+                and then Is_Zero_Secret_DH_Public (Zero_Secret_DH_Public)
+                and then not Is_Zero_Secret_DH_Public (X25519_Public (Pattern (DH_Key_Len, 9, 1)))
+                and then Is_Good_DH_Key (Zero_Secret_DH_Public));
          Check ("canonical_point_boundaries",
                 Is_Canonical_Point (P_Minus_1)
                 and then not Is_Canonical_Point (P_Minus_1_S)
@@ -1034,6 +1197,15 @@ procedure Test_Crypto with SPARK_Mode => Off is
       begin
          Sink_Hash := Blake2b_256 (Big);
       end Hash_Too_Long;
+      --  A27: the all-zero seed is refused by Pre (its public key is the
+      --  named constant Zero_Seed_Public, known to everybody).
+      procedure Key_Pair_Zero_Seed is
+         SK : Secret_Key;
+         PK : Pubkey;
+      begin
+         Key_Pair ([others => 0], SK, PK);
+         Sink_Sig := Sign (SK, P);
+      end Key_Pair_Zero_Seed;
 
       function R1 is new Refused (Update_Inactive);
       function R2 is new Refused (Final_Inactive);
@@ -1044,7 +1216,9 @@ procedure Test_Crypto with SPARK_Mode => Off is
       function R7 is new Refused (Sign_After_Wipe);
       function R8 is new Refused (Update_After_Wipe);
       function R9 is new Refused (Hash_Too_Long);
+      function R10 is new Refused (Key_Pair_Zero_Seed);
    begin
+      Check ("key_pair_zero_seed_refused", R10);
       Check ("context_default_inactive",
              not Is_Active (Ctx) and then Absorbed (Ctx) = 0);
       Check ("update_inactive_refused", R1);

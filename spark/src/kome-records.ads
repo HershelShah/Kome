@@ -71,7 +71,10 @@
 --    * Decode_Verified accepts exactly the well-formed frames (DESIGN.md §2
 --      items 1-5). It checks the shape, ns, the signer block, the certified
 --      ceiling, the del_ttl clamp and the X25519 keys (E5). It also checks
---      that a REVOKE never names root_pk, and it checks the signature.
+--      that a REVOKE never names root_pk, that no root_pk, signer or GRANT
+--      subject is a small-order point or the key of the all-zero seed
+--      (Sign_Key_OK; AUDIT.md H13, A27), that box_pk is not the key of the
+--      all-zero X25519 secret, and it checks the signature.
 --  Not proved: any property of BLAKE2b or Ed25519. Blake2b_256, Sign and
 --  Verify of Kome.Crypto are opaque functions. Well_Formed calls Verify,
 --  and no theorem here depends on the result of Verify.
@@ -205,6 +208,23 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    Zero_Sig : constant Sig := [others => 0];
 
+   --  A signing key that an authorization record may name as its root_pk,
+   --  its signer or (GRANT) its subject (AUDIT.md H13, A27): not one of the
+   --  8 small-order points (a GRANT to such a key, or a signer or root of
+   --  that form, would let anybody forge records: Kome.Crypto.Verify
+   --  refuses them, and so does this check, byte-locally, so that decode
+   --  stays total and the refusal does not depend on a signature check),
+   --  and not the public key of the all-zero seed (a secret that everybody
+   --  knows). The function has no quantifier, so it is public. Well_Formed
+   --  of ROSTER, REVOKE and GRANT requires it of root_pk and signer
+   --  (Cert_OK), and GRANT of subject. The Make_* constructors and
+   --  Make_Cert require it (Pre). Kome.Store.Open must require it of the
+   --  founding key.
+   function Sign_Key_OK (PK : Pubkey) return Boolean is
+     (not Kome.Crypto.Is_Small_Order_Point (PK)
+      and then not Kome.Crypto.Is_Zero_Seed_Public (PK))
+     with Global => null;
+
    ---------------------------------------------------------------------------
    --  The signer block and root certificates (D1, DESIGN.md §2).
    --    SIGNER = signer[32] cert_cap:u48 cert_sig[64]
@@ -228,21 +248,27 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Cert_Hash (NS : NS_Id; Signer : Pubkey; Cap : U48) return Hash256 is
      (Kome.Crypto.Blake2b_256 (Cert_Input (NS, Signer, Cap)));
 
-   --  The signer block is valid: the founding key with a zero block, or a
-   --  root certified by the founding key for this ns and cap.
+   --  The signer block is valid: the signer is a usable key (Sign_Key_OK,
+   --  H13), and it is the founding key with a zero block, or a root
+   --  certified by the founding key for this ns and cap. (Verify refuses a
+   --  small-order root_pk in the second case; Well_Formed also requires
+   --  Sign_Key_OK of root_pk.)
    function Cert_OK
      (Root_PK : Pubkey; NS : NS_Id; Signer : Pubkey; Cap : U48; Cert : Sig) return Boolean
-   is (if Signer = Root_PK then Cap = 0 and then Cert = Zero_Sig
-       else Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (NS, Signer, Cap)));
+   is (Sign_Key_OK (Signer)
+       and then (if Signer = Root_PK then Cap = 0 and then Cert = Zero_Sig
+                 else Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (NS, Signer, Cap))));
 
    --  The certificate that the founding key issues for a root (out of
    --  band, in a key ceremony; DESIGN.md §2). The founding key itself has
-   --  no certificate (its block is zero).
+   --  no certificate (its block is zero). Pre (H13, A27): the certified
+   --  key is usable, so the certificate is one that Cert_OK can accept.
    function Make_Cert
      (Founding : Kome.Crypto.Secret_Key; NS : NS_Id; Signer : Pubkey; Cap : U48) return Sig
    with Global => null,
         Pre  => Kome.Crypto.Is_Valid (Founding)
-                and then Signer /= Kome.Crypto.Public_Of (Founding),
+                and then Signer /= Kome.Crypto.Public_Of (Founding)
+                and then Sign_Key_OK (Signer),
         Post => Make_Cert'Result = Kome.Crypto.Sign (Founding, Cert_Hash (NS, Signer, Cap));
 
    ---------------------------------------------------------------------------
@@ -849,7 +875,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Canonical (R : Roster_Record) return Boolean with Global => null;
 
    --  A canonical ROSTER with ns derived from (root_pk, salt) and a zero
-   --  signature. Links and Members are the flat wire bytes.
+   --  signature. Links and Members are the flat wire bytes. Pre (H13,
+   --  A27): root_pk and signer are usable keys, as Well_Formed requires.
+   --  (Box_PK and the members are not checked here, so tests can build
+   --  rosters that decode refuses.) Box_PK is Kome.Epochs.Box_PK_Of of the
+   --  roster's epoch key and (ns, e, signer, gen), and each member box is
+   --  from Kome.Epochs.Box_Key with the same inputs (A6, G7); this package
+   --  does not check that (Kome.Roster builds rosters, phase 8).
    function Make_Roster
      (Root_PK   : Pubkey;
       S         : Salt;
@@ -864,7 +896,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Links     : Byte_Array;
       Members   : Byte_Array) return Roster_Record
    with Global => null,
-        Pre  => Links'Length <= Links_Bytes_Len
+        Pre  => Sign_Key_OK (Root_PK)
+                and then Sign_Key_OK (Signer)
+                and then Links'Length <= Links_Bytes_Len
                 and then Links'Length mod Link_Len = 0
                 and then Members'Length <= Members_Bytes_Len
                 and then Members'Length mod Member_Len = 0,
@@ -982,22 +1016,27 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    --  Well-formed (DESIGN.md §2 items 1-3 and 5), all from the bytes:
    --    * the record is canonical;
+   --    * root_pk is a usable key (Sign_Key_OK; H13, A27);
    --    * ns agrees with (root_pk, salt);
-   --    * the signer block is valid;
+   --    * the signer block is valid (Cert_OK, which includes Sign_Key_OK of
+   --      the signer);
    --    * for a certified root, ceiling_t is not more than its cert_cap;
    --    * gen is not more than ceiling_t (so a certified root's gen is
    --      bounded by its cap; AUDIT.md H7);
    --    * del_ttl is in range;
-   --    * the X25519 keys are good (E5);
+   --    * the X25519 keys are good (E5), and box_pk is not the public key
+   --      of the all-zero secret (A27);
    --    * the signature over h verifies under signer.
    function Well_Formed (R : Roster_Record) return Boolean is
      (Canonical (R)
+      and then Sign_Key_OK (R.C.Root_PK)
       and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
       and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
       and then (if R.C.Signer /= R.C.Root_PK then R.C.Ceiling_T <= R.C.Cert_Cap)
       and then R.C.Gen <= R.C.Ceiling_T
       and then R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max
       and then DH_Keys_OK (R.C)
+      and then not Kome.Crypto.Is_Zero_Secret_DH_Public (R.C.Box_PK)
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
 
    procedure Decode_Verified
@@ -1110,6 +1149,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      with Pre => J < Revoke_Frame_Len;
 
    --  A REVOKE with ns derived from (root_pk, salt) and a zero signature.
+   --  Pre (H13, A27): root_pk and signer are usable keys, as Well_Formed
+   --  requires. The subject may be any key (revoking a bad key is
+   --  harmless).
    function Make_Revoke
      (Root_PK  : Pubkey;
       S        : Salt;
@@ -1120,6 +1162,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       From_T   : U48;
       Rev_Seq  : U48) return Revoke_Record
    with Global => null,
+        Pre  => Sign_Key_OK (Root_PK) and then Sign_Key_OK (Signer),
         Post => Make_Revoke'Result.C.NS = Collection_Id (Root_PK, S)
           and then Make_Revoke'Result.C.Root_PK = Root_PK
           and then Make_Revoke'Result.C.Salt = S
@@ -1188,11 +1231,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Revoke (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  Well-formed (DESIGN.md §2 items 2, 4, 5): ns agrees with (root_pk,
-   --  salt), the signer block is valid, the founding key is never the
-   --  subject (D2), and the signature over h verifies under signer.
+   --  Well-formed (DESIGN.md §2 items 2, 4, 5): root_pk is a usable key
+   --  (H13, A27), ns agrees with (root_pk, salt), the signer block is
+   --  valid, the founding key is never the subject (D2), and the signature
+   --  over h verifies under signer.
    function Well_Formed (R : Revoke_Record) return Boolean is
-     (R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
+     (Sign_Key_OK (R.C.Root_PK)
+      and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
       and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
       and then R.C.Sign_PK /= R.C.Root_PK
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
@@ -1293,6 +1338,9 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      with Pre => J < Grant_Frame_Len;
 
    --  A GRANT with ns derived from (root_pk, salt) and a zero signature.
+   --  Pre (H13, A27): root_pk, signer and the subject are usable keys, as
+   --  Well_Formed requires. A GRANT to a small-order subject would let
+   --  anybody write as that subject (the decision of H13: refuse).
    function Make_Grant
      (Root_PK  : Pubkey;
       S        : Salt;
@@ -1301,6 +1349,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Cert_Sig : Sig;
       Subject  : Pubkey) return Grant_Record
    with Global => null,
+        Pre  => Sign_Key_OK (Root_PK) and then Sign_Key_OK (Signer)
+                and then Sign_Key_OK (Subject),
         Post => Make_Grant'Result.C.NS = Collection_Id (Root_PK, S)
           and then Make_Grant'Result.C.Root_PK = Root_PK
           and then Make_Grant'Result.C.Salt = S
@@ -1363,11 +1413,15 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                  then Result = OK and then R = Parse_Grant (Frame)
                  else Result = Malformed and then R = R'Old);
 
-   --  Well-formed (DESIGN.md §2 items 2, 5): ns agrees with (root_pk,
-   --  salt), the signer block is valid, and the signature over h verifies
-   --  under signer.
+   --  Well-formed (DESIGN.md §2 items 2, 5): root_pk and the subject are
+   --  usable keys (H13, A27: a small-order subject, or the key of the
+   --  all-zero seed, is refused by bytes), ns agrees with (root_pk, salt),
+   --  the signer block is valid, and the signature over h verifies under
+   --  signer.
    function Well_Formed (R : Grant_Record) return Boolean is
-     (R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
+     (Sign_Key_OK (R.C.Root_PK)
+      and then Sign_Key_OK (R.C.Subject)
+      and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
       and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
 

@@ -1,11 +1,32 @@
 # Kome.Crypto known-answer vectors. tests/test_crypto.adb reads them.
 # Each line holds one vector. Single spaces separate the hex fields, and "-"
 # is the empty byte string. A line that starts with "#" is a comment line.
+#
+# NORMATIVE (DESIGN.md §2 "strict"; AUDIT.md G16, H13, A25). Kome's
+# Ed25519 verification predicate is: A (the public key) and R are canonical
+# RFC 8032 §5.1.3 encodings; S < L; A is not one of the 8 canonical
+# small-order encodings (the torsion subgroup, orders 1, 2, 4, 8); and the
+# cofactored equation [8][S]B = [8]R + [8][k]A holds, with k = SHA-512 (R ‖
+# A ‖ M) mod L. A small-order R is allowed. The wycheproof, ed25519_strict,
+# ed25519_torsion and ed25519_small_order lines below are normative: every
+# Kome verifier must give exactly these answers (the ed25519_torsion cases
+# 3-5 separate the cofactored equation from the cofactorless one, and
+# cases 0-1 and tcIds 152-159 separate "small-order A refused" from plain
+# cofactored verification).
+#
 # Each value comes from a published test suite or from an implementation
 # that is independent of monocypher:
 #   blake2b256      Python hashlib.blake2b(digest_size=32) (RFC 7693 BLAKE2b).
 #                   Lengths 127/128/129 and 255/256/257 cross the 128-byte
 #                   block boundary.
+#   blake2b256_keyed
+#                   Python hashlib.blake2b(msg, key=key, digest_size=32)
+#                   (RFC 7693 §2.10 keyed hashing, 32-byte key): the PRF
+#                   f (key, msg) of DESIGN.md §6 (chain step, message
+#                   "kome/prev") and §8 (bundle key, message "kome/bundle"
+#                   ‖ ns); AUDIT.md G5. Lengths 127/128/129 cross the block
+#                   boundary. The test main also requires that the keyed
+#                   digest is not BLAKE2b-256 (key ‖ msg).
 #   ed25519         RFC 8032 section 7.1 TEST 1, TEST 2 and TEST 3 verbatim
 #                   (https://www.rfc-editor.org/rfc/rfc8032.txt, fetched
 #                   2026-11-02, file SHA-256
@@ -31,6 +52,11 @@
 #                     truncated or wrong length: 30 (empty), 31 (s missing),
 #                       32 (62 bytes), 33 (66 bytes), 38 (63 bytes)
 #                     mixed-order public key regression: 210
+#                     small-order public keys (flag SmallOrderPublicKey,
+#                       result "acceptable" in Wycheproof; Kome refuses
+#                       them, H13, so the lines here say "invalid"):
+#                       152-159. Their public keys are the 8 encodings of
+#                       the ed25519_small_order lines.
 #                   The test main requires Verify = (result = valid) for each
 #                   64-byte signature. For the other signatures, it requires
 #                   that the bytes cannot become a Sig (a length check).
@@ -39,6 +65,37 @@
 #                   each "valid" test and rejected each "invalid" test.
 #                   Plain crypto_ed25519_check accepts tcId 151 (see
 #                   kome-crypto.ads, STRICT VERIFICATION).
+#   ed25519_torsion The 12 cases of ed25519-speccheck ("Taming the many
+#                   EdDSAs", Chalkias, Garillot, Nikolaenko, SSR 2020;
+#                   https://raw.githubusercontent.com/novifinancial/
+#                   ed25519-speccheck/master/cases.json, fetched 2026-11-04,
+#                   file SHA-256
+#                   08e47a36d9aead288664930505584f353fff113ab854f2800db1e4f5b3540450),
+#                   verbatim: case number, Kome's expected answer, pub_key,
+#                   message, signature. The expected answers follow from
+#                   the normative predicate above and were computed with
+#                   it in plain Python integers (RFC 8032 §5.1 arithmetic,
+#                   no library): cases 0 and 1 have a small-order A
+#                   (refused); 2 has a small-order R under a good A
+#                   (accepted); 3, 4 and 5 pass the cofactored equation
+#                   only (accepted: they would fail under a cofactorless
+#                   verifier); 6 and 7 have S >= L; 8 and 9 a non-canonical
+#                   R; 10 and 11 a non-canonical A (all refused).
+#   ed25519_small_order
+#                   The 8 canonical encodings of the small-order points
+#                   (order, encoding). Derived in plain Python integers: the
+#                   points with y in {1, p - 1, 0} and the two roots of
+#                   d y^4 + 2 y^2 - 1 = 0 (the order-8 points, x^2 = -y^2),
+#                   each with both signs of x where x /= 0, kept when the
+#                   decoded point re-encodes to the same bytes; the order of
+#                   each was checked by point multiplication. They are the
+#                   public keys of Wycheproof tcIds 152-159 and libsodium's
+#                   ge25519_has_small_order list (without its non-canonical
+#                   entries). The test main requires Is_Small_Order_Point
+#                   and Is_Canonical_Point, and that Verify refuses the
+#                   signature (R = identity, S = 0), which satisfies the
+#                   cofactored equation for every such key (universal
+#                   forgery without the check).
 #   ed25519_strict  Non-canonical encodings that plain crypto_ed25519_check
 #                   accepts and Verify must reject. Each is paired with its
 #                   canonical control. Generated with Python (hashlib.sha512
@@ -76,9 +133,12 @@
 #
 # Formats:
 #   blake2b256     <msg> <digest32>
+#   blake2b256_keyed <key32> <msg> <digest32>
 #   ed25519        <seed32> <public32> <msg> <sig64>
 #   wycheproof     <tcId> <valid|invalid> <public32> <msg> <sig (any length)>
 #   ed25519_strict <valid|invalid> <public32> <msg> <sig64>
+#   ed25519_torsion <case> <valid|invalid> <public32> <msg> <sig64>
+#   ed25519_small_order <order> <public32>
 #   x25519         <scalar32> <u32> <out32>
 #   x25519dh       <alice_sk> <alice_pk> <bob_sk> <bob_pk> <shared>
 #   x25519_low     <u32>
@@ -95,6 +155,18 @@ blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc d93ebb9c802f5630ab22516fd82b6c21bc8bd551d531349b715f046ed11ed871
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc03 4ce481b24d387422d2bc2baa03d1afd55a1327939ff537c71eb9b38709268649
 blake2b256 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d54 d62b6c768ce1afc8367e0498ab2f8e3f7c178c35b1429f14c4604b545d200f52
+# keyed BLAKE2b-256 (hashlib.blake2b(msg, key=key, digest_size=32)); the
+# third and fourth lines are chain steps k = f(key, "kome/prev"), the fifth
+# a bundle-key input "kome/bundle" || ns.
+blake2b256_keyed 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f - 4e51e7a913fc80137da52880fecca175bf81e117d5c68126dc2774033517ea0d
+blake2b256_keyed 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 616263 d63a32d3e44738d7907f964316c241adaba0abfeabc32349677578a15a203f7f
+blake2b256_keyed 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 6b6f6d652f70726576 15fb3ecb6881c8e2bcd086c4c8059b6fbaa83d2d9697750e67ff63393f8184e8
+blake2b256_keyed ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d652f70726576 1884f102d833cc62cc03b369f37e4a2932fd91fd787d8b759ab15eb7e43f7774
+blake2b256_keyed 05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a 6b6f6d652f62756e646c650102030405060708090a0b0c0d0e0f10 b0e56d42f77305375cccb3a1e59117474b27406334a6d821999784c8fcc222de
+blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366 02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b50555a5f64696e7378 77f3313c4ed4c3ad7fff58dfc456e119370f8ab88991b830a99179e47871f421
+blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366 02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b50555a5f64696e73787d 585af24b25b63ff43126364c6e8ba632120443adb4d9cbb19d1a4892d946e005
+blake2b256_keyed 090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366 02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b50555a5f64696e73787d82 23fc10db010a9498f117cf7f39160c4a6a33265c8120acaa41cc8e8d8760ea68
+blake2b256_keyed 0000000000000000000000000000000000000000000000000000000000000000 78 0ae5fc20067072f427801f3cea7ace608525b9def0b185a4cb103a72b0abc1a4
 # RFC 8032 section 7.1, TEST 1, TEST 2, TEST 3.
 ed25519 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a - e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b
 ed25519 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c 72 92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
@@ -155,6 +227,50 @@ ed25519_strict invalid d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f
 ed25519_strict invalid eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 # public key = identity encoded as y = 1 with the sign bit set
 ed25519_strict invalid 0100000000000000000000000000000000000000000000000000000000000080 6b6f6d6520737472696374 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+# Wycheproof: small-order public keys (tcIds 152-159; Wycheproof says
+# "acceptable" with the flag SmallOrderPublicKey; Kome refuses them, H13)
+wycheproof 152 invalid 0100000000000000000000000000000000000000000000000000000000000000 6d657373616765 58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000
+wycheproof 153 invalid c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a 746f7273696f6e2d312d3134 b63dd4baa9c75ea9f3f1021ada3bf7dd6872e4cfbdac9653965ef78c4be9845d27df2ce4101220ec96bc5ccbcefa1336871b76e6ef52a0fb35745bb187b1a10d
+wycheproof 154 invalid 0000000000000000000000000000000000000000000000000000000000000080 - c459280d27f66a3285aa648ca1cc444cdfcde27a6062d117c6cb399e0969d6edf8b80551824c3e7275922ac8751e59a42793406560453c4e366999f900480506
+wycheproof 155 invalid 26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05 746f7273696f6e2d332d34 afd0270f467226b517fa8f911d1d320906df0065fe0045593c8fd0394770b83e6bb6f264bca826f9a4631816571f8f42681a94db6d3f032e64721265a06c7009
+wycheproof 156 invalid ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f - f8cea2efb481e92ca61b8972098e07aa1c16f2166cbd8da7ae682b55e433693920b491d7e08ab6c8e521b2f0300befbfcbfd7078340bc153a251896ef8b7c805
+wycheproof 157 invalid 26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85 746f7273696f6e2d352d3231 54df79ed63c1bfdc39fd6408ad5f04143bcfc22b7e1dd0e5ea3bc00eccbbbf8260faa75789f6428d7a8a5a3b850b6779171de7edd504ffcfb5db320dd9864b06
+wycheproof 158 invalid 0000000000000000000000000000000000000000000000000000000000000000 - 520679470254237dbe8f93dc12e8b05363f5236b5671ebff01251649930f6c287531efeb34b73a6fe0f3170a211ce386ae269b0d145d5a7e63bb4ba15ce0c408
+wycheproof 159 invalid c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa 746f7273696f6e2d372d39 b57aca4330dc58dcfd4ca75a1f7f3161aaf394a57769c7a9e9837d27cf7a80f7e88557a67e0b4792628285f53ed0f4fac97bc187e436fac5ea0513d320d5560f
+# ed25519-speccheck cases 0-11, verbatim: <case> <expected> <pk> <msg> <sig>
+# case 0: small-order A and R
+ed25519_torsion 0 invalid c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa 8c93255d71dcab10e8f379c26200f3c7bd5f09d9bc3068d3ef4edeb4853022b6 c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a0000000000000000000000000000000000000000000000000000000000000000
+# case 1: small-order A
+ed25519_torsion 1 invalid c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa 9bd9f44f4dcc75bd531b56b2cd280b0bb38fc1cd6d1230e14861d861de092e79 f7badec5b8abeaf699583992219b7b223f1df3fbbea919844e3f7c554a43dd43a5bb704786be79fc476f91d3f3f89b03984d8068dcf1bb7dfc6637b45450ac04
+# case 2: small-order R (allowed), mixed-order check
+ed25519_torsion 2 valid f7badec5b8abeaf699583992219b7b223f1df3fbbea919844e3f7c554a43dd43 aebf3f2601a0c8c5d39cc7d8911642f740b78168218da8471772b35f9d35b9ab c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa8c4bd45aecaca5b24fb97bc10ac27ac8751a7dfe1baff8b953ec9f5833ca260e
+# case 3: mixed-order A and R: cofactored only
+ed25519_torsion 3 valid cdb267ce40c5cd45306fa5d2f29731459387dbf9eb933b7bd5aed9a765b88d4d 9bd9f44f4dcc75bd531b56b2cd280b0bb38fc1cd6d1230e14861d861de092e79 9046a64750444938de19f227bb80485e92b83fdb4b6506c160484c016cc1852f87909e14428a7a1d62e9f22f3d3ad7802db02eb2e688b6c52fcd6648a98bd009
+# case 4: cofactored only
+ed25519_torsion 4 valid cdb267ce40c5cd45306fa5d2f29731459387dbf9eb933b7bd5aed9a765b88d4d e47d62c63f830dc7a6851a0b1f33ae4bb2f507fb6cffec4011eaccd55b53f56c 160a1cb0dc9c0258cd0a7d23e94d8fa878bcb1925f2c64246b2dee1796bed5125ec6bc982a269b723e0668e540911a9a6a58921d6925e434ab10aa7940551a09
+# case 5: cofactored only
+ed25519_torsion 5 valid cdb267ce40c5cd45306fa5d2f29731459387dbf9eb933b7bd5aed9a765b88d4d e47d62c63f830dc7a6851a0b1f33ae4bb2f507fb6cffec4011eaccd55b53f56c 21122a84e0b5fca4052f5b1235c80a537878b38f3142356b2c2384ebad4668b7e40bc836dac0f71076f9abe3a53f9c03c1ceeeddb658d0030494ace586687405
+# case 6: S >= L (S + L)
+ed25519_torsion 6 invalid 442aad9f089ad9e14647b1ef9099a1ff4798d78589e66f28eca69c11f582a623 85e241a07d148b41e47d62c63f830dc7a6851a0b1f33ae4bb2f507fb6cffec40 e96f66be976d82e60150baecff9906684aebb1ef181f67a7189ac78ea23b6c0e547f7690a0e2ddcd04d87dbc3490dc19b3b3052f7ff0538cb68afb369ba3a514
+# case 7: S >= L
+ed25519_torsion 7 invalid 442aad9f089ad9e14647b1ef9099a1ff4798d78589e66f28eca69c11f582a623 85e241a07d148b41e47d62c63f830dc7a6851a0b1f33ae4bb2f507fb6cffec40 8ce5b96c8f26d0ab6c47958c9e68b937104cd36e13c33566acd2fe8d38aa19427e71f98a473474f2f13f06f97c20d58cc3f54b8bd0d272f42b695dd7e89a8c22
+# case 8: non-canonical R (y = p - 1 with the sign bit)
+ed25519_torsion 8 invalid f7badec5b8abeaf699583992219b7b223f1df3fbbea919844e3f7c554a43dd43 9bedc267423725d473888631ebf45988bad3db83851ee85c85e241a07d148b41 ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff03be9678ac102edcd92b0210bb34d7428d12ffc5df5f37e359941266a4e35f0f
+# case 9: non-canonical R
+ed25519_torsion 9 invalid f7badec5b8abeaf699583992219b7b223f1df3fbbea919844e3f7c554a43dd43 9bedc267423725d473888631ebf45988bad3db83851ee85c85e241a07d148b41 ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffca8c5b64cd208982aa38d4936621a4775aa233aa0505711d8fdcfdaa943d4908
+# case 10: non-canonical A (y = p - 1 with the sign bit)
+ed25519_torsion 10 invalid ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff e96b7021eb39c1a163b6da4e3093dcd3f21387da4cc4572be588fafae23c155b a9d55260f765261eb9b84e106f665e00b867287a761990d7135963ee0a7d59dca5bb704786be79fc476f91d3f3f89b03984d8068dcf1bb7dfc6637b45450ac04
+# case 11: non-canonical A
+ed25519_torsion 11 invalid ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 39a591f5321bbe07fd5a23dc2f39d025d74526615746727ceefd6e82ae65c06f a9d55260f765261eb9b84e106f665e00b867287a761990d7135963ee0a7d59dca5bb704786be79fc476f91d3f3f89b03984d8068dcf1bb7dfc6637b45450ac04
+# The 8 canonical small-order encodings: <order> <pk>
+ed25519_small_order 1 0100000000000000000000000000000000000000000000000000000000000000
+ed25519_small_order 2 ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+ed25519_small_order 4 0000000000000000000000000000000000000000000000000000000000000000
+ed25519_small_order 4 0000000000000000000000000000000000000000000000000000000000000080
+ed25519_small_order 8 26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05
+ed25519_small_order 8 26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85
+ed25519_small_order 8 c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a
+ed25519_small_order 8 c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa
 x25519 a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4 e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552
 x25519 4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493 95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957
 x25519dh 77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a 5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742

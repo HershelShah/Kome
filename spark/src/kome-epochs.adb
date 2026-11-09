@@ -1,6 +1,6 @@
 --  Kome.Epochs body. The spec tells what is proved and what is a crypto
---  oracle. Step, Box_Key, Unbox_Key, Seal_Link and Open_Link wipe each named
---  secret byte buffer before they return. gnatprove's flow analysis
+--  oracle. Step, Box_PK_Of, Box_Key, Unbox_Key, Seal_Link and Open_Link
+--  wipe each named secret byte buffer before they return. gnatprove's flow analysis
 --  reports that these final Wipes have no effect on the SPARK model. This
 --  is their purpose (Kome.Crypto.Wipe).
 pragma Ada_2022;
@@ -9,9 +9,9 @@ package body Kome.Epochs with SPARK_Mode is
 
    package C renames Kome.Crypto;
 
-   --  ASCII "prev".
+   --  ASCII "kome/prev".
    Prev_Label : constant Byte_Array (0 .. Prev_Label_Len - 1) :=
-     [16#70#, 16#72#, 16#65#, 16#76#];
+     [16#6B#, 16#6F#, 16#6D#, 16#65#, 16#2F#, 16#70#, 16#72#, 16#65#, 16#76#];
 
    ---------------------------------------------------------------------------
    --  Chain
@@ -24,19 +24,18 @@ package body Kome.Epochs with SPARK_Mode is
    pragma Warnings (GNATprove, Off, "*is set by ""Wipe"" but not used*",
                     Reason => "erasing secrets is not a SPARK effect");
 
-   --  The procedure form of BLAKE2b-256 writes into a buffer, so Step
-   --  can wipe the input (which holds k_{e+1}) and the digest before it
-   --  returns. A function can call the two procedures because they are
-   --  Always_Terminates.
+   --  k_e = f (k_{e+1}, "kome/prev"): keyed BLAKE2b-256 with the key bytes
+   --  of k_{e+1} (G5). The procedure form writes into a buffer, so Step can
+   --  wipe the key bytes and the digest before it returns. A function can
+   --  call the two procedures because they are Always_Terminates.
    function Step (K : Key256) return Key256 is
-      Buf    : Byte_Array (0 .. Hash_Len + Prev_Label_Len - 1) :=
-        Kome.Keys.To_Bytes (K) & Prev_Label;
+      KB     : C.Mac_Key := Kome.Keys.To_Bytes (K);
       Digest : Hash256;
       R      : Key256;
    begin
-      C.Blake2b_256 (Buf, Digest);
+      C.Blake2b_256_Keyed (KB, Prev_Label, Digest);
       R := Kome.Keys.To_Key256 (Digest);
-      C.Wipe (Buf);
+      C.Wipe (KB);
       C.Wipe (Digest);
       return R;
    end Step;
@@ -232,17 +231,52 @@ package body Kome.Epochs with SPARK_Mode is
       C.Wipe (Buf);
    end Link_Key_Of;
 
+   --  eph_sk = BLAKE2b-256 ("kome/eph" ‖ k_e ‖ ns ‖ u16 (e) ‖ signer ‖
+   --  u48 (gen)), into Eph (a secret: the caller wipes it), through a
+   --  wiped input buffer. Post: it is the ghost model Eph_Secret_Of.
+   procedure Eph_Secret
+     (Epoch_Key : Key256;
+      Ns        : Id128;
+      E         : Epoch;
+      Signer    : Pubkey;
+      Gen       : U48;
+      Eph       : out C.DH_Secret)
+     with Global => null,
+          Post   => Eph = Eph_Secret_Of (Epoch_Key, Ns, E, Signer, Gen)
+   is
+      Buf : Eph_Input_Bytes := Eph_Input (Epoch_Key, Ns, E, Signer, Gen);
+   begin
+      C.Blake2b_256 (Buf, Eph);
+      C.Wipe (Buf);
+   end Eph_Secret;
+
+   function Box_PK_Of
+     (Epoch_Key : Key256; Ns : Id128; E : Epoch; Signer : Pubkey; Gen : U48)
+      return Pubkey
+   is
+      Eph : C.DH_Secret;
+      PK  : Pubkey;
+   begin
+      Eph_Secret (Epoch_Key, Ns, E, Signer, Gen, Eph);
+      PK := C.X25519_Public (Eph);
+      C.Wipe (Eph);
+      return PK;
+   end Box_PK_Of;
+
    procedure Box_Key
-     (Eph_Secret     : Kome.Crypto.DH_Secret;
-      Member_DH_PK   : Pubkey;
-      Member_Sign_PK : Pubkey;
+     (Epoch_Key      : Key256;
       Ns             : Id128;
       E              : Epoch;
-      Epoch_Key      : Key256;
+      Signer         : Pubkey;
+      Gen            : U48;
+      Member_DH_PK   : Pubkey;
+      Member_Sign_PK : Pubkey;
+      Box_PK         : out Pubkey;
       N              : out Nonce;
       Sealed         : out Kome.Box;
       Status         : out Box_Status)
    is
+      Eph          : C.DH_Secret;
       Shared       : C.Shared_Secret;
       Contributory : Boolean;
       WK           : Hash256;
@@ -250,6 +284,12 @@ package body Kome.Epochs with SPARK_Mode is
       Cipher       : C.AEAD_Key;
       Mac          : C.Tag;
    begin
+      --  The derived ephemeral secret (A6) and the roster's box_pk (G7),
+      --  the same for every member of the roster.
+      Eph_Secret (Epoch_Key, Ns, E, Signer, Gen, Eph);
+      Box_PK := C.X25519_Public (Eph);
+      pragma Assert (Box_PK = Box_PK_Of (Epoch_Key, Ns, E, Signer, Gen));
+
       --  Refuse an encoding that is not reduced before an exchange. It would
       --  seal a box that its member's reduced key can never open (see
       --  the spec header).
@@ -257,34 +297,38 @@ package body Kome.Epochs with SPARK_Mode is
          N := [others => 0];
          Sealed := [others => 0];
          Status := Non_Canonical_Peer;
+         C.Wipe (Eph);
          return;
       end if;
       if C.Is_Low_Order_U (Member_DH_PK) then
          N := [others => 0];
          Sealed := [others => 0];
          Status := Low_Order_Peer;
+         C.Wipe (Eph);
          return;
       end if;
 
-      C.X25519 (Eph_Secret, Member_DH_PK, Shared, Contributory);
+      C.X25519 (Eph, Member_DH_PK, Shared, Contributory);
       if not Contributory then
          N := [others => 0];
          Sealed := [others => 0];
          Status := Low_Order_Peer;
+         C.Wipe (Eph);
          return;   --  Shared is all zeros already (Kome.Crypto.X25519 Post)
       end if;
 
-      Wrap_Key (Shared, C.X25519_Public (Eph_Secret), Member_DH_PK,
-                Member_Sign_PK, Ns, E, WK);
-      Lemma_Wrap_Shared (Shared, C.X25519_Shared (Eph_Secret, Member_DH_PK),
-                         C.X25519_Public (Eph_Secret), Member_DH_PK,
-                         Member_Sign_PK, Ns, E);
+      Wrap_Key (Shared, Box_PK, Member_DH_PK, Member_Sign_PK, Ns, E, WK);
+      Lemma_Wrap_Shared (Shared,
+                         C.X25519_Shared (Eph_Secret_Of (Epoch_Key, Ns, E, Signer, Gen),
+                                          Member_DH_PK),
+                         Box_PK, Member_DH_PK, Member_Sign_PK, Ns, E);
       Nonce_Of (WK, Epoch_Key, N);
       Plain := Kome.Keys.To_Bytes (Epoch_Key);
       C.Lock (WK, N, Box_AD (Ns, E), Plain, Cipher, Mac);
       Sealed := Cipher & Mac;
       Status := Box_OK;
 
+      C.Wipe (Eph);
       C.Wipe (Shared);
       C.Wipe (WK);
       C.Wipe (Plain);

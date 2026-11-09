@@ -5,9 +5,11 @@
 --
 --    BLAKE2b-256      crypto_blake2b, crypto_blake2b_init/update/final with
 --                     hash_size = 32. DESIGN.md §2 `ns`, `h`, the root
---                     certificate; §6 the epoch key chain and box keys; §8
---                     the accumulator and the bundle key and nonce.
---                     Assumption A2.
+--                     certificate; §6 the box keys; §8 the accumulator
+--                     and the bundle nonce. Assumption A2.
+--    keyed BLAKE2b    crypto_blake2b_keyed with hash_size = key_size = 32:
+--                     the PRF f of DESIGN.md §6 (the epoch chain step) and
+--                     §8 (the bundle key). AUDIT.md G5.
 --    Ed25519          crypto_ed25519_key_pair / _sign / _check, from the
 --                     optional monocypher-ed25519.c. DESIGN.md §2 `sig`,
 --                     `cert_sig`. Assumption A1.
@@ -32,23 +34,38 @@
 --  with BLAKE2b-512, the scheme of Nano). That scheme is not RFC 8032,
 --  and its signatures do not verify here.
 --
---  STRICT VERIFICATION (DESIGN.md §2 "strict: S < L"). Verify accepts a
---  signature only if these conditions are true, and crypto_ed25519_check
---  then accepts it:
+--  STRICT VERIFICATION (DESIGN.md §2 "strict: S < L"; AUDIT.md H13, A25,
+--  G16). Verify accepts a signature exactly when these conditions are all
+--  true:
 --    (a) S < L;
 --    (b) R is the canonical RFC 8032 §5.1.2 encoding of a point;
---    (c) PK is also such a canonical encoding.
+--    (c) PK is also such a canonical encoding;
+--    (d) PK is not one of the 8 canonical encodings of a point of small
+--        order (the torsion subgroup: orders 1, 2, 4 and 8);
+--    (e) crypto_ed25519_check accepts (sig, pk, msg): the cofactored group
+--        equation [8][S]B = [8]R + [8][k]A, which RFC 8032 §5.1.7 permits.
+--  This predicate is normative (G16): a record is well-formed iff its
+--  signature satisfies it, and every Kome verifier must agree on it. The
+--  Wycheproof subset, the ed25519-speccheck ("Taming the many EdDSAs")
+--  cases and the torsion vectors of vectors/crypto.txt pin it.
+--
 --  crypto_ed25519_check itself enforces (a), and it refuses encodings that
 --  are not on the curve. But by design it allows the non-canonical
 --  encodings y >= p and "x = 0 with the sign bit set" (monocypher.c
 --  crypto_eddsa_check_equation: "*Allow* non-cannonical encoding for A and
 --  R"). Wycheproof ed25519_test.json tcId 151 is such a signature, and
---  crypto_ed25519_check accepts it.
+--  crypto_ed25519_check accepts it. It also accepts every small-order
+--  public key: for such an A, [8][k]A is the identity for every k, so the
+--  signature (R = identity, S = 0) verifies for every message (universal
+--  forgery; H13). The all-zero key is one of these points (order 4).
 --
---  The binding checks (b) and (c) itself (Is_Canonical_Point). The
---  strictness is the decoding rule of RFC 8032 §5.1.3. The group equation
---  is monocypher's cofactored equation ([8][S]B = [8]R + [8][k]A, which
---  RFC 8032 §5.1.7 permits).
+--  The binding checks (b), (c) and (d) itself (Is_Canonical_Point,
+--  Is_Small_Order_Point). The strictness of (b) and (c) is the decoding
+--  rule of RFC 8032 §5.1.3. Verify is a SPARK expression function
+--  (completed in the private part, A25): the conjunction of (a) to (d),
+--  which gnatprove proves like any other code, and of Raw_Ed25519_Check,
+--  the C call with no Post. So the Posts of Verify are proved, not
+--  assumed; only the group equation itself is assumed (A1).
 --
 --  SPARK boundary (CONVENTIONS.md, the one allowed exception): this spec is
 --  SPARK_Mode On with full contracts. The body is SPARK_Mode Off, and it
@@ -59,13 +76,17 @@
 --  to C. The contracts state these facts:
 --    * input bounds, output lengths and layouts;
 --    * the state machine and the byte count of the incremental context;
---    * that only Key_Pair makes a valid signing key, and that the public
---      half of a valid key is the one derived from its seed. Is_Valid is
---      an expression function, so gnatprove proves its Post and the facts
---      about the default key;
---    * strict verification: True implies S < L and canonical R and PK;
+--    * that only Key_Pair makes a valid signing key, from a seed that is
+--      not all zeros (A27), and that the public half of a valid key is the
+--      one derived from its seed. Is_Valid is an expression function, so
+--      gnatprove proves its Post and the facts about the default key;
+--    * strict verification: True implies S < L, canonical R and PK, and a
+--      PK that is not small-order (proved from the expression of Verify);
 --    * that X25519 reports a non-contributory exchange, and which X25519
 --      keys Kome accepts at decode (Is_Good_DH_Key, E5);
+--    * the public keys of the all-zero seed and of the all-zero X25519
+--      secret, as named constants (Zero_Seed_Public, Zero_Secret_DH_Public;
+--      A27). Kome.Records refuses them at decode;
 --    * that a refused Unlock and each Wipe leave zeros;
 --    * that BLAKE2b-256 depends only on the bytes of its input
 --      (Lemma_Blake2b_Congruent, an axiom for the prover, run by the test
@@ -125,6 +146,45 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  Pubkey (32), Hash256 (32), Sig (64) and Nonce (24) come from Kome.
    --  A DESIGN.md §2 Box (48 bytes) is an AEAD_Key sealed under Lock,
    --  followed by its Tag.
+
+   --  All 32 bytes are zero. The function has no quantifier (CONVENTIONS.md
+   --  rule 2), so it costs a caller's prover nothing. Seed, DH_Secret and
+   --  Shared_Secret have the same bounds, so it applies to each of them.
+   function Is_Zero (K : Shared_Secret) return Boolean is
+     (K (0) = 0 and then K (1) = 0 and then K (2) = 0 and then K (3) = 0
+      and then K (4) = 0 and then K (5) = 0 and then K (6) = 0
+      and then K (7) = 0 and then K (8) = 0 and then K (9) = 0
+      and then K (10) = 0 and then K (11) = 0 and then K (12) = 0
+      and then K (13) = 0 and then K (14) = 0 and then K (15) = 0
+      and then K (16) = 0 and then K (17) = 0 and then K (18) = 0
+      and then K (19) = 0 and then K (20) = 0 and then K (21) = 0
+      and then K (22) = 0 and then K (23) = 0 and then K (24) = 0
+      and then K (25) = 0 and then K (26) = 0 and then K (27) = 0
+      and then K (28) = 0 and then K (29) = 0 and then K (30) = 0
+      and then K (31) = 0)
+     with Global => null;
+
+   --  Bytes 0 .. 30 of P and Q are equal (byte by byte, no quantifier). The
+   --  small-order test below compares a key against a constant in its low
+   --  31 bytes and then decides on byte 31 (the sign bit may be set).
+   function Same_Low_31 (P, Q : Pubkey) return Boolean is
+     (P (0) = Q (0) and then P (1) = Q (1) and then P (2) = Q (2)
+      and then P (3) = Q (3) and then P (4) = Q (4) and then P (5) = Q (5)
+      and then P (6) = Q (6) and then P (7) = Q (7) and then P (8) = Q (8)
+      and then P (9) = Q (9) and then P (10) = Q (10) and then P (11) = Q (11)
+      and then P (12) = Q (12) and then P (13) = Q (13) and then P (14) = Q (14)
+      and then P (15) = Q (15) and then P (16) = Q (16) and then P (17) = Q (17)
+      and then P (18) = Q (18) and then P (19) = Q (19) and then P (20) = Q (20)
+      and then P (21) = Q (21) and then P (22) = Q (22) and then P (23) = Q (23)
+      and then P (24) = Q (24) and then P (25) = Q (25) and then P (26) = Q (26)
+      and then P (27) = Q (27) and then P (28) = Q (28) and then P (29) = Q (29)
+      and then P (30) = Q (30))
+     with Global => null;
+
+   --  All 32 bytes of P and Q are equal (byte by byte, no quantifier).
+   function Same_Bytes (P, Q : Pubkey) return Boolean is
+     (Same_Low_31 (P, Q) and then P (31) = Q (31))
+     with Global => null;
 
    --  The largest single buffer that this package gives to monocypher,
    --  1 MiB. It is declared here, not in Kome (root), because this package
@@ -191,15 +251,37 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  The same hash, written directly into the caller's buffer. Use
    --  this form when the digest is itself a secret, so that no
-   --  function-result temporary holds a copy. An example is the epoch key
-   --  chain k_e = BLAKE2b-256 (k_{e+1} ‖ "prev") of DESIGN.md §6. The caller
-   --  wipes Digest. The procedure is Always_Terminates (one C call), so a
-   --  function such as Kome.Epochs.Step can hash into a buffer that it then
-   --  wipes.
+   --  function-result temporary holds a copy. An example is the wrap key
+   --  of a member box (DESIGN.md §6). The caller wipes Digest. The
+   --  procedure is Always_Terminates (one C call), so a function can hash
+   --  into a buffer that it then wipes.
    procedure Blake2b_256 (Data : Byte_Array; Digest : out Hash256)
      with Global => null, Always_Terminates,
           Pre    => Data'Length <= Max_Data_Len,
           Post   => Digest = Blake2b_256 (Data);
+
+   --  Keyed BLAKE2b-256 (RFC 7693 §2.10 and §3.3: the key is padded to one
+   --  128-byte block and hashed first, with the key length in the
+   --  parameter block), crypto_blake2b_keyed (hash, 32, key, 32, data, len).
+   --  It is the PRF f (key, msg) of DESIGN.md §6 and §8 (AUDIT.md G5): the
+   --  epoch chain step k_e = f (k_{e+1}, "kome/prev") and the bundle key
+   --  k_b = f (k_e, "kome/bundle" ‖ ns) are both instances of one keyed
+   --  BLAKE2b assumption, not of an unkeyed hash of key ‖ label. The key is
+   --  32 bytes (Mac_Key). There is no Post, as for Blake2b_256; the test
+   --  main checks hashlib's keyed answers.
+   subtype Mac_Key is Byte_Array (0 .. Hash_Len - 1);
+
+   function Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array) return Hash256
+     with Global => null,
+          Pre    => Data'Length <= Max_Data_Len;
+
+   --  The same, written into the caller's buffer, for a secret digest (the
+   --  next epoch key). The caller wipes Digest. Always_Terminates, so that
+   --  Kome.Epochs.Step (a function) can call it.
+   procedure Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array; Digest : out Hash256)
+     with Global => null, Always_Terminates,
+          Pre    => Data'Length <= Max_Data_Len,
+          Post   => Digest = Blake2b_256_Keyed (Key, Data);
 
    --  Incremental BLAKE2b-256: Init, any number of Update calls, then Final.
    --  The context is a bounded byte stream: at most Max_Stream_Len bytes in
@@ -330,12 +412,79 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
            and then P (28) = 16#FF# and then P (29) = 16#FF# and then P (30) = 16#FF#))))
      with Global => null;
 
+   --  The 8-torsion subgroup of the Ed25519 curve (AUDIT.md H13). The
+   --  curve group has order 8 L. Its points of order 1, 2, 4 and 8 form a
+   --  cyclic subgroup of order 8, and these are their canonical RFC 8032
+   --  §5.1.2 encodings (y little-endian, the sign of x in bit 255):
+   --    order 1   y = 1,     x = 0           0100..00
+   --    order 2   y = p - 1, x = 0           ecff..ff7f
+   --    order 4   y = 0,     x = ±sqrt(-1)   0000..00 and 0000..0080
+   --    order 8   y = y8,    x = ±x8         26e8958f..fc05 and ..fc85
+   --    order 8   y = p - y8, x = ±x8'       c7176a70..037a and ..03fa
+   --  with y8 = 0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f
+   --  95e826 (the order-8 points satisfy x^2 = -y^2, so d y^4 + 2 y^2 - 1 =
+   --  0). The encodings 0100..0080 and ecff..ffff (x = 0 with the sign bit
+   --  set) are not canonical, and Is_Canonical_Point refuses them. These
+   --  are the eight "SmallOrderPublicKey" keys of Wycheproof ed25519_test.json
+   --  (tcIds 152-159) and the small-order list of "Taming the many EdDSAs"
+   --  (ed25519-speccheck) and of libsodium (ge25519_has_small_order, which
+   --  also lists the non-canonical forms). The derivation is repeated in
+   --  tests/test_crypto.adb's vectors (vectors/crypto.txt, ed25519_small_order).
+   Torsion_8_A : constant Pubkey :=
+     [16#26#, 16#E8#, 16#95#, 16#8F#, 16#C2#, 16#B2#, 16#27#, 16#B0#,
+      16#45#, 16#C3#, 16#F4#, 16#89#, 16#F2#, 16#EF#, 16#98#, 16#F0#,
+      16#D5#, 16#DF#, 16#AC#, 16#05#, 16#D3#, 16#C6#, 16#33#, 16#39#,
+      16#B1#, 16#38#, 16#02#, 16#88#, 16#6D#, 16#53#, 16#FC#, 16#05#];
+   Torsion_8_B : constant Pubkey :=
+     [16#C7#, 16#17#, 16#6A#, 16#70#, 16#3D#, 16#4D#, 16#D8#, 16#4F#,
+      16#BA#, 16#3C#, 16#0B#, 16#76#, 16#0D#, 16#10#, 16#67#, 16#0F#,
+      16#2A#, 16#20#, 16#53#, 16#FA#, 16#2C#, 16#39#, 16#CC#, 16#C6#,
+      16#4E#, 16#C7#, 16#FD#, 16#77#, 16#92#, 16#AC#, 16#03#, 16#7A#];
+   Identity_Point : constant Pubkey := [0 => 1, others => 0];
+   Order_2_Point  : constant Pubkey := [0 => 16#EC#, 31 => 16#7F#, others => 16#FF#];
+   Order_4_Point  : constant Pubkey := [others => 0];   --  the all-zero key
+
+   --  P is one of the 8 canonical small-order encodings above. A signature
+   --  under such a public key is a universal forgery (see the header), so
+   --  Verify refuses it, and Kome.Records refuses such a key as a root, a
+   --  signer or a GRANT subject (H13). The function has no quantifier, so
+   --  it is public. It reads bytes only, so decode stays total.
+   function Is_Small_Order_Point (P : Pubkey) return Boolean is
+     ((Same_Low_31 (P, Order_4_Point)
+       and then (P (31) = 0 or else P (31) = 16#80#))
+      or else Same_Bytes (P, Identity_Point)
+      or else Same_Bytes (P, Order_2_Point)
+      or else (Same_Low_31 (P, Torsion_8_A)
+               and then (P (31) = 16#05# or else P (31) = 16#85#))
+      or else (Same_Low_31 (P, Torsion_8_B)
+               and then (P (31) = 16#7A# or else P (31) = 16#FA#)))
+     with Global => null;
+
    --  The public key that crypto_ed25519_key_pair derives from a seed
    --  (RFC 8032 §5.1.5). It runs crypto_ed25519_key_pair on a copy of S,
-   --  and it wipes the copy and the 64-byte secret that it made.
+   --  and it wipes the copy and the 64-byte secret that it made. It is
+   --  total: it is a pure function of its argument, and Is_Valid names it
+   --  on the (zero) seed of a wiped key.
    function Derive_Public (S : Seed) return Pubkey
      with Global => null,
           Post   => Is_Canonical_Point (Derive_Public'Result);
+
+   --  Derive_Public of the all-zero seed (AUDIT.md A27): the public key of a
+   --  secret that everybody knows. Computed once, independently of
+   --  monocypher, with RFC 8032 §5.1.5 in plain Python integers (SHA-512 of
+   --  32 zero bytes, clamped, times the base point) and cross-checked with
+   --  pyca/cryptography Ed25519PrivateKey.from_private_bytes (bytes (32)).
+   --  The test main checks it against the live Derive_Public. Kome.Records
+   --  refuses it as a root, a signer or a GRANT subject.
+   Zero_Seed_Public : constant Pubkey :=
+     [16#3B#, 16#6A#, 16#27#, 16#BC#, 16#CE#, 16#B6#, 16#A4#, 16#2D#,
+      16#62#, 16#A3#, 16#A8#, 16#D0#, 16#2A#, 16#6F#, 16#0D#, 16#73#,
+      16#65#, 16#32#, 16#15#, 16#77#, 16#1D#, 16#E2#, 16#43#, 16#A6#,
+      16#3A#, 16#C0#, 16#48#, 16#A1#, 16#8B#, 16#59#, 16#DA#, 16#29#];
+
+   function Is_Zero_Seed_Public (P : Pubkey) return Boolean is
+     (Same_Bytes (P, Zero_Seed_Public))
+     with Global => null;
 
    --  A signing key: monocypher's 64-byte secret key (seed ‖ public key)
    --  plus a validity flag. The type is private and limited, so only
@@ -377,10 +526,13 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
 
    --  crypto_ed25519_key_pair (sk, pk, seed). The C call wipes its seed
    --  argument, so the binding gives it a copy, and S does not change (it
-   --  is an `in` parameter). Post: the key is valid and holds S, and PK is
-   --  its public half and the key derived from S.
+   --  is an `in` parameter). Pre: the seed is not all zeros (AUDIT.md A27:
+   --  an all-zero seed is a publicly known key, Zero_Seed_Public). Post:
+   --  the key is valid and holds S, and PK is its public half and the key
+   --  derived from S.
    procedure Key_Pair (S : Seed; SK : out Secret_Key; PK : out Pubkey)
      with Global => null,
+          Pre    => not Is_Zero (S),
           Post   => Is_Valid (SK)
                     and then Seed_Of (SK) = S
                     and then Public_Of (SK) = PK
@@ -442,20 +594,24 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
                     and then Is_Canonical_Point (Sign'Result (0 .. 31));
 
    --  Strict RFC 8032 verification (see the header): S < L, canonical
-   --  R and PK, then crypto_ed25519_check (sig, pk, msg, len) = 0. DESIGN.md
-   --  §2: a record is well-formed iff its bounds hold and its signature
-   --  verifies. This is a function of its bytes alone, so Verify is a
-   --  function with Global => null. A1 is the assumption that True means
-   --  that the holder of PK's secret key signed Msg. The part that a
-   --  test can check is the encoding: True implies a canonical scalar
-   --  (non-malleability) and canonical point encodings.
+   --  R and PK, PK not small-order, then crypto_ed25519_check (sig, pk,
+   --  msg, len) = 0. DESIGN.md §2: a record is well-formed iff its bounds
+   --  hold and its signature verifies. This is a function of its bytes
+   --  alone, so Verify is a function with Global => null. A1 is the
+   --  assumption that True means that the holder of PK's secret key signed
+   --  Msg. Verify is an expression function (its completion is in the
+   --  private part, after Raw_Ed25519_Check), so gnatprove proves the Post
+   --  from the definition (AUDIT.md A25). Clients can see the definition
+   --  (CONVENTIONS.md "Proof hygiene": a private-part completion is
+   --  visible); it has no quantifier, so that costs them nothing.
    function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean
      with Global => null,
           Pre    => Msg'Length <= Max_Data_Len,
           Post   => (if Verify'Result
                      then S_Below_L (Signature)
                           and then Is_Canonical_Point (Signature (0 .. 31))
-                          and then Is_Canonical_Point (PK));
+                          and then Is_Canonical_Point (PK)
+                          and then not Is_Small_Order_Point (PK));
 
    ---------------------------------------------------------------------------
    --  X25519 (RFC 7748)
@@ -465,22 +621,6 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    --  encoded little-endian (RFC 7748 §5, encodeUCoordinate), so its top
    --  bit is clear. monocypher's fe_tobytes emits the canonical encoding.
    function Is_Canonical_U (U : Pubkey) return Boolean is (U (31) < 16#80#)
-     with Global => null;
-
-   --  All 32 bytes are zero. The function has no quantifier (CONVENTIONS.md
-   --  rule 2), so it costs a caller's prover nothing.
-   function Is_Zero (K : Shared_Secret) return Boolean is
-     (K (0) = 0 and then K (1) = 0 and then K (2) = 0 and then K (3) = 0
-      and then K (4) = 0 and then K (5) = 0 and then K (6) = 0
-      and then K (7) = 0 and then K (8) = 0 and then K (9) = 0
-      and then K (10) = 0 and then K (11) = 0 and then K (12) = 0
-      and then K (13) = 0 and then K (14) = 0 and then K (15) = 0
-      and then K (16) = 0 and then K (17) = 0 and then K (18) = 0
-      and then K (19) = 0 and then K (20) = 0 and then K (21) = 0
-      and then K (22) = 0 and then K (23) = 0 and then K (24) = 0
-      and then K (25) = 0 and then K (26) = 0 and then K (27) = 0
-      and then K (28) = 0 and then K (29) = 0 and then K (30) = 0
-      and then K (31) = 0)
      with Global => null;
 
    --  U is the reduced little-endian encoding of a field element: bit 255
@@ -570,6 +710,24 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    function X25519_Public (Secret : DH_Secret) return Pubkey
      with Global => null,
           Post   => Is_Canonical_U (X25519_Public'Result);
+
+   --  X25519_Public of the all-zero secret (AUDIT.md A27): the public key of
+   --  a secret that everybody knows. RFC 7748 clamps the scalar, so it is
+   --  [2**254] of the base point u = 9, a good DH key by Is_Good_DH_Key.
+   --  Computed once, independently of monocypher, with the RFC 7748 §5
+   --  ladder in plain Python integers and cross-checked with
+   --  pyca/cryptography X25519PrivateKey.from_private_bytes (bytes (32)).
+   --  The test main checks it against the live X25519_Public. Kome.Records
+   --  refuses it as a box_pk.
+   Zero_Secret_DH_Public : constant Pubkey :=
+     [16#2F#, 16#E5#, 16#7D#, 16#A3#, 16#47#, 16#CD#, 16#62#, 16#43#,
+      16#15#, 16#28#, 16#DA#, 16#AC#, 16#5F#, 16#BB#, 16#29#, 16#07#,
+      16#30#, 16#FF#, 16#F6#, 16#84#, 16#AF#, 16#C4#, 16#CF#, 16#C2#,
+      16#ED#, 16#90#, 16#99#, 16#5F#, 16#58#, 16#CB#, 16#3B#, 16#74#];
+
+   function Is_Zero_Secret_DH_Public (U : Pubkey) return Boolean is
+     (Same_Bytes (U, Zero_Secret_DH_Public))
+     with Global => null;
 
    --  crypto_x25519 (shared, your_sk, their_pk): the raw shared secret,
    --  written into the caller's buffer. It is a secret, so the caller wipes
@@ -717,5 +875,24 @@ private
    --  of the definition. The default flag makes the DIC a consequence too.
    function Is_Valid (SK : Secret_Key) return Boolean is
      (SK.Valid and then Public_Of (SK) = Derive_Public (Seed_Of (SK)));
+
+   --  crypto_ed25519_check (sig, pk, msg, len) = 0, and nothing else: the
+   --  cofactored group equation over whatever encodings monocypher
+   --  accepts. It has no Post (AUDIT.md A25): its result is the C
+   --  assumption A1, and Verify adds the SPARK encoding checks around it.
+   --  It is private, so no client can call it without those checks.
+   function Raw_Ed25519_Check
+     (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean
+     with Global => null,
+          Pre    => Msg'Length <= Max_Data_Len;
+
+   --  Strict verification as a SPARK expression (the header, A25): the
+   --  Post of Verify follows from this definition.
+   function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean is
+     (S_Below_L (Signature)
+      and then Is_Canonical_Point (Signature (0 .. 31))
+      and then Is_Canonical_Point (PK)
+      and then not Is_Small_Order_Point (PK)
+      and then Raw_Ed25519_Check (Signature, PK, Msg));
 
 end Kome.Crypto;

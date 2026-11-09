@@ -1,21 +1,30 @@
 # Kome.Epochs known-answer vectors. tests/test_epochs.adb reads them.
-# DESIGN.md §6 epoch chain: k_e = BLAKE2b-256 (k_{e+1} || "prev"), so
-# Derive (k, from, to) applies that step (from - to) times.
-# Python's hashlib computed them, independently of monocypher:
-#   step = lambda k: hashlib.blake2b(k + b'prev', digest_size=32).digest()
+# DESIGN.md §6 epoch chain (AUDIT.md G5): k_e = f (k_{e+1}, "kome/prev"),
+# where f (key, msg) is keyed BLAKE2b-256 (RFC 7693 §2.10, the key is
+# k_{e+1}, the message is the 9-byte ASCII label). Derive (k, from, to)
+# applies that step (from - to) times. Python's hashlib computed them,
+# independently of monocypher:
+#   step = lambda k: hashlib.blake2b(b'kome/prev', key=k, digest_size=32).digest()
 # Format: chain <key at From, 32-byte hex> <From> <To> <key at To, hex>
 #
-# Box and link known answers (DESIGN.md §6 "Boxes (D5, D6)").
-# The independent Python reference below made them on 2026-11-02:
-#   Python 3.13.17; hashlib for BLAKE2b;
-#   PyNaCl 1.6.2 = libsodium for X25519 and
-#     crypto_aead_xchacha20poly1305_ietf;
-#   pyca/cryptography 50.0.1 over OpenSSL 4.0.2 for X25519 and
-#     ChaCha20-Poly1305, under an HChaCha20 subkey written from
-#     draft-irtf-cfrg-xchacha-03.
-# Two different libraries compute each primitive, and the script asserts
-# that the two results agree. No monocypher code is used. Labels are ASCII
-# with no terminator, u16 is big-endian:
+# Box and link known answers (DESIGN.md §6 "Boxes (D5, D6)"; AUDIT.md A6,
+# G7: the ephemeral secret is derived from the epoch key and the roster's
+# identity, not drawn by the caller).
+# The independent Python reference below made every line on 2026-11-04:
+#   Python 3 hashlib for BLAKE2b (unkeyed and keyed);
+#   pyca/cryptography 50.0.1 for X25519 and ChaCha20-Poly1305, under an
+#     HChaCha20 subkey written from draft-irtf-cfrg-xchacha-03;
+#   the RFC 7748 §5 X25519 ladder and RFC 8439 ChaCha20 + Poly1305, written
+#     in plain Python integers in the script itself.
+# Two different implementations compute each primitive, and the script
+# asserts that the two results agree. No monocypher code is used. (The
+# first link line has the same inputs as the previous file's, which a
+# libsodium-backed script made; the output is identical, so the in-script
+# references also agree with libsodium.) Labels are ASCII with no
+# terminator, u16 and u48 are big-endian:
+#   eph_sk   = BLAKE2b-256("kome/eph" || k_e || ns[16] || u16(e) || signer
+#                          || u48(gen))                            (96 bytes)
+#   box_pk   = X25519_Public(eph_sk)
 #   wrap_key = BLAKE2b-256("kome/wrap" || X25519(eph_sk, dh_pk) || box_pk
 #                          || dh_pk || sign_pk || ns[16] || u16(e))   (155 bytes)
 #   nonce    = BLAKE2b-256("kome/nonce" || wrap_key || k_e)[0:24]
@@ -23,126 +32,201 @@
 #   link_key = BLAKE2b-256("kome/link" || k_s || ns || u16(s))
 #   nonce    = BLAKE2b-256("kome/nonce" || link_key || k_{s-1})[0:24]
 #   link box = XChaCha20-Poly1305(link_key, nonce, AD = ns || u16(s), k_{s-1})
-# The first three box lines are the reviewer's k5/k6 case: the same
-# member at epochs 5 and 6 under one reused eph_sk, then epoch 6 under a
-# fresh eph_sk.
+# The first four box lines are the reviewer's k5/k6 case: the same member
+# and signer at epochs 5 and 6 under one gen (the epoch key alone changes
+# eph_sk), then epoch 6 under the next gen, then under another signer.
+# The derivation inputs of each box are its first five fields (k_e, ns, e,
+# signer, gen); eph_sk and box_pk are what Kome.Epochs.Eph_Secret_Of and
+# Box_PK_Of must give for them. No box or link key here is all zeros
+# (Box_Key and Seal_Link refuse an all-zero key, A27); the all-zero chain
+# key is only a Derive input.
 # Format:
-#   box  <eph_sk> <member_dh_sk> <member_sign_pk> <ns> <e> <k_e> <box_pk>
-#        <member_dh_pk> <wrap_key> <nonce> <box>
+#   box  <k_e> <ns> <e> <signer> <gen> <member_dh_sk> <member_sign_pk>
+#        <eph_sk> <box_pk> <member_dh_pk> <wrap_key> <nonce> <box>
 #   link <k_s> <ns> <s> <k_prev> <link_key> <nonce> <box>
 # Reference script (gen_epochs.py, SHA-256
-# bb197e12955a9013f85d550de3f6887415b04d7ad2a97dbb1eac2e28760b45eb). Run it
-# as `python3 -I gen_epochs.py`. It prints the box and link lines below:
-#| # Independent reference for the DESIGN.md §6 box and link constructions.
-#| # BLAKE2b: hashlib. X25519: libsodium (PyNaCl) and pyca/cryptography, which
-#| # must agree. XChaCha20-Poly1305: libsodium (PyNaCl,
-#| # crypto_aead_xchacha20poly1305_ietf) and pyca/cryptography's
-#| # ChaCha20Poly1305 under an HChaCha20 subkey written here from
-#| # draft-irtf-cfrg-xchacha-03, which must agree. No monocypher.
+# 0f8161bfc7419595e62a462090e9ca3e26d3cb5ca2405ebdc68467027069c00c). Extract and run it
+# with:  sed -n 's/^#| \{0,1\}//p' epochs.txt | python3 -I -
+# It prints the chain, box and link lines below:
+#| # Independent reference for the DESIGN.md §6 chain, box and link
+#| # constructions (AUDIT.md G5: the chain step is keyed BLAKE2b; A6: the
+#| # ephemeral secret is derived, not drawn).
+#| # BLAKE2b: hashlib. X25519: pyca/cryptography and the RFC 7748 §5 ladder
+#| # written here in plain integers, which must agree. XChaCha20-Poly1305:
+#| # pyca/cryptography's ChaCha20Poly1305 under an HChaCha20 subkey written
+#| # here from draft-irtf-cfrg-xchacha-03, and a ChaCha20 + Poly1305 written
+#| # here from RFC 8439, which must agree. No monocypher, no libsodium.
 #| import hashlib, struct
-#| from nacl import bindings as sodium
 #| from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 #| from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-#| 
+#|
+#| P = 2**255 - 19
 #| def b2(data): return hashlib.blake2b(data, digest_size=32).digest()
 #| def u16(e): return struct.pack('>H', e)
-#| 
+#| def u48(g): return struct.pack('>Q', g)[2:]
+#|
+#| def ladder(k, u):                       # RFC 7748 §5, X25519(k, u)
+#|     k = bytearray(k); k[0] &= 248; k[31] &= 127; k[31] |= 64
+#|     k = int.from_bytes(bytes(k), 'little')
+#|     x1 = int.from_bytes(u, 'little') & ((1 << 255) - 1)
+#|     x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+#|     for t in range(254, -1, -1):
+#|         kt = (k >> t) & 1; swap ^= kt
+#|         if swap: x2, x3 = x3, x2; z2, z3 = z3, z2
+#|         swap = kt
+#|         a = (x2 + z2) % P; aa = a * a % P; b = (x2 - z2) % P; bb = b * b % P
+#|         e = (aa - bb) % P; c = (x3 + z3) % P; d = (x3 - z3) % P
+#|         da = d * a % P; cb = c * b % P
+#|         x3 = pow(da + cb, 2, P); z3 = x1 * pow(da - cb, 2, P) % P
+#|         x2 = aa * bb % P; z2 = e * (aa + 121665 * e) % P
+#|     if swap: x2, x3 = x3, x2; z2, z3 = z3, z2
+#|     return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, 'little')
+#|
 #| def x25519(sk, pk):
-#|     a = sodium.crypto_scalarmult(sk, pk)
-#|     b = X25519PrivateKey.from_private_bytes(sk).exchange(X25519PublicKey.from_public_bytes(pk))
+#|     a = X25519PrivateKey.from_private_bytes(sk).exchange(X25519PublicKey.from_public_bytes(pk))
+#|     b = ladder(sk, pk)
 #|     assert a == b
 #|     return a
-#| 
+#|
 #| def x25519_pub(sk):
-#|     a = sodium.crypto_scalarmult_base(sk)
-#|     b = X25519PrivateKey.from_private_bytes(sk).public_key().public_bytes_raw()
+#|     a = X25519PrivateKey.from_private_bytes(sk).public_key().public_bytes_raw()
+#|     b = ladder(sk, (9).to_bytes(32, 'little'))
 #|     assert a == b
 #|     return a
-#| 
-#| def hchacha20(key, n16):
-#|     def rotl(v, c): return ((v << c) & 0xffffffff) | (v >> (32 - c))
-#|     def qr(s, a, b, c, d):
-#|         s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = rotl(s[d] ^ s[a], 16)
-#|         s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = rotl(s[b] ^ s[c], 12)
-#|         s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = rotl(s[d] ^ s[a], 8)
-#|         s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = rotl(s[b] ^ s[c], 7)
-#|     s = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
-#|     s += list(struct.unpack('<8I', key)) + list(struct.unpack('<4I', n16))
+#|
+#| def rotl(v, c): return ((v << c) & 0xffffffff) | (v >> (32 - c))
+#| def qr(s, a, b, c, d):
+#|     s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = rotl(s[d] ^ s[a], 16)
+#|     s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = rotl(s[b] ^ s[c], 12)
+#|     s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = rotl(s[d] ^ s[a], 8)
+#|     s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = rotl(s[b] ^ s[c], 7)
+#| def rounds(s):
 #|     for _ in range(10):
 #|         qr(s, 0, 4, 8, 12); qr(s, 1, 5, 9, 13); qr(s, 2, 6, 10, 14); qr(s, 3, 7, 11, 15)
 #|         qr(s, 0, 5, 10, 15); qr(s, 1, 6, 11, 12); qr(s, 2, 7, 8, 13); qr(s, 3, 4, 9, 14)
+#| CONST = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+#|
+#| def hchacha20(key, n16):
+#|     s = CONST + list(struct.unpack('<8I', key)) + list(struct.unpack('<4I', n16))
+#|     rounds(s)
 #|     return struct.pack('<8I', *(s[0:4] + s[12:16]))
-#| 
+#|
+#| def chacha_block(key, counter, n12):        # RFC 8439 §2.3
+#|     s0 = CONST + list(struct.unpack('<8I', key)) + [counter] + list(struct.unpack('<3I', n12))
+#|     s = list(s0); rounds(s)
+#|     return struct.pack('<16I', *[(a + b) & 0xffffffff for a, b in zip(s, s0)])
+#|
+#| def chacha20(key, n12, data, counter=1):
+#|     out = b''
+#|     for i in range(0, len(data), 64):
+#|         out += bytes(a ^ b for a, b in zip(data[i:i + 64], chacha_block(key, counter + i // 64, n12)))
+#|     return out
+#|
+#| def poly1305(key, msg):                     # RFC 8439 §2.5
+#|     r = int.from_bytes(key[:16], 'little') & 0x0ffffffc0ffffffc0ffffffc0fffffff
+#|     s = int.from_bytes(key[16:], 'little'); acc = 0; p = (1 << 130) - 5
+#|     for i in range(0, len(msg), 16):
+#|         n = int.from_bytes(msg[i:i + 16] + b'\x01', 'little')
+#|         acc = (acc + n) * r % p
+#|     return ((acc + s) & ((1 << 128) - 1)).to_bytes(16, 'little')
+#|
+#| def pad16(b): return b + bytes((16 - len(b) % 16) % 16)
+#|
+#| def aead_ref(key, n12, ad, plain):          # RFC 8439 §2.8
+#|     otk = chacha_block(key, 0, n12)[:32]
+#|     cipher = chacha20(key, n12, plain)
+#|     tag = poly1305(otk, pad16(ad) + pad16(cipher) + struct.pack('<QQ', len(ad), len(cipher)))
+#|     return cipher + tag
+#|
 #| def xchacha_seal(key, nonce, ad, plain):
-#|     a = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plain, ad, nonce, key)
-#|     b = ChaCha20Poly1305(hchacha20(key, nonce[:16])).encrypt(b'\0' * 4 + nonce[16:], plain, ad)
+#|     sub = hchacha20(key, nonce[:16]); n12 = b'\0' * 4 + nonce[16:]
+#|     a = ChaCha20Poly1305(sub).encrypt(n12, plain, ad)
+#|     b = aead_ref(sub, n12, ad, plain)
 #|     assert a == b and len(a) == 48
 #|     return a
-#| 
-#| def box(eph_sk, dh_pk, sign_pk, ns, e, k_e):
+#|
+#| def eph(k_e, ns, e, signer, gen):
+#|     return b2(b'kome/eph' + k_e + ns + u16(e) + signer + u48(gen))
+#|
+#| def box(k_e, ns, e, signer, gen, dh_pk, sign_pk):
+#|     eph_sk = eph(k_e, ns, e, signer, gen)
 #|     box_pk = x25519_pub(eph_sk)
 #|     wrap = b2(b'kome/wrap' + x25519(eph_sk, dh_pk) + box_pk + dh_pk + sign_pk + ns + u16(e))
 #|     nonce = b2(b'kome/nonce' + wrap + k_e)[:24]
-#|     return box_pk, wrap, nonce, xchacha_seal(wrap, nonce, ns + u16(e), k_e)
-#| 
+#|     return eph_sk, box_pk, wrap, nonce, xchacha_seal(wrap, nonce, ns + u16(e), k_e)
+#|
 #| def link(k_s, ns, s, k_prev):
 #|     lk = b2(b'kome/link' + k_s + ns + u16(s))
 #|     nonce = b2(b'kome/nonce' + lk + k_prev)[:24]
 #|     return lk, nonce, xchacha_seal(lk, nonce, ns + u16(s), k_prev)
-#| 
-#| def step(k): return b2(k + b'prev')
+#|
+#| # The chain step (DESIGN.md §6, AUDIT.md G5): k_e = f(k_{e+1}, "kome/prev"),
+#| # f = keyed BLAKE2b-256 with k_{e+1} as the key (RFC 7693 §2.10).
+#| def step(k): return hashlib.blake2b(b'kome/prev', key=k, digest_size=32).digest()
 #| def pat(n, mul, add): return bytes((i * mul + add) % 256 for i in range(n))
 #| def ns_of(w0, w1, w2, w3): return struct.pack('>4I', w0, w1, w2, w3)
-#| 
+#| def derive(k, frm, to):
+#|     for _ in range(frm - to): k = step(k)
+#|     return k
+#|
 #| top = bytes.fromhex('ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c')
 #| k = {6: top}
 #| for e in range(6, 0, -1): k[e - 1] = step(k[e])     # k6 .. k0 within one segment
 #| h = lambda s: s.hex()
+#| k0 = bytes(range(32))
+#| print('# chain <key at From> <From> <To> <key at To>')
+#| for key, frm, to in [(k0, 0, 0), (k0, 1, 0), (k0, 2, 0), (k0, 100, 0), (k0, 1000, 999), (k0, 1000, 500),
+#|                      (top, 65535, 65535), (top, 65535, 65534), (top, 65535, 0), (top, 40000, 12345),
+#|                      (top, 12345, 0), (bytes(32), 7, 0), (bytes(32), 65535, 32768)]:
+#|     print('chain', h(key), frm, to, h(derive(key, frm, to)))
 #| ns1 = ns_of(0x6B6F6D65, 1, 2, 3)
 #| members = [(pat(32, 13, 101), pat(32, 17, 5)), (pat(32, 31, 9), pat(32, 3, 200))]
-#| cases = [  # eph_sk, member index, ns, epoch, epoch key
-#|     (pat(32, 7, 3), 0, ns1, 5, k[5]),
-#|     (pat(32, 7, 3), 0, ns1, 6, k[6]),      # same eph_sk reused at epoch 6
-#|     (pat(32, 11, 77), 0, ns1, 6, k[6]),    # fresh eph_sk at epoch 6
-#|     (pat(32, 7, 3), 1, ns1, 0, k[0]),
-#|     (pat(32, 19, 250), 1, ns_of(1, 2, 3, 4), 65535, top),
-#|     (pat(32, 5, 0), 0, bytes(16), 0, bytes(32)),
+#| signer_a, signer_b = pat(32, 7, 3), pat(32, 11, 77)
+#| cases = [  # epoch key, ns, epoch, signer, gen, member index
+#|     (k[5], ns1, 5, signer_a, 1, 0),
+#|     (k[6], ns1, 6, signer_a, 1, 0),        # the same signer and gen at epoch 6
+#|     (k[6], ns1, 6, signer_a, 2, 0),        # the next gen at epoch 6
+#|     (k[6], ns1, 6, signer_b, 1, 0),        # another signer at epoch 6
+#|     (k[0], ns1, 0, signer_a, 0, 1),
+#|     (top, ns_of(1, 2, 3, 4), 65535, signer_b, 2**48 - 1, 1),
+#|     (pat(32, 5, 1), bytes(16), 0, bytes(32), 0, 0),
 #| ]
-#| print('# box <eph_sk> <member_dh_sk> <member_sign_pk> <ns> <e> <k_e> <box_pk> <member_dh_pk> <wrap_key> <nonce> <box>')
-#| for eph, m, ns, e, ke in cases:
+#| print('# box <k_e> <ns> <e> <signer> <gen> <member_dh_sk> <member_sign_pk> <eph_sk> <box_pk> <member_dh_pk> <wrap_key> <nonce> <box>')
+#| for ke, ns, e, signer, gen, m in cases:
 #|     dh_sk, sign_pk = members[m]
 #|     dh_pk = x25519_pub(dh_sk)
-#|     box_pk, wrap, nonce, bx = box(eph, dh_pk, sign_pk, ns, e, ke)
-#|     print('box', h(eph), h(dh_sk), h(sign_pk), h(ns), e, h(ke), h(box_pk), h(dh_pk), h(wrap), h(nonce), h(bx))
+#|     eph_sk, box_pk, wrap, nonce, bx = box(ke, ns, e, signer, gen, dh_pk, sign_pk)
+#|     print('box', h(ke), h(ns), e, h(signer), gen, h(dh_sk), h(sign_pk), h(eph_sk), h(box_pk), h(dh_pk), h(wrap), h(nonce), h(bx))
 #| print('# link <k_s> <ns> <s> <k_prev> <link_key> <nonce> <box>')
 #| for ks, ns, s, kp in [(k[6], ns1, 6, pat(32, 1, 0)), (top, ns1, 1, k[0]),
-#|                       (k[3], ns_of(1, 2, 3, 4), 4096, k[2]), (pat(32, 9, 9), ns1, 65535, bytes(32))]:
+#|                       (k[3], ns_of(1, 2, 3, 4), 4096, k[2]), (pat(32, 9, 9), ns1, 65535, pat(32, 1, 1))]:
 #|     lk, nonce, bx = link(ks, ns, s, kp)
 #|     print('link', h(ks), h(ns), s, h(kp), h(lk), h(nonce), h(bx))
 #
 # Chain vectors.
 chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 0 0 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
-chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1 0 2d86fbde7bdab10bee1715f787711b94aeb62d4472fb3348f43f3a8d021e9169
-chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 2 0 90491607490ee5a49ec97a66a5645d17026f3951f7b7bf677b133bad3409ca28
-chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 100 0 e28b754c01b152b68b09a03d008df923161de227785bc0c279637d4e1e5cc7ee
-chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1000 999 2d86fbde7bdab10bee1715f787711b94aeb62d4472fb3348f43f3a8d021e9169
-chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1000 500 1b342dcba5848220cb134acbe9a3560f8dcb95fab46bfcfe701264b542cc2008
+chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1 0 aa652eff5ada2f829aa6c375c6e3b49cac739244fc53d440681b0e9a0756f17c
+chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 2 0 fef5bb4d8823ce4bbaa4b712b596b69e055b3f99cbeab8f2fcda3adfa817db7b
+chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 100 0 6b0c38eb45818b2eec54a1c4e4f02400c8fb6d61fcecf3a099582cc1177ca7e0
+chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1000 999 aa652eff5ada2f829aa6c375c6e3b49cac739244fc53d440681b0e9a0756f17c
+chain 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 1000 500 f4047f1e8761125b20f19a9df9db4dd1ff67bc5d98787cfb32a0f0e80533887d
 chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 65535 65535 ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c
-chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 65535 65534 00f265cc76577fdbfa8dbbabf30c6e9f771c550e3b808b964664eb95217ff8ec
-chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 65535 0 b50dd78110ae261aa5bc07c03bd9acd137fe491fcee1d7a9b3f35cc411687b26
-chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 40000 12345 ad45a932992f40d7e5652bea16ca0e00169c91e7146e12e03df10eecc90735b4
-chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 12345 0 42f8cd5870834462ede68910145a7fbd844b7c439b6c97fb00d59a58737a82e8
-chain 0000000000000000000000000000000000000000000000000000000000000000 7 0 3591bb5c1ade346cc71757e2714e2cb88874416a7433515d39c24dc141877f8f
-chain 0000000000000000000000000000000000000000000000000000000000000000 65535 32768 19ecb01ba8a00b0ebd8cf7695cd54c195a24fb33af9a9259bdbe312c4ec1a0ff
+chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 65535 65534 1884f102d833cc62cc03b369f37e4a2932fd91fd787d8b759ab15eb7e43f7774
+chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 65535 0 93a6fab5d8d53d1bfb12e1ef85bc00e8b0986bec0aaa51af0caec8a0d9c3ae08
+chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 40000 12345 debd04c087ddd40415271f925fa2d5e2986cfe5679a8046a054d9519dfb583f2
+chain ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 12345 0 10b6b16d74a33bb9f1fce701b30be7cde02e43fd3f1c92d68976b45c3aa92deb
+chain 0000000000000000000000000000000000000000000000000000000000000000 7 0 b6344da59bbc668d4de5c02955f9fa6006d3283f9700f2c80680edfc552039e2
+chain 0000000000000000000000000000000000000000000000000000000000000000 65535 32768 8a416ffa8fdaf3f2e504cd135ec62428909610286c56e445ce88ff568fafbb85
 # Box vectors.
-box 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 6b6f6d65000000010000000200000003 5 00f265cc76577fdbfa8dbbabf30c6e9f771c550e3b808b964664eb95217ff8ec bb50ff9e82a574cfbf820e97f60fb9c143ec7415cf514f8cfd98eff59e059614 c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 8f6476fcd3afbc7af3176b27912a900b257e7c9005362d120534f73ea5358905 7f6887093a331440b5b3810bbc0c3a7401ec6b5d7713421d 3e196c64c43f2693b4e14af99e0c7cf8eaf2866da1ff53d0dbd88133d91b3895cc978e27d83e70f6d9d0f1fc5f66033f
-box 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 6b6f6d65000000010000000200000003 6 ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c bb50ff9e82a574cfbf820e97f60fb9c143ec7415cf514f8cfd98eff59e059614 c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 17306f37d8d4fa2fd14aa4f5dfee116630576073470958839c92badad769b4cc c6979a524cdb4cbeb7714ebba3d625f1967eb362462288de e54d3d052bd49aa891de168909bfebc52c013520e0c7c3c8ad56ca3bc4445dc2c58f036282bf86406cb1f2015f04ffee
-box 4d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 6b6f6d65000000010000000200000003 6 ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 721e01ca09533ffcb068c2ffc5c9449017ac8fdb45ba3f6f09769340132de85c c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 6ea5602ad4548cb4a1bf589945d0d587e62f7139967d0c26a47b15da95a9f596 822fd143d69c208e7853183d0ba04f1e63e685bae1dafdf5 11a7db9aef15daab5882753928ba79c513d511d32e84ff50a03ab56850f3fcd7ba447e5f1de88f5b995f394d20b04260
-box 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabca c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225 6b6f6d65000000010000000200000003 0 a92ee9e6c56304c16b865bf765ec5db5e47143a70f95aa6f328c10283a26b4af bb50ff9e82a574cfbf820e97f60fb9c143ec7415cf514f8cfd98eff59e059614 3e6a55082eec93db3f9437f3088fde906c2d90ff35732970fba9778e79504e1c 1ed45b3780d42d951d1e7d27b36fe1aeff7d0a9fd14d6e53c90e6e3af9f83335 244e863b23c404bf7bc49dbd979ee5026e2f0273229f8f49 5e50de5928644bbae66c285bb7163ae8ac2d946037418b77424cb1639dae880be2bdcfe37075687392203427b77665e8
-box fa0d203346596c7f92a5b8cbdef104172a3d506376899cafc2d5e8fb0e213447 0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabca c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225 00000001000000020000000300000004 65535 ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 1ec32f9edded0e82a636c8b10567233d3404039ac9b596b675bac69886e6d46e 3e6a55082eec93db3f9437f3088fde906c2d90ff35732970fba9778e79504e1c 1493795bb1de7d402b09b3bbf6fb963a311a24248278631eabc6b268b32c5af0 109d4775693f61ad861bcd00333e70824fb94d91b430999c 9a40682bbfde1cc1539b77817b80bb73c2763a4b78d1fa9ebc5502c040a4c5a40ea01a9cbdec0433242e2511a09f2793
-box 00050a0f14191e23282d32373c41464b50555a5f64696e73787d82878c91969b 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 00000000000000000000000000000000 0 0000000000000000000000000000000000000000000000000000000000000000 90278e5c8338024a7a00a3c88e6122802e0be2ec71ee2473b35acebd7087285c c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 3ca7d202638cf29aa06284286a5bf912830fd00996ead7dbbb1ade1a0dadad45 764b4352a815df0f2ec77d80b6e6caabcb40a095f0c2de25 24c81876238f7624ea2f6189c7686059ae21cac9e0667cd619945c6e2f1e4fb9d7a90022c5e31a57d669a3d147659dc1
+box 1884f102d833cc62cc03b369f37e4a2932fd91fd787d8b759ab15eb7e43f7774 6b6f6d65000000010000000200000003 5 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 1 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 90281e73ddb10aadbbd4e8da7310a92c3c047b0bb27e9ea758bc29e4ee7ac4fb 3496d07dc0868253cd686f6df890c0349365f9a20c1da498d87e1d8503e7195e c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 6c05b4703cb23368dd43ac2f4dacfb19a59227e5fa6e701d0b3b07f9daa451a6 91e5d9da1a46b4bd1657be89d1a3b92b895a687da3633fc0 91081dd1a863c0312022680f2b09d12cc1d3a0a2e3df9270a94da2415b9566243bea70d6bb10c997a5d0b2c89220606e
+box ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 6 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 1 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 dc777c8aeef092ea182ca156c33b95349a11dd8a90c583d7f2562557c80b2b0a deeb82150fc69548122123e5e65b4a257a771f3f3c546aa5e41cf4b88c8a9d27 c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 01b1a056ad5a9a130aa7d68fab4924710191364e1045272123d8a249439bf307 2deb43a0b7d42dac8d51cab12cf01b2af8c1c2391ac40351 e01b6cf7a0a050edf55ee77aa4bfd77009954ae6265ad2820b83506be540cc1463083255ec9491c0f9d68569d1c82b5d
+box ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 6 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 2 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 bdbf8a3594b83132673187af8dd168cc2f765657952f5911e3d876e7fe9ef951 9451b48657597fafd5e338b1fbd75291c50759d623988e55de4a0907b3396470 c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 76b72fbd253c8be542a4b18e044b64eeb9443da5196a5847bc9ccb7dba59fdbf 590442e40f384e543bd8e74f1e9854f4319b7433d0aafbd3 9d8e4a3be2a3b4b22aac1a12f56bd3c5e4f644fcb38d1892177940216ae7942de3f8b4743b43959551733aa63d9c7ad3
+box ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 6 4d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2 1 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 83216a6dcbbce0a62a8226245ab6589bcabaf1628d41c9656ec058e87dc75187 ae619a5695a940832deb092e52edcabd9828d3a20f40db90fc405449832d503a c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c 5706e4f5a5f0a8cf50207bf0d73176702ea223ce44c9f28862e03b8b09e6c5ee cbf548886bfd3707cdfd19bb9fddbcdc483b57ef981dcc6f a10a8399959506e0a52af92341276f9023648c6f87dc0590ad963de72f888c95479484e35c6fa2da3e7c068b179d3a7c
+box 635426f75be852b631a5cfacca5f122038fe3603ad67ae801da79ff1c2c16096 6b6f6d65000000010000000200000003 0 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 0 0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabca c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225 bc8e0a47548d0ded91cc6e57bff283d31f9437734766c13ad4b5aa2e85f99a7d 9d2d57b9b4e2ce0fd0e15531e1e1961cc6ef7839dc4560837ccdcaa9bfd2925c 3e6a55082eec93db3f9437f3088fde906c2d90ff35732970fba9778e79504e1c b414f8960cb80dd93a6079fb3e5bc4f9bd47b7f36b0e545e189a81e03d4d850e d480150992aba22aa249797edff4bc5c24459bcac7907013 2b14ee5819a5b74c61209c0d5db6423e1da382feed8bb19c7aa4cb05d058dfd5f2211c899a0a4324b0c83f33afb6bdd3
+box ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 00000001000000020000000300000004 65535 4d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2 281474976710655 0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabca c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225 dce1a59ea3ed573b40cb45bcafc11d686fe00c2c4d84efa22002313ca86e016b 443aa1b698940100ce1151f47ec15ebbe6cd37f3c54fd3684657f4b3ef8f346b 3e6a55082eec93db3f9437f3088fde906c2d90ff35732970fba9778e79504e1c a4efbb141529783b37e3b66a008734ddcb71b3aa95753b22c8ffa51d18411f40 5e2f5d3c837c618633af89f72532ab805e10a10b7dfae0bb 4de8d17b3c4349a0e050bf2d31527d37c3e6015eed906cd7d12ef64bd831466f16475791da9cb76c9135e0c300a774b3
+box 01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979c 00000000000000000000000000000000 0 0000000000000000000000000000000000000000000000000000000000000000 0 65727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf8 05162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f20314 660449a2de40b0ecde8acf99b348c7f3db4a022becd00e825522f2d7a2e8355b 429454ec1a02cc1f14737105e8309d83e511e99634b7369f1877dc6e81c6c55a c5024bdf030cc94500a3804b716928276ba87368fdef2b4da2990dd197d1416c b0e2f8c686ffb3c2c179bf2e0e0e41ee95bac1c46862a235ce33c5bf66dc3782 03ee507468b4a2c184596b22cd4a134fa17331b4d6d26b10 ea11ffd1cc38e5689b9a8a200e72be894828faccc17a86e7cb7e3cb8662842d88f22c8a69f70e7c4cc4f679e84bab167
 # Link vectors.
 link ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 6 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 93c79a203f060b8bf05f13d18de21d54c050952825d4807e20d6f3a25a481dfa a04a70dc4ef6b1bbf479dde99be804f77079148cef28736c 8e2624995613e3171f32011d40f6b8bc7560973e2f4c2511f9244d4ac9ab381da16128950b529c6173a376aae3f6d60a
-link ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 1 a92ee9e6c56304c16b865bf765ec5db5e47143a70f95aa6f328c10283a26b4af fce6d5b8c22a528a38b0d3bf04726ae7683b5bbb4f233621270c3762012ec3f1 8e66bb200d8e7e10a86ed95ddf2e98d9234177ebd9fefb47 d297490926420e081856093face7647870768ea0345904703c643b9ba2742d7f44bc94c746ecb80c5e3693d89eff8efc
-link 10870be3a8b1adaa1cdf3db65a5c0df401eb462019a76b20669f1136e05bc363 00000001000000020000000300000004 4096 d345a6d8dd44c7ec5589623c40cf831301e2d4382da8eb3c66834464c686aac0 99a09f034253b8dd81da14d461dfcf55dc068b5558592917f18c996f25a65522 e6a087db1384b41fd4bf73d863d301c48dffa78a3c9f487e c0cb19aa9203dd702bae2f495f1208145c522f590be6ef98457dd3e9df3ac13aaa97e7161cffb9f8457575b3b646360d
-link 09121b242d363f48515a636c757e879099a2abb4bdc6cfd8e1eaf3fc050e1720 6b6f6d65000000010000000200000003 65535 0000000000000000000000000000000000000000000000000000000000000000 d52da8e40af118a4172f0500b4023e7da96dc6206fa50314fb33cb36650dbda8 929d7144f9564ee6e48c8a6d02da1e20201569fe713cf95a ee168f3c9656058f727c607b1a2134d7dababdab42e78b573d3fa6e0a4bd16c3d06b0c44b1cf9f017dc77c3c2015dd94
+link ba7fa1f528a3ae574e52dbbc4c8fd147b24842609ea89437adca6c7541f9c24c 6b6f6d65000000010000000200000003 1 635426f75be852b631a5cfacca5f122038fe3603ad67ae801da79ff1c2c16096 fce6d5b8c22a528a38b0d3bf04726ae7683b5bbb4f233621270c3762012ec3f1 0cbf8f52dd53cb9418cd91a3290607eca42bf355cb69d5ec b0ef6d228d7682c6fd5ee7f2b81603277c713560861a02750b6b86aa40b051e87aaa2c50821d5364e9cd7b8fe76189b1
+link a2f018c23c345961d1543e3ac6a806054a007058aa7d4db64981ea368506708b 00000001000000020000000300000004 4096 9b740263f1b63b5f6ee0c5af4d68fc5cc5f99bf7b19e1adae8259823e3576330 04710c72dbfbf6d4d08cb542132ea8c5bc9b109e1eea33738fe609c54e9d5933 1d739247c5a17c5132056ebb262cb2d9a3c0820f398cd493 2a20f69cab8e7b1582deb546dddd144bc15aecc779bca05beca11e6610574b4e59be5cd2f80234f7c1799ec85288c4bd
+link 09121b242d363f48515a636c757e879099a2abb4bdc6cfd8e1eaf3fc050e1720 6b6f6d65000000010000000200000003 65535 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 d52da8e40af118a4172f0500b4023e7da96dc6206fa50314fb33cb36650dbda8 1741e3adfd12031bfd35e1350d4461507aec504c3fdc2b80 2b6f32697727ce4baad17c6977ddd35211521f1b6d7df0b16353edb8bfb6876f4aacce6366f456c18097c76f014a556e

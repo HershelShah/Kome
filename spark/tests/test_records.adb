@@ -26,6 +26,7 @@ pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Directories;
+with Ada.Assertions;
 with Kome;             use Kome;
 with Kome.Headers;     use Kome.Headers;
 with Kome.Keys;        use Kome.Keys;
@@ -1100,6 +1101,144 @@ begin
          Y.C.NS (3) := Y.C.NS (3) xor 1;
          St := V (Y, Root_SK);
          Check ("GRANT with ns not derived from (root_pk, salt): Malformed", St = Malformed);
+
+         --  H13 and A27: the 8 small-order points and the key of the
+         --  all-zero seed are refused as a GRANT subject (by bytes: the
+         --  founding key's signature is genuine), as a root_pk (even with
+         --  a matching ns and a zero block), and as a signer (Cert_OK,
+         --  with a genuine certificate from the founding key). Make_Grant
+         --  and Make_Cert refuse them by Pre.
+         declare
+            type Key_List is array (Positive range <>) of Pubkey;
+            Bad : constant Key_List :=
+              [Pubkey (From_Hex ("0100000000000000000000000000000000000000000000000000000000000000")),
+               Pubkey (From_Hex ("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")),
+               Pubkey (From_Hex ("0000000000000000000000000000000000000000000000000000000000000000")),
+               Pubkey (From_Hex ("0000000000000000000000000000000000000000000000000000000000000080")),
+               Pubkey (From_Hex ("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05")),
+               Pubkey (From_Hex ("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85")),
+               Pubkey (From_Hex ("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")),
+               Pubkey (From_Hex ("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa")),
+               Kome.Crypto.Zero_Seed_Public];
+            Ok_Subject, Ok_Root, Ok_Signer, Ok_Pre, Ok_Roster : Boolean := True;
+            Forge : constant Sig := [0 => 1, others => 0];
+            Cert_Sink : Sig := Zero_Sig with Volatile;
+         begin
+            Check ("Sign_Key_OK: the real keys are usable, the bad list is not",
+                   Sign_Key_OK (Root_PK) and then Sign_Key_OK (Other_PK)
+                   and then Sign_Key_OK (Author_PK)
+                   and then (for all K of Bad => not Sign_Key_OK (K))
+                   and then Kome.Crypto.Derive_Public ([others => 0]) = Bad (9));
+            for K of Bad loop
+               --  Subject: a genuine founding-signed GRANT.
+               Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
+               Y.C.Subject := K;
+               St := V (Y, Root_SK);
+               if St /= Malformed or else Well_Formed (Y)
+                 or else not Kome.Crypto.Verify (Y.Signature, Root_PK, Hash (Y.C))
+               then
+                  Ok_Subject := False;
+               end if;
+               --  Root_pk = signer = K with a zero block and a matching ns.
+               --  No signature is possible, but Well_Formed refuses by
+               --  bytes before the signature.
+               Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
+               Y.C.Root_PK := K;
+               Y.C.Signer := K;
+               Y.C.NS := Collection_Id (K, Salt_A);
+               Y.Signature := Forge;
+               if Well_Formed (Y) or else Cert_OK (K, Y.C.NS, K, 0, Zero_Sig)
+                 or else Sign_Key_OK (K)
+               then
+                  Ok_Root := False;
+               end if;
+               Decode_Verified (Encode (Y), Back, St);
+               if St /= Malformed then
+                  Ok_Root := False;
+               end if;
+               --  Signer: a genuine certificate from the founding key.
+               declare
+                  Cert : constant Sig :=
+                    Kome.Crypto.Sign (Root_SK, Cert_Hash (NS_A, K, Cap_2));
+               begin
+                  Y := Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK);
+                  Y.C.Signer := K;
+                  Y.C.Cert_Sig := Cert;
+                  Y.Signature := Forge;
+                  if Cert_OK (Root_PK, NS_A, K, Cap_2, Cert) or else Well_Formed (Y)
+                    or else not Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (NS_A, K, Cap_2))
+                  then
+                     Ok_Signer := False;
+                  end if;
+                  Decode_Verified (Encode (Y), Back, St);
+                  if St /= Malformed then
+                     Ok_Signer := False;
+                  end if;
+               end;
+               --  ROSTER and REVOKE with root_pk = signer = K, zero block.
+               declare
+                  RR : Roster_Record :=
+                    Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
+                                 TTL_OK, 0, Fill (0, 0), Fill (0, 0));
+                  RV : Revoke_Record :=
+                    Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0, 1);
+               begin
+                  RR.C.Root_PK := K; RR.C.Signer := K; RR.C.NS := Collection_Id (K, Salt_A);
+                  RV.C.Root_PK := K; RV.C.Signer := K; RV.C.NS := Collection_Id (K, Salt_A);
+                  if Well_Formed (RR) or else Well_Formed (RV) then
+                     Ok_Roster := False;
+                  end if;
+               end;
+               --  The Pres of Make_Grant (subject) and Make_Cert (signer).
+               declare
+                  Hit : Natural := 0;
+               begin
+                  begin
+                     Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, K);
+                  exception
+                     when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
+                  end;
+                  begin
+                     Cert_Sink := Make_Cert (Root_SK, NS_A, K, Cap_2);
+                  exception
+                     when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
+                  end;
+                  if Hit /= 2 then
+                     Ok_Pre := False;
+                  end if;
+               end;
+            end loop;
+            Check ("GRANT to a small-order or zero-seed subject: Malformed (9 keys)",
+                   Ok_Subject);
+            Check ("small-order or zero-seed root_pk: not well-formed (GRANT)", Ok_Root);
+            Check ("small-order or zero-seed signer with a genuine certificate: not well-formed",
+                   Ok_Signer);
+            Check ("small-order or zero-seed root_pk: not well-formed (ROSTER, REVOKE)",
+                   Ok_Roster);
+            Check ("Make_Grant and Make_Cert refuse a small-order or zero-seed key (Pre)",
+                   Ok_Pre);
+            --  A27: box_pk = X25519_Public (0^32) is a good DH key by E5,
+            --  but Well_Formed refuses it; Box_A is accepted.
+            declare
+               RR : Roster_Record :=
+                 Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
+                              TTL_OK, 0, Fill (0, 0), Fill (0, 0));
+               RB : Roster_Record;
+               S2 : Status;
+            begin
+               Sign (RR, Root_SK);
+               Decode_Verified (Encode (RR), RB, S2);
+               Check ("ROSTER with box_pk = Box_A: OK", S2 = OK and then Well_Formed (RR));
+               RR.C.Box_PK := Kome.Crypto.Zero_Secret_DH_Public;
+               Sign (RR, Root_SK);
+               Decode_Verified (Encode (RR), RB, S2);
+               Check ("ROSTER with box_pk = X25519_Public (0^32): Malformed",
+                      S2 = Malformed and then not Well_Formed (RR)
+                      and then DH_Keys_OK (RR.C)
+                      and then Kome.Crypto.X25519_Public ([others => 0])
+                               = Kome.Crypto.Zero_Secret_DH_Public);
+            end;
+         end;
       end;
    end;
 

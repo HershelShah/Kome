@@ -2,9 +2,10 @@
 --  that CONVENTIONS.md allows. Each subprogram here is a direct call into
 --  monocypher 4.0.2 (third_party/monocypher/monocypher.h and, for Ed25519,
 --  monocypher-ed25519.h). The lengths are converted to size_t, and the
---  buffers are passed by address. The only Ada logic is the encoding check
---  of Verify. It calls the (SPARK, proved) expression functions of the
---  spec. Callers prove against the contracts of the spec. The test main
+--  buffers are passed by address. There is no other logic here: the
+--  encoding checks of Verify are an expression function of the spec
+--  (SPARK, proved), and this body completes only Raw_Ed25519_Check, the C
+--  call. Callers prove against the contracts of the spec. The test main
 --  executes these contracts on monocypher's output under -gnata.
 --
 --  The body passes empty buffers as NULL with size 0. monocypher's manual
@@ -27,6 +28,12 @@ package body Kome.Crypto with SPARK_Mode => Off is
      (Hash : System.Address; Hash_Size : size_t;
       Msg  : System.Address; Msg_Size  : size_t)
      with Import, Convention => C, External_Name => "crypto_blake2b";
+
+   procedure C_Blake2b_Keyed
+     (Hash : System.Address; Hash_Size : size_t;
+      Key  : System.Address; Key_Size  : size_t;
+      Msg  : System.Address; Msg_Size  : size_t)
+     with Import, Convention => C, External_Name => "crypto_blake2b_keyed";
 
    procedure C_Blake2b_Init (Ctx : System.Address; Hash_Size : size_t)
      with Import, Convention => C, External_Name => "crypto_blake2b_init";
@@ -135,6 +142,20 @@ package body Kome.Crypto with SPARK_Mode => Off is
       C_Blake2b (Digest'Address, Hash_Len, Addr (Data), Len (Data));
    end Blake2b_256;
 
+   function Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array) return Hash256 is
+      Result : Hash256 := [others => 0];
+   begin
+      C_Blake2b_Keyed (Result'Address, Hash_Len, Key'Address, Hash_Len,
+                       Addr (Data), Len (Data));
+      return Result;
+   end Blake2b_256_Keyed;
+
+   procedure Blake2b_256_Keyed (Key : Mac_Key; Data : Byte_Array; Digest : out Hash256) is
+   begin
+      C_Blake2b_Keyed (Digest'Address, Hash_Len, Key'Address, Hash_Len,
+                       Addr (Data), Len (Data));
+   end Blake2b_256_Keyed;
+
    --  An axiom (see the spec): there is nothing to execute. Under
    --  -gnata, the Pre and the Post are evaluated. This checks the axiom on
    --  the caller's data.
@@ -203,16 +224,13 @@ package body Kome.Crypto with SPARK_Mode => Off is
       return Result;
    end Sign;
 
-   --  Strict verification (spec header): first the encoding checks, then
-   --  monocypher. S_Below_L repeats the check that crypto_ed25519_check
-   --  enforces, so the first conjunct of the Post does not depend on C
-   --  alone.
-   function Verify (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean is
-     (S_Below_L (Signature)
-      and then Is_Canonical_Point (Signature (0 .. 31))
-      and then Is_Canonical_Point (PK)
-      and then C_Ed25519_Check
-                 (Signature'Address, PK'Address, Addr (Msg), Len (Msg)) = 0);
+   --  The C call alone (spec, private part). Verify is an expression
+   --  function in the spec: the encoding checks (S < L, canonical R and
+   --  PK, PK not small-order) are SPARK, and only this conjunct is C.
+   function Raw_Ed25519_Check
+     (Signature : Sig; PK : Pubkey; Msg : Byte_Array) return Boolean
+   is
+     (C_Ed25519_Check (Signature'Address, PK'Address, Addr (Msg), Len (Msg)) = 0);
 
    ---------------------------------------------------------------------------
    --  X25519

@@ -45,6 +45,16 @@ are different from the copies in the tarball only in the first line
 ("__git__" in place of "4.0.2"). This is the same release-script
 substitution as in monocypher.c. So all four files are the 4.0.2 release.
 
+Bound symbols (spark/src/kome-crypto.adb imports exactly these):
+  monocypher.c:
+    crypto_blake2b, crypto_blake2b_keyed (hash_size = key_size = 32; the
+    PRF of the epoch chain step and the bundle key, AUDIT.md G5),
+    crypto_blake2b_init, crypto_blake2b_update, crypto_blake2b_final,
+    crypto_x25519_public_key, crypto_x25519,
+    crypto_aead_lock, crypto_aead_unlock, crypto_wipe.
+  monocypher-ed25519.c:
+    crypto_ed25519_key_pair, crypto_ed25519_sign, crypto_ed25519_check.
+
 Why monocypher-ed25519 (DESIGN.md §1.2 D4, §2, A1): Kome signs with RFC 8032
 Ed25519, and uses SHA-512 only inside the signature. Core monocypher's
 crypto_eddsa_* functions are EdDSA with BLAKE2b-512. This is not
