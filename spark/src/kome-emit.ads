@@ -5,8 +5,9 @@
 --    floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))
 --                    -- for DEL: max over all fields and deleted_at
 --    floor.t      := max(floor.t, mark)
---                    -- mark: the store's expire mark, the largest t of a
---                    -- DEL that this store expired (AUDIT.md H28). An
+--                    -- mark: the store's expire mark, the largest
+--                    -- horizon the store applied, at or above the t of
+--                    -- every DEL that it expired (AUDIT.md H28). An
 --                    -- absent floor has t = 0, so the floor term always
 --                    -- exists, and a write is above the mark whenever the
 --                    -- mark is below the writer's ceiling.
@@ -353,7 +354,8 @@ package Kome.Emit with SPARK_Mode is
    --  record by Self has seq > Seq_Self (the caller shows the
    --  CLONE_SUSPECTED flag next to the status, DESIGN.md §5, §10.6).
    --  Mark is the store's expire mark (Kome.Store.Expire_Mark, H28): the
-   --  largest t of a DEL that this store expired, 0 if none. Del_TTL is
+   --  largest horizon the store applied, at or above the t of every DEL
+   --  that this store expired, 0 if none. Del_TTL is
    --  del_ttl_eff of the state (Kome.Views.Del_TTL_Eff), which only
    --  Born_Expired reads. Clamped and Born_Expired are False on a refusal.
    --  The Post gives each order fact on the prefix

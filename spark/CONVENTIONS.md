@@ -109,10 +109,10 @@ a bug in one of the two.
   inside "for all" frequently does not prove.
 - Code that touches a file or a clock declares it in `Global`/`Depends`.
   `Open_From_Log` is `Global => null`. The log is append-only: DESIGN.md
-  §10.10 (a) rewrites no byte of it. Until `Kome.Store` moves `data_cap`
-  out of the log (the known gap in `docs/design/IMPLEMENTATION_PLAN.md`),
-  the HEADER capacity rewrite on a larger reopen is the one write that is
-  not an append, and the storage binding owns that write, not the store.
+  §10.10 (a) rewrites no byte of it. The data capacity is a parameter of
+  each open, and the HEADER keeps the `data_cap` of the open that wrote
+  it, so the only writes are appends at `Log_Length` and the rename of
+  `Compact`.
 
 ## Proof hygiene
 

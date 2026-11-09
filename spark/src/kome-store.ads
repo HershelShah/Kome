@@ -30,13 +30,13 @@
 --
 --  The HEADER is the first entry, and the log has exactly one HEADER. Its
 --  ns is BLAKE2b-256 (root_pk ‖ salt)[0:16], which fixes the founding key.
---  Its capacities are those of the store's last open (see
---  Capacities below). A frame is tag ‖ content ‖ sig, exactly as
+--  Its data_cap is the data capacity of the open that wrote it, and its
+--  slice is a check (see Capacities below). A frame is tag ‖ content ‖ sig, exactly as
 --  Kome.Records encodes it. The horizon u48 2**48 - 1 encodes "no
 --  horizon" (a lowered horizon below 0). A real horizon is
 --  min (now, maxceil) - del_ttl_eff <= 2**48 - 1 - Del_TTL_Min, so this
---  code is never a real horizon. (DESIGN.md §7 does not specify this
---  encoding.)
+--  code is never a real horizon. (DESIGN.md §7 states this encoding;
+--  the EXPIRE_NONE op of AUDIT.md H24 was declined.)
 --
 --  The model of the log is a bounded byte buffer. The model writes only at
 --  the end of the buffer, so an OS file can replace it. The binding

@@ -42,7 +42,7 @@ version order.
 | D6 | `wrap_key` hashes the DH output with `box_pk`, the two member keys, `ns` and `epoch`. The box nonce is synthetic, `BLAKE2b(wrap_key ‖ k_e)`. The member calculates it again and checks it. Bundle nonces are also synthetic. The chain step and the bundle key are keyed BLAKE2b, one PRF under one key (§6, T14). |
 | D7 | The accumulator is little-endian and recorded exactly. The tags are bytes (§8). |
 | D8 | The write path selects `(t, seq)` without `h`, and then it calculates the hash. The result does not depend on `h`. `seq_self` is per collection (§5). |
-| D9 | Kome persists only `F`. The log is a `HEADER` (`ns`, `root_pk`, `salt`, the data capacity, the slice as a check) and a journal of `APPLY`, `APPLY_EXPIRED`, `EXPIRE` and `EXPIRE_NONE` entries. The store logs `EXPIRE` only when it removes a record or lowers the horizon. Compaction writes authorization records first, and the store runs it on its own when the entry count passes `2·|F| + c`. Replay gives the same frontier as a set (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
+| D9 | Kome persists only `F`. The log is a `HEADER` (`ns`, `root_pk`, `salt`, the data capacity of the open that wrote it, the slice as a check) and a journal of `APPLY`, `APPLY_EXPIRED` and `EXPIRE` entries. The store logs `EXPIRE` only when it removes a record or lowers the horizon. Compaction writes authorization records first, and the binding runs it whenever `Compact_Due` holds (more than `2·|F| + 64` entries). Replay gives the same frontier as a set (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
 | D10 | Expiry is an operation on the lattice state at `horizon = min(now_local, maxceil) − del_ttl_eff`. `del_ttl_eff` is the largest `del_ttl` of the rosters that are not root-voided (decode refuses a value outside `[Del_TTL_Min, Del_TTL_Max]`, §2 rule 3). A roster leaves `F` only under a roster of its signer with a `del_ttl` at least equal to its own, so `del_ttl_eff` never falls except when a root is root-voided: no root, stolen or honest, can make tombstone life shorter by domination (§3, §7). |
 | D11 | The order of checks is admission, duplicate, domination, room. A dominated record never needs room. No refusal changes anything (§7). |
 | D12 | `Value_Max` = 40 960, so every frame fits in one 48 KiB message (§2, §8). |
@@ -53,7 +53,7 @@ version order.
 | E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. If a record that `F` can hold does not fit the log, the store refuses it with `LOG_FULL`, and the binding compacts and retries. The store never drops a key silently (§7). |
 | E3 | There is one hash chain per collection, in *segments*. Only the founding key opens a segment (on root-void, or when the chain reaches the top of a segment). Each roster carries links that let a member walk back across segments (§6). |
 | E4 | `from_t` gives protection only against a lost key, not against a key that a thief uses. For a stolen key, revoke from 0 (§6). |
-| E5 | Keys are canonical at decode: `box_pk`/`dh_pk` are reduced, not low-order and not the all-zero encoding, every Ed25519 key (`signer`, `subject`, `author`, `root_pk`, member `sign_pk`) is canonical and not small-order, `del_ttl` is in range, and the cert block is zero exactly for the founding key. Each record has one encoding (§2). That every listed member can open its box is not a decode check: `Kome.Roster.Build` makes it true by construction, because it derives `box_pk` from the secret that sealed the boxes (§6). |
+| E5 | Keys are checked at decode: `box_pk`/`dh_pk` are reduced, not low-order and not the all-zero encoding, and `box_pk` is not `X25519_Public(0^32)`; `root_pk`, `signer` and a `GRANT`'s `subject` are not small-order and not the key of the all-zero seed (`Sign_Key_OK`); the signature and certificate checks make `signer`, `root_pk` and a data record's `author` canonical and not small-order; `del_ttl` is in range, and the cert block is zero exactly for the founding key. A `REVOKE`'s `sign_pk` and a member's `sign_pk` have no key check of their own at decode. Each record has one encoding (§2). That every listed member can open its box is not a decode check: `Kome.Roster.Build` makes it true by construction, because it derives `box_pk` from the secret that sealed the boxes (§6). |
 | E6 | `root_pk` must be equal to the store's founding key. The effective certificate cap is the largest cap ever certified (§6). |
 | E7 | Admission does not refuse the records of a revoked key. Instead, the design bounds a revoked key's reach with the write cap (`t ≤ wcap`, §4), states assumption A7 (no replica receives, from any source, a record that a revoked subject signed after its revocation), and makes the H8 bounds depend on A7. A refusal would give a stolen root a permanent primitive for mass deletion, and it would give up T3 (§6, §9). |
 | E8 | The engine has no per-author data quota. A quota refusal is a capacity refusal, and under a flood the replicas would not agree about it. It stays an application policy (§10.5). |
@@ -87,16 +87,30 @@ is valid if and only if `A` and `R` are canonical point encodings (each
 decodes to a point, with the `y` coordinate below `p`), `A` is not one of
 the eight small-order encodings, `S < L`, and `[8][S]B = [8]R + [8][k]A`
 with `k = SHA-512(R ‖ A ‖ m) mod L`. This is the cofactored equation.
-`Kome.Crypto.Verify` is this predicate as a SPARK expression (the canonical
-checks and the small-order check are byte comparisons; the group equation
-is a private `Raw_Ed25519_Check` over monocypher), and nothing else. The
+`Kome.Crypto.Verify` is this predicate as a SPARK expression, and nothing
+else: `S_Below_L(sig) ∧ Is_Canonical_Point(R) ∧ Is_Canonical_Point(A) ∧
+¬Is_Small_Order_Point(A) ∧ Raw_Ed25519_Check(sig, A, m)`. The first four
+are byte comparisons that gnatprove proves. The group equation is the
+private `Raw_Ed25519_Check` over monocypher, which has no Post. It is
+assumed (A1), and so are two binding axioms of the same kind,
+`Kome.Crypto.Lemma_Blake2b_Congruent` and
+`Kome.Crypto.Lemma_X25519_Congruent` (BLAKE2b and X25519 read only the
+bytes of their input); a test under `-gnata` checks each one. The
 Wycheproof and torsion vectors in `spark/vectors/crypto.txt` are normative:
 an implementation that accepts or refuses one of them differently does not
-interoperate. A key that a `GRANT` names, a signer, `root_pk` and the
-author of a data record are each subject to the same canonical and
-small-order checks at decode. (The all-zero key is an order-4 point: a
-`GRANT` to it would let anybody who can deliver frames forge data under
-it.) Kome signs the bare 32-byte `h`, so a device key serves Kome and
+interoperate. At decode, `root_pk`, the signer of an authorization record
+and the subject of a `GRANT` must pass `Kome.Records.Sign_Key_OK`: not one
+of the eight small-order encodings (`Is_Small_Order_Point`) and not
+`Derive_Public(0^32)`, the public key of the all-zero seed. The signer,
+`root_pk` and the author of a data record are also canonical and not
+small-order, because a signature or a certificate verifies under each of
+them. (The all-zero key is an order-4 point: a `GRANT` to it would let
+anybody who can deliver frames forge data under it.) The constructors
+require the same of their inputs: `Make_Roster` and `Make_Revoke` require
+`Sign_Key_OK` of `root_pk` and the signer, `Make_Grant` also of the
+subject, `Make_Cert` and `Cert_OK` of the signer, `Key_Pair` refuses the
+all-zero seed, and `Kome.Store.Open` requires `Sign_Key_OK` of the
+founding key. Kome signs the bare 32-byte `h`, so a device key serves Kome and
 nothing else: the key API generates each key from Kome's own seed, and it
 neither imports nor exports a signing key (§10.3, §10.6). A key that an
 application must import can only sign with Ed25519ph, a different
@@ -183,9 +197,13 @@ and only if all these conditions are true:
    property of how `Kome.Roster.Build` makes the roster, E5, not a decode
    check: no bytes of the frame can show it.)
 4. For `REVOKE`: `sign_pk ≠ root_pk` (nobody can revoke the founding key).
-   For `GRANT`, `REVOKE` and `ROSTER`: `subject`, `sign_pk`, `signer` and
-   `root_pk` are canonical Ed25519 encodings, not small-order and not
-   `Derive_Public(0^32)`, the public key of the all-zero seed.
+   For `GRANT`, `REVOKE` and `ROSTER`: `signer` and `root_pk`, and the
+   `subject` of a `GRANT`, are not small-order and not
+   `Derive_Public(0^32)`, the public key of the all-zero seed
+   (`Sign_Key_OK`). `signer` and `root_pk` are canonical by rule 5 and the
+   certificate check of rule 2. A `REVOKE`'s `sign_pk` has no other key
+   check: a key that is not canonical or is small-order signs no record
+   that verifies.
 5. The signature is valid, under the predicate above, under the signer
    (authorization kinds) or the author (data kinds).
 
@@ -499,7 +517,8 @@ status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit 
 
 1. *Choose* `(t_emit, seq_emit, status)` and the flags `CLONE_SUSPECTED`,
    `CLAMPED` and `BORN_EXPIRED` from the frontier, the target cell,
-   `now_ms`, the device key and `seq_self(ns)`. This step does not use `h`.
+   `now_ms`, the store's expire mark (`Expire_Mark`, §7), `del_ttl_eff`,
+   the device key and `seq_self(ns)`. This step does not use `h`.
    The target is built by `Put_Target(ns, ent, field)` or `Del_Target(ns,
    ent)`, which compute the field hash themselves; a caller cannot name a
    cell that the built record does not have, so the cell that *Choose*
@@ -509,10 +528,13 @@ status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit 
 
 `CLAMPED` means that the ceiling `min(maxceil, wcap)` held the write
 back: `t_emit` is below the clock, or not above the cell's floor (the
-expire mark included). The write was back-dated to the ceiling, and it
+expire mark included): `Is_Clamped` is `t_emit < now_ms ∨ t_emit ≤
+floor_t`. The write was back-dated to the ceiling, and it
 loses against any concurrent write at the ceiling by a higher key. The
 floor term always exists: a cell with no record has the zero version, so
-a write with `now_ms = 0` and no floor gets `t_emit = 1`. `BORN_EXPIRED` means that a `DEL` would be
+a write with `now_ms = 0` and no floor gets `t_emit = 1`. `BORN_EXPIRED`
+(`Is_Born_Expired`: a `DEL` with `t_emit + del_ttl_eff ≤ now_ms`) means
+that a `DEL` would be
 expired already at a replica whose horizon follows a fresh `maxceil` (a
 device that was offline for longer than `del_ttl_eff` under a stale
 ceiling). Such a `DEL` is applied at those replicas for its effect and not
@@ -557,7 +579,11 @@ and a root revokes the old key.
 | Root restored from backup | It issues a roster with an old or an equal `gen`. If its own held roster has a strictly greater `gen`, an epoch at least as high and a ceiling at least as high, the restored roster is dominated on arrival (status `DOMINATED`). If not (an equal `gen`, a current clock, or an older epoch), neither roster dominates, Kome holds both, `ROSTER_FORK` reports the pair, and `ROSTER_eff` is the roster at the newer epoch (then the greater `gen`, then `h`). `h` never evicts a roster of the same signer. After sync, the root issues a new roster above both. `maxceil` never decreases, and no `REVOKE` is lost | It converges in both cases; a stale roster never becomes effective while the newer one is held, and a removal (which raises the epoch) is never undone |
 
 `CLONE_SUSPECTED` is a flag that Kome reports next to the write's
-status. It is not a status: the write occurred.
+status. It is not a status: the write occurred. `Choose` raises it when a
+held record of this device has a `seq` above `seq_self(ns)`. A clone that
+writes at the owner's pace leaves a different trace in `F`: two records of
+this device with equal `seq` and different `h`. The view `Clone_Pair(F,
+self)` reports that, and the caller shows `CLONE_SUSPECTED` for either.
 
 This is the honest statement of the residual risk: **LWW cannot undo the
 effect of a wall clock that was ahead**. If a writer pushed a cell's floor
@@ -847,9 +873,12 @@ The only randomness is the segment tops, which the founding device draws
 in its ceremony (`Kome.Roster`, §10.3). SPARK code reads no RNG. The
 construction is deterministic, and known-answer vectors test it. Decode
 refuses low-order and non-reduced peer keys (§2), and the box code refuses
-them again. An all-zero `eph_sk`, seed or top is refused as an input
-(`X25519_Public(0^32)` and `Derive_Public(0^32)` are public knowledge, and
-a key derived from them protects nothing).
+them again. All-zero inputs are refused (`X25519_Public(0^32)` and
+`Derive_Public(0^32)` are public knowledge, and a key derived from them
+protects nothing): `Key_Pair` requires a seed that is not all zeros,
+`Box_Key` an epoch key that is not `Zero_Key`, and `Seal_Link` neither key
+`Zero_Key`; `eph_sk` is derived, not an input; an all-zero top is refused
+by `Kome.Roster` (§10.3).
 
 **Two gates on transport, none on records.** Kome admits a peer to a session
 for `ns` if and only if its Noise static key is the `dh_pk` of a member of
@@ -1016,20 +1045,27 @@ HEADER         op = 0 ‖ "kome/log" ‖ version:u8 ‖ ns[16] ‖ root_pk[32] �
 APPLY          op = 1 ‖ len:u32 ‖ frame        a record applied and held
 APPLY_EXPIRED  op = 2 ‖ len:u32 ‖ frame        a DEL applied for its effect and not held (below)
 EXPIRE         op = 3 ‖ horizon:u48            Frontier.Expire at this horizon, or a lowered horizon
-EXPIRE_NONE    op = 4                          the horizon lowered to "none"
 ```
 
 The log starts with exactly one `HEADER` (`version = 1`; 80 bytes). Its `ns`
 must be equal to `BLAKE2b-256(root_pk ‖ salt)[0:16]`. This fixes the
 founding key for all the store's operations. Its `slice` field is a check:
-the slice is the constant `Slice_Max` at every replica, and a `HEADER`
-with another value is refused. Its `data_cap` is the data capacity that
-wrote the log; the capacity in force is a parameter of the open, kept
-outside the log or appended as a `CAPS` entry, and a reopen at a smaller
-`data_cap` is allowed whenever the replay fits in it (§10.10 (a)). "No
-horizon" is an entry of its own (`EXPIRE_NONE`), not a reserved horizon
-value (H6). Kome persists nothing else. The registers are functions of `F`
-(§4), and refused or dominated records changed nothing.
+the binding opens every store with the constant `Slice_Max` (a binding
+duty; `Kome.Store.Open` does not require it), and replay refuses a
+`HEADER` whose `slice` is not the slice of the open with `NO_SPACE`. Its
+`data_cap` is the data capacity of the open that wrote the `HEADER`, and
+replay only checks that it is in range. The capacity in force is a
+parameter of each open, which the binding chooses, and a reopen at a
+larger or a smaller `data_cap` is allowed whenever the replay fits in it
+(§10.10 (a)). No byte of the log is rewritten in place: the only writes are
+appends at `Log_Length` and the rename of `Compact`. The horizon code
+`2^48 − 1` means "no horizon". A real horizon is at most `2^48 − 1 −
+Del_TTL_Min`, so the code is never a real horizon. It is a reserved value,
+which H6 forbids; an `EXPIRE_NONE` entry was considered and declined,
+because the code decodes to "no horizon", which is below every bound of
+the replay clamp (below), so an `EXPIRE` that reads as the code can only
+lower the horizon. Kome persists nothing else. The registers are functions
+of `F` (§4), and refused or dominated records changed nothing.
 
 **Deletion is not erasure.** A `DEL` frees the bytes of its entity in `F`,
 the index and the next compacted log. It does not erase them: the
@@ -1045,47 +1081,65 @@ the host's.
 **Compaction** writes a new log. The new log has the `HEADER`, then one
 `APPLY` per record of `F`, then one `EXPIRE(horizon)` if the store has a
 horizon. The `APPLY` entries put all authorization records first and then
-all data records (each part in index order). Compaction is a store duty,
-not only a caller's: after an append, when the entry count passes
-`2·|F| + c` (a small constant `c`), the store runs `Compact` itself. So
-the log holds at most `2·|F| + c` entries after every operation, which
-bounds the dominated bytes that a deleted value leaves behind and bounds
-the cost of the next open.
+all data records (each part in index order). Compaction is a store duty of
+the binding: `Put_Frame` never compacts on its own, and the binding calls
+`Compact` whenever `Compact_Due(S)` holds, that is, when the log has more
+than `2·|F| + Compact_Slack` entries (`Compact_Slack = 64`). A compacted
+log is never due (the Post of `Compact`). So, under this duty, the log
+holds at most `2·|F| + 64` entries before every operation, which bounds
+the dominated bytes that a deleted value leaves behind and bounds the cost
+of the next open.
 
 **Replay** (when a store opens) does these steps:
 
-1. It checks the `HEADER`.
-2. It takes the capacities of this open. A larger `data_cap` than the
-   logged one is always allowed, and a smaller one is allowed when the
-   replayed `F` fits in it (`NO_SPACE` otherwise, and nothing is written).
+1. It checks the `HEADER`: its op, magic and version, its `ns` against
+   `root_pk` and `salt`, its `data_cap` in range (`MALFORMED` otherwise),
+   and its `slice` against the slice of this open (`NO_SPACE` otherwise).
+2. It takes the capacities of this open. A larger or a smaller `data_cap`
+   than the logged one is allowed when the replayed `F` fits in it. An
+   `APPLY` that the data row of this open refuses gives `NO_SPACE`, and
+   nothing is written.
 3. It starts from the empty state with the logged founding key.
-4. It does the entries in order. An `EXPIRE(horizon)` is applied at
+4. It does the entries in order. An `APPLY` goes through `Put_Frame`,
+   which must hold the record as a new record or find it held already: a
+   duplicated `APPLY` replays as `OK` with no change, as the live
+   `Put_Frame` treats it. An `APPLY_EXPIRED` is applied for its effect. An
+   `EXPIRE(horizon)` is applied at
    `min(horizon, maxceil(F) − del_ttl_eff(F))` for the `F` replayed so far
    (`Horizon_At(F, U48'Last)`): every `EXPIRE` that the store wrote meets
-   this bound, because `maxceil` never falls and `del_ttl_eff ≥
-   Del_TTL_Min`, so a valid log replays as written, and a torn or corrupt
-   horizon (bytes that read as `2^48 − 16`, for example) cannot drop every
-   tombstone. T18 allows the lower horizon that the clamp can give.
+   this bound (the Post of `Expire` has `Horizon(S) ≤ Horizon_At(F'Old,
+   U48'Last)`, `maxceil` never falls and `del_ttl_eff ≥ Del_TTL_Min`), so
+   a valid log replays as written, and a torn or corrupt horizon (bytes
+   that read as `2^48 − 16`, for example) cannot drop every tombstone. T18
+   allows the lower horizon that the clamp can give. The clamp refuses
+   nothing: the logged bytes stay as they are.
 
-Replay verifies one signature per logged record, so an open costs
-`O(entries)` signature checks: with the compaction trigger above, that is
-`O(|F|)`, and never a multiple of it. `Open_From_Log` is strict: the
-whole log replays, or the open refuses. The binding owns the two cases
-that strictness alone would make permanent (REQUIREMENTS H8: one entry
-must not brick the store). A *torn tail* (power lost inside an append) is
-cut: `Open_From_Log` reports `Valid_Length`, the offset of the last
-complete entry, and the binding truncates the file there and opens again;
-the prefix replays, because the log is append-only and every
-entry-boundary prefix of a log that the store wrote is a log that the
-store wrote (T18-prefix). A *corrupt entry* in the middle (a flipped byte,
-a failed signature check) stops the replay at that entry: the binding
-opens the prefix before it, reports `DEGRADED`, and syncs again; the
-entries after the corrupt one are not skipped, because an `EXPIRE` or a
-`DEL` among them could have removed what the prefix still holds, and a
+Replay verifies one signature per logged `APPLY` or `APPLY_EXPIRED`, so an
+open costs `O(entries)` signature checks: under the compaction duty above,
+at most `2·|F| + 64`, and never a multiple of `|F|` beyond that.
+`Open_From_Log` is strict: an entry that does not parse or does not
+replay stops the open. It also reports `Valid_Length`, the length of the
+longest prefix of the input at an entry boundary that replays: on `OK`
+the whole input (`Valid_Length − 1 = Input'Last`); on `MALFORMED`, or on a
+`NO_SPACE` from an entry, the start of the refused entry; 0 when the
+`HEADER` is refused or the log does not fit. When `Valid_Length > 0`, the
+returned `(S, F)` is the replay of exactly that prefix, with that prefix as
+its log (`Replayed_Prefix`, proved: T18-prefix). The binding owns the two
+cases that strictness alone would make permanent (REQUIREMENTS H8: one
+entry must not brick the store). A *torn tail* (power lost inside an
+append) is a cut last entry, which replays as `MALFORMED`: the binding
+truncates the file to `Valid_Length` and opens again, or uses the
+returned prefix state as it is. A *corrupt entry* in the middle (a flipped
+byte, a failed signature check) stops the replay at that entry: the
+binding opens the prefix before it, reports `DEGRADED`, and syncs again;
+the entries after the corrupt one are not skipped, because an `EXPIRE` or
+a `DEL` among them could have removed what the prefix still holds, and a
 replica that holds more than it should is only stale. A *duplicated*
-entry cannot occur: the binding writes each append at the `Log_Length`
-from before the call (`pwrite` at that offset), so a retry after a write
-error overwrites the same bytes and never appends twice.
+`APPLY` replays as `OK` with no change (step 4), and the binding still
+writes each append at the `Log_Length` from before the call (`pwrite` at
+that offset; `Put_Frame` returns that offset as `Off` whether or not it
+appended), so a retry after a write error overwrites the same bytes and
+never appends twice.
 
 Each operation is a deterministic function of the held set. After
 compaction, Kome admits each authorization record and each data record. The
@@ -1127,7 +1181,8 @@ change, and no refusal changes anything:
      record (below, and §10.5).
    - An authorization record whose signer's slice is full and that frees
      nothing, or whose signer is new when all 16 slots are in use:
-     `AUTH_FULL`.
+     `AUTH_FULL`. An authorization record when the store's `Auth_Gen` is at
+     its bound `2^62` (below) also gets `AUTH_FULL`; no replica reaches it.
    - Not sufficient log bytes for the entry: `LOG_FULL`. The binding
      compacts and retries. Log bytes are a capacity class of their own,
      shared by every record, so a store whose log is too small for its
@@ -1176,7 +1231,8 @@ stolen root can cause this. It cannot touch any other signer's slice. When
 it is root-voided, all that its surplus admitted reads `void`. After that,
 byte-for-byte agreement comes back only if the owner re-founds the
 collection. The slice is the constant `Slice_Max` at every replica, so no
-two replicas disagree about where a slice ends.
+two replicas disagree about where a slice ends (a binding duty: the binding
+opens every store with `Slice_Max`).
 
 **Drop rule.** A record leaves `F` if and only if:
 
@@ -1200,8 +1256,9 @@ the user) cannot expire all tombstones at once and make
 expiry as well as writing: once wall time passes `maxceil` (the root
 devices stopped refreshing), every new `DEL` is emitted at `t = maxceil`,
 which is above the frozen horizon, so no tombstone expires until a fresh
-roster arrives. `Ceiling_Stale` (`now > maxceil`) and `Horizon_Frozen`
-are statuses that the store computes and the C ABI shows (§10.6). A
+roster arrives. `Ceiling_Stale` (`now > maxceil`, `Kome.Views`) and
+`Horizon_Frozen` (the same test, `Kome.Store`: `Expire(now)` is bounded by
+`maxceil`, not by `now`) are statuses that the C ABI shows (§10.6). A
 device with no real-time clock, or one whose clock it does not trust,
 calls `Expire(now := maxceil(F))`: it then expires exactly what the
 fastest honest replica has expired, and never more.
@@ -1221,9 +1278,11 @@ If `horizon` is above the store's horizon, `Expire` removes from `F`
 exactly the `DEL`s with `t ≤ horizon` and sets the store's horizon. If
 `horizon` is below it (a clock stepped back, or a higher `del_ttl_eff`),
 `Expire` only lowers the store's horizon. So fewer `DEL`s that arrive
-expire on arrival, and A4 does not become narrower. A `DEL` that `Expire`
-already removed stays removed. If it arrives again, Kome applies it and
-holds it until it expires again.
+expire on arrival, and A4 does not become narrower. In both cases the new
+horizon is at most `Horizon_At(F, U48'Last)` of the frontier it was
+computed on (the Post of `Expire`), so the replay clamp never lowers it on
+the same frontier. A `DEL` that `Expire` already removed stays removed. If
+it arrives again, Kome applies it and holds it until it expires again.
 
 Kome logs `EXPIRE(horizon)` if and only if the call removed a record or
 lowered the horizon. So periodic calls do not make the log larger. Kome
@@ -1232,13 +1291,29 @@ is then at most the live one, so the store only holds more records
 until its next `Expire`. The registers do not change, and when Kome removes
 records from a frontier, the result is a frontier.
 
-The store also keeps an **expire mark**: the largest `d.t` of any `DEL`
-that `Expire` removed or that an `APPLY_EXPIRED` applied. `Expire` only
-raises it, replay rebuilds it from the logged entries, and it is not part
-of `F`. The write path reads it: when `mark < maxceil`, `Choose` emits at
-`t ≥ mark + 1` (§5). Without the mark, a device whose clock was reset
-after it expired `d` would write the entity at a `t` below `d.t`, and
-every replica that still holds `d` would drop the user's write.
+The store also keeps an **expire mark** (`Expire_Mark`). `Open` sets it
+to 0. `Put_Frame` raises it to `max(mark, d.t)` when it applies an
+expired `DEL` `d` for its effect (an `APPLY_EXPIRED`). `Expire` raises it
+to `max(mark, horizon)` exactly when it raises the horizon. Nothing lowers
+it, and `Compact` keeps it. So the mark is the largest horizon that the
+store applied, which is at or above the `t` of every `DEL` that `Expire`
+removed, and at least the `t` of every `DEL` applied for its effect.
+Replay rebuilds it through the same steps from the logged `EXPIRE` and
+`APPLY_EXPIRED` entries, so a reopened mark is at most the live one (a
+raise that removed nothing is not logged), and a compacted log's
+`EXPIRE(horizon)` carries it. It is not part of `F`. The write path reads
+it: when `mark < maxceil`, `Choose` emits at `t ≥ mark + 1` (§5). Without
+the mark, a device whose clock was reset after it expired `d` would write
+the entity at a `t` below `d.t`, and every replica that still holds `d`
+would drop the user's write.
+
+The store also keeps the **authorization generation** (`Auth_Gen`, of
+type `Auth_Counter`, range 0 .. 2^62). `Open` sets it to 0. It goes up by
+one exactly when `Put_Frame` holds a new `ROSTER`, `REVOKE` or `GRANT`,
+also in replay, and `Expire` and `Compact` keep it. At `2^62`, `Put_Frame`
+refuses an authorization record with `AUTH_FULL`, so the counter never
+wraps. A session records it at `Admit` and evaluates the gate again when
+it has moved (§8). It is not part of `F`.
 
 After a session's authorization phase, and before its data phase, the
 transport calls `Expire(now)` if `del_ttl_eff` changed: a roster with a
@@ -1310,8 +1385,9 @@ the authorization part (each signer's rosters, `GRANT`s and `REVOKE`s,
 within its slice). Thus `|W| ≤ 8 192`. This bounds *storage*: the keys
 that can hold records. The devices that can sync are bounded by the gate,
 at most `Members_Max` = 64 per collection, the members of one roster (§6).
-The state is `F`, the index, the horizon and the expire mark; every
-per-session value lives in the session and is gone when it ends.
+The state is `F`, the index, the horizon, the expire mark and the
+authorization generation; every per-session value lives in the session and
+is gone when it ends.
 
 ## 8. Reconciliation and digest
 
@@ -1450,7 +1526,12 @@ peer's credential, if it came first). The snapshot is `Snapshot_Of(F)`,
 built in SPARK from the store: its keys are `Key_Of(H)` for each held
 header, in key order, and its frames come from the log, so the digest of
 the snapshot is the digest of `F` by construction, and no caller can
-present a snapshot that `F` does not have.
+present a snapshot whose keys `F` does not have. In SPARK the keys and the
+digest come from `F` (the Post of `Snapshot_Of` states `Range_Fp =
+Frontier_Digest(F)`), and the frames come from two frame tables that the
+binding fills from the log with `Read_Frame` (`Frame_Table`,
+`Add_Frame`); that entry `I` of a table is the frame of the `I`-th record
+is a binding duty.
 
 **Session (D14).** The two sides send `OPEN` after the Noise handshake. Then
 they exchange HELLOs as above. Then:
@@ -1494,7 +1575,8 @@ what the new value expires. The initiator is the Noise initiator.
   element.)
 - `RANGE` otherwise: at most 16 `RANGE`s that tile `[lo, hi)`. Each carries
   our exact count and fingerprint of its sub-range, and each holds strictly
-  fewer of our elements (balanced: `⌊n/16⌋` or `⌈n/16⌉`).
+  fewer of our elements (balanced: `⌊n/16⌋` or `⌈n/16⌉`; the balance is
+  tested, not proved).
 - `ELEMENTS`: deliver exactly the listed items that are not in our snapshot.
   Then, if `|window| ≤ 4`, send `HAVE` over `[lo, hi)` that carries exactly
   `window` minus the listed items (one empty `HAVE` if there are none). If
@@ -1513,10 +1595,16 @@ order, so reply groups arrive in request order, and a side accepts a
 reply only when it matches the head obligation; any other reply is
 refused and changes nothing. So a duplicated or forged reply cannot close
 another obligation, and `Complete` means that every obligation got exactly
-one full reply group. A fingerprint over a sub-range costs at most 64
-additions and one hash through the D15 prefix sums, never a pass over the
-slice, so the work of a session is `O(n log n)` for `n` held elements,
-whatever a peer asks.
+one full reply group. (`Complete` implies one full reply group for each
+obligation by induction over the per-call Posts of `Admit`, `Receive` and
+`Next_Phase`; that induction is tested, not proved.) A fingerprint over a
+sub-range costs at most 64 additions and one hash through the D15 prefix
+sums, never a hash over the whole range. Each accepted message costs one
+scan of the window (`O(n)`) and at most 17 such fingerprints, so a session
+of `m` accepted messages costs `O(m·n)` scans, and the budgets bound `m`.
+With balanced splits, `m` is `O(log n)` for each difference, and the
+fingerprint work is `O(n log n)` for `n` held elements; this bound rests on
+the balance and is tested, not proved.
 
 The session layer requires exactly-once, in-order delivery: Noise's nonce
 counter rejects a replayed or reordered message, and a rejected message
@@ -1580,6 +1668,11 @@ bundle = ns[16] ‖ nonce[24] ‖ XChaCha20-Poly1305(k_b, nonce, AD = ns ‖ u16
 k_b    = f(k_epoch, "kome/bundle" ‖ ns)           -- keyed BLAKE2b-256 under the epoch key (§6)
 nonce  = BLAKE2b-256("kome/bnonce" ‖ k_b ‖ pad(plaintext))[0:24]
 ```
+
+The SPARK code does not derive `k_b` or seal bundles yet: `Kome.Crypto`
+binds keyed BLAKE2b-256 (`Blake2b_256_Keyed`) and `Kome.Epochs.Step`
+uses it for the chain, but the bundle key, the padding and the bundle seal
+belong to the bundle layer of the transport (phase 9).
 
 The epoch is in the associated data only, never in the clear: the sealer
 fills it from its `ROSTER_eff.epoch`, and the opener from its own, which
@@ -1695,7 +1788,19 @@ T14.
   counts in the range, and `k = 1` for a `RANGE` and 0 for an `ELEMENTS`.
   The two sides then hold `F(F_A ∪ F_B)`. If loss occurs, no session
   completes, and convergence follows from fairness at the session level.
-  (This is the large Lean project.)
+  (This is the large Lean project.) `Kome.Reconcile` proves the per-call
+  facts: each reply strictly decreases the measure, the reply kinds and
+  exact plans, the obligation FIFO, the message size bounds, the budget
+  checks, the gate check under a new `Auth_Gen`, and the snapshot digest.
+  Its "Tested, not proved" list holds the rest: T7 itself; that `Decode`
+  accepts every `ELEMENTS`/`HAVE` that carries items, and the item and
+  frame bytes inside one; balanced splits and the `log₁₆` round bound; the
+  honest-session derivations of the budget numbers and of the sufficient
+  obligation capacity; that the heap sort of `Snapshot_Of` sorts (a final
+  scan checks its result, so its Post holds in every case); the
+  session-wide statements that every accepted message was accepted while
+  the gate held and that `Complete` gives one full reply group per
+  obligation; and the `O(n log n)` work bound (§8).
 - **T8 ✓ Chase.** If `floor.t < maxceil`, then `v_emit > floor`. Always,
   `v_emit.t ≤ maxceil`, and `v_emit.seq` is larger than each `seq` that this
   device emitted in this collection and each own `seq` held. The result of
@@ -1765,8 +1870,11 @@ T14.
   (and so the same registers and digest) and the same index entries, both as
   sets. The replayed horizon is at most the live one. After compaction, each
   replayed `APPLY` succeeds. The replayed horizon can also be lower than
-  a logged `EXPIRE` by the replay clamp of §7. (T15–T17 are reserved for
-  typed fields, C10, and are not stated.)
+  a logged `EXPIRE` by the replay clamp of §7. In SPARK, `Open_From_Log`
+  proves T18-prefix (when `Valid_Length > 0`, the result is the replay of
+  exactly that prefix, `Replayed_Prefix`); the set statement itself is
+  tested there, not proved. (T15–T17 are reserved for typed fields, C10,
+  and are not stated.)
 
 **Assumptions.** The assumption IDs are fixed: a restated assumption keeps
 its ID, and a new one takes the next free number.
@@ -2051,18 +2159,28 @@ clock, and A3 and A4 are the assumptions that bound it.
 10. **Two log decisions made in the SPARK store.**
     - (a) Capacities: the slice is the constant `Slice_Max` at every
       replica, and the `HEADER`'s `slice` field is a check, not a
-      parameter. The data capacity in force is a parameter of the open,
-      kept outside the log or appended as a `CAPS` entry, so nothing in
-      the log is ever rewritten in place, and a reopen with a smaller
-      `data_cap` is allowed whenever the replayed `F` fits in it
-      (`No_Space` otherwise, with nothing written). The slice therefore
-      never appears in T4's scope: no two replicas can disagree about
-      it.
-    - (b) Compaction: `Compact` omits the trailing `EXPIRE(horizon)` only
-      when the old log is exactly the `HEADER` plus one held `APPLY` per
-      record of `F`, with no other entry and fewer than 7 bytes to spare.
-      Every other entry is at least 7 bytes long, so in every other case
-      the room for the `EXPIRE` is there. That one case is the full-log state of §7: a log whose
-      `Log_Cap` is below `Log_Fits`, with every record held, where
-      compaction frees nothing. The reopened replica then has a lower
-      horizon, and T18 allows this.
+      parameter: replay refuses a `HEADER` whose `slice` is not the
+      slice of the open (`No_Space`). Opening with `Slice_Max` is a
+      binding duty; `Kome.Store.Open` does not require it. The data
+      capacity in force is a parameter of each open, chosen by the
+      binding. The `HEADER`'s `data_cap` is the capacity of the open
+      that wrote it, and replay checks only that it is in range. A
+      reopen with a larger or a smaller `data_cap` is allowed whenever
+      the log replays at it (`No_Space` otherwise, with nothing written,
+      and `Valid_Length` names the prefix that replayed). There is no
+      `CAPS` entry, and nothing in the log is ever rewritten in place:
+      the only writes are appends and the rename of `Compact`. The store
+      invariant `Valid` does not relate the logged `data_cap` to the data
+      capacity of `F`. Under the binding duty, the slice never appears in
+      T4's scope: no two replicas can disagree about it.
+    - (b) Compaction: `Compact` omits the trailing `EXPIRE(horizon)` of a
+      store that has a horizon only when the old log is exactly the
+      `HEADER` plus one held `APPLY` per record of `F`: the Post
+      (`Compact_Layout`) states that the old log then had fewer than
+      `Expire_Len` = 7 bytes beyond the `HEADER` and the held `APPLY`s.
+      Every other entry is an `EXPIRE` of 7 bytes or an `APPLY` of a
+      verified frame, which is longer, so in every other case the room
+      for the `EXPIRE` is there. That one case is the full-log state of
+      §7: a log whose `Log_Cap` is below `Log_Fits`, with every record
+      held, where compaction frees nothing. The reopened replica then has
+      a lower horizon, and T18 allows this.
