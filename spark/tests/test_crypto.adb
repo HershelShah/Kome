@@ -310,8 +310,8 @@ procedure Test_Crypto with SPARK_Mode => Off is
       function Hex (K : Positive) return Byte_Array is (From_Hex (Field (K)));
 
       N_B2, N_B2K, N_Ed, N_X, N_Low, N_DH, N_AE, N_Key,
-      N_Strict_Valid, N_Strict_Invalid : Natural := 0;
-      Ok_B2K : Boolean := True;
+      N_Strict_Valid, N_Strict_Invalid, N_Hedge : Natural := 0;
+      Ok_B2K, Ok_Hedge : Boolean := True;
       N_Wp_Valid, N_Wp_Invalid, N_Wp_Length, N_Wp_Small : Natural := 0;
       N_Tor_Valid, N_Tor_Invalid, N_Small : Natural := 0;
       Seen_151, Seen_S_Over_L : Boolean := False;
@@ -375,6 +375,42 @@ procedure Test_Crypto with SPARK_Mode => Off is
             Fail (Ok_B2K, "blake2b256_keyed");
          end if;
       end Do_Blake2b_Keyed;
+
+      --  The hedge (AUDIT.md A6, SIMPLIFY.md S4): keyed BLAKE2b-256 under
+      --  the seed of a signing key that Key_Pair made from it, against
+      --  hashlib. The Post (Digest = Blake2b_256_Keyed (Seed_Of (SK), ...))
+      --  runs under -gnata. A changed rnd, or another key, changes it.
+      procedure Do_Hedge is
+         S     : constant Seed         := Hex (2);
+         Label : constant Byte_Array   := Hex (3);
+         Ctx   : constant Byte_Array   := Hex (4);
+         Rnd   : constant Random_Bytes := Hex (5);
+         Want  : constant Byte_Array   := Hex (6);
+         SK, SK2 : Secret_Key;
+         PK, PK2 : Pubkey;
+         D, D2   : Hash256;
+         R2      : Random_Bytes := Rnd;
+         S2      : Seed := S;
+      begin
+         N_Hedge := N_Hedge + 1;
+         Key_Pair (S, SK, PK);
+         Hedge (SK, Label, Ctx, Rnd, D);
+         R2 (0) := R2 (0) xor 1;
+         Hedge (SK, Label, Ctx, R2, D2);
+         S2 (31) := S2 (31) xor 1;
+         Key_Pair (S2, SK2, PK2);
+         if D /= Want or else D /= Blake2b_256_Keyed (S, Label & Ctx & Rnd)
+           or else D2 = Want
+         then
+            Fail (Ok_Hedge, "hedge");
+         end if;
+         Hedge (SK2, Label, Ctx, Rnd, D2);
+         if D2 = Want or else D = Blake2b_256 (Label & Ctx & Rnd) then
+            Fail (Ok_Hedge, "hedge key");
+         end if;
+         Wipe (SK);
+         Wipe (SK2);
+      end Do_Hedge;
 
       --  RFC 8032 §7.1: seed -> public key, sign, verify, and tamper checks.
       procedure Do_Ed25519 is
@@ -747,6 +783,8 @@ procedure Test_Crypto with SPARK_Mode => Off is
                   Do_Blake2b;
                elsif Kind = "blake2b256_keyed" and then N_Fields = 4 then
                   Do_Blake2b_Keyed;
+               elsif Kind = "hedge" and then N_Fields = 6 then
+                  Do_Hedge;
                elsif Kind = "ed25519" and then N_Fields = 5 then
                   Do_Ed25519;
                elsif Kind = "wycheproof" and then N_Fields = 6 then
@@ -777,6 +815,7 @@ procedure Test_Crypto with SPARK_Mode => Off is
       Check ("blake2b256_vectors" & N_B2'Image, Ok_B2 and then N_B2 >= 2);
       Check ("blake2b256_incremental_every_split", Ok_B2_Inc and then N_B2 >= 2);
       Check ("blake2b256_keyed_vectors" & N_B2K'Image, Ok_B2K and then N_B2K >= 9);
+      Check ("hedge_vectors" & N_Hedge'Image, Ok_Hedge and then N_Hedge = 4);
       Check ("ed25519_rfc8032_vectors" & N_Ed'Image, Ok_Ed and then N_Ed = 3);
       Check ("ed25519_tampered_rejected", Ok_Ed_Tamper and then N_Ed = 3);
       Check ("wycheproof_valid_accepted" & N_Wp_Valid'Image,
@@ -1231,8 +1270,30 @@ procedure Test_Crypto with SPARK_Mode => Off is
       function R7 is new Refused (Sign_After_Wipe);
       function R8 is new Refused (Update_After_Wipe);
       function R9 is new Refused (Hash_Too_Long);
+      --  The hedge needs a valid key (a default or wiped key has a zero
+      --  seed) and a nonempty label.
+      procedure Hedge_Default_Key is
+         Fresh : Secret_Key;
+      begin
+         Hedge (Fresh, [Byte'(1)], P, [others => 0], D);
+         Sink_Hash := D;
+      end Hedge_Default_Key;
+      procedure Hedge_Empty_Label is
+         SK : Secret_Key;
+         PK : Pubkey;
+         E  : constant Byte_Array (0 .. -1) := [others => 0];
+      begin
+         Key_Pair ([others => 7], SK, PK);
+         Hedge (SK, E, P, [others => 0], D);
+         Sink_Hash := D;
+      end Hedge_Empty_Label;
+
       function R10 is new Refused (Key_Pair_Zero_Seed);
+      function R11 is new Refused (Hedge_Default_Key);
+      function R12 is new Refused (Hedge_Empty_Label);
    begin
+      Check ("hedge_invalid_key_refused", R11);
+      Check ("hedge_empty_label_refused", R12);
       Check ("key_pair_zero_seed_refused", R10);
       Check ("context_default_inactive",
              not Is_Active (Ctx) and then Absorbed (Ctx) = 0);

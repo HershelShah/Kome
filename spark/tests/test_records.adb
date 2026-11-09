@@ -1,25 +1,29 @@
---  Test main for Kome.Records (DESIGN.md §2, §3, T13). It checks these
---  items:
+--  Test main for Kome.Records (SIMPLIFY.md §2 S1-S4, DESIGN.md §2, §3, T13).
+--  It checks these items:
+--    * The collection context: cid = BLAKE2b-256 (root_pk ‖ salt ‖ u48
+--      (del_ttl)), ns = cid[0:16], and h = BLAKE2b-256 (tag ‖ cid ‖
+--      content) for every kind; a record is well-formed under its own cid
+--      only (another salt or another del_ttl is another collection).
 --    * Every kind encodes, decodes and verifies at its extreme sizes (empty
---      value, 40 960-byte value, 32-byte field, 15 links, 64 members, u48
---      at 0 and 2**48 - 1).
+--      value, 40 960-byte value, 32-byte field, 64 members, u48 at 0 and
+--      2**48 - 1).
 --    * Decode refuses truncated, oversized, mistagged and out-of-bound
 --      frames, and the record does not change.
---    * Well_Formed refuses a tampered signature, content byte or ns.
---    * The signer block (D1). A ROSTER, REVOKE or GRANT that an outsider
---      signs is Malformed. The records of a certified root are well-formed,
---      but its roster above cert_cap is not. A certificate for a different
---      ns or cap is refused. A nonzero block for the founding key is
---      refused. A REVOKE of root_pk is refused.
---    * E5: del_ttl outside the clamp is Malformed. A dh_pk or box_pk that
---      is p or low order is Malformed.
+--    * Well_Formed refuses a tampered signature or content byte.
+--    * The signer block (D1, S3). Every signer carries a certificate from
+--      the founding key, the founding key its own (cap 2^48 - 1); there is
+--      no zero-certificate case. A ROSTER, REVOKE or GRANT that an outsider
+--      signs is Malformed. The records of a certified root are
+--      well-formed, but its roster above cert_cap is not. A certificate for
+--      a different cid or cap is refused. A REVOKE of root_pk is refused.
+--    * E5: a dh_pk or box_pk that is p or low order is Malformed.
 --    * D12: vlen 40 960 decodes, and vlen 40 961 is refused.
 --    * The header fields agree with DESIGN.md §3 / Kome.Headers, and they
---      satisfy Kome.Headers.Canonical (D3). The test calculates the
---      expected values here from the frame bytes (not through
---      Kome.Records.Hash).
---    * Known answers in vectors/records.txt pin each layout, h and the
---      certificate hash, independently of this package.
+--      satisfy Kome.Headers.Canonical (D3). The GRANT header carries the
+--      issuer's cert_cap (wcap, S3). The test calculates the expected
+--      values here from the frame bytes (not through Kome.Records.Hash).
+--    * Known answers in vectors/records.txt pin each layout, h, the cid
+--      and the certificate hash, independently of this package.
 --  The test compiles with -gnata, so every Pre / Post and the ghost lemmas
 --  also execute on these records.
 pragma Ada_2022;
@@ -75,16 +79,18 @@ procedure Test_Records with SPARK_Mode => Off is
    function BE48 (V : U48) return Byte_Array is
      ([for I in 0 .. 5 => Byte ((V / 2 ** (8 * (5 - I))) mod 256)]);
 
-   function H_Of (Frame : Byte_Array) return Key256 is
-     (To_Key256 (Kome.Crypto.Blake2b_256 (Frame (Frame'First .. Frame'Last - Sig_Len))));
-
-   --  The h of a data frame (DEL, PUT) under the collection context Cid
-   --  (AUDIT.md A26): BLAKE2b-256 (tag ‖ cid ‖ content), written here from
-   --  the frame bytes, independently of Kome.Records.With_Cid.
-   function H_Of_D (Frame : Byte_Array; Cid : Hash256) return Key256 is
+   --  The h of a frame under the collection context Cid: BLAKE2b-256 (tag
+   --  ‖ cid ‖ content), written here from the frame bytes, independently
+   --  of Kome.Records.Hash_Input.
+   function H_Of (Frame : Byte_Array; Cid : Hash256) return Key256 is
      (To_Key256 (Kome.Crypto.Blake2b_256
         (Frame (Frame'First .. Frame'First) & Cid
          & Frame (Frame'First + 1 .. Frame'Last - Sig_Len))));
+
+   --  BLAKE2b-256 (tag ‖ content): the h of an earlier design, which no
+   --  kind uses now.
+   function H_Plain (Frame : Byte_Array) return Key256 is
+     (To_Key256 (Kome.Crypto.Blake2b_256 (Frame (Frame'First .. Frame'Last - Sig_Len))));
 
    function From_Hex (S : String) return Byte_Array is
       function Nib (C : Character) return Byte is
@@ -115,17 +121,17 @@ procedure Test_Records with SPARK_Mode => Off is
    Author_SK, Other_SK, Root_SK : Kome.Crypto.Secret_Key;
    Author_PK, Other_PK, Root_PK : Pubkey;
 
-   Salt_A : constant Salt := Salt (Fill (Salt_Len, 90));
-   Salt_B : constant Salt := Salt (Fill (Salt_Len, 91));
-   NS_A   : NS_Id;
-   NS_B   : NS_Id;
-   Cid_A  : Hash256;   --  the collection contexts of (Root_PK, Salt_A / Salt_B)
-   Cid_B  : Hash256;
-   Ent_A  : constant Ent_Id := Ent_Id (Fill (Ent_Len, 40));
-
    Max_U48 : constant U48 := U48'Last;
    Day     : constant U48 := 86_400_000;
    TTL_OK  : constant U48 := 30 * Day;
+
+   Salt_A : constant Salt := Salt (Fill (Salt_Len, 90));
+   Salt_B : constant Salt := Salt (Fill (Salt_Len, 91));
+   Cid_A  : Hash256;   --  the collection of (Root_PK, Salt_A, TTL_OK)
+   Cid_B  : Hash256;   --  (Root_PK, Salt_B, TTL_OK): another salt
+   Cid_T  : Hash256;   --  (Root_PK, Salt_A, TTL_OK + 1): another del_ttl
+   NS_A   : NS_Id;
+   Ent_A  : constant Ent_Id := Ent_Id (Fill (Ent_Len, 40));
 
    --  X25519 encodings that decode refuses (E5): p itself (not reduced)
    --  and low-order points.
@@ -136,8 +142,10 @@ procedure Test_Records with SPARK_Mode => Off is
    U_One   : constant Pubkey := [0 => 1, others => 0];
    U_Zero  : constant Pubkey := [others => 0];
 
-   --  The certified secondary root: the founding key certifies Other_PK
-   --  for NS_A up to Cap_2.
+   --  The founding key's certificate of itself (S3), and the certified
+   --  secondary root: the founding key certifies Other_PK for Cid_A up to
+   --  Cap_2.
+   Cert_R : Sig;
    Cap_2  : constant U48 := 10_000;
    Cert_2 : Sig;
 
@@ -147,19 +155,20 @@ begin
    Kome.Crypto.Key_Pair (Seed_Of (1), Author_SK, Author_PK);
    Kome.Crypto.Key_Pair (Seed_Of (2), Other_SK, Other_PK);
    Kome.Crypto.Key_Pair (Seed_Of (3), Root_SK, Root_PK);
-   NS_A := Collection_Id (Root_PK, Salt_A);
-   NS_B := Collection_Id (Root_PK, Salt_B);
-   Cid_A := Cid_Of (Root_PK, Salt_A);
-   Cid_B := Cid_Of (Root_PK, Salt_B);
-   Check ("A26: cid = BLAKE2b-256 (root_pk ‖ salt), ns = cid[0:16]",
-          Cid_A = Kome.Crypto.Blake2b_256 (Root_PK & Salt_A)
+   Cid_A := Cid_Of (Root_PK, Salt_A, TTL_OK);
+   Cid_B := Cid_Of (Root_PK, Salt_B, TTL_OK);
+   Cid_T := Cid_Of (Root_PK, Salt_A, TTL_OK + 1);
+   NS_A  := NS_Of (Cid_A);
+   Check ("S1: cid = BLAKE2b-256 (root_pk ‖ salt ‖ u48 (del_ttl)), ns = cid[0:16]",
+          Cid_A = Kome.Crypto.Blake2b_256 (Root_PK & Salt_A & BE48 (TTL_OK))
+          and then Cid_Input (Root_PK, Salt_A, TTL_OK) = Root_PK & Salt_A & BE48 (TTL_OK)
           and then NS_A = Cid_A (0 .. NS_Len - 1)
-          and then NS_B = Cid_B (0 .. NS_Len - 1)
-          and then Cid_A /= Cid_B);
-   Check ("A26: With_Cid puts the cid after the tag",
-          With_Cid (Cid_A, [1, 2, 3]) = [Byte'(1)] & Cid_A & [Byte'(2), 3]
-          and then With_Cid (Cid_A, [Byte'(9)]) = [Byte'(9)] & Cid_A);
-   Cert_2 := Make_Cert (Root_SK, NS_A, Other_PK, Cap_2);
+          and then Cid_A /= Cid_B and then Cid_A /= Cid_T and then Cid_B /= Cid_T);
+   Check ("S1: Hash_Input puts the cid after the tag",
+          Hash_Input (Cid_A, [1, 2, 3]) = [Byte'(1)] & Cid_A & [Byte'(2), 3]
+          and then Hash_Input (Cid_A, [Byte'(9)]) = [Byte'(9)] & Cid_A);
+   Cert_R := Make_Cert (Root_SK, Cid_A, Root_PK, Founding_Cap);
+   Cert_2 := Make_Cert (Root_SK, Cid_A, Other_PK, Cap_2);
 
    ---------------------------------------------------------------------------
    --  Integer codecs.
@@ -202,44 +211,49 @@ begin
           and then Kind_Of ([Byte'(2)]) = K_Grant and then Kind_Of ([Byte'(3)]) = K_Del
           and then Kind_Of ([Byte'(4)]) = K_Put
           and then Has_Kind ([Byte'(4)]) and then not Has_Kind ([Byte'(5)]));
-   --  Compile_Time_Error pragmas in the spec check Frame_Max = 176 +
-   --  Value_Max = 41 136, ROSTER 285 .. 10 099 <= Frame_Max, REVOKE 269 and
-   --  GRANT 263. The checks below examine the encoded lengths.
+   --  Compile_Time_Error pragmas in the spec check Frame_Max = 160 +
+   --  Value_Max = 41 120, PUT 129 .. 41 120, ROSTER 212 .. 8 916, REVOKE
+   --  205, GRANT 199 and DEL 125. The checks below examine the encoded
+   --  lengths.
 
    ---------------------------------------------------------------------------
-   --  Certificates (D1).
+   --  Certificates (D1, S3).
    ---------------------------------------------------------------------------
    declare
       Want : constant Byte_Array :=
         [16#6B#, 16#6F#, 16#6D#, 16#65#, 16#2F#, 16#72#, 16#6F#, 16#6F#, 16#74#]
-        & NS_A & Other_PK & BE48 (Cap_2);
+        & Cid_A & Other_PK & BE48 (Cap_2);
    begin
-      Check ("Cert_Input = ""kome/root"" ‖ ns ‖ signer ‖ u48 (cap), 63 bytes",
-             Cert_Input (NS_A, Other_PK, Cap_2)'Length = 63
-             and then Cert_Input (NS_A, Other_PK, Cap_2) = Want);
+      Check ("Cert_Input = ""kome/root"" ‖ cid ‖ signer ‖ u48 (cap), 79 bytes",
+             Cert_Input (Cid_A, Other_PK, Cap_2)'Length = 79
+             and then Cert_Input (Cid_A, Other_PK, Cap_2) = Want);
       Check ("Cert_Hash = BLAKE2b-256 (Cert_Input)",
-             Cert_Hash (NS_A, Other_PK, Cap_2) = Kome.Crypto.Blake2b_256 (Want));
+             Cert_Hash (Cid_A, Other_PK, Cap_2) = Kome.Crypto.Blake2b_256 (Want));
       Check ("Make_Cert = Sign (founding, Cert_Hash), and it verifies",
-             Cert_2 = Kome.Crypto.Sign (Root_SK, Cert_Hash (NS_A, Other_PK, Cap_2))
-             and then Kome.Crypto.Verify (Cert_2, Root_PK, Cert_Hash (NS_A, Other_PK, Cap_2)));
-      Check ("Cert_OK: founding key with zero block",
-             Cert_OK (Root_PK, NS_A, Root_PK, 0, Zero_Sig));
-      Check ("Cert_OK: founding key with cap 1 or a nonzero cert is refused",
-             not Cert_OK (Root_PK, NS_A, Root_PK, 1, Zero_Sig)
-             and then not Cert_OK (Root_PK, NS_A, Root_PK, 0, Cert_2));
-      Check ("Cert_OK: certified root for this ns and cap",
-             Cert_OK (Root_PK, NS_A, Other_PK, Cap_2, Cert_2));
-      Check ("Cert_OK: wrong ns, cap, signer or a zero cert is refused",
-             not Cert_OK (Root_PK, NS_B, Other_PK, Cap_2, Cert_2)
-             and then not Cert_OK (Root_PK, NS_A, Other_PK, Cap_2 + 1, Cert_2)
-             and then not Cert_OK (Root_PK, NS_A, Author_PK, Cap_2, Cert_2)
-             and then not Cert_OK (Root_PK, NS_A, Other_PK, Cap_2, Zero_Sig));
-      Check ("Cert_OK: a certificate signed by the root itself is refused",
-             not Cert_OK (Root_PK, NS_A, Author_PK, Cap_2,
-                          Make_Cert (Author_SK, NS_A, Other_PK, Cap_2))
-             and then not Cert_OK
-               (Root_PK, NS_A, Author_PK, Cap_2,
-                Kome.Crypto.Sign (Author_SK, Cert_Hash (NS_A, Author_PK, Cap_2))));
+             Cert_2 = Kome.Crypto.Sign (Root_SK, Cert_Hash (Cid_A, Other_PK, Cap_2))
+             and then Kome.Crypto.Verify (Cert_2, Root_PK, Cert_Hash (Cid_A, Other_PK, Cap_2)));
+      Check ("Cert_OK: the founding key with its own certificate (cap 2^48 - 1)",
+             Cert_OK (Cid_A, Root_PK, Root_PK, Founding_Cap, Cert_R)
+             and then Cert_OK (Cid_A, Root_PK, Root_PK, U48'Last, Cert_R));
+      Check ("Cert_OK: the founding key with a zero block is refused (no exception, S3)",
+             not Cert_OK (Cid_A, Root_PK, Root_PK, 0, Zero_Sig)
+             and then not Cert_OK (Cid_A, Root_PK, Root_PK, Founding_Cap, Zero_Sig)
+             and then not Cert_OK (Cid_A, Root_PK, Root_PK, Founding_Cap - 1, Cert_R));
+      Check ("Cert_OK: certified root for this cid and cap",
+             Cert_OK (Cid_A, Root_PK, Other_PK, Cap_2, Cert_2));
+      Check ("Cert_OK: wrong cid (salt or del_ttl), cap, signer, founding key or a zero cert"
+             & " is refused",
+             not Cert_OK (Cid_B, Root_PK, Other_PK, Cap_2, Cert_2)
+             and then not Cert_OK (Cid_T, Root_PK, Other_PK, Cap_2, Cert_2)
+             and then not Cert_OK (Cid_A, Root_PK, Other_PK, Cap_2 + 1, Cert_2)
+             and then not Cert_OK (Cid_A, Root_PK, Author_PK, Cap_2, Cert_2)
+             and then not Cert_OK (Cid_A, Author_PK, Other_PK, Cap_2, Cert_2)
+             and then not Cert_OK (Cid_A, Root_PK, Other_PK, Cap_2, Zero_Sig));
+      Check ("Cert_OK: a certificate signed by a non-founding key is refused",
+             not Cert_OK (Cid_A, Root_PK, Author_PK, Cap_2,
+                          Make_Cert (Author_SK, Cid_A, Author_PK, Cap_2))
+             and then not Cert_OK (Cid_A, Root_PK, Other_PK, Cap_2,
+                                   Make_Cert (Author_SK, Cid_A, Other_PK, Cap_2)));
    end;
 
    ---------------------------------------------------------------------------
@@ -247,7 +261,7 @@ begin
    ---------------------------------------------------------------------------
    declare
       Field_N : constant Byte_Array := [Character'Pos ('n')];
-      Small   : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, Field_N, 0, 0, Author_PK, []);
+      Small   : Put_Record := Make_Put (Cid_A, Ent_A, Field_N, 0, 0, Author_PK, []);
       Back    : Put_Record;
       St      : Status;
    begin
@@ -255,11 +269,12 @@ begin
       declare
          E : constant Byte_Array := Encode (Small);
       begin
-         Check ("PUT minimal: length 145 (1-byte field, empty value)",
-                E'Length = 145 and then E'Length = Frame_Len (Small)
-                and then E (0) = Tag_Put and then E (0) = 4 and then E (33) = 1
-                and then E (35 .. 40) = BE48 (0)
-                and then E (79) = 0 and then E (80) = 0);
+         Check ("PUT minimal: length 129 (1-byte field, empty value)",
+                E'Length = 129 and then E'Length = Frame_Len (Small)
+                and then E'Length = Put_Frame_Min
+                and then E (0) = Tag_Put and then E (0) = 4 and then E (17) = 1
+                and then E (19 .. 24) = BE48 (0)
+                and then E (63) = 0 and then E (64) = 0);
          Decode (E, Back, St);
          Check ("PUT minimal: decode OK and equal", St = OK and then Back = Small);
          Check ("PUT minimal: well-formed", Well_Formed (Cid_A, Back));
@@ -274,7 +289,7 @@ begin
       Field_32 : constant Byte_Array := Fill (Field_Max, 200);
       Value_M  : constant Byte_Array := Fill (Value_Max, 3);
       Big      : Put_Record :=
-        Make_Put (Cid_A, NS_A, Ent_A, Field_32, Max_U48, Max_U48, Author_PK, Value_M);
+        Make_Put (Cid_A, Ent_A, Field_32, Max_U48, Max_U48, Author_PK, Value_M);
       Before   : Header;
       Back     : Put_Record;
       Keep     : Put_Record;
@@ -288,17 +303,17 @@ begin
          L  : constant Natural    := E'Length;
          FL : constant Natural    := Field_Max;
       begin
-         Check ("PUT max: length 41136 (32-byte field, 40960-byte value)",
-                L = 1 + 16 + 16 + 1 + 32 + 6 + 6 + 32 + 2 + 40_960 + 64
+         Check ("PUT max: length 41120 (32-byte field, 40960-byte value)",
+                L = 1 + 16 + 1 + 32 + 6 + 6 + 32 + 2 + 40_960 + 64
                 and then L = Put_Frame_Max and then L = Frame_Max);
-         Check ("PUT max: layout bytes",
-                E (1 .. 16) = NS_A and then E (17 .. 32) = Ent_A
-                and then E (33) = 32 and then E (34 .. 65) = Field_32
-                and then E (34 + FL .. 39 + FL) = BE48 (Max_U48)
-                and then E (40 + FL .. 45 + FL) = BE48 (Max_U48)
-                and then E (46 + FL .. 77 + FL) = Author_PK
-                and then E (78 + FL) = 16#A0# and then E (79 + FL) = 16#00#
-                and then E (80 + FL .. L - 65) = Value_M
+         Check ("PUT max: layout bytes (no ns)",
+                E (1 .. 16) = Ent_A
+                and then E (17) = 32 and then E (18 .. 49) = Field_32
+                and then E (18 + FL .. 23 + FL) = BE48 (Max_U48)
+                and then E (24 + FL .. 29 + FL) = BE48 (Max_U48)
+                and then E (30 + FL .. 61 + FL) = Author_PK
+                and then E (62 + FL) = 16#A0# and then E (63 + FL) = 16#00#
+                and then E (64 + FL .. L - 65) = Value_M
                 and then E (L - 64 .. L - 1) = Big.Signature);
          Decode (E, Back, St);
          Check ("PUT max: decode OK and equal", St = OK and then Back = Big);
@@ -319,18 +334,15 @@ begin
          declare
             H : constant Header := To_Header (Cid_A, Big);
          begin
-            Check ("PUT header: kind, ns, ent",
-                   H.K = K_Put and then H.NS = To_Id128 (NS_A)
-                   and then H.Ent = To_Id128 (Ent_A));
+            Check ("PUT header: kind, ent", H.K = K_Put and then H.Ent = To_Id128 (Ent_A));
             Check ("PUT header: FH = BLAKE2b-256 (field name)",
                    H.FH = To_Key256 (Kome.Crypto.Blake2b_256 (Field_32)));
             Check ("PUT header: V = (t, author, seq, h)",
                    H.V.T = Max_U48 and then H.V.Author = To_Key256 (Author_PK)
-                   and then H.V.Seq = Max_U48 and then H.V.H = H_Of_D (E, Cid_A));
-            Check ("PUT header: no issuer, del_ttl 0",
-                   H.Issuer = Zero_Key and then H.Del_TTL = 0);
-            Check ("PUT header: h = BLAKE2b-256 (frame minus sig)",
-                   To_Key256 (Hash (Cid_A, Big.C)) = H_Of_D (E, Cid_A));
+                   and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E, Cid_A));
+            Check ("PUT header: no issuer", H.Issuer = Zero_Key);
+            Check ("PUT header: h = BLAKE2b-256 (tag ‖ cid ‖ frame minus sig)",
+                   To_Key256 (Hash (Cid_A, Big.C)) = H_Of (E, Cid_A));
             Lemma_Header_Canonical (Cid_A, Big);
             Check ("PUT header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          end;
@@ -343,7 +355,7 @@ begin
          Decode (E & Byte'(0), Back, St);
          Check ("PUT oversized by one byte refused, record unchanged",
                 St = Malformed and then Back = Keep);
-         Decode (E (0 .. 143), Back, St);
+         Decode (E (0 .. 127), Back, St);
          Check ("PUT shorter than any frame refused", St = Malformed and then Back = Keep);
          declare
             Empty : constant Byte_Array (1 .. 0) := [];
@@ -358,17 +370,17 @@ begin
             Decode (Bad, Back, St);
             Check ("PUT wrong tag refused", St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (33) := 0;
+            Bad (17) := 0;
             Decode (Bad, Back, St);
             Check ("PUT flen 0 refused, record unchanged",
                    St = Malformed and then Back = Keep);
-            Bad (33) := 33;
+            Bad (17) := 33;
             Decode (Bad, Back, St);
             Check ("PUT flen 33 refused, record unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (78 + FL) := 16#FF#;
-            Bad (79 + FL) := 16#FE#;
+            Bad (62 + FL) := 16#FF#;
+            Bad (63 + FL) := 16#FE#;
             Decode (Bad, Back, St);
             Check ("PUT vlen disagreeing with length refused",
                    St = Malformed and then Back = Keep);
@@ -386,13 +398,13 @@ begin
             Decode_Verified (Cid_A, Bad, R2, St);
             Check ("PUT tampered signature: Decode_Verified refuses", St = Malformed);
             Bad := E;
-            Bad (80 + FL + 100) := Bad (80 + FL + 100) xor 16#80#;   --  value byte 100
+            Bad (64 + FL + 100) := Bad (64 + FL + 100) xor 16#80#;   --  value byte 100
             Decode (Bad, R2, St);
             Check ("PUT tampered value byte: decodes to the changed value, not well-formed",
                    St = OK and then R2.C.Value (100) /= Big.C.Value (100)
                    and then not Well_Formed (Cid_A, R2));
             Bad := E;
-            Bad (46 + FL + 3) := Bad (46 + FL + 3) xor 1;   --  author byte 3
+            Bad (30 + FL + 3) := Bad (30 + FL + 3) xor 1;   --  author byte 3
             Decode (Bad, R2, St);
             Check ("PUT tampered author byte: not well-formed",
                    St = OK and then R2.C.Author /= Big.C.Author
@@ -416,7 +428,7 @@ begin
 
       --  Non-canonical padding.
       declare
-         Pad : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [1, 2], 5, 6, Author_PK, [7]);
+         Pad : Put_Record := Make_Put (Cid_A, Ent_A, [1, 2], 5, 6, Author_PK, [7]);
       begin
          Sign (Cid_A, Pad, Author_SK);
          Check ("PUT canonical record is well-formed",
@@ -435,7 +447,7 @@ begin
    --  the length agrees (with a 1-byte field, Put_Frame_Max has space for
    --  it).
    declare
-      V  : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
+      V  : Put_Record := Make_Put (Cid_A, Ent_A, [16#66#], 1, 1, Author_PK, Fill (Value_Max, 9));
       R2 : Put_Record;
       K2 : Put_Record;
       St : Status;
@@ -446,14 +458,14 @@ begin
          Big : Byte_Array := E (0 .. E'Last - Sig_Len) & Byte'(16#5A#) & V.Signature;
       begin
          Decode_Verified (Cid_A, E, R2, St);
-         Check ("PUT vlen 40960 (1-byte field): length 41105, OK",
-                E'Length = 144 + 1 + 40_960 and then E (79) = 16#A0# and then E (80) = 0
+         Check ("PUT vlen 40960 (1-byte field): length 41089, OK",
+                E'Length = 128 + 1 + 40_960 and then E (63) = 16#A0# and then E (64) = 0
                 and then St = OK and then R2 = V);
-         Big (79) := 16#A0#;
-         Big (80) := 16#01#;   --  vlen 40 961, and the length is 144 + 1 + 40 961
+         Big (63) := 16#A0#;
+         Big (64) := 16#01#;   --  vlen 40 961, and the length is 128 + 1 + 40 961
          K2 := R2;
          Check ("PUT vlen 40961: length agrees and fits Put_Frame_Max",
-                Big'Length = 144 + 1 + 40_961 and then Big'Length <= Put_Frame_Max);
+                Big'Length = 128 + 1 + 40_961 and then Big'Length <= Put_Frame_Max);
          Decode (Big, R2, St);
          Check ("PUT vlen 40961: Malformed, record unchanged",
                 St = Malformed and then R2 = K2 and then not Is_Put_Frame (Big));
@@ -468,16 +480,16 @@ begin
    ---------------------------------------------------------------------------
    declare
       R : constant Put_Record :=
-        Make_Put (Cid_A, NS_A, Ent_A, [16#61#, 16#62#], 16#0102_0304_0506#, 16#0A0B_0C0D_0E0F#,
+        Make_Put (Cid_A, Ent_A, [16#61#, 16#62#], 16#0102_0304_0506#, 16#0A0B_0C0D_0E0F#,
                   Author_PK, [16#AA#, 16#BB#, 16#CC#]);
       E : constant Byte_Array := Encode (R);
    begin
       Check ("PUT t, seq, vlen big-endian",
-             E (36 .. 41) = [1, 2, 3, 4, 5, 6]
-             and then E (42 .. 47) = [16#0A#, 16#0B#, 16#0C#, 16#0D#, 16#0E#, 16#0F#]
-             and then E (80 .. 81) = [0, 3]
-             and then E (82 .. 84) = [16#AA#, 16#BB#, 16#CC#]
-             and then E'Length = 144 + 2 + 3);
+             E (20 .. 25) = [1, 2, 3, 4, 5, 6]
+             and then E (26 .. 31) = [16#0A#, 16#0B#, 16#0C#, 16#0D#, 16#0E#, 16#0F#]
+             and then E (64 .. 65) = [0, 3]
+             and then E (66 .. 68) = [16#AA#, 16#BB#, 16#CC#]
+             and then E'Length = 128 + 2 + 3);
    end;
 
    ---------------------------------------------------------------------------
@@ -485,12 +497,12 @@ begin
    --  (both Posts execute here under -gnata).
    ---------------------------------------------------------------------------
    declare
-      D    : Del_Record := Make_Del (Cid_A, NS_A, Ent_A, 1234, Max_U48, Author_PK);
+      D    : Del_Record := Make_Del (Cid_A, Ent_A, 1234, Max_U48, Author_PK);
       Hand : constant Del_Record :=
-        (C => (NS => NS_A, Ent => Ent_A, T => 1234, Seq => Max_U48, Author => Author_PK),
+        (C => (Ent => Ent_A, T => 1234, Seq => Max_U48, Author => Author_PK),
          Signature => [others => 0]);
       P    : constant Put_Record :=
-        Make_Put (Cid_A, NS_A, Ent_A, [16#61#, 16#62#], 7, 8, Author_PK, [1]);
+        Make_Put (Cid_A, Ent_A, [16#61#, 16#62#], 7, 8, Author_PK, [1]);
       Back : Del_Record;
       St   : Status;
    begin
@@ -499,20 +511,20 @@ begin
       Decode_Verified (Cid_A, Encode (D), Back, St);
       Check ("Make_Del then Sign: verified decode, same header, h = hash of content",
              St = OK and then Back = D and then To_Header (Cid_A, Back) = To_Header (Cid_A, D)
-             and then To_Header (Cid_A, D).V.H = H_Of_D (Encode (D), Cid_A)
+             and then To_Header (Cid_A, D).V.H = H_Of (Encode (D), Cid_A)
              and then To_Header (Cid_A, D).V.T = 1234 and then To_Header (Cid_A, D).V.Seq = Max_U48);
       Check ("Make_Put header: FH = BLAKE2b (field), V from the arguments",
              To_Header (Cid_A, P).FH = To_Key256 (Kome.Crypto.Blake2b_256 ([16#61#, 16#62#]))
              and then To_Header (Cid_A, P).V.T = 7 and then To_Header (Cid_A, P).V.Seq = 8
              and then To_Header (Cid_A, P).V.Author = To_Key256 (Author_PK)
-             and then To_Header (Cid_A, P).V.H = H_Of_D (Encode (P), Cid_A));
+             and then To_Header (Cid_A, P).V.H = H_Of (Encode (P), Cid_A));
    end;
 
    ---------------------------------------------------------------------------
    --  DEL
    ---------------------------------------------------------------------------
    declare
-      D    : Del_Record := (C => (NS => NS_A, Ent => Ent_A, T => 1234, Seq => Max_U48,
+      D    : Del_Record := (C => (Ent => Ent_A, T => 1234, Seq => Max_U48,
                                   Author => Author_PK),
                             Signature => [others => 0]);
       Back : Del_Record;
@@ -523,27 +535,26 @@ begin
       declare
          E    : constant Byte_Array := Encode (D);
          Want : constant Byte_Array :=
-           [Byte'(3)] & NS_A & Ent_A & BE48 (1234) & BE48 (Max_U48) & Author_PK & D.Signature;
+           [Byte'(3)] & Ent_A & BE48 (1234) & BE48 (Max_U48) & Author_PK & D.Signature;
          H    : constant Header := To_Header (Cid_A, D);
       begin
-         Check ("DEL: length 141 and bytes equal the hand-built layout (tag 3)",
-                E'Length = 141 and then E = Want);
+         Check ("DEL: length 125 and bytes equal the hand-built layout (tag 3, no ns)",
+                E'Length = 125 and then E = Want);
          Decode (E, Back, St);
          Check ("DEL: decode OK and equal", St = OK and then Back = D);
          Check ("DEL: well-formed", Well_Formed (Cid_A, Back));
          Lemma_Decode_Encode (D);
          Lemma_Encode_Decode_Del (E);
-         Check ("DEL header: V = (t, author, seq, h), FH 0, no issuer, del_ttl 0",
-                H.K = K_Del and then H.NS = To_Id128 (NS_A)
-                and then H.Ent = To_Id128 (Ent_A)
+         Check ("DEL header: V = (t, author, seq, h), FH 0, no issuer",
+                H.K = K_Del and then H.Ent = To_Id128 (Ent_A)
                 and then H.FH = Zero_Key
                 and then H.V.T = 1234 and then H.V.Author = To_Key256 (Author_PK)
-                and then H.V.Seq = Max_U48 and then H.V.H = H_Of_D (E, Cid_A)
-                and then H.Issuer = Zero_Key and then H.Del_TTL = 0);
+                and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E, Cid_A)
+                and then H.Issuer = Zero_Key);
          Lemma_Header_Canonical (Cid_A, D);
          Check ("DEL header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          Keep := Back;
-         Decode (E (0 .. 139), Back, St);
+         Decode (E (0 .. 123), Back, St);
          Check ("DEL truncated refused, record unchanged",
                 St = Malformed and then Back = Keep);
          Decode (E & Byte'(0), Back, St);
@@ -552,7 +563,7 @@ begin
          declare
             Bad : Byte_Array := E;
          begin
-            Bad (100) := Bad (100) xor 4;   --  signature byte 23 (sig is 77 .. 140)
+            Bad (100) := Bad (100) xor 4;   --  signature byte 39 (sig is 61 .. 124)
             Decode (Bad, Back, St);
             Check ("DEL tampered signature: decodes, not well-formed",
                    St = OK and then Back.C = D.C and then Back.Signature /= D.Signature
@@ -562,7 +573,7 @@ begin
             Check ("DEL tampered signature: Decode_Verified refuses, record unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (70) := Bad (70) xor 4;     --  author byte 25 (author is 45 .. 76)
+            Bad (40) := Bad (40) xor 4;     --  author byte 11 (author is 29 .. 60)
             Decode (Bad, Back, St);
             Check ("DEL tampered author: decodes, not well-formed",
                    St = OK and then Back.C.Author /= D.C.Author
@@ -575,8 +586,7 @@ begin
             Bad := E;
             Bad (0) := 2;   --  Tag_Grant on a DEL frame
             Decode (Bad, Back, St);
-            Check ("DEL frame with the old DEL tag 2 refused",
-                   St = Malformed and then Back = Keep);
+            Check ("DEL frame with tag 2 refused", St = Malformed and then Back = Keep);
          end;
          --  A DEL frame is not a PUT frame.
          declare
@@ -592,62 +602,60 @@ begin
    end;
 
    ---------------------------------------------------------------------------
-   --  A26: the collection context. The same data record bytes under two
-   --  (root_pk, salt) pairs have two different h, and a frame signed under
-   --  one cid does not verify under the other. (NS_A and NS_B differ here;
-   --  the point is that h binds the full cid, not only the ns bytes in the
-   --  frame, so the check holds whatever ns the frame carries.)
+   --  S1: the collection context. The same record bytes under two cids
+   --  (another salt, or another del_ttl) have two different h, and a frame
+   --  signed under one cid does not verify under the other.
    ---------------------------------------------------------------------------
    declare
-      P    : Put_Record := Make_Put (Cid_A, NS_A, Ent_A, [16#61#], 9, 10, Author_PK, [5, 6]);
-      D    : Del_Record := Make_Del (Cid_A, NS_A, Ent_A, 11, 12, Author_PK);
+      P    : Put_Record := Make_Put (Cid_A, Ent_A, [16#61#], 9, 10, Author_PK, [5, 6]);
+      D    : Del_Record := Make_Del (Cid_A, Ent_A, 11, 12, Author_PK);
       PB   : Put_Record;
       DB   : Del_Record;
       St   : Status;
    begin
       Sign (Cid_A, P, Author_SK);
       Sign (Cid_A, D, Author_SK);
-      Check ("A26 PUT: one record, two cids, two h (and two headers)",
+      Check ("S1 PUT: one record, two cids, two h (and two headers)",
              Hash (Cid_A, P.C) /= Hash (Cid_B, P.C)
-             and then To_Key256 (Hash (Cid_A, P.C)) = H_Of_D (Encode (P), Cid_A)
-             and then To_Key256 (Hash (Cid_B, P.C)) = H_Of_D (Encode (P), Cid_B)
-             and then To_Header (Cid_A, P).V.H /= To_Header (Cid_B, P).V.H
-             and then To_Header (Cid_A, P).NS = To_Header (Cid_B, P).NS);
-      Check ("A26 PUT: h is not BLAKE2b-256 (tag ‖ content) any more",
-             To_Key256 (Hash (Cid_A, P.C)) /= H_Of (Encode (P)));
-      Check ("A26 PUT: well-formed under its cid only",
-             Well_Formed (Cid_A, P) and then not Well_Formed (Cid_B, P));
+             and then To_Key256 (Hash (Cid_A, P.C)) = H_Of (Encode (P), Cid_A)
+             and then To_Key256 (Hash (Cid_B, P.C)) = H_Of (Encode (P), Cid_B)
+             and then To_Header (Cid_A, P).V.H /= To_Header (Cid_B, P).V.H);
+      Check ("S1 PUT: h is not BLAKE2b-256 (tag ‖ content)",
+             To_Key256 (Hash (Cid_A, P.C)) /= H_Plain (Encode (P)));
+      Check ("S1 PUT: well-formed under its cid only (not another salt or del_ttl)",
+             Well_Formed (Cid_A, P) and then not Well_Formed (Cid_B, P)
+             and then not Well_Formed (Cid_T, P));
       PB := P;
       PB.C.T := 0;
       Decode_Verified (Cid_B, Encode (P), PB, St);
-      Check ("A26 PUT: Decode_Verified under the other cid refuses, record unchanged",
+      Check ("S1 PUT: Decode_Verified under the other cid refuses, record unchanged",
              St = Malformed and then PB.C.T = 0);
       Decode_Verified (Cid_A, Encode (P), PB, St);
-      Check ("A26 PUT: Decode_Verified under its cid accepts", St = OK and then PB = P);
-      Check ("A26 DEL: one record, two cids, two h",
+      Check ("S1 PUT: Decode_Verified under its cid accepts", St = OK and then PB = P);
+      Check ("S1 DEL: one record, two cids, two h",
              Hash (Cid_A, D.C) /= Hash (Cid_B, D.C)
-             and then To_Key256 (Hash (Cid_B, D.C)) = H_Of_D (Encode (D), Cid_B)
+             and then To_Key256 (Hash (Cid_B, D.C)) = H_Of (Encode (D), Cid_B)
              and then To_Header (Cid_A, D).V.H /= To_Header (Cid_B, D).V.H);
-      Check ("A26 DEL: well-formed under its cid only",
-             Well_Formed (Cid_A, D) and then not Well_Formed (Cid_B, D));
+      Check ("S1 DEL: well-formed under its cid only",
+             Well_Formed (Cid_A, D) and then not Well_Formed (Cid_B, D)
+             and then not Well_Formed (Cid_T, D));
       DB := D;
       DB.C.T := 0;
       Decode_Verified (Cid_B, Encode (D), DB, St);
-      Check ("A26 DEL: Decode_Verified under the other cid refuses, record unchanged",
+      Check ("S1 DEL: Decode_Verified under the other cid refuses, record unchanged",
              St = Malformed and then DB.C.T = 0);
-      --  Same ns bytes, two cids (the 2^64 collision of A26, simulated):
-      --  a record whose ns is NS_A, signed under a cid other than Cid_A,
-      --  does not verify under Cid_A.
+      --  Same ns, two cids (the 2^64 ns collision, simulated): a record
+      --  signed under a cid other than Cid_A whose first 16 bytes are
+      --  NS_A does not verify under Cid_A.
       declare
          Other_Cid : Hash256 := Cid_A;
-         Q         : Put_Record :=
-           Make_Put (Cid_A, NS_A, Ent_A, [16#62#], 1, 2, Author_PK, []);
+         Q         : Put_Record;
       begin
          Other_Cid (31) := Other_Cid (31) xor 1;   --  same first 16 bytes (ns)
-         Q := Make_Put (Other_Cid, NS_A, Ent_A, [16#62#], 1, 2, Author_PK, []);
+         Q := Make_Put (Other_Cid, Ent_A, [16#62#], 1, 2, Author_PK, []);
          Sign (Other_Cid, Q, Author_SK);
-         Check ("A26: same ns, other cid: well-formed there, refused here",
-                Other_Cid (0 .. NS_Len - 1) = NS_A
+         Check ("S1: same ns, other cid: well-formed there, refused here",
+                NS_Of (Other_Cid) = NS_A
                 and then Well_Formed (Other_Cid, Q) and then not Well_Formed (Cid_A, Q));
       end;
    end;
@@ -656,60 +664,45 @@ begin
    --  ROSTER
    ---------------------------------------------------------------------------
    declare
-      Links_15   : constant Byte_Array := Fill (Links_Max * Link_Len, 11);
       Members_64 : constant Byte_Array := Members_Of (Members_Max, 77);
       Big  : Roster_Record :=
-        Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, Max_U48, Max_U48,
-                     Del_TTL_Max, 65_535, Links_15, Members_64);
+        Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, Max_U48, Max_U48,
+                     Members_64);
       Back : Roster_Record;
       Keep : Roster_Record;
       St   : Status;
    begin
-      Sign (Big, Root_SK);
+      Sign (Cid_A, Big, Root_SK);
       declare
          E : constant Byte_Array := Encode (Big);
          L : constant Natural    := E'Length;
-         H : constant Header     := To_Header (Big);
+         H : constant Header     := To_Header (Cid_A, Big);
       begin
-         Check ("ROSTER max: length 10099 (15 links, 64 members)",
-                L = 1 + 16 + 32 + 16 + 32 + 6 + 64 + 32 + 6 + 6 + 6 + 2 + 1 + 15 * 74 + 1
-                    + 64 * 136 + 64
+         Check ("ROSTER max: length 8916 (64 members)",
+                L = 1 + 32 + 6 + 64 + 32 + 6 + 6 + 1 + 64 * 136 + 64
                 and then L = Roster_Frame_Max and then L = Frame_Len (Big));
-         Check ("ROSTER max: layout bytes at the DESIGN.md §2 offsets",
-                E (0) = Tag_Roster and then E (0) = 0 and then E (1 .. 16) = NS_A
-                and then E (17 .. 48) = Root_PK and then E (49 .. 64) = Salt_A
-                and then E (65 .. 96) = Root_PK
-                and then E (97 .. 102) = BE48 (0)
-                and then E (103 .. 166) = Zero_Sig
-                and then E (167 .. 198) = Box_A
-                and then E (199 .. 204) = BE48 (Max_U48)
-                and then E (205 .. 210) = BE48 (Max_U48)
-                and then E (211 .. 216) = BE48 (Del_TTL_Max)
-                and then E (217 .. 218) = [16#FF#, 16#FF#]
-                and then E (219) = 15 and then E (220 .. 220 + 1110 - 1) = Links_15
-                and then E (220 + 1110) = 64
-                and then E (221 + 1110 .. 221 + 1110 + 8704 - 1) = Members_64
+         Check ("ROSTER max: layout bytes at the SIMPLIFY.md §2 offsets",
+                E (0) = Tag_Roster and then E (0) = 0
+                and then E (1 .. 32) = Root_PK
+                and then E (33 .. 38) = BE48 (Founding_Cap)
+                and then E (39 .. 102) = Cert_R
+                and then E (103 .. 134) = Box_A
+                and then E (135 .. 140) = BE48 (Max_U48)
+                and then E (141 .. 146) = BE48 (Max_U48)
+                and then E (147) = 64
+                and then E (148 .. 148 + 8704 - 1) = Members_64
                 and then E (L - 64 .. L - 1) = Big.Signature);
          Decode (E, Back, St);
          Check ("ROSTER max: decode OK and equal", St = OK and then Back = Big);
-         Check ("ROSTER max: well-formed (founder-signed)", Well_Formed (Back));
-         Decode_Verified (E, Back, St);
+         Check ("ROSTER max: well-formed (founder-signed, self-certified)",
+                Well_Formed (Cid_A, Root_PK, Back));
+         Decode_Verified (Cid_A, Root_PK, E, Back, St);
          Check ("ROSTER max: Decode_Verified OK", St = OK and then Back = Big);
          Lemma_Decode_Encode (Big);
          Lemma_Encode_Decode_Roster (E);
          Check ("ROSTER max: Encode (Decode (frame)) = frame", Encode (Back) = E);
-         Lemma_Link_Bytes (Back.C, 15);
-         Lemma_Link_Bytes (Back.C, 1);
          Lemma_Member_Bytes (Back.C, 64);
          Lemma_Member_Bytes (Back.C, 1);
-         Check ("ROSTER accessors: link 1, link 15",
-                Natural (Link_From_Epoch (Back.C, 1)) =
-                  Natural (Links_15 (0)) * 256 + Natural (Links_15 (1))
-                and then Natural (Link_From_Epoch (Back.C, 15)) =
-                  Natural (Links_15 (14 * 74)) * 256 + Natural (Links_15 (14 * 74 + 1))
-                and then Link_Nonce (Back.C, 15) = Links_15 (14 * 74 + 2 .. 14 * 74 + 25)
-                and then Link_Box (Back.C, 15) = Links_15 (14 * 74 + 26 .. 14 * 74 + 73)
-                and then Link_Box (Back.C, 1) = Links_15 (26 .. 73));
          Check ("ROSTER accessors: member 1, member 64",
                 Member_Sign_PK (Back.C, 64) = Members_64 (63 * 136 .. 63 * 136 + 31)
                 and then Member_DH_PK (Back.C, 64) = Members_64 (63 * 136 + 32 .. 63 * 136 + 63)
@@ -720,16 +713,16 @@ begin
          Lemma_DH_Box_OK (Back.C);
          Lemma_DH_Keys_OK (Back.C, 64);
          Check ("ROSTER DH_Keys_OK (box_pk and 64 members)", DH_Keys_OK (Back.C));
-         Check ("ROSTER header: V = (ceiling_t, signer, gen, h), issuer, del_ttl",
-                H.K = K_Roster and then H.NS = To_Id128 (NS_A)
+         Check ("ROSTER header: V = (ceiling_t, signer, gen, h), issuer = signer",
+                H.K = K_Roster
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
                 and then H.V.T = Max_U48 and then H.V.Author = To_Key256 (Root_PK)
                 and then H.V.Author = Signer_Key (Big)
-                and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E)
+                and then H.V.Seq = Max_U48 and then H.V.H = H_Of (E, Cid_A)
+                and then H.V.H /= H_Plain (E)
                 and then H.Issuer = To_Key256 (Root_PK)
-                and then H.Del_TTL = Del_TTL_Max
                 and then Ceil_Of (H) = Max_U48);
-         Lemma_Header_Canonical (Big);
+         Lemma_Header_Canonical (Cid_A, Big);
          Check ("ROSTER header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
 
          Keep := Back;
@@ -745,79 +738,67 @@ begin
          declare
             Bad : Byte_Array := E;
          begin
-            Bad (219) := 16;   --  n_links 16
-            Decode (Bad, Back, St);
-            Check ("ROSTER n_links 16 refused", St = Malformed and then Back = Keep);
-            Bad := E;
-            Bad (220 + 1110) := 65;   --  n_members 65
+            Bad (147) := 65;   --  n_members 65
             Decode (Bad, Back, St);
             Check ("ROSTER n_members 65 refused", St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (219) := 255;   --  n_links past the end: n_members never read
+            Bad (147) := 63;   --  n_members disagrees with the length
             Decode (Bad, Back, St);
-            Check ("ROSTER n_links 255 refused", St = Malformed and then Back = Keep);
+            Check ("ROSTER n_members 63 with 64 members' bytes refused",
+                   St = Malformed and then Back = Keep);
             Bad := E;
             Bad (L - 30) := Bad (L - 30) xor 2;
             Decode (Bad, Back, St);
             Check ("ROSTER tampered signature: not well-formed",
-                   St = OK and then Back.C = Big.C and then not Well_Formed (Back));
+                   St = OK and then Back.C = Big.C
+                   and then not Well_Formed (Cid_A, Root_PK, Back));
             Bad := E;
-            Bad (170) := Bad (170) xor 2;   --  box_pk byte 3
+            Bad (106) := Bad (106) xor 2;   --  box_pk byte 3
             Decode (Bad, Back, St);
             Check ("ROSTER tampered box_pk: not well-formed",
-                   St = OK and then Back.C.Box_PK /= Box_A and then not Well_Formed (Back));
+                   St = OK and then Back.C.Box_PK /= Box_A
+                   and then not Well_Formed (Cid_A, Root_PK, Back));
             Keep := Back;
             Bad := E;
             Bad (3000) := Bad (3000) xor 2;
-            Decode_Verified (Bad, Back, St);
+            Decode_Verified (Cid_A, Root_PK, Bad, Back, St);
             Check ("ROSTER tampered member box: Decode_Verified refuses, unchanged",
                    St = Malformed and then Back = Keep);
          end;
+         Check ("ROSTER: not well-formed under another cid or another founding key",
+                not Well_Formed (Cid_B, Root_PK, Big)
+                and then not Well_Formed (Cid_T, Root_PK, Big)
+                and then not Well_Formed (Cid_A, Other_PK, Big));
       end;
 
-      --  ns must agree with (root_pk, salt), also when the signature is
-      --  correct.
       declare
          Wrong : Roster_Record := Big;
       begin
-         Wrong.C.NS (0) := Wrong.C.NS (0) xor 1;
-         Sign (Wrong, Root_SK);
-         Check ("ROSTER with ns not derived from (root_pk, salt) is not well-formed",
-                not Well_Formed (Wrong));
-         Wrong := Big;
-         Wrong.C.Root_PK := Other_PK;
          Wrong.C.Signer := Other_PK;
-         Wrong.C.NS := Collection_Id (Other_PK, Salt_A);
-         Sign (Wrong, Other_SK);
-         Wrong.C.Root_PK := Root_PK;
+         Sign (Cid_A, Wrong, Other_SK);
          Wrong.C.Signer := Root_PK;
-         Wrong.C.NS := NS_A;
          Check ("ROSTER signed by a key other than signer is not well-formed",
-                not Well_Formed (Wrong));
+                not Well_Formed (Cid_A, Root_PK, Wrong));
          Wrong := Big;
          Wrong.C.N_Members := 63;   --  the bytes of member 64 become padding
          Check ("ROSTER nonzero member padding is not canonical",
-                not Canonical (Wrong) and then not Well_Formed (Wrong));
-         Wrong := Big;
-         Wrong.C.N_Links := 14;     --  the bytes of link 15 become padding
-         Check ("ROSTER nonzero link padding is not canonical",
-                not Canonical (Wrong) and then not Well_Formed (Wrong));
+                not Canonical (Wrong) and then not Well_Formed (Cid_A, Root_PK, Wrong));
       end;
 
-      --  Empty roster: no links, no members.
+      --  Empty roster: no members.
       declare
          Empty_R : Roster_Record :=
-           Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0, Del_TTL_Min, 0,
-                        [], []);
+           Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 0, 0, []);
       begin
-         Sign (Empty_R, Root_SK);
+         Sign (Cid_A, Empty_R, Root_SK);
          declare
             E : constant Byte_Array := Encode (Empty_R);
          begin
             Decode (E, Back, St);
-            Check ("ROSTER empty: length 285, round trip, well-formed",
-                   E'Length = 285 and then E (219) = 0 and then E (220) = 0
-                   and then St = OK and then Back = Empty_R and then Well_Formed (Back));
+            Check ("ROSTER empty: length 212, round trip, well-formed",
+                   E'Length = 212 and then E (147) = 0
+                   and then St = OK and then Back = Empty_R
+                   and then Well_Formed (Cid_A, Root_PK, Back));
             Lemma_Decode_Encode (Empty_R);
             Lemma_Encode_Decode_Roster (E);
          end;
@@ -825,7 +806,7 @@ begin
    end;
 
    ---------------------------------------------------------------------------
-   --  ROSTER signer admission (D1).
+   --  ROSTER signer admission (D1, S3).
    ---------------------------------------------------------------------------
    declare
       Mem  : constant Byte_Array := Members_Of (2, 33);
@@ -834,18 +815,17 @@ begin
       St   : Status;
 
       function R (Signer : Pubkey; Cap : U48; Cert : Sig; Ceil : U48;
-                  TTL : U48 := TTL_OK; Box_PK : Pubkey := Box_A;
+                  Box_PK : Pubkey := Box_A;
                   Members : Byte_Array := Mem) return Roster_Record is
-        (Make_Roster (Root_PK, Salt_A, Signer, Cap, Cert, Box_PK, 7, Ceil, TTL, 2,
-                      Fill (Link_Len, 5), Members));
+        (Make_Roster (Cid_A, Signer, Cap, Cert, Box_PK, 7, Ceil, Members));
 
       --  Sign with SK and run Decode_Verified on the frame.
       function Verdict (X : in out Roster_Record; SK : Kome.Crypto.Secret_Key) return Status is
          S : Status;
       begin
-         Sign (X, SK);
+         Sign (Cid_A, X, SK);
          Keep := Back;
-         Decode_Verified (Encode (X), Back, S);
+         Decode_Verified (Cid_A, Root_PK, Encode (X), Back, S);
          if S = Malformed and then Back /= Keep then
             Check ("ROSTER refusal leaves the record unchanged", False);
          end if;
@@ -855,13 +835,12 @@ begin
       X : Roster_Record;
    begin
       --  An outsider signs a roster that increases the ceiling to 2^48 - 1.
-      --  The outsider names itself as signer, with a zero signer block.
       X := R (Author_PK, 0, Zero_Sig, Max_U48);
       St := Verdict (X, Author_SK);
       Check ("ROSTER outsider-signed (zero cert), ceiling 2^48-1: Malformed",
-             St = Malformed and then not Well_Formed (X)
-             and then Kome.Crypto.Verify (X.Signature, Author_PK, Hash (X.C)));
-      X := R (Author_PK, Max_U48, Make_Cert (Author_SK, NS_A, Other_PK, Max_U48), Max_U48);
+             St = Malformed and then not Well_Formed (Cid_A, Root_PK, X)
+             and then Kome.Crypto.Verify (X.Signature, Author_PK, Hash (Cid_A, X.C)));
+      X := R (Author_PK, Max_U48, Make_Cert (Author_SK, Cid_A, Author_PK, Max_U48), Max_U48);
       St := Verdict (X, Author_SK);
       Check ("ROSTER outsider-signed with a self-made certificate: Malformed",
              St = Malformed);
@@ -874,11 +853,11 @@ begin
       X := R (Other_PK, Cap_2, Cert_2, 6000);
       St := Verdict (X, Other_SK);
       Check ("ROSTER by certified root, ceiling_t <= cert_cap: OK",
-             St = OK and then Back = X and then Well_Formed (X));
+             St = OK and then Back = X and then Well_Formed (Cid_A, Root_PK, X));
       Check ("ROSTER by certified root: header author and issuer are the signer",
-             To_Header (X).V.Author = To_Key256 (Other_PK)
-             and then To_Header (X).Issuer = To_Key256 (Other_PK)
-             and then To_Header (X).V.Author /= To_Key256 (Root_PK)
+             To_Header (Cid_A, X).V.Author = To_Key256 (Other_PK)
+             and then To_Header (Cid_A, X).Issuer = To_Key256 (Other_PK)
+             and then To_Header (Cid_A, X).V.Author /= To_Key256 (Root_PK)
              and then Signer_Key (X) = To_Key256 (Other_PK));
       X := R (Other_PK, Cap_2, Cert_2, Cap_2);
       St := Verdict (X, Other_SK);
@@ -886,7 +865,7 @@ begin
       X := R (Other_PK, Cap_2, Cert_2, Cap_2 + 1);
       St := Verdict (X, Other_SK);
       Check ("ROSTER by certified root, ceiling_t > cert_cap: Malformed",
-             St = Malformed and then not Well_Formed (X));
+             St = Malformed and then not Well_Formed (Cid_A, Root_PK, X));
       X := R (Other_PK, Cap_2 + 5000, Cert_2, Cap_2 + 1);
       St := Verdict (X, Other_SK);
       Check ("ROSTER by certified root claiming a larger cap than certified: Malformed",
@@ -895,43 +874,43 @@ begin
       --  bounded by its cap. The helper R uses gen 7.
       X := R (Other_PK, Cap_2, Cert_2, 7);
       St := Verdict (X, Other_SK);
-      Check ("ROSTER with gen = ceiling_t: OK", St = OK and then Well_Formed (X));
+      Check ("ROSTER with gen = ceiling_t: OK", St = OK and then Well_Formed (Cid_A, Root_PK, X));
       X := R (Other_PK, Cap_2, Cert_2, 6);
       St := Verdict (X, Other_SK);
       Check ("ROSTER with gen > ceiling_t (H7): Malformed",
-             St = Malformed and then not Well_Formed (X)
-             and then not Kome.Headers.Canonical (To_Header (X)));
-      X := R (Other_PK, Cap_2, Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), 6000);
+             St = Malformed and then not Well_Formed (Cid_A, Root_PK, X)
+             and then not Kome.Headers.Canonical (To_Header (Cid_A, X)));
+      X := R (Other_PK, Cap_2, Make_Cert (Root_SK, Cid_B, Other_PK, Cap_2), 6000);
       St := Verdict (X, Other_SK);
-      Check ("ROSTER with a certificate made for another ns: Malformed", St = Malformed);
+      Check ("ROSTER with a certificate made for another salt: Malformed", St = Malformed);
+      X := R (Other_PK, Cap_2, Make_Cert (Root_SK, Cid_T, Other_PK, Cap_2), 6000);
+      St := Verdict (X, Other_SK);
+      Check ("ROSTER with a certificate made for another del_ttl: Malformed", St = Malformed);
 
-      --  The block of the founding key must be zero.
-      X := R (Root_PK, 0, Zero_Sig, Max_U48);
+      --  The founding key carries its own certificate (S3).
+      X := R (Root_PK, Founding_Cap, Cert_R, Max_U48);
       St := Verdict (X, Root_SK);
-      Check ("ROSTER by founding key, zero block, any ceiling: OK", St = OK);
-      X := R (Root_PK, 1, Zero_Sig, 6000);
+      Check ("ROSTER by founding key, self-certificate, any ceiling: OK", St = OK);
+      X := R (Root_PK, 0, Zero_Sig, 6000);
       St := Verdict (X, Root_SK);
-      Check ("ROSTER by founding key with cert_cap 1: Malformed", St = Malformed);
-      X := R (Root_PK, 0, Cert_2, 6000);
+      Check ("ROSTER by founding key with a zero block: Malformed (no exception)",
+             St = Malformed);
+      X := R (Root_PK, Founding_Cap, Cert_2, 6000);
       St := Verdict (X, Root_SK);
-      Check ("ROSTER by founding key with a nonzero cert_sig: Malformed", St = Malformed);
-
-      --  del_ttl clamp (DESIGN.md §2 item 3).
-      X := R (Root_PK, 0, Zero_Sig, 6000, TTL => Del_TTL_Min);
-      St := Verdict (X, Root_SK);
-      Check ("ROSTER del_ttl = Del_TTL_Min: OK", St = OK);
-      X := R (Root_PK, 0, Zero_Sig, 6000, TTL => Del_TTL_Max);
-      St := Verdict (X, Root_SK);
-      Check ("ROSTER del_ttl = Del_TTL_Max: OK", St = OK);
-      X := R (Root_PK, 0, Zero_Sig, 6000, TTL => Del_TTL_Min - 1);
-      St := Verdict (X, Root_SK);
-      Check ("ROSTER del_ttl = Del_TTL_Min - 1: Malformed", St = Malformed);
-      X := R (Root_PK, 0, Zero_Sig, 6000, TTL => Del_TTL_Max + 1);
-      St := Verdict (X, Root_SK);
-      Check ("ROSTER del_ttl = Del_TTL_Max + 1: Malformed", St = Malformed);
-      X := R (Root_PK, 0, Zero_Sig, 6000, TTL => 0);
-      St := Verdict (X, Root_SK);
-      Check ("ROSTER del_ttl = 0: Malformed", St = Malformed);
+      Check ("ROSTER by founding key with another signer's certificate: Malformed",
+             St = Malformed);
+      declare
+         Low_R : constant Sig := Make_Cert (Root_SK, Cid_A, Root_PK, 5000);
+      begin
+         X := R (Root_PK, 5000, Low_R, 5000);
+         St := Verdict (X, Root_SK);
+         Check ("ROSTER by founding key under a self-certificate of cap 5000: OK at 5000",
+                St = OK);
+         X := R (Root_PK, 5000, Low_R, 5001);
+         St := Verdict (X, Root_SK);
+         Check ("ROSTER by founding key above its own certified cap: Malformed (no branch)",
+                St = Malformed);
+      end;
 
       --  X25519 keys (E5).
       declare
@@ -941,16 +920,16 @@ begin
            ["p      ", "order 8", "u = 1  ", "u = 0  "];
       begin
          for K in Bad_Keys'Range loop
-            X := R (Root_PK, 0, Zero_Sig, 6000, Box_PK => Bad_Keys (K));
+            X := R (Root_PK, Founding_Cap, Cert_R, 6000, Box_PK => Bad_Keys (K));
             St := Verdict (X, Root_SK);
             Check ("ROSTER box_pk = " & Names (K) & ": Malformed",
                    St = Malformed and then not DH_Keys_OK (X.C)
-                   and then Kome.Crypto.Verify (X.Signature, Root_PK, Hash (X.C)));
+                   and then Kome.Crypto.Verify (X.Signature, Root_PK, Hash (Cid_A, X.C)));
             declare
                M : Byte_Array := Mem;
             begin
                M (Member_Len + Pubkey_Len .. Member_Len + 2 * Pubkey_Len - 1) := Bad_Keys (K);
-               X := R (Root_PK, 0, Zero_Sig, 6000, Members => M);
+               X := R (Root_PK, Founding_Cap, Cert_R, 6000, Members => M);
                St := Verdict (X, Root_SK);
                Check ("ROSTER member 2 dh_pk = " & Names (K) & ": Malformed",
                       St = Malformed and then not DH_Keys_OK (X.C));
@@ -964,34 +943,34 @@ begin
    ---------------------------------------------------------------------------
    declare
       X    : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 777);
+        Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK, 777);
       Back : Revoke_Record;
       Keep : Revoke_Record;
       St   : Status;
    begin
-      Sign (X, Root_SK);
+      Sign (Cid_A, X, Root_SK);
       declare
          E    : constant Byte_Array := Encode (X);
          Want : constant Byte_Array :=
-           [Byte'(1)] & NS_A & Root_PK & Salt_A & Root_PK & BE48 (0) & Zero_Sig & Author_PK
+           [Byte'(1)] & Root_PK & BE48 (Founding_Cap) & Cert_R & Author_PK
            & BE48 (777) & X.Signature;
-         H    : constant Header := To_Header (X);
+         H    : constant Header := To_Header (Cid_A, X);
       begin
-         Check ("REVOKE: length 269 and bytes equal the hand-built layout",
-                E'Length = 269 and then E = Want);
+         Check ("REVOKE: length 205 and bytes equal the hand-built layout",
+                E'Length = 205 and then E = Want);
          Decode (E, Back, St);
          Check ("REVOKE: decode OK and equal", St = OK and then Back = X);
-         Check ("REVOKE: well-formed", Well_Formed (Back));
+         Check ("REVOKE: well-formed", Well_Formed (Cid_A, Root_PK, Back));
          Lemma_Decode_Encode (X);
          Lemma_Encode_Decode_Revoke (E);
          Check ("REVOKE header: V = (from_t, sign_pk, 0, h), issuer = signer",
-                H.K = K_Revoke and then H.NS = To_Id128 (NS_A)
+                H.K = K_Revoke
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
                 and then H.V.T = 777 and then H.V.Author = To_Key256 (Author_PK)
-                and then H.V.Seq = 0 and then H.V.H = H_Of (E)
-                and then H.Issuer = To_Key256 (Root_PK) and then H.Del_TTL = 0
+                and then H.V.Seq = 0 and then H.V.H = H_Of (E, Cid_A)
+                and then H.Issuer = To_Key256 (Root_PK)
                 and then Signer_Key (X) = To_Key256 (Root_PK));
-         Lemma_Header_Canonical (X);
+         Lemma_Header_Canonical (Cid_A, X);
          Check ("REVOKE header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          Keep := Back;
          Decode (E (1 .. E'Last), Back, St);
@@ -1003,34 +982,29 @@ begin
          declare
             Bad : Byte_Array := E;
          begin
-            Bad (244) := Bad (244) xor 1;   --  signature byte 39 (sig is 205 .. 268)
-            Decode_Verified (Bad, Back, St);
+            Bad (180) := Bad (180) xor 1;   --  signature byte 39 (sig is 141 .. 204)
+            Decode_Verified (Cid_A, Root_PK, Bad, Back, St);
             Check ("REVOKE tampered signature: Decode_Verified refuses, unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (202) := Bad (202) xor 1;   --  from_t (199 .. 204)
+            Bad (138) := Bad (138) xor 1;   --  from_t (135 .. 140)
             Decode (Bad, Back, St);
             Check ("REVOKE tampered from_t: not well-formed",
-                   St = OK and then Back.C.From_T /= 777 and then not Well_Formed (Back));
+                   St = OK and then Back.C.From_T /= 777
+                   and then not Well_Formed (Cid_A, Root_PK, Back));
          end;
-      end;
-      declare
-         Wrong : Revoke_Record := X;
-      begin
-         Wrong.C.Salt (0) := Wrong.C.Salt (0) xor 1;
-         Sign (Wrong, Root_SK);
-         Check ("REVOKE with ns not derived from (root_pk, salt) is not well-formed",
-                not Well_Formed (Wrong));
+         Check ("REVOKE: not well-formed under another cid",
+                not Well_Formed (Cid_B, Root_PK, X) and then not Well_Formed (Cid_T, Root_PK, X));
       end;
 
-      --  Signer admission (D1, D2).
+      --  Signer admission (D1, D2, S3).
       declare
          function V (Y : in out Revoke_Record; SK : Kome.Crypto.Secret_Key) return Status is
             S : Status;
          begin
-            Sign (Y, SK);
+            Sign (Cid_A, Y, SK);
             Keep := Back;
-            Decode_Verified (Encode (Y), Back, S);
+            Decode_Verified (Cid_A, Root_PK, Encode (Y), Back, S);
             if S = Malformed and then Back /= Keep then
                Check ("REVOKE refusal leaves the record unchanged", False);
             end if;
@@ -1038,40 +1012,39 @@ begin
          end V;
          Y : Revoke_Record;
       begin
-         Y := Make_Revoke (Root_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0);
+         Y := Make_Revoke (Cid_A, Author_PK, 0, Zero_Sig, Other_PK, 0);
          St := V (Y, Author_SK);
          Check ("REVOKE outsider-signed (revoking a root): Malformed",
-                St = Malformed and then not Well_Formed (Y)
-                and then Kome.Crypto.Verify (Y.Signature, Author_PK, Hash (Y.C)));
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
+                St = Malformed and then not Well_Formed (Cid_A, Root_PK, Y)
+                and then Kome.Crypto.Verify (Y.Signature, Author_PK, Hash (Cid_A, Y.C)));
+         Y := Make_Revoke (Cid_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
          St := V (Y, Other_SK);
          Check ("REVOKE by certified root: OK, signer key, subject in header",
                 St = OK and then Back = Y and then Signer_Key (Y) = To_Key256 (Other_PK)
-                and then To_Header (Y).V.Author = To_Key256 (Author_PK)
-                and then To_Header (Y).Issuer = To_Key256 (Other_PK));
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2,
-                           Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), Author_PK, 9);
+                and then To_Header (Cid_A, Y).V.Author = To_Key256 (Author_PK)
+                and then To_Header (Cid_A, Y).Issuer = To_Key256 (Other_PK));
+         Y := Make_Revoke (Cid_A, Other_PK, Cap_2,
+                           Make_Cert (Root_SK, Cid_B, Other_PK, Cap_2), Author_PK, 9);
          St := V (Y, Other_SK);
-         Check ("REVOKE with a certificate made for another ns: Malformed", St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 5, Zero_Sig, Author_PK, 9);
+         Check ("REVOKE with a certificate made for another cid: Malformed", St = Malformed);
+         Y := Make_Revoke (Cid_A, Root_PK, 0, Zero_Sig, Author_PK, 9);
          St := V (Y, Root_SK);
-         Check ("REVOKE by founding key with a nonzero cert block: Malformed",
-                St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Root_PK, 0);
+         Check ("REVOKE by founding key with a zero cert block: Malformed", St = Malformed);
+         Y := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Root_PK, 0);
          St := V (Y, Root_SK);
          Check ("REVOKE of root_pk (founding-signed): Malformed",
-                St = Malformed and then not Well_Formed (Y));
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Root_PK, 0);
+                St = Malformed and then not Well_Formed (Cid_A, Root_PK, Y));
+         Y := Make_Revoke (Cid_A, Other_PK, Cap_2, Cert_2, Root_PK, 0);
          St := V (Y, Other_SK);
          Check ("REVOKE of root_pk (by a certified root): Malformed", St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
+         Y := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Other_PK, 0);
          St := V (Y, Root_SK);
          Check ("REVOKE of a certified root by the founding key: OK", St = OK);
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
-         Sign (Y, Other_SK);
+         Y := Make_Revoke (Cid_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
+         Sign (Cid_A, Y, Other_SK);
          Y.C.Signer := Root_PK;
          Check ("REVOKE whose signer field is not the signing key is not well-formed",
-                not Well_Formed (Y));
+                not Well_Formed (Cid_A, Root_PK, Y));
       end;
    end;
 
@@ -1079,39 +1052,39 @@ begin
    --  GRANT
    ---------------------------------------------------------------------------
    declare
-      G    : Grant_Record := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
+      G    : Grant_Record := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK);
       Back : Grant_Record;
       Keep : Grant_Record;
       St   : Status;
    begin
-      Sign (G, Root_SK);
+      Sign (Cid_A, G, Root_SK);
       declare
          E    : constant Byte_Array := Encode (G);
          Want : constant Byte_Array :=
-           [Byte'(2)] & NS_A & Root_PK & Salt_A & Root_PK & BE48 (0) & Zero_Sig & Author_PK
-           & G.Signature;
-         H    : constant Header := To_Header (G);
+           [Byte'(2)] & Root_PK & BE48 (Founding_Cap) & Cert_R & Author_PK & G.Signature;
+         H    : constant Header := To_Header (Cid_A, G);
       begin
-         Check ("GRANT: length 263 and bytes equal the hand-built layout",
-                E'Length = 263 and then E = Want and then Is_Grant_Frame (E)
+         Check ("GRANT: length 199 and bytes equal the hand-built layout",
+                E'Length = 199 and then E = Want and then Is_Grant_Frame (E)
                 and then Kind_Of (E) = K_Grant);
          Decode (E, Back, St);
          Check ("GRANT: decode OK and equal", St = OK and then Back = G);
-         Check ("GRANT: well-formed", Well_Formed (Back));
-         Decode_Verified (E, Back, St);
+         Check ("GRANT: well-formed", Well_Formed (Cid_A, Root_PK, Back));
+         Decode_Verified (Cid_A, Root_PK, E, Back, St);
          Check ("GRANT: Decode_Verified OK", St = OK and then Back = G);
          Lemma_Decode_Encode (G);
          Lemma_Encode_Decode_Grant (E);
          Check ("GRANT: Encode (Decode (frame)) = frame", Encode (Back) = E);
-         Check ("GRANT header: V = (cap, subject, 0, h), issuer = signer; founding cap 2^48-1",
-                H.K = K_Grant and then H.NS = To_Id128 (NS_A)
+         Check ("GRANT header: V = (cert_cap, subject, 0, h), issuer = signer;"
+                & " founding cap 2^48-1",
+                H.K = K_Grant
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
-                and then H.V.T = U48'Last and then Grant_Cap (G) = U48'Last
+                and then H.V.T = U48'Last and then Cap_Of (H) = U48'Last
                 and then H.V.Author = To_Key256 (Author_PK)
-                and then H.V.Seq = 0 and then H.V.H = H_Of (E)
-                and then H.Issuer = To_Key256 (Root_PK) and then H.Del_TTL = 0
+                and then H.V.Seq = 0 and then H.V.H = H_Of (E, Cid_A)
+                and then H.Issuer = To_Key256 (Root_PK)
                 and then Signer_Key (G) = To_Key256 (Root_PK));
-         Lemma_Header_Canonical (G);
+         Lemma_Header_Canonical (Cid_A, G);
          Check ("GRANT header: Kome.Headers.Canonical", Kome.Headers.Canonical (H));
          Keep := Back;
          Decode (E (0 .. E'Last - 1), Back, St);
@@ -1127,22 +1100,23 @@ begin
             Decode (Bad, Back, St);
             Check ("GRANT wrong tag refused", St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (180) := Bad (180) xor 1;   --  subject byte 13 (subject is 167 .. 198)
+            Bad (116) := Bad (116) xor 1;   --  subject byte 13 (subject is 103 .. 134)
             Decode (Bad, Back, St);
             Check ("GRANT tampered subject: decodes, not well-formed",
                    St = OK and then Back.C.Subject /= Author_PK
-                   and then not Well_Formed (Back));
+                   and then not Well_Formed (Cid_A, Root_PK, Back));
             Keep := Back;
             Bad := E;
-            Bad (240) := Bad (240) xor 1;   --  signature
-            Decode_Verified (Bad, Back, St);
+            Bad (170) := Bad (170) xor 1;   --  signature
+            Decode_Verified (Cid_A, Root_PK, Bad, Back, St);
             Check ("GRANT tampered signature: Decode_Verified refuses, unchanged",
                    St = Malformed and then Back = Keep);
             Bad := E;
-            Bad (99) := Bad (99) xor 1;     --  cert_cap byte 2 (cert_cap is 97 .. 102)
+            Bad (35) := Bad (35) xor 1;     --  cert_cap byte 2 (cert_cap is 33 .. 38)
             Decode (Bad, Back, St);
             Check ("GRANT tampered cert_cap: not well-formed",
-                   St = OK and then Back.C.Cert_Cap /= 0 and then not Well_Formed (Back));
+                   St = OK and then Back.C.Cert_Cap /= Founding_Cap
+                   and then not Well_Formed (Cid_A, Root_PK, Back));
          end;
       end;
 
@@ -1150,9 +1124,9 @@ begin
          function V (Y : in out Grant_Record; SK : Kome.Crypto.Secret_Key) return Status is
             S : Status;
          begin
-            Sign (Y, SK);
+            Sign (Cid_A, Y, SK);
             Keep := Back;
-            Decode_Verified (Encode (Y), Back, S);
+            Decode_Verified (Cid_A, Root_PK, Encode (Y), Back, S);
             if S = Malformed and then Back /= Keep then
                Check ("GRANT refusal leaves the record unchanged", False);
             end if;
@@ -1160,36 +1134,38 @@ begin
          end V;
          Y : Grant_Record;
       begin
-         Y := Make_Grant (Root_PK, Salt_A, Author_PK, 0, Zero_Sig, Author_PK);
+         Y := Make_Grant (Cid_A, Author_PK, 0, Zero_Sig, Author_PK);
          St := V (Y, Author_SK);
          Check ("GRANT outsider-signed (granting itself): Malformed",
-                St = Malformed and then not Well_Formed (Y)
-                and then Kome.Crypto.Verify (Y.Signature, Author_PK, Hash (Y.C)));
-         Y := Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK);
+                St = Malformed and then not Well_Formed (Cid_A, Root_PK, Y)
+                and then Kome.Crypto.Verify (Y.Signature, Author_PK, Hash (Cid_A, Y.C)));
+         Y := Make_Grant (Cid_A, Other_PK, Cap_2, Cert_2, Author_PK);
          St := V (Y, Other_SK);
-         Check ("GRANT by certified root: OK, issuer is the signer",
+         Check ("GRANT by certified root: OK, issuer is the signer, V.T = cert_cap (wcap)",
                 St = OK and then Back = Y
-                and then To_Header (Y).Issuer = To_Key256 (Other_PK)
-                and then To_Header (Y).V.Author = To_Key256 (Author_PK));
-         Y := Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2,
-                          Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), Author_PK);
+                and then To_Header (Cid_A, Y).Issuer = To_Key256 (Other_PK)
+                and then To_Header (Cid_A, Y).V.Author = To_Key256 (Author_PK)
+                and then To_Header (Cid_A, Y).V.T = Cap_2
+                and then Cap_Of (To_Header (Cid_A, Y)) = Cap_2);
+         Y := Make_Grant (Cid_A, Other_PK, Cap_2,
+                          Make_Cert (Root_SK, Cid_B, Other_PK, Cap_2), Author_PK);
          St := V (Y, Other_SK);
-         Check ("GRANT with a certificate made for another ns: Malformed", St = Malformed);
-         Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Cert_2, Author_PK);
+         Check ("GRANT with a certificate made for another cid: Malformed", St = Malformed);
+         Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_2, Author_PK);
          St := V (Y, Root_SK);
-         Check ("GRANT by founding key with a nonzero cert_sig: Malformed", St = Malformed);
-         Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
-         Y.C.NS (3) := Y.C.NS (3) xor 1;
+         Check ("GRANT by founding key with another signer's certificate: Malformed",
+                St = Malformed);
+         Y := Make_Grant (Cid_A, Root_PK, 0, Zero_Sig, Author_PK);
          St := V (Y, Root_SK);
-         Check ("GRANT with ns not derived from (root_pk, salt): Malformed", St = Malformed);
+         Check ("GRANT by founding key with a zero block: Malformed", St = Malformed);
 
          --  H13 and A27: the 8 small-order points, the key of the all-zero
          --  seed and a non-canonical encoding (y = p, which no small-order
          --  test names) are refused as a GRANT subject (by bytes: the
-         --  founding key's signature is genuine), as a root_pk (even with
-         --  a matching ns and a zero block), and as a signer (Cert_OK,
-         --  with a genuine certificate from the founding key). Make_Grant
-         --  and Make_Cert refuse them by Pre.
+         --  founding key's signature is genuine), as the founding key (the
+         --  verifier's Root_PK; Cert_OK), and as a signer (Cert_OK, with a
+         --  genuine certificate from the founding key). Make_Grant and
+         --  Make_Cert refuse them by Pre.
          declare
             type Key_List is array (Positive range <>) of Pubkey;
             Bad : constant Key_List :=
@@ -1217,61 +1193,59 @@ begin
                    and then not Kome.Crypto.Is_Zero_Seed_Public (Bad (10)));
             for K of Bad loop
                --  Subject: a genuine founding-signed GRANT.
-               Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
+               Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK);
                Y.C.Subject := K;
                St := V (Y, Root_SK);
-               if St /= Malformed or else Well_Formed (Y)
-                 or else not Kome.Crypto.Verify (Y.Signature, Root_PK, Hash (Y.C))
+               if St /= Malformed or else Well_Formed (Cid_A, Root_PK, Y)
+                 or else not Kome.Crypto.Verify (Y.Signature, Root_PK, Hash (Cid_A, Y.C))
                then
                   Ok_Subject := False;
                end if;
-               --  Root_pk = signer = K with a zero block and a matching ns.
-               --  No signature is possible, but Well_Formed refuses by
-               --  bytes before the signature.
-               Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
-               Y.C.Root_PK := K;
+               --  Founding key = signer = K. No signature is possible, but
+               --  Well_Formed refuses by bytes before the signature.
+               Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK);
                Y.C.Signer := K;
-               Y.C.NS := Collection_Id (K, Salt_A);
                Y.Signature := Forge;
-               if Well_Formed (Y) or else Cert_OK (K, Y.C.NS, K, 0, Zero_Sig)
+               if Well_Formed (Cid_A, K, Y)
+                 or else Cert_OK (Cid_A, K, K, Founding_Cap, Forge)
                  or else Sign_Key_OK (K)
                then
                   Ok_Root := False;
                end if;
-               Decode_Verified (Encode (Y), Back, St);
+               Decode_Verified (Cid_A, K, Encode (Y), Back, St);
                if St /= Malformed then
                   Ok_Root := False;
                end if;
                --  Signer: a genuine certificate from the founding key.
                declare
                   Cert : constant Sig :=
-                    Kome.Crypto.Sign (Root_SK, Cert_Hash (NS_A, K, Cap_2));
+                    Kome.Crypto.Sign (Root_SK, Cert_Hash (Cid_A, K, Cap_2));
                begin
-                  Y := Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK);
+                  Y := Make_Grant (Cid_A, Other_PK, Cap_2, Cert_2, Author_PK);
                   Y.C.Signer := K;
                   Y.C.Cert_Sig := Cert;
                   Y.Signature := Forge;
-                  if Cert_OK (Root_PK, NS_A, K, Cap_2, Cert) or else Well_Formed (Y)
-                    or else not Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (NS_A, K, Cap_2))
+                  if Cert_OK (Cid_A, Root_PK, K, Cap_2, Cert)
+                    or else Well_Formed (Cid_A, Root_PK, Y)
+                    or else not Kome.Crypto.Verify (Cert, Root_PK, Cert_Hash (Cid_A, K, Cap_2))
                   then
                      Ok_Signer := False;
                   end if;
-                  Decode_Verified (Encode (Y), Back, St);
+                  Decode_Verified (Cid_A, Root_PK, Encode (Y), Back, St);
                   if St /= Malformed then
                      Ok_Signer := False;
                   end if;
                end;
-               --  ROSTER and REVOKE with root_pk = signer = K, zero block.
+               --  ROSTER and REVOKE with founding key = signer = K.
                declare
                   RR : Roster_Record :=
-                    Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
-                                 TTL_OK, 0, Fill (0, 0), Fill (0, 0));
+                    Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 0, 0, Fill (0, 0));
                   RV : Revoke_Record :=
-                    Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
+                    Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK, 0);
                begin
-                  RR.C.Root_PK := K; RR.C.Signer := K; RR.C.NS := Collection_Id (K, Salt_A);
-                  RV.C.Root_PK := K; RV.C.Signer := K; RV.C.NS := Collection_Id (K, Salt_A);
-                  if Well_Formed (RR) or else Well_Formed (RV) then
+                  RR.C.Signer := K;
+                  RV.C.Signer := K;
+                  if Well_Formed (Cid_A, K, RR) or else Well_Formed (Cid_A, K, RV) then
                      Ok_Roster := False;
                   end if;
                end;
@@ -1280,12 +1254,12 @@ begin
                   Hit : Natural := 0;
                begin
                   begin
-                     Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, K);
+                     Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, K);
                   exception
                      when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
                   end;
                   begin
-                     Cert_Sink := Make_Cert (Root_SK, NS_A, K, Cap_2);
+                     Cert_Sink := Make_Cert (Root_SK, Cid_A, K, Cap_2);
                   exception
                      when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
                   end;
@@ -1296,12 +1270,12 @@ begin
             end loop;
             Check ("GRANT to a small-order, zero-seed or non-canonical subject: Malformed (10 keys)",
                    Ok_Subject);
-            Check ("small-order, zero-seed or non-canonical root_pk: not well-formed (GRANT)",
+            Check ("small-order, zero-seed or non-canonical founding key: not well-formed (GRANT)",
                    Ok_Root);
             Check ("small-order, zero-seed or non-canonical signer with a genuine certificate:"
                    & " not well-formed",
                    Ok_Signer);
-            Check ("small-order, zero-seed or non-canonical root_pk: not well-formed"
+            Check ("small-order, zero-seed or non-canonical founding key: not well-formed"
                    & " (ROSTER, REVOKE)",
                    Ok_Roster);
             Check ("Make_Grant and Make_Cert refuse a small-order, zero-seed or non-canonical"
@@ -1321,32 +1295,33 @@ begin
                S2   : Status;
                Rv_Sink : Revoke_Record with Volatile;
             begin
-               RV := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
-               Sign (RV, Root_SK);
-               Decode_Verified (Encode (RV), RVB, S2);
-               Check ("REVOKE with a usable subject: OK", S2 = OK and then Well_Formed (RV));
-               RM := Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
-                                  TTL_OK, 0, Fill (0, 0), Base_Mem);
-               Sign (RM, Root_SK);
-               Decode_Verified (Encode (RM), RMB, S2);
+               RV := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK, 0);
+               Sign (Cid_A, RV, Root_SK);
+               Decode_Verified (Cid_A, Root_PK, Encode (RV), RVB, S2);
+               Check ("REVOKE with a usable subject: OK",
+                      S2 = OK and then Well_Formed (Cid_A, Root_PK, RV));
+               RM := Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 0, 0, Base_Mem);
+               Sign (Cid_A, RM, Root_SK);
+               Decode_Verified (Cid_A, Root_PK, Encode (RM), RMB, S2);
                Lemma_Member_Keys_OK_Def (RM.C);
                Lemma_Member_Keys_OK (RM.C, 2);
                Check ("ROSTER with usable member sign_pks: OK, Member_Keys_OK",
-                      S2 = OK and then Well_Formed (RM) and then Member_Keys_OK (RM.C));
+                      S2 = OK and then Well_Formed (Cid_A, Root_PK, RM)
+                      and then Member_Keys_OK (RM.C));
                for K of Bad loop
-                  RV := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
+                  RV := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Author_PK, 0);
                   RV.C.Sign_PK := K;
-                  Sign (RV, Root_SK);
-                  RVB := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
-                  Decode_Verified (Encode (RV), RVB, S2);
-                  if S2 /= Malformed or else Well_Formed (RV)
+                  Sign (Cid_A, RV, Root_SK);
+                  RVB := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Other_PK, 0);
+                  Decode_Verified (Cid_A, Root_PK, Encode (RV), RVB, S2);
+                  if S2 /= Malformed or else Well_Formed (Cid_A, Root_PK, RV)
                     or else RVB.C.Sign_PK /= Other_PK
-                    or else not Kome.Crypto.Verify (RV.Signature, Root_PK, Hash (RV.C))
+                    or else not Kome.Crypto.Verify (RV.Signature, Root_PK, Hash (Cid_A, RV.C))
                   then
                      Ok_Rv := False;
                   end if;
                   begin
-                     Rv_Sink := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, K, 0);
+                     Rv_Sink := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, K, 0);
                      Ok_Rv_Pre := False;
                   exception
                      when Ada.Assertions.Assertion_Error => null;
@@ -1358,16 +1333,16 @@ begin
                      for I in 0 .. Pubkey_Len - 1 loop
                         Mem (Mem'First + Member_Len + I) := K (I);
                      end loop;
-                     RM := Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
-                                        TTL_OK, 0, Fill (0, 0), Mem);
+                     RM := Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 0, 0, Mem);
                   end;
-                  Sign (RM, Root_SK);
-                  Decode_Verified (Encode (RM), RMB, S2);
-                  if S2 /= Malformed or else Well_Formed (RM) or else Member_Keys_OK (RM.C)
+                  Sign (Cid_A, RM, Root_SK);
+                  Decode_Verified (Cid_A, Root_PK, Encode (RM), RMB, S2);
+                  if S2 /= Malformed or else Well_Formed (Cid_A, Root_PK, RM)
+                    or else Member_Keys_OK (RM.C)
                     or else Member_Sign_PK (RM.C, 2) /= K
                     or else not Sign_Key_OK (Member_Sign_PK (RM.C, 1))
                     or else not DH_Keys_OK (RM.C)
-                    or else not Kome.Crypto.Verify (RM.Signature, Root_PK, Hash (RM.C))
+                    or else not Kome.Crypto.Verify (RM.Signature, Root_PK, Hash (Cid_A, RM.C))
                   then
                      Ok_Mem := False;
                   end if;
@@ -1386,19 +1361,19 @@ begin
             --  but Well_Formed refuses it; Box_A is accepted.
             declare
                RR : Roster_Record :=
-                 Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
-                              TTL_OK, 0, Fill (0, 0), Fill (0, 0));
+                 Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 0, 0, Fill (0, 0));
                RB : Roster_Record;
                S2 : Status;
             begin
-               Sign (RR, Root_SK);
-               Decode_Verified (Encode (RR), RB, S2);
-               Check ("ROSTER with box_pk = Box_A: OK", S2 = OK and then Well_Formed (RR));
+               Sign (Cid_A, RR, Root_SK);
+               Decode_Verified (Cid_A, Root_PK, Encode (RR), RB, S2);
+               Check ("ROSTER with box_pk = Box_A: OK",
+                      S2 = OK and then Well_Formed (Cid_A, Root_PK, RR));
                RR.C.Box_PK := Kome.Crypto.Zero_Secret_DH_Public;
-               Sign (RR, Root_SK);
-               Decode_Verified (Encode (RR), RB, S2);
+               Sign (Cid_A, RR, Root_SK);
+               Decode_Verified (Cid_A, Root_PK, Encode (RR), RB, S2);
                Check ("ROSTER with box_pk = X25519_Public (0^32): Malformed",
-                      S2 = Malformed and then not Well_Formed (RR)
+                      S2 = Malformed and then not Well_Formed (Cid_A, Root_PK, RR)
                       and then DH_Keys_OK (RR.C)
                       and then Kome.Crypto.X25519_Public ([others => 0])
                                = Kome.Crypto.Zero_Secret_DH_Public);
@@ -1408,44 +1383,32 @@ begin
    end;
 
    ---------------------------------------------------------------------------
-   --  Frame accessors: Root_Key_Of, Roster_Lists_DH, Is_Founding_Revoke.
+   --  Frame accessors: Is_Auth_Frame, Roster_Lists_DH.
    ---------------------------------------------------------------------------
    declare
       Mem : constant Byte_Array := Members_Of (3, 61);
       Ro  : Roster_Record :=
-        Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 1, 100, TTL_OK, 0,
-                     [], Mem);
-      Rv1 : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
-      Rv2 : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 0);
+        Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 1, 100, Mem);
+      Rv  : Revoke_Record :=
+        Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Other_PK, 0);
       Gr  : Grant_Record :=
-        Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK);
-      Alien : constant Revoke_Record :=
-        Make_Revoke (Author_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0);
+        Make_Grant (Cid_A, Other_PK, Cap_2, Cert_2, Author_PK);
+      Dl  : constant Del_Record := Make_Del (Cid_A, Ent_A, 1, 1, Author_PK);
    begin
-      Sign (Ro, Root_SK);
-      Sign (Rv1, Root_SK);
-      Sign (Rv2, Other_SK);
-      Sign (Gr, Other_SK);
+      Sign (Cid_A, Ro, Root_SK);
+      Sign (Cid_A, Rv, Root_SK);
+      Sign (Cid_A, Gr, Other_SK);
       declare
-         ER  : constant Byte_Array := Encode (Ro);
-         EV1 : constant Byte_Array := Encode (Rv1);
-         EV2 : constant Byte_Array := Encode (Rv2);
-         EG  : constant Byte_Array := Encode (Gr);
-         EA  : constant Byte_Array := Encode (Alien);
+         ER : constant Byte_Array := Encode (Ro);
+         EV : constant Byte_Array := Encode (Rv);
+         EG : constant Byte_Array := Encode (Gr);
+         ED : constant Byte_Array := Encode (Dl);
          Shifted : Byte_Array (500 .. 500 + ER'Length - 1);
       begin
          Shifted := ER;
-         Check ("Root_Key_Of: ROSTER, REVOKE, GRANT give root_pk",
-                Is_Auth_Frame (ER) and then Root_Key_Of (ER) = To_Key256 (Root_PK)
-                and then Root_Key_Of (EV1) = To_Key256 (Root_PK)
-                and then Root_Key_Of (EV2) = To_Key256 (Root_PK)
-                and then Root_Key_Of (EG) = To_Key256 (Root_PK)
-                and then Root_Key_Of (Shifted) = To_Key256 (Root_PK));
-         Check ("Root_Key_Of: another collection's founding key, not the signer",
-                Root_Key_Of (EA) = To_Key256 (Author_PK)
-                and then Root_Key_Of (EV2) /= To_Key256 (Other_PK));
+         Check ("Is_Auth_Frame: ROSTER, REVOKE, GRANT; not DEL",
+                Is_Auth_Frame (ER) and then Is_Auth_Frame (EV) and then Is_Auth_Frame (EG)
+                and then Is_Auth_Frame (Shifted) and then not Is_Auth_Frame (ED));
          Lemma_Roster_Lists_DH (ER, Mem (Pubkey_Len .. 2 * Pubkey_Len - 1));
          Lemma_Roster_Lists_DH (ER, Box_A);
          Check ("Roster_Lists_DH: each member's dh_pk is listed",
@@ -1463,26 +1426,19 @@ begin
                 and then not Roster_Lists_DH (ER, Good_DH (99)));
          declare
             E0 : constant Byte_Array := Encode
-              (Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 1, 100, TTL_OK, 0,
-                            [], []));
+              (Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Box_A, 1, 100, []));
          begin
             Lemma_Roster_Lists_DH (E0, Box_A);
             Check ("Roster_Lists_DH: a roster with no members lists nothing",
                    not Roster_Lists_DH (E0, Box_A)
                    and then not Roster_Lists_DH (E0, Mem (Pubkey_Len .. 2 * Pubkey_Len - 1)));
          end;
-         Check ("Is_Founding_Revoke: founding-signed REVOKE",
-                Is_Founding_Revoke (EV1));
-         Check ("Is_Founding_Revoke: not a certified root's REVOKE, a GRANT or a ROSTER",
-                not Is_Founding_Revoke (EV2) and then not Is_Founding_Revoke (EG)
-                and then not Is_Founding_Revoke (ER)
-                and then not Is_Founding_Revoke (EV1 (0 .. EV1'Last - 1)));
       end;
    end;
 
    ---------------------------------------------------------------------------
-   --  Known answers (vectors/records.txt): layout, h and the certificate
-   --  hash, independent of this package.
+   --  Known answers (vectors/records.txt): layout, h, the cid and the
+   --  certificate hash, independent of this package.
    ---------------------------------------------------------------------------
    declare
       Path  : constant String := Find ("vectors/records.txt");
@@ -1494,8 +1450,8 @@ begin
       Au_V  : constant Pubkey := Pubkey (Fill (32, 4));
       Rt_V  : constant Pubkey := Pubkey (Fill (32, 8));
       Sa_V  : constant Salt   := Salt (Fill (16, 9));
-      Cid_V : constant Hash256 := Cid_Of (Rt_V, Sa_V);
-      NS_V  : constant NS_Id  := Collection_Id (Rt_V, Sa_V);
+      TTL_V : constant U48    := 30 * Day;
+      Cid_V : constant Hash256 := Cid_Of (Rt_V, Sa_V, TTL_V);
       Sg_V  : constant Pubkey := Pubkey (Fill (32, 10));
 
       procedure One (Name : String; Content, H : Byte_Array) is
@@ -1505,18 +1461,16 @@ begin
             declare
                R : constant Put_Record :=
                  (if Name = "put1"
-                  then Make_Put (Cid_V, NS_V, Ent_V, Fill (5, 3), 16#0102_0304_0506#, 7,
+                  then Make_Put (Cid_V, Ent_V, Fill (5, 3), 16#0102_0304_0506#, 7,
                                  Au_V, Fill (10, 5))
-                  else Make_Put (Cid_V, NS_V, Ent_V, Fill (32, 6), 0, Max_U48, Au_V, []));
+                  else Make_Put (Cid_V, Ent_V, Fill (32, 6), 0, Max_U48, Au_V, []));
             begin
                Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
          elsif Name = "del1" then
             declare
-               R : constant Del_Record :=
-                 (C => (NS => NS_V, Ent => Ent_V, T => 1234, Seq => Max_U48, Author => Au_V),
-                  Signature => [others => 0]);
+               R : constant Del_Record := Make_Del (Cid_V, Ent_V, 1234, Max_U48, Au_V);
             begin
                Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
@@ -1525,17 +1479,16 @@ begin
             declare
                R : constant Roster_Record :=
                  (if Name = "roster1"
-                  then Make_Roster (Rt_V, Sa_V, Sg_V, 5000, Sig (Fill (64, 11)),
-                                    Pubkey (Fill (32, 15)), 3, 1000, 30 * Day, 513,
-                                    Fill (148, 12), Fill (272, 13))
+                  then Make_Roster (Cid_V, Sg_V, 5000, Sig (Fill (64, 11)),
+                                    Pubkey (Fill (32, 15)), 3, 1000, Fill (272, 13))
                   elsif Name = "roster2"
-                  then Make_Roster (Rt_V, Sa_V, Rt_V, 0, Zero_Sig, Pubkey (Fill (32, 16)),
-                                    0, 0, 0, 0, [], [])
-                  else Make_Roster (Rt_V, Sa_V, Rt_V, 0, Zero_Sig, Pubkey (Fill (32, 17)),
-                                    Max_U48, Max_U48, 3650 * Day, 65_535,
-                                    Fill (74 * 15, 18), Fill (136 * 64, 19)));
+                  then Make_Roster (Cid_V, Rt_V, Max_U48, Sig (Fill (64, 20)),
+                                    Pubkey (Fill (32, 16)), 0, 0, [])
+                  else Make_Roster (Cid_V, Rt_V, Max_U48, Sig (Fill (64, 22)),
+                                    Pubkey (Fill (32, 17)), Max_U48, Max_U48,
+                                    Fill (136 * 64, 19)));
             begin
-               Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
+               Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
                if Ok then
                   Lemma_Encode_Decode_Roster (Encode (R));
@@ -1545,27 +1498,25 @@ begin
          elsif Name = "revoke1" then
             declare
                R : constant Revoke_Record :=
-                 Make_Revoke (Rt_V, Sa_V, Sg_V, 5000, Sig (Fill (64, 11)),
-                              Pubkey (Fill (32, 14)), 777);
+                 Make_Revoke (Cid_V, Sg_V, 5000, Sig (Fill (64, 11)), Pubkey (Fill (32, 14)), 777);
             begin
-               Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
+               Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
          elsif Name = "grant1" then
             declare
                R : constant Grant_Record :=
-                 Make_Grant (Rt_V, Sa_V, Sg_V, Max_U48, Sig (Fill (64, 20)),
-                             Pubkey (Fill (32, 21)));
+                 Make_Grant (Cid_V, Sg_V, Max_U48, Sig (Fill (64, 20)), Pubkey (Fill (32, 21)));
             begin
-               Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
+               Ok := Content_Bytes (R.C) = Content and then Hash (Cid_V, R.C) = H
                      and then Encode (R) = Content & Zero_Sig;
             end;
          elsif Name = "cid1" then
-            Ok := Content = Rt_V & Sa_V and then Cid_Of (Rt_V, Sa_V) = H
-                  and then Collection_Id (Rt_V, Sa_V) = H (0 .. NS_Len - 1);
+            Ok := Content = Cid_Input (Rt_V, Sa_V, TTL_V) and then Cid_Of (Rt_V, Sa_V, TTL_V) = H
+                  and then NS_Of (Cid_V) = H (0 .. NS_Len - 1);
          elsif Name = "cert1" then
-            Ok := Cert_Input (Collection_Id (Rt_V, Sa_V), Sg_V, 16#0000_0102_0304#) = Content
-                  and then Cert_Hash (Collection_Id (Rt_V, Sa_V), Sg_V, 16#0000_0102_0304#) = H;
+            Ok := Cert_Input (Cid_V, Sg_V, 16#0000_0102_0304#) = Content
+                  and then Cert_Hash (Cid_V, Sg_V, 16#0000_0102_0304#) = H;
          end if;
          Check ("vector " & Name & ": bytes and hash", Ok);
          N := N + 1;
