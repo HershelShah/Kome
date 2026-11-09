@@ -59,6 +59,24 @@ package body Kome.Store with SPARK_Mode is
                         (if Is_Data (Entry_At (S, I).H) then Is_Data (Entry_At (S, J).H)))));
    end Compact_Index;
 
+   function Replayed_Prefix
+     (Input : Byte_Array; F : Frontier.State; S : Store; VL : Log_Size) return Boolean
+   is
+   begin
+      return
+        (Valid (S, F)
+         and then VL >= Header_Len
+         and then Input'Last < S.Log_Cap
+         and then Header_Well_Formed (Input)
+         and then Header_Slice (Input) = F.Slice
+         and then Log_Length (S) = VL
+         and then VL - 1 <= Input'Last
+         and then (for all J in 0 .. VL - 1 => Log_Byte (S, J) = Input (J))
+         and then Word (Logged_Cap (S)) = Header_Cap (Input)
+         and then Logged_Slice (S) = F.Slice
+         and then Horizon_Logged (S));
+   end Replayed_Prefix;
+
    function Compact_Layout (Old_S, S : Store) return Boolean is
    begin
       return
@@ -4013,68 +4031,63 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (S.LL = Off + Apply_Prefix + Frame'Length);
       pragma Assert (for all J in 0 .. Old_S.LL - 1 => S.Log (J) = Old_S.Log (J));
       pragma Assert (S.Log (Off) = Op);
-      Lemma_Frame_Stored_Log (S, Off, Frame);
-      pragma Assert (Len_Word (S.Log, Off) = Word (Frame'Length));
-      pragma Assert
-        (for all K in 0 .. Frame'Length - 1 =>
-           S.Log (Off + Apply_Prefix + K) = Frame (Frame'First + K));
-      for K in 0 .. Frame'Length - 1 loop
-         pragma Assert (Old_S.LL + Apply_Prefix + K = Off + Apply_Prefix + K);
-         pragma Assert (S.Log (Old_S.LL + Apply_Prefix + K) = Frame (Frame'First + K));
-         pragma Loop_Invariant
-           (for all K2 in 0 .. K =>
-              S.Log (Old_S.LL + Apply_Prefix + K2) = Frame (Frame'First + K2));
-      end loop;
+      pragma Assert (Frame_Stored (S, Old_S.LL, Frame));
+      Lemma_Frame_Stored_Log (S, Old_S.LL, Frame);
    end Lemma_Replayed;
 
-   --  Replay one APPLY or APPLY_EXPIRED entry: Frame, at the end of the log.
-   procedure Replay_Frame
-     (S      : in out Store;
-      F      : in out Frontier.State;
+   --  Replay accepts the APPLY (Op_Apply) or APPLY_EXPIRED entry Frame:
+   --  the frame verifies and is of the collection, and Put_Frame would
+   --  hold and index it as a new record, or holds it already (AUDIT.md
+   --  H23); or it is an admitted, undominated DEL that is not held.
+   function Replay_Accepts
+     (S : Store; F : Frontier.State; Op : Byte; Frame : Byte_Array) return Boolean
+   is
+     (Verified (Frame)
+      and then Canonical (Header_Of (Frame))
+      and then Header_Of (Frame).K = Kome.Records.Kind_Of (Frame)
+      and then Header_Of (Frame).NS = S.NS
+      and then not (Kome.Records.Is_Auth_Frame (Frame)
+                    and then Kome.Records.Root_Key_Of (Frame) /= S.Fnd)
+      and then Admitted (F, Header_Of (Frame))
+      and then
+        (if Op = Op_Apply then
+           Holds (F, Header_Of (Frame))
+           or else (not Dom (F, Header_Of (Frame))
+                    and then not Expired (Header_Of (Frame), S.Hz)
+                    and then not Data_Full (F, Header_Of (Frame))
+                    and then not Auth_Rule (F, Header_Of (Frame))
+                    and then not Gen_Full (S, Header_Of (Frame)))
+         else Header_Of (Frame).K = K_Del
+              and then not Holds (F, Header_Of (Frame))
+              and then not Dom (F, Header_Of (Frame))))
+   with Pre => Is_Frontier (F);
+
+   --  The checks of replay for one APPLY or APPLY_EXPIRED entry. S and F
+   --  are only read, so a refusal changes nothing (AUDIT.md H23: the store
+   --  stays at the entry boundary). No_Space: the data row of this open is
+   --  full (AUDIT.md A11); Malformed: a store with these capacities did
+   --  not write this entry.
+   procedure Replay_Check
+     (S      : Store;
+      F      : Frontier.State;
       Op     : Byte;
       Frame  : Byte_Array;
       Result : out Status)
    with
      Global => null,
-     Pre  => Valid (S, F)
-       and then Horizon_Logged (S)
-       and then (Op = Op_Apply or else Op = Op_Apply_Expired)
-       and then Frame'Length in Frame_Size
-       and then S.Log_Cap - S.LL >= Apply_Prefix + Frame'Length,
-     Post => Valid (S, F)
-       and then Result in OK | Malformed | No_Space
-       and then Logged_Cap (S) = Logged_Cap (S'Old)
-       --  A refusal is decided before any change (AUDIT.md H23: the store
-       --  stays at the entry boundary).
-       and then (if Result /= OK then
-                   S.LL = S.LL'Old
-                   and then (for all J in 0 .. S.LL - 1 => S.Log (J) = S'Old.Log (J))
-                   and then Horizon (S) = Horizon (S'Old)
-                   and then Horizon_Logged (S))
-       and then (if Result = OK then
-                   Log_Extends (S'Old, S)
-                   and then Grew_By (S'Old, S, S.LL'Old, Apply_Prefix + Frame'Length)
-                   and then Op_At (S, S.LL'Old) = Op
-                   and then Horizon (S) = Horizon (S'Old)
-                   and then S.LL = S.LL'Old + Apply_Prefix + Frame'Length
-                   and then (for all J in 0 .. S.LL'Old - 1 => S.Log (J) = S'Old.Log (J))
-                   and then S.Log (S.LL'Old) = Op
-                   and then Len_Word (S.Log, S.LL'Old) = Word (Frame'Length)
-                   and then (for all K in 0 .. Frame'Length - 1 =>
-                               S.Log (S.LL'Old + Apply_Prefix + K) = Frame (Frame'First + K)));
+     Pre  => Valid (S, F) and then Frame'Length in Frame_Size,
+     Post => Result in OK | Malformed | No_Space
+       and then (Result = OK) = Replay_Accepts (S, F, Op, Frame);
 
-   procedure Replay_Frame
-     (S      : in out Store;
-      F      : in out Frontier.State;
+   procedure Replay_Check
+     (S      : Store;
+      F      : Frontier.State;
       Op     : Byte;
       Frame  : Byte_Array;
       Result : out Status)
    is
-      Saved    : constant Store := S with Ghost;
       Accepted : Boolean;
       H        : Header;
-      Off      : Log_Size;
-      St       : Status;
    begin
       Result := Malformed;
       Decode_Frame (Frame, Accepted);
@@ -4087,22 +4100,12 @@ package body Kome.Store with SPARK_Mode is
       if H.NS /= S.NS
         or else (Kome.Records.Is_Auth_Frame (Frame)
                  and then Kome.Records.Root_Key_Of (Frame) /= S.Fnd)
+        or else not Admitted (F, H)
       then
          return;
       end if;
       if Op = Op_Apply then
-         if not Admitted (F, H) then
-            return;
-         elsif Holds (F, H) then
-            --  AUDIT.md H23: already held. Put_Frame answers OK and changes
-            --  nothing; replay keeps the entry in the log.
-            Keep_Apply (S, F, Frame, Off);
-            Lemma_Replayed (Saved, S, Op, Frame, Off);
-         else
-            --  Put_Frame must hold and index it as a new record. Its
-            --  refusals are decided here, before the call, so that a
-            --  refusal changes nothing (the log has room, so Log_Full
-            --  cannot occur).
+         if not Holds (F, H) then
             if Dom (F, H) or else Expired (H, S.Hz) then
                return;
             end if;
@@ -4113,9 +4116,142 @@ package body Kome.Store with SPARK_Mode is
                return;
             end if;
             if Auth_Rule (F, H) or else Gen_Full (S, H) then
-               --  A store with these capacities did not write this log.
                return;
             end if;
+         end if;
+      elsif H.K /= K_Del or else Holds (F, H) or else Dom (F, H) then
+         return;
+      end if;
+      Result := OK;
+   end Replay_Check;
+
+   --  The OK facts of Replay_Frame for an appended APPLY_EXPIRED, in a
+   --  small context (no Valid): a bridge from Appended_Expired.
+   procedure Lemma_Expired_Replayed (Old_S, S : Store; Frame : Byte_Array) with
+     Ghost, Global => null,
+     Pre  => Frame'Length in Frame_Size
+       and then Old_S.LL <= Old_S.Log_Cap and then S.LL <= S.Log_Cap
+       and then Log_Extends (Old_S, S)
+       and then Appended_Expired (Old_S, S, Frame, Old_S.LL),
+     Post => Log_Extends (Old_S, S)
+       and then Grew_By (Old_S, S, Old_S.LL, Apply_Prefix + Frame'Length)
+       and then Op_At (S, Old_S.LL) = Op_Apply_Expired
+       and then S.LL = Old_S.LL + Apply_Prefix + Frame'Length
+       and then (for all J in 0 .. Old_S.LL - 1 => S.Log (J) = Old_S.Log (J))
+       and then S.Log (Old_S.LL) = Op_Apply_Expired
+       and then Len_Word (S.Log, Old_S.LL) = Word (Frame'Length)
+       and then (for all K in 0 .. Frame'Length - 1 =>
+                   S.Log (Old_S.LL + Apply_Prefix + K) = Frame (Frame'First + K));
+
+   procedure Lemma_Expired_Replayed (Old_S, S : Store; Frame : Byte_Array) is
+   begin
+      pragma Assert (Grew_By (Old_S, S, Old_S.LL, Apply_Prefix + Frame'Length));
+      pragma Assert (Op_At (S, Old_S.LL) = Op_Apply_Expired);
+      pragma Assert (Frame_Stored (S, Old_S.LL, Frame));
+      Lemma_Replayed (Old_S, S, Op_Apply_Expired, Frame, Old_S.LL);
+   end Lemma_Expired_Replayed;
+
+   --  Replay an APPLY_EXPIRED entry: the admitted, undominated DEL Frame,
+   --  applied for its effect (a small context for the branch of
+   --  Replay_Frame).
+   procedure Replay_Expired
+     (S     : in out Store;
+      F     : in out Frontier.State;
+      Frame : Byte_Array;
+      H     : Header)
+   with
+     Global => null,
+     Pre  => Valid (S, F)
+       and then H.K = K_Del
+       and then Canonical (H)
+       and then H.NS = S.NS
+       and then Admitted (F, H)
+       and then not Dom (F, H)
+       and then not Holds (F, H)
+       and then Frame'Length in Frame_Size
+       and then S.Log_Cap - S.LL >= Apply_Prefix + Frame'Length,
+     Post => Valid (S, F)
+       and then Logged_Cap (S) = Logged_Cap (S'Old)
+       and then Log_Extends (S'Old, S)
+       and then Grew_By (S'Old, S, S.LL'Old, Apply_Prefix + Frame'Length)
+       and then Op_At (S, S.LL'Old) = Op_Apply_Expired
+       and then Horizon (S) = Horizon (S'Old)
+       and then S.LL = S.LL'Old + Apply_Prefix + Frame'Length
+       and then (for all J in 0 .. S.LL'Old - 1 => S.Log (J) = S'Old.Log (J))
+       and then S.Log (S.LL'Old) = Op_Apply_Expired
+       and then Len_Word (S.Log, S.LL'Old) = Word (Frame'Length)
+       and then (for all K in 0 .. Frame'Length - 1 =>
+                   S.Log (S.LL'Old + Apply_Prefix + K) = Frame (Frame'First + K));
+
+   procedure Replay_Expired
+     (S     : in out Store;
+      F     : in out Frontier.State;
+      Frame : Byte_Array;
+      H     : Header)
+   is
+      Saved : constant Store := S with Ghost;
+   begin
+      Do_Apply_Expired (S, F, Frame, H);
+      pragma Assert (Horizon (S) = Horizon (Saved));
+      pragma Assert (S.DCap = Saved.DCap);
+      Lemma_Expired_Replayed (Saved, S, Frame);
+   end Replay_Expired;
+
+   --  Replay one APPLY or APPLY_EXPIRED entry that Replay_Check accepts:
+   --  Frame, at the end of the log.
+   procedure Replay_Frame
+     (S      : in out Store;
+      F      : in out Frontier.State;
+      Op     : Byte;
+      Frame  : Byte_Array)
+   with
+     Global => null,
+     Pre  => Valid (S, F)
+       and then (Op = Op_Apply or else Op = Op_Apply_Expired)
+       and then Frame'Length in Frame_Size
+       and then S.Log_Cap - S.LL >= Apply_Prefix + Frame'Length
+       and then Replay_Accepts (S, F, Op, Frame),
+     Post => Valid (S, F)
+       and then Logged_Cap (S) = Logged_Cap (S'Old)
+       and then Log_Extends (S'Old, S)
+       and then Grew_By (S'Old, S, S.LL'Old, Apply_Prefix + Frame'Length)
+       and then Op_At (S, S.LL'Old) = Op
+       and then Horizon (S) = Horizon (S'Old)
+       and then S.LL = S.LL'Old + Apply_Prefix + Frame'Length
+       and then (for all J in 0 .. S.LL'Old - 1 => S.Log (J) = S'Old.Log (J))
+       and then S.Log (S.LL'Old) = Op
+       and then Len_Word (S.Log, S.LL'Old) = Word (Frame'Length)
+       and then (for all K in 0 .. Frame'Length - 1 =>
+                   S.Log (S.LL'Old + Apply_Prefix + K) = Frame (Frame'First + K));
+
+   procedure Replay_Frame
+     (S      : in out Store;
+      F      : in out Frontier.State;
+      Op     : Byte;
+      Frame  : Byte_Array)
+   is
+      Saved : constant Store := S with Ghost;
+      H     : constant Header := Header_Of (Frame);
+      Off   : Log_Size;
+      St    : Status;
+   begin
+      Lemma_Header_Of (Frame);
+      Lemma_Verified_Canonical (Frame);
+      pragma Assert (H.NS = Collection (S));
+      if Op = Op_Apply then
+         if Holds (F, H) then
+            --  AUDIT.md H23: already held. Put_Frame answers OK and changes
+            --  nothing; replay keeps the entry in the log.
+            Keep_Apply (S, F, Frame, Off);
+            Lemma_Replayed (Saved, S, Op, Frame, Off);
+         else
+            --  Put_Frame holds and indexes it as a new record: Replay_Check
+            --  decided its refusals, and the log has room, so Log_Full
+            --  cannot occur.
+            pragma Assert (not Foreign_Root (S, Frame));
+            pragma Assert (not Dom (F, H) and then not Expired (H, Horizon (S)));
+            pragma Assert (not Data_Full (F, H) and then not Auth_Rule (F, H)
+                           and then not Gen_Full (S, H));
             Put_Frame (S, F, Frame, H, Off, St);
             pragma Assert (St = OK);
             pragma Assert (Appended (Saved, S, Frame, H, Off));
@@ -4126,24 +4262,10 @@ package body Kome.Store with SPARK_Mode is
          end if;
       else
          --  An admitted, undominated DEL, applied for its effect.
-         if H.K /= K_Del or else not Admitted (F, H) or else Holds (F, H)
-           or else Dom (F, H)
-         then
-            return;
-         end if;
-         Do_Apply_Expired (S, F, Frame, H);
-         pragma Assert (Appended_Expired (Saved, S, Frame, Saved.LL));
-         pragma Assert (Grew_By (Saved, S, Saved.LL, Apply_Prefix + Frame'Length));
-         pragma Assert (Op_At (S, Saved.LL) = Op_Apply_Expired);
-         pragma Assert (Len_At (S, Saved.LL) = Word (Frame'Length));
-         pragma Assert (Saved.LL < Log_Length (S));
-         pragma Assert (Frame_Stored (S, Saved.LL, Frame));
-         pragma Assert (Horizon (S) = Horizon (Saved));
-         pragma Assert (Log_Extends (Saved, S));
-         pragma Assert (Op_At (S, Saved.LL) = Op);
-         Lemma_Replayed (Saved, S, Op, Frame, Saved.LL);
+         pragma Assert (H.K = K_Del and then Canonical (H) and then H.NS = S.NS);
+         pragma Assert (Admitted (F, H) and then not Dom (F, H) and then not Holds (F, H));
+         Replay_Expired (S, F, Frame, H);
       end if;
-      Result := OK;
    end Replay_Frame;
 
    --  A (PA ..) = B (0 ..) and B (0 ..) = C (PC ..) over Len bytes.
@@ -4269,6 +4391,7 @@ package body Kome.Store with SPARK_Mode is
       Op    : constant Byte := Input (P);
       Saved : constant Store := S with Ghost;
    begin
+      pragma Assert (Horizon_Logged (Saved));
       Lemma_Scan (Saved, F);
       Lemma_Valid_Facts (S, F);
       Result := Malformed;
@@ -4292,11 +4415,12 @@ package body Kome.Store with SPARK_Mode is
                St    : Status;
             begin
                pragma Assert (for all K in 0 .. FL - 1 => Frame (K) = Input (P + Apply_Prefix + K));
-               Replay_Frame (S, F, Op, Frame, St);
+               Replay_Check (S, F, Op, Frame, St);
                if St /= OK then
                   Result := St;
                   return;
                end if;
+               Replay_Frame (S, F, Op, Frame);
                Lemma_Word_Bytes
                  (S.Log (P + 1), S.Log (P + 2), S.Log (P + 3), S.Log (P + 4),
                   Input (P + 1), Input (P + 2), Input (P + 3), Input (P + 4));
@@ -4431,6 +4555,39 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Log_Length (S) = S.LL and then S.LL = Image'Last + 1);
    end Lemma_Log_Agrees;
 
+   --  The T18-prefix clause of the Post of Open_From_Log, from the facts
+   --  that its replay loop keeps (prover time: one small goal, AUDIT.md
+   --  H23).
+   procedure Open_Post_Parts
+     (Input : Byte_Array; F : Frontier.State; S : Store; VL : Log_Size; Cap_W : Word)
+   with
+     Ghost, Global => null,
+     Pre  => Input'First = 0
+       and then Valid (S, F)
+       and then Horizon_Logged (S)
+       and then Input'Last < S.Log_Cap
+       and then Header_Well_Formed (Input)
+       and then Header_Slice (Input) = F.Slice
+       and then Header_Cap (Input) = Cap_W
+       and then Word (S.DCap) = Cap_W
+       and then S.Slc = F.Slice
+       and then VL >= Header_Len
+       and then VL - 1 <= Input'Last
+       and then Log_Length (S) = VL
+       and then (for all J in 0 .. VL - 1 => Log_Byte (S, J) = Input (J)),
+     Post => Replayed_Prefix (Input, F, S, VL);
+
+   procedure Open_Post_Parts
+     (Input : Byte_Array; F : Frontier.State; S : Store; VL : Log_Size; Cap_W : Word)
+   is
+   begin
+      pragma Assert (Logged_Cap (S) = S.DCap and then Word (S.DCap) = Cap_W);
+      pragma Assert (Logged_Slice (S) = S.Slc and then Log_Length (S) = VL);
+      pragma Assert (Word (Logged_Cap (S)) = Header_Cap (Input));
+      pragma Assert (Logged_Slice (S) = F.Slice);
+      pragma Assert (Replayed_Prefix (Input, F, S, VL));
+   end Open_Post_Parts;
+
    procedure Open_From_Log
      (Input        : in     Byte_Array;
       F            :    out Frontier.State;
@@ -4531,6 +4688,7 @@ package body Kome.Store with SPARK_Mode is
             pragma Loop_Invariant (for all J in 0 .. S.LL - 1 => S.Log (J) = Input (J));
             pragma Loop_Invariant (S.DCap = Data_Size (Cap_W));
             pragma Loop_Invariant (Valid_Length = S.LL);
+            pragma Loop_Invariant (S.Slc = F.Slice);
             pragma Loop_Variant (Increases => S.LL);
             exit when S.LL = Len;
             pragma Assert (Input'Last >= Header_Len);
@@ -4545,6 +4703,8 @@ package body Kome.Store with SPARK_Mode is
                   pragma Assert (Log_Length (S) = Valid_Length);
                   pragma Assert
                     (for all J in 0 .. Valid_Length - 1 => Log_Byte (S, J) = Input (J));
+                  Open_Post_Parts (Input, F, S, Valid_Length, Cap_W);
+                  pragma Assert (Valid_Length - 1 <= Input'Last);
                   Result := St;
                   return;
                end if;
@@ -4555,6 +4715,10 @@ package body Kome.Store with SPARK_Mode is
          Lemma_Log_Agrees (S, Input);
          pragma Assert (for all J in 0 .. Input'Last => Log_Byte (S, J) = Input (J));
          pragma Assert (Header_Cap (Input) = Cap_W);
+         pragma Assert (Valid_Length = Len);
+         pragma Assert (for all J in 0 .. Valid_Length - 1 => Log_Byte (S, J) = Input (J));
+         Open_Post_Parts (Input, F, S, Valid_Length, Cap_W);
+         pragma Assert (Valid_Length - 1 = Input'Last);
          Result := OK;
       end;
    end Open_From_Log;

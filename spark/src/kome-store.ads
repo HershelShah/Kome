@@ -102,10 +102,12 @@
 --    * one EXPIRE (horizon), if the store has a horizon.
 --  If fewer than Expire_Len (7) bytes of the log are left after the
 --  frames, there is no EXPIRE. Compact_Layout states when this happens
---  (DESIGN.md §10 item 10 (b), AUDIT.md G23): only when the old log was
---  the HEADER and the held APPLYs with fewer than 7 bytes to spare, that
---  is, in the full-log state of AUDIT.md H3, which Log_Fits excludes. The
---  reopened horizon is then lower, and T18 allows this.
+--  (DESIGN.md §10 item 10 (b), AUDIT.md G23): only when the old log had
+--  fewer than 7 bytes beyond the HEADER and the held APPLYs. Every other
+--  entry is an EXPIRE (7 bytes) or an APPLY of a verified frame (more
+--  than 7 bytes), so the old log was exactly the HEADER plus the held
+--  APPLYs: the full-log state of AUDIT.md H3, which Log_Fits excludes.
+--  The reopened horizon is then lower, and T18 allows this.
 --
 --  Compaction is a store duty of the binding (AUDIT.md H26): it calls
 --  Compact when Compact_Due (S) holds (more than 2 * |F| + Compact_Slack
@@ -739,10 +741,10 @@ package Kome.Store with SPARK_Mode is
    --  it). The last conjunct is the lemma of DESIGN.md §10 item 10 (b)
    --  (AUDIT.md G23): Compact omits a horizon only when the old log had
    --  fewer than Expire_Len bytes beyond the HEADER and the held APPLYs,
-   --  that is, only in the full-log state of AUDIT.md H3 (every entry is
-   --  at least Min_Entry bytes, so the old log was the HEADER, the held
-   --  APPLYs and at most one entry that is not a record). Under Log_Fits
-   --  this state is unreachable.
+   --  that is, only in the full-log state of AUDIT.md H3 (every other
+   --  entry is an EXPIRE of Expire_Len bytes or an APPLY of a verified
+   --  frame, which is longer, so the old log was exactly the HEADER and
+   --  the held APPLYs). Under Log_Fits this state is unreachable.
    function Compact_Layout (Old_S, S : Store) return Boolean
    with
      Ghost, Global => null,
@@ -995,6 +997,29 @@ package Kome.Store with SPARK_Mode is
               and then (for all K2 in K + 1 .. Log_Entries (S) => not Is_Expire (S, K2)))
       else Horizon (S) = No_Horizon);
 
+   --  The T18-prefix clause of Open_From_Log (AUDIT.md H23): (S, F) is a
+   --  Valid pair, its log is the first VL bytes of Input, and its HEADER
+   --  is the HEADER of Input. Its Post defines it (one atom in the
+   --  contract of Open_From_Log, so that no goal carries the whole
+   --  clause).
+   function Replayed_Prefix
+     (Input : Byte_Array; F : Frontier.State; S : Store; VL : Log_Size) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Input'First = 0,
+     Post => Replayed_Prefix'Result =
+       (Valid (S, F)
+        and then VL >= Header_Len
+        and then Input'Last < S.Log_Cap
+        and then Header_Well_Formed (Input)
+        and then Header_Slice (Input) = F.Slice
+        and then Log_Length (S) = VL
+        and then VL - 1 <= Input'Last
+        and then (for all J in 0 .. VL - 1 => Log_Byte (S, J) = Input (J))
+        and then Word (Logged_Cap (S)) = Header_Cap (Input)
+        and then Logged_Slice (S) = F.Slice
+        and then Horizon_Logged (S));
+
    --  Open a store again from its log (replay, T18). The discriminants of
    --  F and S are the capacities for this open (AUDIT.md A11):
    --    * the slice is fixed for a collection (DESIGN.md §7 requires the
@@ -1070,20 +1095,10 @@ package Kome.Store with SPARK_Mode is
               Input'Last >= S.Log_Cap
               or else (Input'Last >= Header_Len - 1 and then Header_Slice (Input) /= F.Slice)
               or else Input'Last >= Header_Len)
-       and Valid_Length - 1 <= Input'Last
+       and (Valid_Length = 0 or else Valid_Length - 1 <= Input'Last)
        and (if Result = OK then Valid_Length - 1 = Input'Last)
        --  T18-prefix (AUDIT.md H23): the replayed prefix is a log.
-       and (if Valid_Length > 0 then
-              Valid (S, F)
-              and then Valid_Length >= Header_Len
-              and then Input'Last < S.Log_Cap
-              and then Header_Well_Formed (Input)
-              and then Header_Slice (Input) = F.Slice
-              and then Log_Length (S) = Valid_Length
-              and then (for all J in 0 .. Valid_Length - 1 => Log_Byte (S, J) = Input (J))
-              and then Word (Logged_Cap (S)) = Header_Cap (Input)
-              and then Logged_Slice (S) = F.Slice
-              and then Horizon_Logged (S));
+       and (if Valid_Length > 0 then Replayed_Prefix (Input, F, S, Valid_Length));
 
    --  The cell index (DESIGN.md §7 "cell -> (offset, v)"): the entry of
    --  the PUT on (NS, Ent, FH), if there is one.
