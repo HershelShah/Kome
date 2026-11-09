@@ -1,8 +1,8 @@
 --  Root of Kome. This package holds the byte types, the integer ranges and
 --  the size bounds that all packages share. docs/design/DESIGN.md gives the
---  design. Eight child packages refine the proved model in
---  lean/Kome/Frontier.lean: Kome.Versions, Kome.Headers, Kome.Registers,
---  Kome.Frontier, Kome.Records, Kome.Store, Kome.Emit and Kome.Views.
+--  design. Seven child packages refine the proved model in
+--  lean/Kome/Frontier.lean: Kome.Versions, Kome.Headers, Kome.Frontier,
+--  Kome.Records, Kome.Store, Kome.Emit and Kome.Views.
 --  Kome.Write joins Emit, Records and Store into the write path (DESIGN.md
 --  §5 steps 1-3, AUDIT.md A10) and gives the apply-side clone flag (H18).
 --  The others implement encodings, cryptography and protocols. Each DESIGN.md
@@ -90,12 +90,11 @@ package Kome with SPARK_Mode, Pure is
    --  signer has its own slice in the frontier (E1). A slice holds at most
    --  Slice_Max authorization records (the rosters, REVOKEs and GRANTs that
    --  the signer signed).
+   --  Slice_Max is a compile-time constant of every state (SIMPLIFY.md
+   --  S15): the frontier holds at most Signers_Max * Slice_Max = 8_192
+   --  authorization records.
    Signers_Max : constant := 16;
    Slice_Max   : constant := 512;
-   --  W holds at most one subject for each held GRANT. The frontier holds at
-   --  most Signers_Max * Slice_Max authorization records, so W never
-   --  becomes full on its own (DESIGN.md §7 "Bounds").
-   Writers_Max : constant := Signers_Max * Slice_Max;   --  8_192
 
    --  Tombstone lifetime del_ttl, in milliseconds (SIMPLIFY.md S2). It is
    --  fixed at founding: a u48 in the log HEADER and in the cid

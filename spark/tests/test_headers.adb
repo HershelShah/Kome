@@ -1,9 +1,10 @@
 --  Test main for Kome.Headers. It tests the wire codes, the canonical form,
 --  domination for each kind, and expiry. Domination follows the DESIGN.md
 --  §3 table: the roster product order D3 (ceiling_t, gen strictly; AUDIT.md
---  H1; no epoch and no del_ttl, SIMPLIFY.md S2, S4, S22), grants keyed by (issuer, subject) D1′, and
---  REVOKE never dominated. The test evaluates the ghost lemmas at run time
---  (-gnata) on each pair of a grid.
+--  H1; no epoch and no del_ttl, SIMPLIFY.md S2, S4, S22), grants keyed by
+--  (issuer, subject) D1′, and REVOKEs keyed by (issuer, subject) with the
+--  least from_t winning (SIMPLIFY.md S5). The test evaluates the ghost
+--  lemmas at run time (-gnata) on each pair of a grid.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -45,7 +46,7 @@ procedure Test_Headers with SPARK_Mode => Off is
 
    function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, Ent => Zero_Id, FH => Zero_Key,
-      V => (From_T, Key (Subject), 1, Hsh (H)), Issuer => Key (Issuer));
+      V => (From_T, Key (Subject), 0, Hsh (H)), Issuer => Key (Issuer));
 
    type List is array (Positive range <>) of Header;
 
@@ -56,7 +57,9 @@ procedure Test_Headers with SPARK_Mode => Off is
       Roster (9, 3, 5500, 10), Roster (9, 4, 9000, 11), Roster (21, 5, 9000, 12),
       Roster (9, 2, 6000, 19),
       Grant (9, 1, 13), Grant (9, 1, 14), Grant (21, 1, 15), Grant (9, 2, 16),
-      Revoke (9, 1, 0, 17), Revoke (9, 1, 0, 18)];
+      Revoke (9, 1, 0, 17), Revoke (9, 1, 0, 18), Revoke (9, 1, 50, 25),
+      Revoke (9, 1, 50, 26), Revoke (21, 1, 0, 27), Revoke (9, 2, 0, 28),
+      Revoke (9, 1, 10, 29)];
 
    R1 : constant Header := Roster (9, 1, 5000, 7);
    R2 : constant Header := Roster (9, 2, 6000, 8);
@@ -76,11 +79,13 @@ begin
    Check ("non-canonical: a PUT with an issuer, a DEL with a field hash",
           not Canonical ((Put (1, 1, 1, 1, 1) with delta Issuer => Key (3)))
           and then not Canonical ((Del (1, 1, 1, 1, 1) with delta FH => Key (3))));
-   Check ("non-canonical: a roster whose issuer is not its signer",
-          not Canonical ((R1 with delta Issuer => Key (3))));
-   Check ("non-canonical: a roster with gen above ceiling_t (H7)",
+   Check ("non-canonical: a roster whose issuer is not its signer, or with an entity",
+          not Canonical ((R1 with delta Issuer => Key (3)))
+          and then not Canonical ((R1 with delta Ent => Ent (1))));
+   Check ("non-canonical: a roster with gen above ceiling_t (H7), a REVOKE with a field hash",
           not Canonical (Roster (9, 6001, 6000, 8))
-          and then Canonical (Roster (9, 6000, 6000, 8)));
+          and then Canonical (Roster (9, 6000, 6000, 8))
+          and then not Canonical ((Revoke (9, 1, 0, 17) with delta FH => Key (3))));
    Check ("non-canonical: a grant with seq set; a grant carries its cap in t",
           Canonical ((Grant (9, 1, 1) with delta V => (1, Key (1), 0, Hsh (1))))
           and then not Canonical ((Grant (9, 1, 1) with delta V => (0, Key (1), 1, Hsh (1))))
@@ -126,8 +131,25 @@ begin
    Lemma_Grant_Dom (Grant (9, 1, 13, Cap => 200), Grant (9, 1, 14, Cap => 100));
    Lemma_Dominator_Keeps_Registers (Grant (9, 1, 14, Cap => 200), Grant (9, 1, 13, Cap => 100));
 
-   Check ("revoke: never dominated",
-          (for all X of Grid => not Dominates (X, Revoke (9, 1, 0, 17))));
+   --  REVOKEs (S5): keyed by (issuer, subject); a lower from_t wins, an
+   --  equal from_t is decided by h.
+   Check ("revoke: a lower from_t of the same key dominates",
+          Dominates (Revoke (9, 1, 0, 17), Revoke (9, 1, 50, 25))
+          and then Dominates (Revoke (9, 1, 10, 29), Revoke (9, 1, 50, 25))
+          and then not Dominates (Revoke (9, 1, 50, 25), Revoke (9, 1, 0, 17)));
+   Check ("revoke: an equal from_t and a greater h dominates",
+          Dominates (Revoke (9, 1, 0, 18), Revoke (9, 1, 0, 17))
+          and then not Dominates (Revoke (9, 1, 0, 17), Revoke (9, 1, 0, 18))
+          and then Dominates (Revoke (9, 1, 50, 26), Revoke (9, 1, 50, 25)));
+   Check ("revoke: another issuer or another subject never dominates",
+          not Dominates (Revoke (21, 1, 0, 27), Revoke (9, 1, 50, 25))
+          and then not Dominates (Revoke (9, 2, 0, 28), Revoke (9, 1, 50, 25)));
+   Check ("revoke: only a REVOKE dominates a REVOKE, and a REVOKE dominates no other kind",
+          (for all X of Grid =>
+             (if X.K /= K_Revoke then not Dominates (X, Revoke (9, 1, 50, 25))))
+          and then (for all X of Grid =>
+                      (if X.K /= K_Revoke then not Dominates (Revoke (9, 1, 0, 17), X))));
+   Lemma_Dominator_Keeps_Registers (Revoke (9, 1, 0, 17), Revoke (9, 1, 50, 25));
    Check ("data: a newer DEL dominates the entity's PUTs",
           Dominates (Del (1, 150, 2, 1, 4), Put (1, 100, 1, 1, 1))
           and then not Dominates (Del (1, 150, 2, 1, 4), Put (1, 200, 1, 2, 2)));
@@ -135,7 +157,7 @@ begin
    Check ("Expired: only DELs at or below the horizon",
           Expired (Del (1, 150, 2, 1, 4), 150) and then not Expired (Del (1, 150, 2, 1, 4), 149)
           and then not Expired (Put (1, 100, 1, 1, 1), 1000)
-          and then not Expired (Del (1, 0, 2, 1, 4), No_Horizon));
+          and then Expired (Del (1, 0, 2, 1, 4), 0));
    Check ("Ceil_Of: a roster's ceiling_t, else 0",
           Ceil_Of (R4) = 9000 and then Ceil_Of (Grant (9, 1, 13)) = 0
           and then Ceil_Of (Revoke (9, 1, 1234, 17)) = 0);
@@ -153,7 +175,15 @@ begin
             Lemma_Grant_Dom (X, Y);
          end if;
          if X.K = K_Revoke then
-            Lemma_Revoke_Never_Dominated (Y, X);
+            Lemma_Revoke_Dom (X, Y);
+         end if;
+         if Y.K = K_Revoke and then Dominates (Y, X) then
+            Lemma_Revoke_Dominates_Only_Revokes (Y, X);
+         end if;
+         if X.K = K_Roster and then Y.K = K_Roster
+           and then X.V.Author = Y.V.Author and then X.V.Seq = Y.V.Seq
+         then
+            Lemma_Equal_Gen_No_Dom (X, Y);
          end if;
          if Dominates (Y, X) then
             Lemma_Dominator_Keeps_Registers (Y, X);
