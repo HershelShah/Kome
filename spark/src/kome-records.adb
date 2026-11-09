@@ -574,6 +574,10 @@ package body Kome.Records with SPARK_Mode is
 
    procedure Lemma_DH_Keys_OK (C : Roster_Content; I : Member_Index) is null;
 
+   procedure Lemma_Member_Keys_OK_Def (C : Roster_Content) is null;
+
+   procedure Lemma_Member_Keys_OK (C : Roster_Content; I : Member_Index) is null;
+
    function Make_Roster
      (Root_PK   : Pubkey;
       S         : Salt;
@@ -1094,8 +1098,7 @@ package body Kome.Records with SPARK_Mode is
       Cert_Cap : U48;
       Cert_Sig : Sig;
       Sign_PK  : Pubkey;
-      From_T   : U48;
-      Rev_Seq  : U48) return Revoke_Record is
+      From_T   : U48) return Revoke_Record is
    begin
       return
         (C         =>
@@ -1106,8 +1109,7 @@ package body Kome.Records with SPARK_Mode is
             Cert_Cap => Cert_Cap,
             Cert_Sig => Cert_Sig,
             Sign_PK  => Sign_PK,
-            From_T   => From_T,
-            Rev_Seq  => Rev_Seq),
+            From_T   => From_T),
          Signature => [others => 0]);
    end Make_Revoke;
 
@@ -1139,8 +1141,7 @@ package body Kome.Records with SPARK_Mode is
             Cert_Cap => U48_At (Frame, F + Revoke_O_Cert_Cap),
             Cert_Sig => [for I in Sig'Range => Frame (F + Revoke_O_Cert_Sig + I)],
             Sign_PK  => [for I in Pubkey'Range => Frame (F + Revoke_O_Sign_PK + I)],
-            From_T   => U48_At (Frame, F + Revoke_O_From_T),
-            Rev_Seq  => U48_At (Frame, F + Revoke_O_Rev_Seq)),
+            From_T   => U48_At (Frame, F + Revoke_O_From_T)),
          Signature => [for I in Sig'Range => Frame (F + Revoke_Content_Len + I)]);
    end Parse_Revoke;
 
@@ -1181,8 +1182,7 @@ package body Kome.Records with SPARK_Mode is
      Ghost, Global => null,
      Post => Is_Revoke_Frame (Encode (R))
              and then Parse_Revoke (Encode (R)).C.Cert_Cap = R.C.Cert_Cap
-             and then Parse_Revoke (Encode (R)).C.From_T = R.C.From_T
-             and then Parse_Revoke (Encode (R)).C.Rev_Seq = R.C.Rev_Seq;
+             and then Parse_Revoke (Encode (R)).C.From_T = R.C.From_T;
 
    procedure Lemma_Revoke_Ints (R : Revoke_Record) is
       E : constant Byte_Array := Encode (R);
@@ -1206,14 +1206,6 @@ package body Kome.Records with SPARK_Mode is
       pragma Assert (E (Revoke_O_From_T + 5) = Byte_Of_U48 (R.C.From_T, 5));
       Lemma_U48_Round_Trip (R.C.From_T);
       pragma Assert (U48_At (E, Revoke_O_From_T) = R.C.From_T);
-      pragma Assert (E (Revoke_O_Rev_Seq) = Byte_Of_U48 (R.C.Rev_Seq, 0));
-      pragma Assert (E (Revoke_O_Rev_Seq + 1) = Byte_Of_U48 (R.C.Rev_Seq, 1));
-      pragma Assert (E (Revoke_O_Rev_Seq + 2) = Byte_Of_U48 (R.C.Rev_Seq, 2));
-      pragma Assert (E (Revoke_O_Rev_Seq + 3) = Byte_Of_U48 (R.C.Rev_Seq, 3));
-      pragma Assert (E (Revoke_O_Rev_Seq + 4) = Byte_Of_U48 (R.C.Rev_Seq, 4));
-      pragma Assert (E (Revoke_O_Rev_Seq + 5) = Byte_Of_U48 (R.C.Rev_Seq, 5));
-      Lemma_U48_Round_Trip (R.C.Rev_Seq);
-      pragma Assert (U48_At (E, Revoke_O_Rev_Seq) = R.C.Rev_Seq);
    end Lemma_Revoke_Ints;
 
    procedure Lemma_Decode_Encode (R : Revoke_Record) is
@@ -1298,9 +1290,6 @@ package body Kome.Records with SPARK_Mode is
       Lemma_U48_Bytes_Round_Trip
         (Frame (F + Revoke_O_From_T), Frame (F + Revoke_O_From_T + 1), Frame (F + Revoke_O_From_T + 2),
          Frame (F + Revoke_O_From_T + 3), Frame (F + Revoke_O_From_T + 4), Frame (F + Revoke_O_From_T + 5));
-      Lemma_U48_Bytes_Round_Trip
-        (Frame (F + Revoke_O_Rev_Seq), Frame (F + Revoke_O_Rev_Seq + 1), Frame (F + Revoke_O_Rev_Seq + 2),
-         Frame (F + Revoke_O_Rev_Seq + 3), Frame (F + Revoke_O_Rev_Seq + 4), Frame (F + Revoke_O_Rev_Seq + 5));
       pragma Assert (for all J in Revoke_O_Sign_PK .. Revoke_O_From_T - 1 => E (J) = Frame (F + J));
       pragma Assert (E (Revoke_O_From_T) = Frame (F + Revoke_O_From_T));
       pragma Assert (E (Revoke_O_From_T + 1) = Frame (F + Revoke_O_From_T + 1));
@@ -1308,12 +1297,6 @@ package body Kome.Records with SPARK_Mode is
       pragma Assert (E (Revoke_O_From_T + 3) = Frame (F + Revoke_O_From_T + 3));
       pragma Assert (E (Revoke_O_From_T + 4) = Frame (F + Revoke_O_From_T + 4));
       pragma Assert (E (Revoke_O_From_T + 5) = Frame (F + Revoke_O_From_T + 5));
-      pragma Assert (E (Revoke_O_Rev_Seq) = Frame (F + Revoke_O_Rev_Seq));
-      pragma Assert (E (Revoke_O_Rev_Seq + 1) = Frame (F + Revoke_O_Rev_Seq + 1));
-      pragma Assert (E (Revoke_O_Rev_Seq + 2) = Frame (F + Revoke_O_Rev_Seq + 2));
-      pragma Assert (E (Revoke_O_Rev_Seq + 3) = Frame (F + Revoke_O_Rev_Seq + 3));
-      pragma Assert (E (Revoke_O_Rev_Seq + 4) = Frame (F + Revoke_O_Rev_Seq + 4));
-      pragma Assert (E (Revoke_O_Rev_Seq + 5) = Frame (F + Revoke_O_Rev_Seq + 5));
       pragma Assert (for all J in Revoke_Content_Len .. Revoke_Frame_Len - 1 => E (J) = Frame (F + J));
       pragma Assert (for all J in Revoke_O_Sign_PK .. Revoke_Frame_Len - 1 => E (J) = Frame (F + J));
    end Lemma_Revoke_ED_Tail;

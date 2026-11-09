@@ -253,10 +253,10 @@ procedure Test_Reconcile with SPARK_Mode => Off is
    function Hsh (B : Natural) return Key256 is (W0 => Word (B), others => 5);
    function KeyB (B : Natural) return Key256 is (others => Word (B));
 
-   --  V = (from_t, subject, rev_seq, h), Issuer = the founding key.
+   --  V = (from_t, subject, 0, h), Issuer = the founding key.
    function Founding_Revoke (Subject : Key256; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, NS => NS_X, Ent => Zero_Id, FH => Zero_Key,
-      V => (T => From_T, Author => Subject, Seq => 1, H => Hsh (H)),
+      V => (T => From_T, Author => Subject, Seq => 0, H => Hsh (H)),
       Issuer => Fnd, Del_TTL => 0, Epoch => 0);
 
    --  V = (cap, subject, 0, h), Issuer = signer.
@@ -277,7 +277,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       V => (T => T, Author => Author, Seq => Seq, H => Hsh (H)),
       Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
 
-   --  A 275-byte REVOKE frame with a distinct content byte.
+   --  A 269-byte REVOKE frame with a distinct content byte.
    function Rv (Seed : Byte) return Rv_Frame is
       B : Rv_Frame := [others => Seed];
    begin
@@ -876,13 +876,13 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       end loop;
       Encode_Open ((Proto => Proto_Version, NS => NS_Y, N_RV => Rv_Max, RV => RVs), Buf, L);
       Decode_Open (Slice (Buf, L), O, OK);
-      Check ("OPEN with 15 frames: Open_Max_Len = 4 144 bytes, round trip",
-             OK and then L = Open_Max_Len and then L = 4_144
+      Check ("OPEN with 15 frames: Open_Max_Len = 4 054 bytes, round trip",
+             OK and then L = Open_Max_Len and then L = 4_054
              and then O.NS = NS_Y and then O.N_RV = 15 and then O.RV = RVs);
       Encode_Open ((Proto => Proto_Version, NS => NS_Y, N_RV => 2, RV => RVs), Buf, L);
       Decode_Open (Slice (Buf, L), O, OK);
       Check ("OPEN with 2 frames is canonical: unused frames zero",
-             OK and then L = 19 + 2 * 275 and then O.RV (2) = RVs (2)
+             OK and then L = 19 + 2 * 269 and then O.RV (2) = RVs (2)
              and then O.RV (3) = Zero_Rv and then O.RV (15) = Zero_Rv);
       declare
          B2 : Msg_Buffer := Buf;
@@ -892,7 +892,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          Check ("OPEN with a wrong proto refused", not OK);
          B2 := Buf;
          B2 (Open_O_NRV) := 16;
-         Decode_Open (B2 (0 .. 19 + 16 * 275 - 1), O, OK);
+         Decode_Open (B2 (0 .. 19 + 16 * 269 - 1), O, OK);
          Check ("OPEN with n_rv = 16 refused", not OK);
          Decode_Open (Buf (0 .. L - 2), O, OK);
          Check ("truncated OPEN refused", not OK);
@@ -1440,7 +1440,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       begin
          Clear_Table (T9);
          Must_Add (T9, Cred_T);
-         Must_Add (T9, Frame_Of (275, 7));          --  tag 7: not a REVOKE frame
+         Must_Add (T9, Frame_Of (269, 7));          --  tag 7: not a REVOKE frame
          for I in 3 .. 6 loop
             Must_Add (T9, Rv (Byte (I)));
          end loop;

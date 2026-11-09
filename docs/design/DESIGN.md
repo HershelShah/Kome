@@ -53,7 +53,7 @@ version order.
 | E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. If a record that `F` can hold does not fit the log, the store refuses it with `LOG_FULL`, and the binding compacts and retries. The store never drops a key silently (§7). |
 | E3 | There is one hash chain per collection, in *segments*. Only the founding key opens a segment (on root-void, or when the chain reaches the top of a segment). Each roster carries links that let a member walk back across segments (§6). |
 | E4 | `from_t` gives protection only against a lost key, not against a key that a thief uses. For a stolen key, revoke from 0 (§6). |
-| E5 | Keys are checked at decode: `box_pk`/`dh_pk` are reduced, not low-order and not the all-zero encoding, and `box_pk` is not `X25519_Public(0^32)`; `root_pk`, `signer` and a `GRANT`'s `subject` are not small-order and not the key of the all-zero seed (`Sign_Key_OK`); the signature and certificate checks make `signer`, `root_pk` and a data record's `author` canonical and not small-order; `del_ttl` is in range, and the cert block is zero exactly for the founding key. A `REVOKE`'s `sign_pk` and a member's `sign_pk` have no key check of their own at decode. Each record has one encoding (§2). That every listed member can open its box is not a decode check: `Kome.Roster.Build` makes it true by construction, because it derives `box_pk` from the secret that sealed the boxes (§6). |
+| E5 | Keys are checked at decode: `box_pk`/`dh_pk` are reduced, not low-order and not the all-zero encoding, and `box_pk` is not `X25519_Public(0^32)`; `root_pk`, `signer`, a `GRANT`'s `subject`, a `REVOKE`'s `sign_pk` and every roster member's `sign_pk` are canonical, not small-order and not the key of the all-zero seed (`Sign_Key_OK`); the signature check makes a data record's `author` canonical and not small-order; `del_ttl` is in range, and the cert block is zero exactly for the founding key. Each record has one encoding (§2). That every listed member can open its box is not a decode check: `Kome.Roster.Build` makes it true by construction, because it derives `box_pk` from the secret that sealed the boxes (§6). |
 | E6 | `root_pk` must be equal to the store's founding key. The effective certificate cap is the largest cap ever certified (§6). |
 | E7 | Admission does not refuse the records of a revoked key. Instead, the design bounds a revoked key's reach with the write cap (`t ≤ wcap`, §4), states assumption A7 (no replica receives, from any source, a record that a revoked subject signed after its revocation), and makes the H8 bounds depend on A7. A refusal would give a stolen root a permanent primitive for mass deletion, and it would give up T3 (§6, §9). |
 | E8 | The engine has no per-author data quota. A quota refusal is a capacity refusal, and under a flood the replicas would not agree about it. It stays an application policy (§10.5). |
@@ -98,16 +98,16 @@ assumed (A1), and so are two binding axioms of the same kind,
 bytes of their input); a test under `-gnata` checks each one. The
 Wycheproof and torsion vectors in `spark/vectors/crypto.txt` are normative:
 an implementation that accepts or refuses one of them differently does not
-interoperate. At decode, `root_pk`, the signer of an authorization record
-and the subject of a `GRANT` must pass `Kome.Records.Sign_Key_OK`: not one
-of the eight small-order encodings (`Is_Small_Order_Point`) and not
-`Derive_Public(0^32)`, the public key of the all-zero seed. The signer,
-`root_pk` and the author of a data record are also canonical and not
-small-order, because a signature or a certificate verifies under each of
-them. (The all-zero key is an order-4 point: a `GRANT` to it would let
+interoperate. At decode, `root_pk`, the signer of an authorization record,
+the subject of a `GRANT` or a `REVOKE` (`sign_pk`) and every member
+`sign_pk` of a `ROSTER` must pass `Kome.Records.Sign_Key_OK`: a canonical
+point encoding (`Is_Canonical_Point`), not one of the eight small-order
+encodings (`Is_Small_Order_Point`) and not `Derive_Public(0^32)`, the
+public key of the all-zero seed. The author of a data record is also
+canonical and not small-order, because a signature verifies under it. (The all-zero key is an order-4 point: a `GRANT` to it would let
 anybody who can deliver frames forge data under it.) The constructors
-require the same of their inputs: `Make_Roster` and `Make_Revoke` require
-`Sign_Key_OK` of `root_pk` and the signer, `Make_Grant` also of the
+require the same of their inputs: `Make_Roster` requires `Sign_Key_OK` of
+`root_pk` and the signer, `Make_Revoke` and `Make_Grant` also of the
 subject, `Make_Cert` and `Cert_OK` of the signer, `Key_Pair` refuses the
 all-zero seed, and `Kome.Store.Open` requires `Sign_Key_OK` of the
 founding key. Kome signs the bare 32-byte `h`, so a device key serves Kome and
@@ -123,7 +123,7 @@ tag 0  ROSTER  ns[16] root_pk[32] salt[16] SIGNER box_pk[32]
                gen:u48 ceiling_t:u48 del_ttl:u48 epoch:u16
                n_links:u8 (≤ 15)   links[n_links]     { from_epoch:u16 nonce[24] box[48] }
                n_members:u8 (≤ 64) members[n_members] { sign_pk[32] dh_pk[32] nonce[24] box[48] }
-tag 1  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32] from_t:u48 rev_seq:u48
+tag 1  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32] from_t:u48
 tag 2  GRANT   ns[16] root_pk[32] salt[16] SIGNER subject[32]
 tag 3  DEL     ns[16] ent[16] t:u48 seq:u48 author[32]
 tag 4  PUT     ns[16] ent[16] flen:u8 field[flen] t:u48 seq:u48 author[32] vlen:u16 value[vlen]
@@ -134,7 +134,7 @@ SIGNER = signer[32] cert_cap:u48 cert_sig[64]
 | Kind | Content offsets (the tag is byte 0) | Frame bytes |
 |---|---|---|
 | ROSTER | ns 1, root_pk 17, salt 49, signer 65, cert_cap 97, cert_sig 103, box_pk 167, gen 199, ceiling_t 205, del_ttl 211, epoch 217, n_links 219, links 220, n_members 220 + 74·n_links, members 221 + 74·n_links | 285 + 74·n_links + 136·n_members, at most 10 099 |
-| REVOKE | ns 1, root_pk 17, salt 49, signer 65, cert_cap 97, cert_sig 103, sign_pk 167, from_t 199, rev_seq 205 | 275 |
+| REVOKE | ns 1, root_pk 17, salt 49, signer 65, cert_cap 97, cert_sig 103, sign_pk 167, from_t 199 | 269 |
 | GRANT | ns 1, root_pk 17, salt 49, signer 65, cert_cap 97, cert_sig 103, subject 167 | 263 |
 | DEL | ns 1, ent 17, t 33, seq 39, author 45 | 141 |
 | PUT | ns 1, ent 17, flen 33, field 34, t 34 + flen, seq 40 + flen, author 46 + flen, vlen 78 + flen, value 80 + flen | 144 + flen + vlen, at most 41 136 |
@@ -197,13 +197,13 @@ and only if all these conditions are true:
    property of how `Kome.Roster.Build` makes the roster, E5, not a decode
    check: no bytes of the frame can show it.)
 4. For `REVOKE`: `sign_pk ≠ root_pk` (nobody can revoke the founding key).
-   For `GRANT`, `REVOKE` and `ROSTER`: `signer` and `root_pk`, and the
-   `subject` of a `GRANT`, are not small-order and not
-   `Derive_Public(0^32)`, the public key of the all-zero seed
-   (`Sign_Key_OK`). `signer` and `root_pk` are canonical by rule 5 and the
-   certificate check of rule 2. A `REVOKE`'s `sign_pk` has no other key
-   check: a key that is not canonical or is small-order signs no record
-   that verifies.
+   For `GRANT`, `REVOKE` and `ROSTER`: `signer` and `root_pk`, the
+   `subject` of a `GRANT`, the `sign_pk` of a `REVOKE` and every member
+   `sign_pk` of a `ROSTER` are canonical point encodings, not
+   small-order and not `Derive_Public(0^32)`, the public key of the
+   all-zero seed (`Sign_Key_OK`). So each subject and member key has one
+   encoding, and a `REVOKE` or a member entry never names a key that
+   could not sign a record that verifies.
 5. The signature is valid, under the predicate above, under the signer
    (authorization kinds) or the author (data kinds).
 
@@ -250,7 +250,7 @@ that the dominator's version is greater on the record's key:
 | DEL | `(t, author, seq, h)` | entity `(ns, ent)` | `v` |
 | ROSTER | `(ceiling_t, signer, gen, h)` | `(ns, signer)` | product of `gen` (strict), `ceiling_t`, `epoch` and `del_ttl` |
 | GRANT | `(cap, subject, 0, h)` | `(ns, issuer, subject)` | product of `cap` and `h` |
-| REVOKE | `(from_t, subject, rev_seq, h)` | none: never dominated | — |
+| REVOKE | `(from_t, subject, 0, h)` | none: never dominated | — |
 
 The roster clause is a product order (D3). Suppose that the order put the
 roster ceiling first. Then a stale roster with an old `gen` and a current
@@ -1454,7 +1454,7 @@ this reason, the sum is 4096 bits.
 reply group (0 only for a root `RANGE`).
 
 ```
-OPEN      5 ‖ proto:u8 ‖ ns[16] ‖ n_rv:u8 (≤ 15) ‖ n_rv × frame[275]
+OPEN      5 ‖ proto:u8 ‖ ns[16] ‖ n_rv:u8 (≤ 15) ‖ n_rv × frame[269]
 HELLO     1 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]
 RANGE     2 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ count:u32 ‖ fp[32]
 ELEMENTS  3 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u32 ‖ frame)
@@ -1474,7 +1474,7 @@ The frames are the sender's **root-void set**: for each subject `s` that is
 whether the sender holds any record that `s` signed). A subject can have
 several founding `REVOKE`s, because `REVOKE`s are never dominated; one is
 enough, since `root_void` ignores `from_t`. The set has at most 15
-subjects (`Signers_Max − 1`), so an `OPEN` is at most 4 144 bytes. The
+subjects (`Signers_Max − 1`), so an `OPEN` is at most 4 054 bytes. The
 sender includes the set only when the peer's Noise static key is a member
 `dh_pk` in some roster that the sender holds, and sends `n_rv = 0`
 otherwise: a stranger gets no list of the collection's revoked roots. The
@@ -1837,7 +1837,7 @@ T14.
   clause of `void` and `W_eff` are monotone in `F`. (So a `GRANT` can only
   un-void, and a `REVOKE` can only void.)
 - **T13 ✓ Bounds.** Each emitted record agrees with the §2 layout. `seq`,
-  `t`, `gen` and `rev_seq` never wrap. At a bound, emission fails with no
+  `t` and `gen` never wrap. At a bound, emission fails with no
   side effect. No refused apply changes the state. Every held roster has
   `gen ≤ ceiling_t` (§2 rule 2), so a certified root's `gen` is at most
   its cap, and an honest root never emits `gen > 2^47` (§10.3).

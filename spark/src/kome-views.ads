@@ -127,7 +127,7 @@ package Kome.Views with SPARK_Mode is
 
    --  A REVOKE of Subject, by any issuer. The revoked key is V.Author of
    --  the REVOKE, and from_t is its V.T (Kome.Headers: V = (from_t,
-   --  subject, rev_seq, h)). No collection test: each held record has
+   --  subject, 0, h)). No collection test: each held record has
    --  NS = Collection (S).
    function Revokes (X : Header; Subject : Key256) return Boolean is
      (X.K = K_Revoke and then X.V.Author = Subject);

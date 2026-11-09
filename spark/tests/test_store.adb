@@ -165,9 +165,9 @@ procedure Test_Store with SPARK_Mode => Off is
    function Founding_Grant (Subject : Pubkey) return Byte_Array is
      (Grant_Of (Root_SK, Root_PK, 0, Zero_Sig, Subject));
 
-   function Revoke_Of (Subject : Pubkey; From_T, Rev_Seq : U48) return Byte_Array is
+   function Revoke_Of (Subject : Pubkey; From_T : U48) return Byte_Array is
       R : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Subject, From_T, Rev_Seq);
+        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Subject, From_T);
    begin
       Sign (R, Root_SK);
       return Encode (R);
@@ -1190,7 +1190,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Put (S, SL, Founding_Grant (Author2_PK));
       Put (S, SL, Put_Of (1, 'n', 10 * Day, 1, [1]));
       Put (S, SL, Put_Of (2, 'n', 11 * Day, 1, [2], Author2_SK, Author2_PK));
-      Put (S, SL, Revoke_Of (Author2_PK, 0, 1));
+      Put (S, SL, Revoke_Of (Author2_PK, 0));
       Put (S, SL, R2);
       Put (S, SL, Put_Of (3, 'n', 12 * Day, 2, [3], Author2_SK, Author2_PK));
       Check ("revoke: admission ignores REVOKE; the revoked key's records stay held",

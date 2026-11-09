@@ -15,7 +15,7 @@
 --    PUT     V = (t, author, seq, h)            cell = (ns, ent, fh)
 --    DEL     V = (t, author, seq, h)            entity = (ns, ent), FH = 0
 --    ROSTER  V = (ceiling_t, signer, gen, h)    Issuer = signer, Del_TTL, Epoch
---    REVOKE  V = (from_t, subject, rev_seq, h)  Issuer = signer
+--    REVOKE  V = (from_t, subject, 0, h)        Issuer = signer
 --    GRANT   V = (cap, subject, 0, h)           Issuer = signer; cap is the
 --                                               issuer's cert_cap, or 2^48 - 1
 --                                               for the founding key (AUDIT.md A1)

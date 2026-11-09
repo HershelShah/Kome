@@ -19,7 +19,7 @@
 --
 --  Messages (all integers big-endian):
 --
---    OPEN      5 ‖ proto:u8 ‖ ns[16] ‖ n_rv:u8 (<= 15) ‖ n_rv × frame[275]
+--    OPEN      5 ‖ proto:u8 ‖ ns[16] ‖ n_rv:u8 (<= 15) ‖ n_rv × frame[269]
 --    HELLO     1 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]
 --    RANGE     2 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ count:u32 ‖ fp[32]
 --    ELEMENTS  3 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u32 ‖ frame)
@@ -250,7 +250,7 @@
 --
 --  Message size (D12). No emitted message is longer than Max_Message_Len
 --  bytes (Kome, §8). This is proved (Plan_OK, Plan_Len). A RANGE is 200
---  bytes, an OPEN is at most Open_Max_Len = 4 144 and a HELLO is at most
+--  bytes, an OPEN is at most Open_Max_Len = 4 054 and a HELLO is at most
 --  Hello_Max_Len = 10 142. If the frames of an ELEMENTS do not fit, the
 --  sender splits it more: one ELEMENTS for each element, over a sub-range
 --  that holds only that element. If a HAVE does not fit, it goes as one
@@ -438,20 +438,20 @@ package Kome.Reconcile with SPARK_Mode is
      (Kome.Records.Frame_Max > Frame_Ship_Max,
       "DESIGN.md §8 (D12): Kome.Records.Frame_Max must not exceed Frame_Ship_Max");
 
-   --  OPEN (pre-gate, D13): 5 ‖ proto ‖ ns[16] ‖ n_rv ‖ n_rv × frame[275].
+   --  OPEN (pre-gate, D13): 5 ‖ proto ‖ ns[16] ‖ n_rv ‖ n_rv × frame[269].
    --  The frames are founding REVOKEs for at most 15 subjects (Rv_Max =
    --  Signers_Max - 1; AUDIT.md H5).
    Proto_Version : constant Byte := 1;
-   Rv_Frame_Len  : constant := Kome.Records.Revoke_Frame_Len;        --  275
+   Rv_Frame_Len  : constant := Kome.Records.Revoke_Frame_Len;        --  269
    Rv_Max        : constant := Signers_Max - 1;                     --  15
    Open_O_Proto  : constant := 1;
    Open_O_NS     : constant := 2;
    Open_O_NRV    : constant := 18;
    Open_Fixed    : constant := 19;
-   Open_Max_Len  : constant := Open_Fixed + Rv_Max * Rv_Frame_Len;   --  4 144
+   Open_Max_Len  : constant := Open_Fixed + Rv_Max * Rv_Frame_Len;   --  4 054
    pragma Compile_Time_Error
-     (Rv_Frame_Len /= 275 or else Open_Max_Len /= 4_144,
-      "DESIGN.md §8: an OPEN is at most 4 144 bytes");
+     (Rv_Frame_Len /= 269 or else Open_Max_Len /= 4_054,
+      "DESIGN.md §8: an OPEN is at most 4 054 bytes");
 
    --  HELLO (post-gate, D13): 1 ‖ n_auth ‖ n_data ‖ digest[32] ‖ cred_len ‖
    --  cred. No register value goes on the wire. HELLO has no proto (OPEN

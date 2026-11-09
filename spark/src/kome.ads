@@ -20,7 +20,7 @@ package Kome with SPARK_Mode, Pure is
    --  each overflow is a proof obligation and no value is reserved (H6).
    type U64 is mod 2**64 with Size => 64;
 
-   --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl, from_t and rev_seq are
+   --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl and from_t are
    --  48-bit values. 0 is an ordinary value, and 2**48 - 1 is an ordinary
    --  value. If an emission would go above the range, it fails and has no
    --  side effect (T13).
