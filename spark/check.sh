@@ -29,9 +29,15 @@ cd "$(dirname "$SELF")"
 # tests/test_*.adb. Fails (exit 1, the reason on stderr) if a name is on
 # one side only, or if src/kome.ads is missing.
 modules() {
-  local names n bad=0
-  names="$( { ls src/kome-*.adb tests/test_*.adb 2>/dev/null || true; } \
-    | sed 's|^src/kome-||; s|^tests/test_||; s|\.adb$||' | sort -u )"
+  local names f n bad=0
+  # Bash globs, not ls: a failed fork must not pass for an empty list.
+  names=""
+  for f in src/kome-*.adb tests/test_*.adb; do
+    [ -e "$f" ] || continue
+    n="${f#src/kome-}"; n="${n#tests/test_}"; n="${n%.adb}"
+    names+="$n"$'\n'
+  done
+  names="$(printf '%s' "$names" | sort -u)"
   if [ ! -f src/kome.ads ]; then
     echo "== kome: src/kome.ads is missing" >&2; bad=1
   fi
