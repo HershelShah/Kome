@@ -183,7 +183,7 @@ begin
           and then Kind_Of ([Byte'(4)]) = K_Put
           and then Has_Kind ([Byte'(4)]) and then not Has_Kind ([Byte'(5)]));
    --  Compile_Time_Error pragmas in the spec check Frame_Max = 176 +
-   --  Value_Max = 41 136, ROSTER 285 .. 10 099 <= Frame_Max, REVOKE 275 and
+   --  Value_Max = 41 136, ROSTER 285 .. 10 099 <= Frame_Max, REVOKE 269 and
    --  GRANT 263. The checks below examine the encoded lengths.
 
    ---------------------------------------------------------------------------
@@ -883,7 +883,7 @@ begin
    ---------------------------------------------------------------------------
    declare
       X    : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 777, 1);
+        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 777);
       Back : Revoke_Record;
       Keep : Revoke_Record;
       St   : Status;
@@ -893,21 +893,21 @@ begin
          E    : constant Byte_Array := Encode (X);
          Want : constant Byte_Array :=
            [Byte'(1)] & NS_A & Root_PK & Salt_A & Root_PK & BE48 (0) & Zero_Sig & Author_PK
-           & BE48 (777) & BE48 (1) & X.Signature;
+           & BE48 (777) & X.Signature;
          H    : constant Header := To_Header (X);
       begin
-         Check ("REVOKE: length 275 and bytes equal the hand-built layout",
-                E'Length = 275 and then E = Want);
+         Check ("REVOKE: length 269 and bytes equal the hand-built layout",
+                E'Length = 269 and then E = Want);
          Decode (E, Back, St);
          Check ("REVOKE: decode OK and equal", St = OK and then Back = X);
          Check ("REVOKE: well-formed", Well_Formed (Back));
          Lemma_Decode_Encode (X);
          Lemma_Encode_Decode_Revoke (E);
-         Check ("REVOKE header: V = (from_t, sign_pk, rev_seq, h), issuer = signer",
+         Check ("REVOKE header: V = (from_t, sign_pk, 0, h), issuer = signer",
                 H.K = K_Revoke and then H.NS = To_Id128 (NS_A)
                 and then H.Ent = Zero_Id and then H.FH = Zero_Key
                 and then H.V.T = 777 and then H.V.Author = To_Key256 (Author_PK)
-                and then H.V.Seq = 1 and then H.V.H = H_Of (E)
+                and then H.V.Seq = 0 and then H.V.H = H_Of (E)
                 and then H.Issuer = To_Key256 (Root_PK) and then H.Del_TTL = 0
                 and then Signer_Key (X) = To_Key256 (Root_PK));
          Lemma_Header_Canonical (X);
@@ -922,7 +922,7 @@ begin
          declare
             Bad : Byte_Array := E;
          begin
-            Bad (250) := Bad (250) xor 1;   --  signature byte 39 (sig is 211 .. 274)
+            Bad (244) := Bad (244) xor 1;   --  signature byte 39 (sig is 205 .. 268)
             Decode_Verified (Bad, Back, St);
             Check ("REVOKE tampered signature: Decode_Verified refuses, unchanged",
                    St = Malformed and then Back = Keep);
@@ -957,36 +957,36 @@ begin
          end V;
          Y : Revoke_Record;
       begin
-         Y := Make_Revoke (Root_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0, 1);
+         Y := Make_Revoke (Root_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0);
          St := V (Y, Author_SK);
          Check ("REVOKE outsider-signed (revoking a root): Malformed",
                 St = Malformed and then not Well_Formed (Y)
                 and then Kome.Crypto.Verify (Y.Signature, Author_PK, Hash (Y.C)));
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9, 2);
+         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
          St := V (Y, Other_SK);
          Check ("REVOKE by certified root: OK, signer key, subject in header",
                 St = OK and then Back = Y and then Signer_Key (Y) = To_Key256 (Other_PK)
                 and then To_Header (Y).V.Author = To_Key256 (Author_PK)
                 and then To_Header (Y).Issuer = To_Key256 (Other_PK));
          Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2,
-                           Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), Author_PK, 9, 2);
+                           Make_Cert (Root_SK, NS_B, Other_PK, Cap_2), Author_PK, 9);
          St := V (Y, Other_SK);
          Check ("REVOKE with a certificate made for another ns: Malformed", St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 5, Zero_Sig, Author_PK, 9, 2);
+         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 5, Zero_Sig, Author_PK, 9);
          St := V (Y, Root_SK);
          Check ("REVOKE by founding key with a nonzero cert block: Malformed",
                 St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Root_PK, 0, 3);
+         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Root_PK, 0);
          St := V (Y, Root_SK);
          Check ("REVOKE of root_pk (founding-signed): Malformed",
                 St = Malformed and then not Well_Formed (Y));
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Root_PK, 0, 3);
+         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Root_PK, 0);
          St := V (Y, Other_SK);
          Check ("REVOKE of root_pk (by a certified root): Malformed", St = Malformed);
-         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0, 4);
+         Y := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
          St := V (Y, Root_SK);
          Check ("REVOKE of a certified root by the founding key: OK", St = OK);
-         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9, 2);
+         Y := Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 9);
          Sign (Y, Other_SK);
          Y.C.Signer := Root_PK;
          Check ("REVOKE whose signer field is not the signing key is not well-formed",
@@ -1102,8 +1102,9 @@ begin
          St := V (Y, Root_SK);
          Check ("GRANT with ns not derived from (root_pk, salt): Malformed", St = Malformed);
 
-         --  H13 and A27: the 8 small-order points and the key of the
-         --  all-zero seed are refused as a GRANT subject (by bytes: the
+         --  H13 and A27: the 8 small-order points, the key of the all-zero
+         --  seed and a non-canonical encoding (y = p, which no small-order
+         --  test names) are refused as a GRANT subject (by bytes: the
          --  founding key's signature is genuine), as a root_pk (even with
          --  a matching ns and a zero block), and as a signer (Cert_OK,
          --  with a genuine certificate from the founding key). Make_Grant
@@ -1119,7 +1120,8 @@ begin
                Pubkey (From_Hex ("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85")),
                Pubkey (From_Hex ("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")),
                Pubkey (From_Hex ("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa")),
-               Kome.Crypto.Zero_Seed_Public];
+               Kome.Crypto.Zero_Seed_Public,
+               Pubkey (From_Hex ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"))];
             Ok_Subject, Ok_Root, Ok_Signer, Ok_Pre, Ok_Roster : Boolean := True;
             Forge : constant Sig := [0 => 1, others => 0];
             Cert_Sink : Sig := Zero_Sig with Volatile;
@@ -1128,7 +1130,10 @@ begin
                    Sign_Key_OK (Root_PK) and then Sign_Key_OK (Other_PK)
                    and then Sign_Key_OK (Author_PK)
                    and then (for all K of Bad => not Sign_Key_OK (K))
-                   and then Kome.Crypto.Derive_Public ([others => 0]) = Bad (9));
+                   and then Kome.Crypto.Derive_Public ([others => 0]) = Bad (9)
+                   and then not Kome.Crypto.Is_Canonical_Point (Bad (10))
+                   and then not Kome.Crypto.Is_Small_Order_Point (Bad (10))
+                   and then not Kome.Crypto.Is_Zero_Seed_Public (Bad (10)));
             for K of Bad loop
                --  Subject: a genuine founding-signed GRANT.
                Y := Make_Grant (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK);
@@ -1181,7 +1186,7 @@ begin
                     Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
                                  TTL_OK, 0, Fill (0, 0), Fill (0, 0));
                   RV : Revoke_Record :=
-                    Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0, 1);
+                    Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
                begin
                   RR.C.Root_PK := K; RR.C.Signer := K; RR.C.NS := Collection_Id (K, Salt_A);
                   RV.C.Root_PK := K; RV.C.Signer := K; RV.C.NS := Collection_Id (K, Salt_A);
@@ -1208,15 +1213,94 @@ begin
                   end if;
                end;
             end loop;
-            Check ("GRANT to a small-order or zero-seed subject: Malformed (9 keys)",
+            Check ("GRANT to a small-order, zero-seed or non-canonical subject: Malformed (10 keys)",
                    Ok_Subject);
-            Check ("small-order or zero-seed root_pk: not well-formed (GRANT)", Ok_Root);
-            Check ("small-order or zero-seed signer with a genuine certificate: not well-formed",
+            Check ("small-order, zero-seed or non-canonical root_pk: not well-formed (GRANT)",
+                   Ok_Root);
+            Check ("small-order, zero-seed or non-canonical signer with a genuine certificate:"
+                   & " not well-formed",
                    Ok_Signer);
-            Check ("small-order or zero-seed root_pk: not well-formed (ROSTER, REVOKE)",
+            Check ("small-order, zero-seed or non-canonical root_pk: not well-formed"
+                   & " (ROSTER, REVOKE)",
                    Ok_Roster);
-            Check ("Make_Grant and Make_Cert refuse a small-order or zero-seed key (Pre)",
+            Check ("Make_Grant and Make_Cert refuse a small-order, zero-seed or non-canonical"
+                   & " key (Pre)",
                    Ok_Pre);
+            --  The same 10 keys as a REVOKE subject (sign_pk) and as a
+            --  ROSTER member sign_pk: refused by bytes, under a genuine
+            --  signature of the founding key. Make_Revoke refuses them as
+            --  the subject by Pre.
+            declare
+               Ok_Rv, Ok_Mem, Ok_Rv_Pre : Boolean := True;
+               Base_Mem : constant Byte_Array := Members_Of (2, 61);
+               RV   : Revoke_Record;
+               RVB  : Revoke_Record;
+               RM   : Roster_Record;
+               RMB  : Roster_Record;
+               S2   : Status;
+               Rv_Sink : Revoke_Record with Volatile;
+            begin
+               RV := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
+               Sign (RV, Root_SK);
+               Decode_Verified (Encode (RV), RVB, S2);
+               Check ("REVOKE with a usable subject: OK", S2 = OK and then Well_Formed (RV));
+               RM := Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
+                                  TTL_OK, 0, Fill (0, 0), Base_Mem);
+               Sign (RM, Root_SK);
+               Decode_Verified (Encode (RM), RMB, S2);
+               Lemma_Member_Keys_OK_Def (RM.C);
+               Lemma_Member_Keys_OK (RM.C, 2);
+               Check ("ROSTER with usable member sign_pks: OK, Member_Keys_OK",
+                      S2 = OK and then Well_Formed (RM) and then Member_Keys_OK (RM.C));
+               for K of Bad loop
+                  RV := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Author_PK, 0);
+                  RV.C.Sign_PK := K;
+                  Sign (RV, Root_SK);
+                  RVB := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
+                  Decode_Verified (Encode (RV), RVB, S2);
+                  if S2 /= Malformed or else Well_Formed (RV)
+                    or else RVB.C.Sign_PK /= Other_PK
+                    or else not Kome.Crypto.Verify (RV.Signature, Root_PK, Hash (RV.C))
+                  then
+                     Ok_Rv := False;
+                  end if;
+                  begin
+                     Rv_Sink := Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, K, 0);
+                     Ok_Rv_Pre := False;
+                  exception
+                     when Ada.Assertions.Assertion_Error => null;
+                  end;
+                  --  Member 2's sign_pk is K; member 1 stays usable.
+                  declare
+                     Mem : Byte_Array := Base_Mem;
+                  begin
+                     for I in 0 .. Pubkey_Len - 1 loop
+                        Mem (Mem'First + Member_Len + I) := K (I);
+                     end loop;
+                     RM := Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 0, 0,
+                                        TTL_OK, 0, Fill (0, 0), Mem);
+                  end;
+                  Sign (RM, Root_SK);
+                  Decode_Verified (Encode (RM), RMB, S2);
+                  if S2 /= Malformed or else Well_Formed (RM) or else Member_Keys_OK (RM.C)
+                    or else Member_Sign_PK (RM.C, 2) /= K
+                    or else not Sign_Key_OK (Member_Sign_PK (RM.C, 1))
+                    or else not DH_Keys_OK (RM.C)
+                    or else not Kome.Crypto.Verify (RM.Signature, Root_PK, Hash (RM.C))
+                  then
+                     Ok_Mem := False;
+                  end if;
+               end loop;
+               Check ("REVOKE of a small-order, zero-seed or non-canonical subject: Malformed"
+                      & " (10 keys), record unchanged",
+                      Ok_Rv);
+               Check ("Make_Revoke refuses a small-order, zero-seed or non-canonical subject"
+                      & " (Pre)",
+                      Ok_Rv_Pre);
+               Check ("ROSTER with a small-order, zero-seed or non-canonical member sign_pk:"
+                      & " Malformed (10 keys)",
+                      Ok_Mem);
+            end;
             --  A27: box_pk = X25519_Public (0^32) is a good DH key by E5,
             --  but Well_Formed refuses it; Box_A is accepted.
             declare
@@ -1251,13 +1335,13 @@ begin
         Make_Roster (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Box_A, 1, 100, TTL_OK, 0,
                      [], Mem);
       Rv1 : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0, 1);
+        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Other_PK, 0);
       Rv2 : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 0, 1);
+        Make_Revoke (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK, 0);
       Gr  : Grant_Record :=
         Make_Grant (Root_PK, Salt_A, Other_PK, Cap_2, Cert_2, Author_PK);
       Alien : constant Revoke_Record :=
-        Make_Revoke (Author_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0, 1);
+        Make_Revoke (Author_PK, Salt_A, Author_PK, 0, Zero_Sig, Other_PK, 0);
    begin
       Sign (Ro, Root_SK);
       Sign (Rv1, Root_SK);
@@ -1380,7 +1464,7 @@ begin
             declare
                R : constant Revoke_Record :=
                  Make_Revoke (Rt_V, Sa_V, Sg_V, 5000, Sig (Fill (64, 11)),
-                              Pubkey (Fill (32, 14)), 777, 1);
+                              Pubkey (Fill (32, 14)), 777);
             begin
                Ok := Content_Bytes (R.C) = Content and then Hash (R.C) = H
                      and then Encode (R) = Content & Zero_Sig;

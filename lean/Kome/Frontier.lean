@@ -128,13 +128,13 @@ the views read:
 - `put` and `del` carry a version.
 - `roster` carries its signer, its ceiling, its generation, its `del_ttl`,
   its epoch and its hash.
-- `revoke` carries its issuer, its subject, `from_t`, `rev_seq` and its hash.
+- `revoke` carries its issuer, its subject, `from_t` and its hash.
 - `grant` carries its issuer, its subject, its write cap and its hash. -/
 inductive Record where
   | put (ent field : Nat) (v : Version) (value : Nat)
   | del (ent : Nat) (v : Version)
   | roster (signer ceil gen ttl epoch h : Nat)
-  | revoke (issuer subject fromT revSeq h : Nat)
+  | revoke (issuer subject fromT h : Nat)
   | grant (issuer subject cap h : Nat)
 deriving DecidableEq, Repr
 
@@ -173,13 +173,13 @@ theorem dominates_trans {x y z : Record} (hyx : dominates y x = true)
     (try simp only [Version.lt] at *) <;> omega
 
 /-- T12 (part): a revocation is never dominated. -/
-theorem revoke_never_dominated (q : Record) (i s f r h : Nat) :
-    dominates q (revoke i s f r h) = false := by
+theorem revoke_never_dominated (q : Record) (i s f h : Nat) :
+    dominates q (revoke i s f h) = false := by
   cases q <;> simp [dominates]
 
 /-- A revocation dominates nothing. -/
-theorem revoke_never_dominates (x : Record) (i s f r h : Nat) :
-    dominates (revoke i s f r h) x = false := by
+theorem revoke_never_dominates (x : Record) (i s f h : Nat) :
+    dominates (revoke i s f h) x = false := by
   cases x <;> simp [dominates]
 
 /-! ### Domination and the frontier -/
@@ -1332,7 +1332,7 @@ key. -/
 /-- `root_void(k)`: the founding key revoked `k`. This view ignores the
 revocation's `from_t`. The founding key is never root-voided. -/
 def rootVoid (founding : Nat) (H : List Record) (k : Nat) : Prop :=
-  k ≠ founding ∧ ∃ f r hh, revoke founding k f r hh ∈ H
+  k ≠ founding ∧ ∃ f hh, revoke founding k f hh ∈ H
 
 /-- `k ∈ W_eff`: a grant of `k` by an issuer that is not root-voided. -/
 def wEff (founding : Nat) (H : List Record) (k : Nat) : Prop :=
@@ -1340,7 +1340,7 @@ def wEff (founding : Nat) (H : List Record) (k : Nat) : Prop :=
 
 /-- The `REVOKE` clause of `void` for a record by `a` at time `t`. -/
 def revokeVoids (founding : Nat) (H : List Record) (a t : Nat) : Prop :=
-  ∃ i f r hh, revoke i a f r hh ∈ H ∧ f ≤ t ∧ ¬ rootVoid founding H i
+  ∃ i f hh, revoke i a f hh ∈ H ∧ f ≤ t ∧ ¬ rootVoid founding H i
 
 /-- `void(p)` for a data record. It is false for the other kinds. -/
 def voided (founding : Nat) (H : List Record) : Record → Prop
@@ -1348,16 +1348,16 @@ def voided (founding : Nat) (H : List Record) : Record → Prop
   | del _ v => revokeVoids founding H v.author v.t ∨ ¬ wEff founding H v.author
   | _ => False
 
-theorem revoke_mem_F {H : List Record} {i s f r h : Nat} :
-    revoke i s f r h ∈ F H ↔ revoke i s f r h ∈ H :=
+theorem revoke_mem_F {H : List Record} {i s f h : Nat} :
+    revoke i s f h ∈ F H ↔ revoke i s f h ∈ H :=
   ⟨fun hx => F_subset H hx, fun hx => mem_F_iff.mpr ⟨hx, fun ⟨q, _, hq⟩ => by
     rw [revoke_never_dominated] at hq; exact Bool.false_ne_true hq⟩⟩
 
 /-- T12: `root_void` is monotone in the held set. -/
 theorem rootVoid_mono {f : Nat} {H H' : List Record} {k : Nat} (hs : H ⊆ H')
     (h : rootVoid f H k) : rootVoid f H' k :=
-  let ⟨hk, fr, r, hh, hm⟩ := h
-  ⟨hk, fr, r, hh, hs hm⟩
+  let ⟨hk, fr, hh, hm⟩ := h
+  ⟨hk, fr, hh, hs hm⟩
 
 theorem rootVoid_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (k : Nat) :
     rootVoid f H k ↔ rootVoid f H' k :=
@@ -1368,8 +1368,8 @@ dominated. -/
 theorem rootVoid_F {f : Nat} {H : List Record} {k : Nat} : rootVoid f (F H) k ↔ rootVoid f H k := by
   unfold rootVoid
   constructor
-  · rintro ⟨hk, fr, r, hh, hm⟩; exact ⟨hk, fr, r, hh, revoke_mem_F.mp hm⟩
-  · rintro ⟨hk, fr, r, hh, hm⟩; exact ⟨hk, fr, r, hh, revoke_mem_F.mpr hm⟩
+  · rintro ⟨hk, fr, hh, hm⟩; exact ⟨hk, fr, hh, revoke_mem_F.mp hm⟩
+  · rintro ⟨hk, fr, hh, hm⟩; exact ⟨hk, fr, hh, revoke_mem_F.mpr hm⟩
 
 theorem wEff_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (k : Nat) :
     wEff f H k ↔ wEff f H' k := by
@@ -1406,26 +1406,26 @@ monotone (a `REVOKE` can only void). -/
 theorem voided_revoke_mono {f : Nat} {H H' : List Record} {a t : Nat} (hs : H ⊆ H')
     (hfix : ∀ i, rootVoid f H' i → rootVoid f H i) (h : revokeVoids f H a t) :
     revokeVoids f H' a t :=
-  let ⟨i, fr, r, hh, hm, hle, hv⟩ := h
-  ⟨i, fr, r, hh, hs hm, hle, fun hv' => hv (hfix i hv')⟩
+  let ⟨i, fr, hh, hm, hle, hv⟩ := h
+  ⟨i, fr, hh, hs hm, hle, fun hv' => hv (hfix i hv')⟩
 
 theorem revokeVoids_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (a t : Nat) :
     revokeVoids f H a t ↔ revokeVoids f H' a t := by
   unfold revokeVoids
   constructor
-  · rintro ⟨i, fr, r, hh, hm, hle, hv⟩
-    exact ⟨i, fr, r, hh, (h _).mp hm, hle, fun hv' => hv ((rootVoid_congr h i).mpr hv')⟩
-  · rintro ⟨i, fr, r, hh, hm, hle, hv⟩
-    exact ⟨i, fr, r, hh, (h _).mpr hm, hle, fun hv' => hv ((rootVoid_congr h i).mp hv')⟩
+  · rintro ⟨i, fr, hh, hm, hle, hv⟩
+    exact ⟨i, fr, hh, (h _).mp hm, hle, fun hv' => hv ((rootVoid_congr h i).mpr hv')⟩
+  · rintro ⟨i, fr, hh, hm, hle, hv⟩
+    exact ⟨i, fr, hh, (h _).mpr hm, hle, fun hv' => hv ((rootVoid_congr h i).mp hv')⟩
 
 theorem revokeVoids_F {f : Nat} {H : List Record} {a t : Nat} :
     revokeVoids f (F H) a t ↔ revokeVoids f H a t := by
   unfold revokeVoids
   constructor
-  · rintro ⟨i, fr, r, hh, hm, hle, hv⟩
-    exact ⟨i, fr, r, hh, revoke_mem_F.mp hm, hle, fun hv' => hv (rootVoid_F.mpr hv')⟩
-  · rintro ⟨i, fr, r, hh, hm, hle, hv⟩
-    exact ⟨i, fr, r, hh, revoke_mem_F.mpr hm, hle, fun hv' => hv (rootVoid_F.mp hv')⟩
+  · rintro ⟨i, fr, hh, hm, hle, hv⟩
+    exact ⟨i, fr, hh, revoke_mem_F.mp hm, hle, fun hv' => hv (rootVoid_F.mpr hv')⟩
+  · rintro ⟨i, fr, hh, hm, hle, hv⟩
+    exact ⟨i, fr, hh, revoke_mem_F.mpr hm, hle, fun hv' => hv (rootVoid_F.mp hv')⟩
 
 /-- T5: `void` is a function of the held set. -/
 theorem voided_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (x : Record) :
@@ -1440,20 +1440,20 @@ theorem voided_F {f : Nat} {H : List Record} (x : Record) : voided f (F H) x ↔
 
 /-- `root_void` as a Boolean test. -/
 def revokesRoot (founding k : Nat) : Record → Bool
-  | revoke i j _ _ _ => decide (i = founding ∧ j = k)
+  | revoke i j _ _ => decide (i = founding ∧ j = k)
   | _ => false
 
 def rootVoidB (founding : Nat) (H : List Record) (k : Nat) : Bool :=
   decide (k ≠ founding) && H.any (revokesRoot founding k)
 
 theorem revokesRoot_iff {f k : Nat} {r : Record} :
-    revokesRoot f k r = true ↔ ∃ fr rs hh, r = revoke f k fr rs hh := by
+    revokesRoot f k r = true ↔ ∃ fr hh, r = revoke f k fr hh := by
   cases r with
-  | revoke i j fr rs hh =>
+  | revoke i j fr hh =>
     simp only [revokesRoot, decide_eq_true_eq]
     constructor
-    · rintro ⟨rfl, rfl⟩; exact ⟨fr, rs, hh, rfl⟩
-    · rintro ⟨_, _, _, he⟩; cases he; exact ⟨rfl, rfl⟩
+    · rintro ⟨rfl, rfl⟩; exact ⟨fr, hh, rfl⟩
+    · rintro ⟨_, _, he⟩; cases he; exact ⟨rfl, rfl⟩
   | _ => simp [revokesRoot]
 
 theorem rootVoidB_iff {f : Nat} {H : List Record} {k : Nat} :
@@ -1462,10 +1462,10 @@ theorem rootVoidB_iff {f : Nat} {H : List Record} {k : Nat} :
   rw [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true]
   constructor
   · rintro ⟨hk, r, hr, hrv⟩
-    obtain ⟨fr, rs, hh, rfl⟩ := revokesRoot_iff.mp hrv
-    exact ⟨hk, fr, rs, hh, hr⟩
-  · rintro ⟨hk, fr, rs, hh, hm⟩
-    exact ⟨hk, _, hm, revokesRoot_iff.mpr ⟨fr, rs, hh, rfl⟩⟩
+    obtain ⟨fr, hh, rfl⟩ := revokesRoot_iff.mp hrv
+    exact ⟨hk, fr, hh, hr⟩
+  · rintro ⟨hk, fr, hh, hm⟩
+    exact ⟨hk, _, hm, revokesRoot_iff.mpr ⟨fr, hh, rfl⟩⟩
 
 theorem rootVoidB_congr {f : Nat} {H H' : List Record} (h : ∀ y, y ∈ H ↔ y ∈ H') (k : Nat) :
     rootVoidB f H k = rootVoidB f H' k :=

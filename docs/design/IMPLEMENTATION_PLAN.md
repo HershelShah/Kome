@@ -25,7 +25,7 @@ built.
 |---|---|---|---|---|
 | 0 | `Kome` (bounds, status), `Kome.Byteorder` (little-endian u64, D7) | §2 bounds, §8 | — | done. Byteorder: 6 tests, 47 checks, 0 unproved |
 | 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` (per-signer authorization slices, `Expire`) | §2, §3, §4, §7 | T1, T2', T4', T11 | done. Versions: 11 tests, 13 checks, 0 unproved. Headers: 24 tests, 33 checks, 0 unproved. Registers: 8 tests, 201 checks, 0 unproved. Frontier: 48 tests, 1,727 checks, 0 unproved |
-| 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 60 tests, 35 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 173 tests, 2,623 checks, 0 unproved |
+| 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 60 tests, 35 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 178 tests, 2,569 checks, 0 unproved |
 | 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first and `Compact_Due`, expiry at `Horizon_At` with the replay clamp, `Open_From_Log` with `Valid_Length` and `Replayed_Prefix`, the counters `Auth_Gen` and `Expire_Mark`, `Horizon_Frozen`) | §7 | T11, T18 | done. 109 tests, 4,511 checks, 0 unproved |
 | 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 61 tests, 322 checks, 0 unproved |
 | 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `revoked`, `far`, `ROSTER_eff` by `(epoch, gen, h)`, `ROSTER_FORK`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 141 tests, 1,190 checks, 0 unproved |
@@ -248,12 +248,13 @@ None is open. These two were decided last:
 
 - Small-order Ed25519 public keys are decided as "refuse":
   `Kome.Crypto.Verify` refuses a small-order public key (the eight
-  canonical torsion encodings). Decode refuses a small-order key,
-  or the key of the all-zero seed, as `root_pk`, signer or GRANT subject
+  canonical torsion encodings). Decode refuses a small-order key, a
+  non-canonical key or the key of the all-zero seed as `root_pk`,
+  signer, GRANT subject, REVOKE `sign_pk` or ROSTER member `sign_pk`
   (`Kome.Records.Sign_Key_OK`). `Make_Roster`, `Make_Revoke` and
   `Make_Grant` require `Sign_Key_OK` of `root_pk` and the signer (and of
-  the subject, for a GRANT), `Make_Cert` and `Cert_OK` of the signer, and
-  `Store.Open` of the founding key. The Wycheproof small-order keys
+  the subject, for a GRANT or a REVOKE), `Make_Cert` and `Cert_OK` of
+  the signer, and `Store.Open` of the founding key. The Wycheproof small-order keys
   (tcIds 152-180) are invalid vectors (AUDIT.md H13).
 - The `EXPIRE_NONE` op of AUDIT.md H24 is declined. The `EXPIRE` entry
   encodes "no horizon" as `2^48 − 1`, a reserved value. The code decodes

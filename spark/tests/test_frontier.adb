@@ -65,10 +65,10 @@ procedure Test_Frontier with SPARK_Mode => Off is
       V => (T => Cap, Author => Key (Subject), Seq => 0, H => Hsh (H)),
       Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
-   --  V = (from_t, subject, rev_seq, h), Issuer = signer.
+   --  V = (from_t, subject, 0, h), Issuer = signer.
    function Revoke (Issuer, Subject : Byte; From_T : U48; H : Natural) return Header is
      (K => K_Revoke, NS => NS, Ent => Zero_Id, FH => Zero_Key,
-      V => (T => From_T, Author => Key (Subject), Seq => 1, H => Hsh (H)),
+      V => (T => From_T, Author => Key (Subject), Seq => 0, H => Hsh (H)),
       Issuer => Key (Issuer), Del_TTL => 0, Epoch => 0);
 
    function New_State (Cap : Data_Size := 64; Slice : Slice_Count := 8) return State is

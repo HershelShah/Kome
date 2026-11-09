@@ -15,7 +15,7 @@
 --                   n_members:u8 (<= 64) members[n_members]
 --                                        { sign_pk[32] dh_pk[32] nonce[24] box[48] }
 --    tag 1  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32]
---                   from_t:u48 rev_seq:u48
+--                   from_t:u48
 --    tag 2  GRANT   ns[16] root_pk[32] salt[16] SIGNER subject[32]
 --    tag 3  DEL     ns[16] ent[16] t:u48 seq:u48 author[32]
 --    tag 4  PUT     ns[16] ent[16] flen:u8 field[flen] t:u48 seq:u48
@@ -71,8 +71,9 @@
 --    * Decode_Verified accepts exactly the well-formed frames (DESIGN.md §2
 --      items 1-5). It checks the shape, ns, the signer block, the certified
 --      ceiling, the del_ttl clamp and the X25519 keys (E5). It also checks
---      that a REVOKE never names root_pk, that no root_pk, signer or GRANT
---      subject is a small-order point or the key of the all-zero seed
+--      that a REVOKE never names root_pk, that every root_pk, signer, GRANT
+--      subject, REVOKE subject and ROSTER member sign_pk is a canonical
+--      point, not a small-order point and not the key of the all-zero seed
 --      (Sign_Key_OK; AUDIT.md H13, A27), that box_pk is not the key of the
 --      all-zero X25519 secret, and it checks the signature.
 --  Not proved: any property of BLAKE2b or Ed25519. Blake2b_256, Sign and
@@ -209,19 +210,25 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    Zero_Sig : constant Sig := [others => 0];
 
    --  A signing key that an authorization record may name as its root_pk,
-   --  its signer or (GRANT) its subject (AUDIT.md H13, A27): not one of the
-   --  8 small-order points (a GRANT to such a key, or a signer or root of
-   --  that form, would let anybody forge records: Kome.Crypto.Verify
-   --  refuses them, and so does this check, byte-locally, so that decode
-   --  stays total and the refusal does not depend on a signature check),
-   --  and not the public key of the all-zero seed (a secret that everybody
-   --  knows). The function has no quantifier, so it is public. Well_Formed
-   --  of ROSTER, REVOKE and GRANT requires it of root_pk and signer
-   --  (Cert_OK), and GRANT of subject. The Make_* constructors and
-   --  Make_Cert require it (Pre). Kome.Store.Open must require it of the
-   --  founding key.
+   --  its signer, its subject (GRANT, REVOKE) or a member sign_pk (ROSTER)
+   --  (AUDIT.md H13, A27): a canonical point encoding
+   --  (Kome.Crypto.Is_Canonical_Point, so that each key has one encoding
+   --  and one lattice identity; Verify refuses a non-canonical key too),
+   --  not one of the 8 small-order points (a GRANT to such a key, or a
+   --  signer or root of that form, would let anybody forge records:
+   --  Kome.Crypto.Verify refuses them, and so does this check,
+   --  byte-locally, so that decode stays total and the refusal does not
+   --  depend on a signature check), and not the public key of the all-zero
+   --  seed (a secret that everybody knows). The function has no
+   --  quantifier, so it is public. Well_Formed of ROSTER, REVOKE and GRANT
+   --  requires it of root_pk and signer (Cert_OK), GRANT and REVOKE of the
+   --  subject, and ROSTER of every member sign_pk (Member_Keys_OK).
+   --  Make_Cert, Make_Grant and Make_Revoke require it of every key they
+   --  take (Pre), Make_Roster of root_pk and signer. Kome.Store.Open
+   --  requires it of the founding key.
    function Sign_Key_OK (PK : Pubkey) return Boolean is
-     (not Kome.Crypto.Is_Small_Order_Point (PK)
+     (Kome.Crypto.Is_Canonical_Point (PK)
+      and then not Kome.Crypto.Is_Small_Order_Point (PK)
       and then not Kome.Crypto.Is_Zero_Seed_Public (PK))
      with Global => null;
 
@@ -870,6 +877,23 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      Pre  => DH_Keys_OK (C) and then I <= C.N_Members,
      Post => Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I));
 
+   --  DESIGN.md §2 item 4: every member sign_pk is a usable signing key
+   --  (Sign_Key_OK: canonical, not small order, not the all-zero seed).
+   --  This function has a quantifier, so its completion is in the private
+   --  part. Lemma_Member_Keys_OK_Def gives its meaning, and
+   --  Lemma_Member_Keys_OK gives it for one member.
+   function Member_Keys_OK (C : Roster_Content) return Boolean with Global => null;
+
+   procedure Lemma_Member_Keys_OK_Def (C : Roster_Content) with
+     Ghost, Global => null,
+     Post => Member_Keys_OK (C) =
+               (for all I in 1 .. C.N_Members => Sign_Key_OK (Member_Sign_PK (C, I)));
+
+   procedure Lemma_Member_Keys_OK (C : Roster_Content; I : Member_Index) with
+     Ghost, Global => null,
+     Pre  => Member_Keys_OK (C) and then I <= C.N_Members,
+     Post => Sign_Key_OK (Member_Sign_PK (C, I));
+
    --  Unused link and member bytes are zero. This function has a
    --  quantifier, so its completion is in the private part.
    function Canonical (R : Roster_Record) return Boolean with Global => null;
@@ -1024,6 +1048,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --    * gen is not more than ceiling_t (so a certified root's gen is
    --      bounded by its cap; AUDIT.md H7);
    --    * del_ttl is in range;
+   --    * every member sign_pk is a usable key (Member_Keys_OK; H13, A27);
    --    * the X25519 keys are good (E5), and box_pk is not the public key
    --      of the all-zero secret (A27);
    --    * the signature over h verifies under signer.
@@ -1035,6 +1060,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       and then (if R.C.Signer /= R.C.Root_PK then R.C.Ceiling_T <= R.C.Cert_Cap)
       and then R.C.Gen <= R.C.Ceiling_T
       and then R.C.Del_TTL in Del_TTL_Min .. Del_TTL_Max
+      and then Member_Keys_OK (R.C)
       and then DH_Keys_OK (R.C)
       and then not Kome.Crypto.Is_Zero_Secret_DH_Public (R.C.Box_PK)
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
@@ -1095,8 +1121,10 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    ---------------------------------------------------------------------------
    --  REVOKE  ns[16] root_pk[32] salt[16] SIGNER sign_pk[32] from_t:u48
-   --          rev_seq:u48
    --  sign_pk is the subject (the revoked key). signer is the issuing root.
+   --  A REVOKE has no sequence number (AUDIT.md E15): the header's seq is
+   --  0 (DESIGN.md §3), and two REVOKEs of one subject by one issuer are
+   --  told apart by from_t and h only.
    ---------------------------------------------------------------------------
 
    type Revoke_Content is record
@@ -1108,7 +1136,6 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Cert_Sig : Sig       := [others => 0];
       Sign_PK  : Pubkey    := [others => 0];   --  subject
       From_T   : U48       := 0;
-      Rev_Seq  : U48       := 0;
    end record;
 
    type Revoke_Record is record
@@ -1124,11 +1151,10 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    Revoke_O_Cert_Sig : constant := 103;
    Revoke_O_Sign_PK  : constant := 167;
    Revoke_O_From_T   : constant := 199;
-   Revoke_O_Rev_Seq  : constant := 205;
-   Revoke_Content_Len : constant := 211;
+   Revoke_Content_Len : constant := 205;
    Revoke_Frame_Len   : constant := Revoke_Content_Len + Sig_Len;
    pragma Compile_Time_Error
-     (Revoke_Frame_Len /= 275, "DESIGN.md §2: a REVOKE frame is 275 bytes");
+     (Revoke_Frame_Len /= 269, "DESIGN.md §2: a REVOKE frame is 269 bytes");
 
    function Content_Byte (C : Revoke_Content; J : Natural) return Byte is
      (if J = 0 then Tag_Revoke
@@ -1139,8 +1165,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       elsif J < Revoke_O_Cert_Sig then Byte_Of_U48 (C.Cert_Cap, J - Revoke_O_Cert_Cap)
       elsif J < Revoke_O_Sign_PK then C.Cert_Sig (J - Revoke_O_Cert_Sig)
       elsif J < Revoke_O_From_T then C.Sign_PK (J - Revoke_O_Sign_PK)
-      elsif J < Revoke_O_Rev_Seq then Byte_Of_U48 (C.From_T, J - Revoke_O_From_T)
-      else Byte_Of_U48 (C.Rev_Seq, J - Revoke_O_Rev_Seq))
+      else Byte_Of_U48 (C.From_T, J - Revoke_O_From_T))
      with Pre => J < Revoke_Content_Len;
 
    function Frame_Byte (R : Revoke_Record; J : Natural) return Byte is
@@ -1149,9 +1174,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
      with Pre => J < Revoke_Frame_Len;
 
    --  A REVOKE with ns derived from (root_pk, salt) and a zero signature.
-   --  Pre (H13, A27): root_pk and signer are usable keys, as Well_Formed
-   --  requires. The subject may be any key (revoking a bad key is
-   --  harmless).
+   --  Pre (H13, A27): root_pk, signer and the subject are usable keys, as
+   --  Well_Formed requires.
    function Make_Revoke
      (Root_PK  : Pubkey;
       S        : Salt;
@@ -1159,10 +1183,10 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       Cert_Cap : U48;
       Cert_Sig : Sig;
       Sign_PK  : Pubkey;
-      From_T   : U48;
-      Rev_Seq  : U48) return Revoke_Record
+      From_T   : U48) return Revoke_Record
    with Global => null,
-        Pre  => Sign_Key_OK (Root_PK) and then Sign_Key_OK (Signer),
+        Pre  => Sign_Key_OK (Root_PK) and then Sign_Key_OK (Signer)
+                and then Sign_Key_OK (Sign_PK),
         Post => Make_Revoke'Result.C.NS = Collection_Id (Root_PK, S)
           and then Make_Revoke'Result.C.Root_PK = Root_PK
           and then Make_Revoke'Result.C.Salt = S
@@ -1171,7 +1195,6 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then Make_Revoke'Result.C.Cert_Sig = Cert_Sig
           and then Make_Revoke'Result.C.Sign_PK = Sign_PK
           and then Make_Revoke'Result.C.From_T = From_T
-          and then Make_Revoke'Result.C.Rev_Seq = Rev_Seq
           and then (for all I in Sig'Range => Make_Revoke'Result.Signature (I) = 0);
 
    function Content_Bytes (C : Revoke_Content) return Byte_Array
@@ -1203,8 +1226,6 @@ package Kome.Records with SPARK_Mode, Preelaborate is
                   U48_At (Frame, Frame'First + Revoke_O_Cert_Cap)
           and then Parse_Revoke'Result.C.From_T =
                      U48_At (Frame, Frame'First + Revoke_O_From_T)
-          and then Parse_Revoke'Result.C.Rev_Seq =
-                     U48_At (Frame, Frame'First + Revoke_O_Rev_Seq)
           and then (for all I in NS_Id'Range =>
                       Parse_Revoke'Result.C.NS (I) = Frame (Frame'First + Revoke_O_NS + I))
           and then (for all I in Pubkey'Range =>
@@ -1233,12 +1254,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
 
    --  Well-formed (DESIGN.md §2 items 2, 4, 5): root_pk is a usable key
    --  (H13, A27), ns agrees with (root_pk, salt), the signer block is
-   --  valid, the founding key is never the subject (D2), and the signature
-   --  over h verifies under signer.
+   --  valid, the subject is a usable key (Sign_Key_OK) and is never the
+   --  founding key (D2), and the signature over h verifies under signer.
    function Well_Formed (R : Revoke_Record) return Boolean is
      (Sign_Key_OK (R.C.Root_PK)
       and then R.C.NS = Collection_Id (R.C.Root_PK, R.C.Salt)
       and then Cert_OK (R.C.Root_PK, R.C.NS, R.C.Signer, R.C.Cert_Cap, R.C.Cert_Sig)
+      and then Sign_Key_OK (R.C.Sign_PK)
       and then R.C.Sign_PK /= R.C.Root_PK
       and then Kome.Crypto.Verify (R.Signature, R.C.Signer, Hash (R.C)));
 
@@ -1261,7 +1283,8 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    function Signer_Key (R : Revoke_Record) return Key256 is
      (To_Key256 (R.C.Signer));
 
-   --  DESIGN.md §3: V = (from_t, sign_pk, rev_seq, h); Issuer = signer.
+   --  DESIGN.md §3: V = (from_t, sign_pk, 0, h); Issuer = signer. A REVOKE
+   --  has no sequence number (AUDIT.md E15), so seq is 0.
    function To_Header (R : Revoke_Record) return Header is
      (K       => K_Revoke,
       NS      => To_Id128 (R.C.NS),
@@ -1269,7 +1292,7 @@ package Kome.Records with SPARK_Mode, Preelaborate is
       FH      => Zero_Key,
       V       => (T      => R.C.From_T,
                   Author => To_Key256 (R.C.Sign_PK),
-                  Seq    => R.C.Rev_Seq,
+                  Seq    => 0,
                   H      => To_Key256 (Hash (R.C))),
       Issuer  => Signer_Key (R),
       Del_TTL => 0,
@@ -1562,6 +1585,9 @@ private
      (Kome.Crypto.Is_Good_DH_Key (C.Box_PK)
       and then (for all I in 1 .. C.N_Members =>
                   Kome.Crypto.Is_Good_DH_Key (Member_DH_PK (C, I))));
+
+   function Member_Keys_OK (C : Roster_Content) return Boolean is
+     (for all I in 1 .. C.N_Members => Sign_Key_OK (Member_Sign_PK (C, I)));
 
    --  The dh_pk of member I, read directly from a ROSTER frame.
    function Frame_DH (Frame : Byte_Array; I : Member_Index) return Pubkey is

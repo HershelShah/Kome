@@ -232,8 +232,8 @@ package Kome.Emit with SPARK_Mode is
         else Floor'Result.V = Zero_Version);
 
    --  X is a data record that this device (key Self) signed. Only PUT and
-   --  DEL have the device's seq in V.Seq (a ROSTER has gen, a REVOKE has
-   --  rev_seq, a GRANT has 0), so only they count for H8. It has no
+   --  DEL have the device's seq in V.Seq (a ROSTER has gen, a REVOKE and
+   --  a GRANT have 0), so only they count for H8. It has no
    --  quantifier, so it is public.
    function Own (X : Header; Self : Key256) return Boolean is
      (Is_Data (X) and then X.V.Author = Self);
