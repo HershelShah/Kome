@@ -13,9 +13,10 @@
 --    root_void(k)        := k ≠ root_pk ∧ ∃ x ∈ F : REVOKE, x.subject = k,
 --                                                   x.issuer = root_pk
 --    W_eff(F)            := { g.subject | g ∈ F, GRANT, ¬ root_void(g.issuer) }
---    void(p)             := (∃ x ∈ F : REVOKE, x.subject = p.author,
---                              p.t ≥ x.from_t, ¬ root_void(x.issuer))
---                           ∨ p.author ∉ W_eff(F)
+--    void(p)             := p is a PUT or a DEL ∧
+--                           ((∃ x ∈ F : REVOKE, x.subject = p.author,
+--                               p.t ≥ x.from_t, ¬ root_void(x.issuer))
+--                            ∨ p.author ∉ W_eff(F))            -- false off data (AUDIT.md G8)
 --    ROSTER_eff          := the maximal ROSTER r ∈ F with ¬ root_void(r.issuer),
 --                           by (epoch, gen, h), ties by (signer, ceiling_t, del_ttl)
 --    del_ttl_eff         := max { r.del_ttl | r ∈ F, ROSTER, ¬ root_void(r.issuer) },
@@ -24,7 +25,13 @@
 --                           (any from_t; the session gate reads it, AUDIT.md A3)
 --    ROSTER_FORK         := ∃ r, r' ∈ F : ROSTER, r ≠ r', same signer, same gen
 --                           (a restored or cloned root; AUDIT.md H1)
+--    contested           := ∃ r ∈ F : ROSTER, ¬ root_void(r.signer),
+--                             r.gen = ROSTER_eff.gen, r.epoch = ROSTER_eff.epoch,
+--                             r.signer ≠ ROSTER_eff.signer
+--                           (rivals: concurrent additions by two roots; AUDIT.md A22)
 --    far(p)              := p.t > now_local + slack                -- advisory
+--    ceiling_lead        := maxceil − now_local, or 0                -- advisory (AUDIT.md N3)
+--    ceiling_stale       := now_local > maxceil                      -- advisory (AUDIT.md N4)
 --
 --  Each quantified view is opaque (declared here, defined in the body).
 --  Other units read it through its Lemma_<View>_Def, which gives exactly
@@ -59,6 +66,10 @@
 --    Lemma_Roster_Local / Lemma_Del_TTL_Local
 --                              the authorization views depend only on held
 --                              ROSTER/REVOKE/GRANT and the founding key;
+--    Lemma_Dominates_Del_TTL / Lemma_Del_TTL_Eff_Apply
+--                              a dominating roster is not lower in del_ttl,
+--                              so to apply a roster never lowers
+--                              del_ttl_eff (H15);
 --    Lemma_Apply_Auth_Local    to apply a ROSTER, REVOKE or GRANT keeps the
 --                              PUT/DEL records (T12);
 --    Lemma_Apply_Data_Local    to apply a PUT or DEL keeps the
@@ -143,6 +154,15 @@ package Kome.Views with SPARK_Mode is
    function Forked (X, Y : Header) return Boolean is
      (X.K = K_Roster and then Y.K = K_Roster and then X /= Y
       and then X.V.Author = Y.V.Author and then X.V.Seq = Y.V.Seq);
+
+   --  X is a rival of the roster E: a roster at the same gen and the same
+   --  epoch, by another signer (AUDIT.md A22). Two roots that add a member
+   --  at the same time make such a pair; h decides ROSTER_eff between them,
+   --  and the loser's newcomer is shut out until a root issues gen + 1 with
+   --  the union of the members.
+   function Rivals (X, E : Header) return Boolean is
+     (X.K = K_Roster and then X.V.Seq = E.V.Seq and then X.Epoch = E.Epoch
+      and then X.V.Author /= E.V.Author);
 
    --  The ROSTER_eff order: Frontier.lean `rkLt`, lexicographic on
    --  (epoch, gen, h, signer, ceiling_t, del_ttl). The V of a roster is
@@ -249,10 +269,12 @@ package Kome.Views with SPARK_Mode is
    function W_Eff (S : State; K : Key256) return Boolean with
      Global => null;
 
-   --  The REVOKE clause of void(p): a held REVOKE of p's author, with
-   --  from_t <= p.t and with an issuer that is not root_void.
+   --  The REVOKE clause of void(p): P is a PUT or a DEL, and F holds a
+   --  REVOKE of p's author, with from_t <= p.t and with an issuer that is
+   --  not root_void. Like void, it is False off data (AUDIT.md G8).
    function Revoke_Void (S : State; P : Header) return Boolean with
-     Global => null;
+     Global => null,
+     Post   => (if Revoke_Void'Result then Is_Data (P));
 
    --  revoked(k): a held REVOKE of k, with any from_t, from an issuer that
    --  is not root_void. The session gate reads it (DESIGN.md §6, AUDIT.md
@@ -262,7 +284,12 @@ package Kome.Views with SPARK_Mode is
    function Revoked (S : State; K : Key256) return Boolean with
      Global => null;
 
-   --  void(p) := Revoke_Void (S, p) or else p.author ∉ W_eff (DESIGN.md §3).
+   --  void(p) := p is a PUT or a DEL, and (Revoke_Void (S, p) or else
+   --  p.author ∉ W_eff) (DESIGN.md §3). The flag is defined on data
+   --  records only, and it is False on every other header (a roster, a
+   --  REVOKE, a GRANT, No_Header): a roster's signer is not a writer, and
+   --  that does not make the roster void (AUDIT.md G8; Frontier.lean
+   --  `voided` is False off data).
    --
    --  What from_t can do (E4, DESIGN.md §6): with from_t > 0, a key's
    --  earlier records do not get the flag. This protects only a key that
@@ -281,7 +308,8 @@ package Kome.Views with SPARK_Mode is
    --  with F (Lemma_Void_Monotone). The W_eff clause is ANTI-monotone (a
    --  GRANT can un-void), so void as a whole is not monotone in F.
    function Is_Void (S : State; P : Header) return Boolean with
-     Global => null;
+     Global => null,
+     Post   => (if Is_Void'Result then Is_Data (P));
 
    --  A roster eligible for ROSTER_eff and del_ttl_eff: its issuer is not
    --  root_void. The founding key is never root_void, so each founding
@@ -316,13 +344,27 @@ package Kome.Views with SPARK_Mode is
    function Roster_Fork (S : State) return Boolean with
      Global => null;
 
+   --  contested (AUDIT.md A22, "rivals"): F holds an eligible roster at
+   --  the gen and the epoch of ROSTER_eff, by another signer. Two roots
+   --  that each add a newcomer at the same time make such a pair. h decides
+   --  ROSTER_eff between them, and the loser's newcomer is not a member
+   --  until a root issues gen + 1 with the union of the members. The flag
+   --  tells a root to do so. It is False if ROSTER_eff is absent. Like
+   --  ROSTER_eff, it ignores root-voided rosters.
+   function Contested (S : State) return Boolean with
+     Global => null,
+     Post   => (if Contested'Result then Roster_Eff (S).Present);
+
    --  del_ttl_eff (D10, DESIGN.md §3, §7): the largest del_ttl of the
    --  eligible held rosters, or Del_TTL_Default if there is none. It is a
    --  maximum, so a root can make tombstone life longer, but it can never
    --  make it shorter than a different root's value. When a root is
-   --  root-voided, the longer life that it set stops. Kome.Store computes
-   --  the expiry horizon from it. On a frontier, each held roster is
-   --  canonical, so its del_ttl is in range, and this value is too.
+   --  root-voided, the longer life that it set stops. A dominating roster
+   --  is not lower in del_ttl (Kome.Headers.Dominates, AUDIT.md H15), so
+   --  to apply a roster never lowers this value either
+   --  (Lemma_Del_TTL_Eff_Apply). Kome.Store computes the expiry horizon
+   --  from it. On a frontier, each held roster is canonical, so its
+   --  del_ttl is in range, and this value is too.
    function Del_TTL_Eff (S : State) return U48 with
      Global => null,
      Pre    => Is_Frontier (S),
@@ -334,6 +376,30 @@ package Kome.Views with SPARK_Mode is
 
    function Is_Writer (S : State; K : Key256) return Boolean is
      (Kome.Registers.In_W (Regs (S), K));
+
+   --  ceiling_lead (AUDIT.md N3): how far maxceil is ahead of this
+   --  replica's wall clock, maxceil − now_local, or 0 if the clock has
+   --  passed maxceil. A per-replica advisory, like Is_Far: the lattice
+   --  never reads it. A large lead means a roster (or a GRANT's cap) was
+   --  issued far ahead of real time; the issuer rule bounds it, and a
+   --  status reports it when it passes a bound. No receiver-side rule can
+   --  refuse it (a late joiner with maxceil = 0 would discard the only
+   --  surviving roster). It never underflows: it is 0 when Now >= maxceil.
+   function Ceiling_Lead (S : State; Now : U48) return U48 is
+     (if Max_Ceil (S) > Now then Max_Ceil (S) - Now else 0)
+   with Global => null;
+
+   --  ceiling_stale (AUDIT.md N4): this replica's wall clock has passed
+   --  maxceil. From then on, each DEL that it writes is clamped to
+   --  t = maxceil, which is above the frozen horizon
+   --  min(now_local, maxceil) − del_ttl_eff, so no tombstone of this
+   --  replica expires until a roster with a higher ceiling arrives (A3
+   --  also gates expiry). The transport and the C ABI show it. Advisory,
+   --  per replica: the lattice never reads it. Ceiling_Stale implies
+   --  Ceiling_Lead = 0; the converse fails at Now = maxceil.
+   function Ceiling_Stale (S : State; Now : U48) return Boolean is
+     (Now > Max_Ceil (S))
+   with Global => null;
 
    ---------------------------------------------------------------------------
    --  Definitions of the opaque views.
@@ -389,15 +455,17 @@ package Kome.Views with SPARK_Mode is
    procedure Lemma_Is_Void_Def (S : State; P : Header) with
      Ghost, Global => null,
      Post => Revoke_Void (S, P) =
-               (for some I in 1 .. Count (S) =>
-                  Voids (Held (S, I), P)
-                  and then not Root_Void (S, Held (S, I).Issuer))
+               (Is_Data (P)
+                and then (for some I in 1 .. Count (S) =>
+                            Voids (Held (S, I), P)
+                            and then not Root_Void (S, Held (S, I).Issuer)))
              and then
              Is_Void (S, P) =
-               ((for some I in 1 .. Count (S) =>
-                   Voids (Held (S, I), P)
-                   and then not Root_Void (S, Held (S, I).Issuer))
-                or else not W_Eff (S, P.V.Author));
+               (Is_Data (P)
+                and then ((for some I in 1 .. Count (S) =>
+                             Voids (Held (S, I), P)
+                             and then not Root_Void (S, Held (S, I).Issuer))
+                          or else not W_Eff (S, P.V.Author)));
 
    procedure Lemma_Roster_Eff_Def (S : State) with
      Ghost, Global => null,
@@ -426,6 +494,14 @@ package Kome.Views with SPARK_Mode is
      Post => Roster_Fork (S) =
                (for some I in 1 .. Count (S) =>
                   (for some J in 1 .. Count (S) => Forked (Held (S, I), Held (S, J))));
+
+   procedure Lemma_Contested_Def (S : State) with
+     Ghost, Global => null,
+     Post => Contested (S) =
+               (Roster_Eff (S).Present
+                and then (for some I in 1 .. Count (S) =>
+                            Eligible (S, Held (S, I))
+                            and then Rivals (Held (S, I), Roster_Eff (S).Hdr)));
 
    --  A REVOKE that voids P also makes P's author revoked.
    procedure Lemma_Revoke_Void_Revoked (S : State; P : Header) with
@@ -639,6 +715,48 @@ package Kome.Views with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Is_Frontier (S1) and then Is_Frontier (S2) and then Same_Auth (S1, S2),
      Post => Del_TTL_Eff (S1) = Del_TTL_Eff (S2);
+
+   --  H15: a roster that dominates a roster is not lower in del_ttl
+   --  (Kome.Headers.Dominates, the roster clause). So the del_ttl
+   --  contribution of a dominated roster to del_ttl_eff is never lost.
+   procedure Lemma_Dominates_Del_TTL (P, Q : Header) with
+     Ghost, Global => null,
+     Pre  => P.K = K_Roster and then Dominates (Q, P),
+     Post => P.Del_TTL <= Q.Del_TTL;
+
+   --  H15, the obligation on the view (Frontier.lean `delTtlEff_F`): to
+   --  apply a roster R never lowers del_ttl_eff. The hypotheses are the
+   --  postcondition of Kome.Frontier.Apply for Before = S'Old, After = S
+   --  when R is held after it: After ⊆ Before ∪ {R}, and each record of
+   --  Before is in After or R dominates it. Then
+   --    * each eligible roster of Before is at most del_ttl_eff (After):
+   --      it is still held, or R dominates it and is not lower in del_ttl
+   --      and is eligible (same signer);
+   --    * so del_ttl_eff does not go down while an eligible roster is held;
+   --    * del_ttl_eff (After) is del_ttl_eff (Before) or R's del_ttl.
+   --  (Before = After is allowed, so a duplicate satisfies the hypotheses
+   --  too. A refused R is not held, and then Apply leaves the state
+   --  unchanged.)
+   procedure Lemma_Del_TTL_Eff_Apply (Before, After : State; R : Header) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (Before) and then Is_Frontier (After)
+             and then Founding (After) = Founding (Before)
+             and then R.K = K_Roster and then Holds (After, R)
+             and then (for all I in 1 .. Count (After) =>
+                         Holds (Before, Held (After, I)) or else Held (After, I) = R)
+             and then (for all I in 1 .. Count (Before) =>
+                         Holds (After, Held (Before, I))
+                         or else Dominates (R, Held (Before, I))),
+     Post => (for all I in 1 .. Count (Before) =>
+                (if Eligible (Before, Held (Before, I))
+                 then Held (Before, I).Del_TTL <= Del_TTL_Eff (After)))
+             and then (if Eligible (After, R) then R.Del_TTL <= Del_TTL_Eff (After))
+             and then (if (for some I in 1 .. Count (Before) =>
+                             Eligible (Before, Held (Before, I)))
+                       then Del_TTL_Eff (Before) <= Del_TTL_Eff (After))
+             and then (Del_TTL_Eff (After) = Del_TTL_Eff (Before)
+                       or else (Eligible (After, R)
+                                and then Del_TTL_Eff (After) = R.Del_TTL));
 
    --  T12 (revocation locality): to apply a ROSTER, REVOKE or GRANT never
    --  adds or removes a PUT or DEL. The postcondition of

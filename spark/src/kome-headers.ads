@@ -68,9 +68,12 @@ package Kome.Headers with SPARK_Mode, Pure is
    --    PUT     a newer PUT on the same cell, or a newer DEL of its entity
    --    DEL     a newer DEL of the same entity
    --    ROSTER  a roster of the same signer with a strictly greater gen,
-   --            and not lower in ceiling_t or in epoch: the product order
-   --            (D3). Two rosters of one signer at equal gen are both held
-   --            (Kome.Views.Roster_Fork reports this).
+   --            and not lower in ceiling_t, in epoch or in del_ttl: the
+   --            product order (D3). Two rosters of one signer at equal gen
+   --            are both held (Kome.Views.Roster_Fork reports this). A
+   --            refresh that lowers del_ttl is held beside the roster it
+   --            refreshes, so no roster (a thief's or the root's own) can
+   --            lower del_ttl_eff (AUDIT.md H15).
    --    GRANT   a GRANT of the same issuer and subject with a greater h
    --            and a cap at least as large: the product order (D1′; keyed
    --            by (ns, issuer, subject)). So wcap, the largest cap of a
@@ -90,7 +93,8 @@ package Kome.Headers with SPARK_Mode, Pure is
          when K_Del    => Q.K = K_Del and then Q.Ent = P.Ent,
          when K_Roster => Q.K = K_Roster and then Q.V.Author = P.V.Author
                           and then P.V.T <= Q.V.T and then P.Epoch <= Q.Epoch
-                          and then P.V.Seq < Q.V.Seq,
+                          and then P.V.Seq < Q.V.Seq
+                          and then P.Del_TTL <= Q.Del_TTL,
          when K_Grant  => Q.K = K_Grant and then Q.V.Author = P.V.Author
                           and then Q.Issuer = P.Issuer
                           and then P.V.T <= Q.V.T and then Lt (P.V.H, Q.V.H),
@@ -173,15 +177,18 @@ package Kome.Headers with SPARK_Mode, Pure is
      Pre  => X.K = K_Revoke,
      Post => not Dominates (Q, X);
 
-   --  Roster domination is the product order (D3): the other conjuncts imply
-   --  the version conjunct. It is strict in gen, so two rosters of one
-   --  signer at equal gen never dominate each other (AUDIT.md H1).
+   --  Roster domination is the product order (D3) on (ceiling_t, epoch,
+   --  gen, del_ttl): the other conjuncts imply the version conjunct. It is
+   --  strict in gen, so two rosters of one signer at equal gen never
+   --  dominate each other (AUDIT.md H1). It is not lower in del_ttl, so a
+   --  dominator never lowers del_ttl_eff (AUDIT.md H15).
    procedure Lemma_Roster_Dom (P, Q : Header) with
      Ghost, Global => null,
      Pre  => P.K = K_Roster and then Q.K = K_Roster and then P.NS = Q.NS,
      Post => Dominates (Q, P)
              = (Q.V.Author = P.V.Author and then P.V.T <= Q.V.T
-                and then P.Epoch <= Q.Epoch and then P.V.Seq < Q.V.Seq);
+                and then P.Epoch <= Q.Epoch and then P.V.Seq < Q.V.Seq
+                and then P.Del_TTL <= Q.Del_TTL);
 
    --  Two rosters of one signer at equal gen never dominate each other.
    procedure Lemma_Equal_Gen_No_Dom (P, Q : Header) with

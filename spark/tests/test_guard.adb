@@ -139,6 +139,12 @@ procedure Test_Guard with SPARK_Mode => Off is
              St = OK and then Roster_Eff (S) = (Present => True, Hdr => RH));
       Check ("gate admits each listed member, refuses an unlisted key",
              Gate (S, R, DH1) and then Gate (S, R, DH2) and then not Gate (S, R, DHX));
+      --  G8: the founding roster is not void (its signer is in no W_eff,
+      --  and that is irrelevant off data). A22: one roster is not contested.
+      Check ("the effective roster is not void (G8) and not contested (A22)",
+             not Is_Void (S, RH) and then not Revoke_Void (S, RH) and then not Contested (S));
+      Lemma_Is_Void_Def (S, RH);
+      Lemma_Contested_Def (S);
       Apply (S, X81, St);
       Check ("a certified root's REVOKE of member 1 (from 0) closes the gate for its dh_pk",
              St = OK and then Revoked (S, S1) and then not Gate (S, R, DH1)
@@ -168,6 +174,21 @@ procedure Test_Guard with SPARK_Mode => Off is
          Apply (Before, R8, St);
          Check ("the certified root's roster at the newer epoch is ROSTER_eff",
                 St = OK and then Roster_Eff (Before) = (Present => True, Hdr => R8));
+         --  A22: a rival at the same gen and epoch by another root (7)
+         --  makes the membership contested; the founding roster at the old
+         --  epoch does not.
+         declare
+            R7 : constant Header := (R8 with delta V => (T => 6000, Author => Key (7), Seq => 2, H => Hsh (85)),
+                                     Issuer => Key (7));
+            W  : State := Before;
+         begin
+            Check ("the founding roster at the old epoch is no rival", not Contested (Before));
+            Apply (W, R7, St);
+            Check ("a second root's roster at the gen and epoch of ROSTER_eff: contested (A22)",
+                   St = OK and then Contested (W) and then Rivals (R7, R8)
+                   and then Roster_Eff (W) = (Present => True, Hdr => R7));
+            Lemma_Contested_Def (W);
+         end;
          Check ("the flag starts clear", not G.Quarantined);
          --  An OPEN that carries no root-void keeps it clear.
          Note_Open (G, Before, Before);
