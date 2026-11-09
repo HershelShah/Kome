@@ -63,7 +63,7 @@ a bug in one of the two.
   discriminant that sets the capacity when the object is created (as
   `Kome.Frontier.State (Cap)` does). Take the bound from `Kome` (root), and
   cite the DESIGN.md section that sets it.
-- Use *range* types for semantic integers (`U48`, `Epoch`, counts), never
+- Use *range* types for semantic integers (`U48`, `Gen`, counts), never
   modular types. Then every overflow is a proof obligation, and no value is
   reserved (H6). `Kome.Byte` and `Kome.U64` are the only modular types.
   `Byte` is the wire unit. `U64` is for the limbs of the accumulator and
