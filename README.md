@@ -13,7 +13,7 @@ The work starts with the design and the proofs. The code comes after them:
 | The problem and the constraints | `docs/design/REQUIREMENTS.md` | fixed |
 | The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
 | Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T3, T4 (a) and (b), T4′, T5, T8, T9, T10, T11 (a) and (b), T12, T13 and T18 proved, in the scope that `DESIGN.md` §10.1 lists (no `sorry`); T4 (c) and T7 open |
-| The implementation, in SPARK, proved against the Lean model | `spark/` | 16 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). Eight of them (`Kome.Versions`, `Headers`, `Registers`, `Frontier`, `Records`, `Store`, `Emit`, `Views`) refine `Frontier.lean`; the others implement encodings, cryptography and protocols. The plan's Phases table holds the per-package test and proof counts, and its Known gaps section lists the remaining gaps |
+| The implementation, in SPARK, proved against the Lean model | `spark/` | 17 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). Eight of them (`Kome.Versions`, `Headers`, `Registers`, `Frontier`, `Records`, `Store`, `Emit`, `Views`) refine `Frontier.lean`; the others implement encodings, cryptography and protocols. The plan's Phases table holds the per-package test and proof counts, and its Known gaps section lists the remaining gaps |
 | The design audit: holes, removable assumptions, residue | `docs/design/AUDIT.md` | 160 confirmed findings at 2be1260; §0 of the audit lists what is applied |
 
 ## The design in one paragraph
