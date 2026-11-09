@@ -137,6 +137,13 @@ package body Kome.Crypto with SPARK_Mode => Off is
       return Result;
    end Blake2b_256;
 
+   function Blake2b_512 (Data : Byte_Array) return Hash512 is
+      Result : Hash512 := [others => 0];
+   begin
+      C_Blake2b (Result'Address, Hash512_Len, Addr (Data), Len (Data));
+      return Result;
+   end Blake2b_512;
+
    procedure Blake2b_256 (Data : Byte_Array; Digest : out Hash256) is
    begin
       C_Blake2b (Digest'Address, Hash_Len, Addr (Data), Len (Data));

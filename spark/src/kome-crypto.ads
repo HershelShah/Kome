@@ -252,6 +252,18 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
                               A (A'First + K) = B (B'First + K)),
           Post => Blake2b_256 (A) = Blake2b_256 (B);
 
+   --  BLAKE2b-512 (RFC 7693, 64-byte digest): crypto_blake2b (hash, 64,
+   --  data, len). Its one use is the set accumulator: acc(e) is eight
+   --  BLAKE2b-512 outputs (SIMPLIFY.md S20, Kome.Digest). There is no
+   --  Post, as for Blake2b_256; the known answers of vectors/digest.txt
+   --  (Python hashlib) check it through Kome.Digest.
+   Hash512_Len : constant := 64;
+   subtype Hash512 is Byte_Array (0 .. Hash512_Len - 1);
+
+   function Blake2b_512 (Data : Byte_Array) return Hash512
+     with Global => null,
+          Pre    => Data'Length <= Max_Data_Len;
+
    --  The same hash, written directly into the caller's buffer. Use
    --  this form when the digest is itself a secret, so that no
    --  function-result temporary holds a copy. An example is the wrap key

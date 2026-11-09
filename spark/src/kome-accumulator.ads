@@ -1,9 +1,9 @@
 --  Kome.Accumulator: the 4096-bit homomorphic set accumulator of DESIGN.md
---  §8 (decision D7 of §1), arithmetic only. DESIGN.md §8 gives these
---  definitions:
+--  §8 (decision D7 of §1), arithmetic only. DESIGN.md §8 with
+--  SIMPLIFY.md S20 gives these definitions:
 --
---    B_i(e) := BLAKE2b-256("kome/acc" ‖ h(e) ‖ u8(i))   for i = 0..15
---    acc(e) := Σ_{i=0..15} LE(B_i(e)) · 2^(256·i)  mod 2^4096,
+--    B_i(e) := BLAKE2b-512("kome/acc" ‖ h(e) ‖ u8(i))   for i = 0..7
+--    acc(e) := Σ_{i=0..7} LE(B_i(e)) · 2^(512·i)  mod 2^4096,
 --              LE(B) := Σ_j B[j] · 256^j
 --    ACC(R) := Σ_{e ∈ R} acc(e)  mod 2^4096
 --
@@ -15,13 +15,13 @@
 --  below from this package.
 --
 --  Byte order (DESIGN.md §8, D7: "acc(e) is the 512-byte string
---  B_0 ‖ … ‖ B_15 read as a little-endian integer, and ACC_le(R) is the
+--  B_0 ‖ … ‖ B_7 read as a little-endian integer, and ACC_le(R) is the
 --  512-byte little-endian form (byte k is ⌊ACC/256^k⌋ mod 256)"; the
 --  accumulator is the only little-endian quantity in Kome). The 512-byte
 --  string is the LITTLE-ENDIAN encoding of the integer: byte 0 is the
---  least significant. The sixteen 32-byte BLAKE2b outputs of acc(e) are
+--  least significant. The eight 64-byte BLAKE2b outputs of acc(e) are
 --  concatenated in counter order, with B_0 lowest. This is the
---  Σ LE(B_i) · 2^(256·i) of §8. fp hashes ACC(R) in this same order
+--  Σ LE(B_i) · 2^(512·i) of §8. fp hashes ACC(R) in this same order
 --  (ACC_le). This is not only a comment: Lemma_Value_From_Bytes and
 --  Lemma_Value_To_Bytes below prove Value (From_Bytes (B)) =
 --  Σ B (I) · 256^I, so Kome.Digest can state acc(e) as an integer and

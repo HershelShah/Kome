@@ -1,10 +1,11 @@
 --  Kome.Digest: the fingerprint of a set of records. This is also the
 --  collection digest (DESIGN.md §8 "Fingerprint = digest (D7)", T6).
 --
---  Definitions, exactly as DESIGN.md §8 (decision D7 of §1) gives them:
+--  Definitions, as DESIGN.md §8 (decision D7 of §1) gives them, with
+--  SIMPLIFY.md S20 (eight BLAKE2b-512 outputs, not sixteen BLAKE2b-256):
 --
---    B_i(e)     := BLAKE2b-256 ("kome/acc" ‖ h(e) ‖ u8(i))     i = 0 .. 15
---    acc(e)     := Σ_i LE(B_i(e)) · 2^(256·i)  mod 2^4096,
+--    B_i(e)     := BLAKE2b-512 ("kome/acc" ‖ h(e) ‖ u8(i))     i = 0 .. 7
+--    acc(e)     := Σ_i LE(B_i(e)) · 2^(512·i)  mod 2^4096,
 --                  LE(B) := Σ_j B[j] · 256^j
 --    ACC(R)     := Σ_{e ∈ R} acc(e)  mod 2^4096
 --    fp(R)      := BLAKE2b-256 ("kome/fp" ‖ u64(|R|) ‖ ACC_le(R))
@@ -16,8 +17,8 @@
 --  BLAKE2b made them (Kome.Keys.To_Bytes). u8(i) is one byte. u64(|R|) is
 --  big-endian.
 --
---  acc(e) is the 512-byte string B_0 ‖ … ‖ B_15 read as a LITTLE-ENDIAN
---  integer (byte 0 least significant, chunk i at bytes 32·i .. 32·i + 31).
+--  acc(e) is the 512-byte string B_0 ‖ … ‖ B_7 read as a LITTLE-ENDIAN
+--  integer (byte 0 least significant, chunk i at bytes 64·i .. 64·i + 63).
 --  ACC_le(R) is the 512-byte little-endian form (Kome.Accumulator.To_Bytes).
 --  The accumulator is the only little-endian quantity in Kome.
 --  vectors/digest.txt holds the normative known-answer vectors (computed
@@ -113,7 +114,7 @@
 --
 --  Run-time cost under -gnata: each Post that mentions Sum_Of or
 --  Frontier_Sum computes the sum again from the start (one Add, about
---  1.5 ms with the checks of Kome.Accumulator on, plus 16 hashes for each
+--  1.5 ms with the checks of Kome.Accumulator on, plus 8 hashes for each
 --  element). The loop invariants and per-step ghost lemmas of
 --  Build_Prefix, Range_Sum, Digest_Of and State_Of would make that
 --  quadratic, so those bodies set Loop_Invariant, Assert and Ghost to
@@ -144,8 +145,10 @@ package Kome.Digest with SPARK_Mode is
    Fp_Tag  : constant Byte_Array (0 .. Fp_Tag_Len - 1) :=
      [16#6B#, 16#6F#, 16#6D#, 16#65#, 16#2F#, 16#66#, 16#70#];
 
-   --  acc(e) is sixteen BLAKE2b-256 outputs: 16 · 32 = 512 bytes = 4096 bits.
-   Chunks : constant := Acc_Bytes / Hash_Len;
+   --  acc(e) is eight BLAKE2b-512 outputs: 8 · 64 = 512 bytes = 4096 bits
+   --  (SIMPLIFY.md S20: half the hash calls of sixteen BLAKE2b-256).
+   Chunk_Len : constant := Kome.Crypto.Hash512_Len;
+   Chunks    : constant := Acc_Bytes / Chunk_Len;
    subtype Chunk_Index is Natural range 0 .. Chunks - 1;
 
    --  "kome/acc" ‖ h(e) ‖ i
@@ -182,12 +185,12 @@ package Kome.Digest with SPARK_Mode is
                           = Kome.Keys.Byte_At (H, J))
             and then Acc_Input'Result (Acc_Input_Len - 1) = Byte (I);
 
-   --  The 512 bytes of acc(e): chunk I is BLAKE2b-256 of Acc_Input (H, I).
+   --  The 512 bytes of acc(e): chunk I is BLAKE2b-512 of Acc_Input (H, I).
    function Acc_Bytes_Of (H : Key256) return Acc_Byte_Array
      with Global => null,
           Post => (for all I in Chunk_Index =>
-                     Acc_Bytes_Of'Result (Hash_Len * I .. Hash_Len * I + Hash_Len - 1)
-                       = Kome.Crypto.Blake2b_256 (Acc_Input (H, I)));
+                     Acc_Bytes_Of'Result (Chunk_Len * I .. Chunk_Len * I + Chunk_Len - 1)
+                       = Kome.Crypto.Blake2b_512 (Acc_Input (H, I)));
 
    --  acc(e) as an accumulator. It is an expression function, so that the
    --  element term is logical in H (a record of words).

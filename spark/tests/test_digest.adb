@@ -403,7 +403,6 @@ procedure Test_Digest with SPARK_Mode => Off is
 
    procedure Frontier_Part is
       use Kome.Frontier;
-      NS  : constant Id128 := (others => 7);
       Fnd : constant Natural := 9;           --  the founding key
 
       function K (B : Natural) return Key256 is (others => Word (B));
@@ -411,20 +410,20 @@ procedure Test_Digest with SPARK_Mode => Off is
 
       function Put (E : Natural; F : Natural; T : U48; A : Natural;
                     Hh : Natural) return Header is
-        (K => K_Put, NS => NS, Ent => Ent (E), FH => K (F),
+        (K => K_Put, Ent => Ent (E), FH => K (F),
          V => (T => T, Author => K (A), Seq => 1, H => H (Hh)),
-         Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
+         Issuer => Zero_Key);
 
       --  The founding key's roster (V = (ceiling_t, signer, gen, h))
       --  and its GRANTs (V = (0, subject, 0, h)) to the two writers.
       Roster : constant Header :=
-        (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+        (K => K_Roster, Ent => Zero_Id, FH => Zero_Key,
          V => (T => 100, Author => K (Fnd), Seq => 1, H => H (500)),
-         Issuer => K (Fnd), Del_TTL => Del_TTL_Default, Epoch => 0);
+         Issuer => K (Fnd));
       function Grant (Subject : Natural; Hh : Natural) return Header is
-        (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+        (K => K_Grant, Ent => Zero_Id, FH => Zero_Key,
          V => (T => U48'Last, Author => K (Subject), Seq => 0, H => H (Hh)),
-         Issuer => K (Fnd), Del_TTL => 0, Epoch => 0);
+         Issuer => K (Fnd));
       Auth : constant array (1 .. 3) of Header :=
         [Roster, Grant (1, 510), Grant (2, 511)];
 
@@ -433,9 +432,9 @@ procedure Test_Digest with SPARK_Mode => Off is
          Put (1, 1, 12, 2, 503),   --  beats the first on cell (1, 1)
          Put (2, 1, 13, 1, 504)];
 
-      X : State := Empty (NS, K (Fnd), 16, 4);
-      Y : State := Empty (NS, K (Fnd), 16, 4);
-      Z : constant State := Empty (NS, K (Fnd), 16, 4);
+      X : State := Empty (K (Fnd), 16);
+      Y : State := Empty (K (Fnd), 16);
+      Z : constant State := Empty (K (Fnd), 16);
       St : Status;
    begin
       Check ("frontier_empty_digest_is_empty_fp",
@@ -449,17 +448,17 @@ procedure Test_Digest with SPARK_Mode => Off is
       --  sorted by key, AUDIT.md G25, so the two data rows end in the same
       --  order; the slot order differs.)
       for I in Auth'Range loop
-         Apply (X, Auth (I), St);
+         Apply (X, Auth (I), U64 (I), St);
          Check ("frontier_x_auth" & I'Image & "_ok", St = OK);
-         Apply (Y, Auth (Auth'Last + 1 - I), St);
+         Apply (Y, Auth (Auth'Last + 1 - I), U64 (I), St);
          Check ("frontier_y_auth" & I'Image & "_ok", St = OK);
       end loop;
       for I in Recs'Range loop
-         Apply (X, Recs (I), St);
+         Apply (X, Recs (I), U64 (I), St);
          Check ("frontier_x_forward_rec" & I'Image & "_ok", St = OK);
       end loop;
       for I in reverse Recs'Range loop
-         Apply (Y, Recs (I), St);
+         Apply (Y, Recs (I), U64 (I), St);
          Check ("frontier_y_reverse_rec" & I'Image & "_status",
                 (if I = 1 then St = Dominated else St = OK));
       end loop;

@@ -194,12 +194,12 @@ package body Kome.Digest with SPARK_Mode is
       R : Acc_Byte_Array := [others => 0];
    begin
       for I in Chunk_Index loop
-         R (Hash_Len * I .. Hash_Len * I + Hash_Len - 1) :=
-           Kome.Crypto.Blake2b_256 (Acc_Input (H, I));
+         R (Chunk_Len * I .. Chunk_Len * I + Chunk_Len - 1) :=
+           Kome.Crypto.Blake2b_512 (Acc_Input (H, I));
          pragma Loop_Invariant
            (for all J in 0 .. I =>
-              R (Hash_Len * J .. Hash_Len * J + Hash_Len - 1)
-                = Kome.Crypto.Blake2b_256 (Acc_Input (H, J)));
+              R (Chunk_Len * J .. Chunk_Len * J + Chunk_Len - 1)
+                = Kome.Crypto.Blake2b_512 (Acc_Input (H, J)));
       end loop;
       return R;
    end Acc_Bytes_Of;
