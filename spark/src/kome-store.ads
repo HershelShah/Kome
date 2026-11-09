@@ -74,8 +74,10 @@
 --        OK with no change. This step needs only log room.
 --    (5) Room: first the rules of Frontier (No_Space for the data row,
 --        Auth_Full for the slice of a signer, the slot table or W), then
---        the log bytes (Log_Full: the binding compacts and retries; under
---        Log_Fits a compacted log always has the room, AUDIT.md H3).
+--        the authorization generation counter at its bound (Auth_Full,
+--        unreachable in practice), then the log bytes (Log_Full: the
+--        binding compacts and retries; under Log_Fits a compacted log
+--        always has the room, AUDIT.md H3).
 --    (6) Apply the record, append APPLY, index the record, and remove the
 --        index entries of the records that it dominated.
 --  A refusal changes nothing (T13): the Post says Unchanged (F'Old, F)
@@ -98,61 +100,83 @@
 --    * one APPLY for each index entry: first all authorization records,
 --      then all data records, each part in index order;
 --    * one EXPIRE (horizon), if the store has a horizon.
---  If fewer than 7 bytes of the log are left after the frames, there is
---  no EXPIRE. The reopened horizon is then lower, and T18 allows this
---  (DESIGN.md §10 item 10 (b)).
+--  If fewer than Expire_Len (7) bytes of the log are left after the
+--  frames, there is no EXPIRE. Compact_Layout states when this happens
+--  (DESIGN.md §10 item 10 (b), AUDIT.md G23): only when the old log had
+--  fewer than 7 bytes beyond the HEADER and the held APPLYs. Every other
+--  entry is an EXPIRE (7 bytes) or an APPLY of a verified frame (more
+--  than 7 bytes), so the old log was exactly the HEADER plus the held
+--  APPLYs: the full-log state of AUDIT.md H3, which Log_Fits excludes.
+--  The reopened horizon is then lower, and T18 allows this.
+--
+--  Compaction is a store duty of the binding (AUDIT.md H26): it calls
+--  Compact when Compact_Due (S) holds (more than 2 * |F| + Compact_Slack
+--  log entries). Put_Frame never compacts on its own. Replay then checks
+--  at most 2 * |F| + Compact_Slack signatures.
+--
+--  Two counters (AUDIT.md H11, H28) are part of the store and of the
+--  contracts of every operation, and replay rebuilds them from the log:
+--    * Auth_Gen goes up by one iff Put_Frame holds a ROSTER, REVOKE or
+--      GRANT. A session compares two reads of it to see whether the gate
+--      must be evaluated again. At its bound, Put_Frame refuses the record
+--      (Auth_Full, Gen_Full);
+--    * Expire_Mark is a monotone lower bound for the write floor
+--      (Kome.Emit.Choose): the largest horizon the store ever applied
+--      (at or above the t of every DEL that Expire removed), and at least
+--      the t of every DEL applied for its effect.
 --
 --  Replay (T18): Open_From_Log does these steps:
---    1. It checks the HEADER.
---    2. It refuses capacities below the logged capacities (No_Space).
---    3. It starts from Frontier.Empty with the logged founding key and the
+--    1. It checks the HEADER (bytes, and the slice of this open).
+--    2. It starts from Frontier.Empty with the logged founding key and the
 --       capacities of this open.
---    4. It performs the entries in order:
+--    3. It performs the entries in order:
 --         * APPLY through Put_Frame, which must hold the record as a new
---           record (any other result is Malformed);
+--           record, or find it held already (any other result is
+--           Malformed; No_Space when the data row of this open is full);
 --         * APPLY_EXPIRED through Frontier.Apply_Expired;
 --         * EXPIRE through Frontier.Expire if it raises the horizon. In
---           all cases, replay sets the horizon.
---  Replay trusts the logged horizons. If an EXPIRE has a horizon that no
---  live store can write (above maxceil - del_ttl_eff), replay performs it
---  as written. A bound such as horizon <= maxceil - Del_TTL_Min would not
---  refuse a log that a store wrote itself: maxceil never falls (the Post
---  of Frontier.Apply keeps Ceil non-decreasing), and
---  del_ttl_eff >= Del_TTL_Min. But DESIGN.md §7 does not ask for this
---  bound, and the code does not apply it: the log is sealed at rest (a
---  later layer).
+--           all cases, replay sets the horizon, clamped to
+--           Horizon_At (F, U48'Last) = maxceil - del_ttl_eff of the
+--           frontier at that point (AUDIT.md H24).
+--  The clamp refuses nothing: the logged bytes stay as they are, only the
+--  horizon that replay applies is bounded. Every EXPIRE that Expire
+--  writes meets the bound (its Post), maxceil never falls (the Post of
+--  Frontier.Apply keeps Ceil non-decreasing), and del_ttl_eff is at least
+--  Del_TTL_Min; so on a store's own log the clamp changes a horizon only
+--  when a later roster raised del_ttl_eff (then the reopened horizon is
+--  lower, which T18 allows). The horizon u48 2**48 - 1 still encodes "no
+--  horizon" on the wire; it is below every bound, so a corrupt EXPIRE can
+--  at most lower the horizon.
 --
---  Capacities (for T18; DESIGN.md §10 item 10 (a) records this decision):
---  the capacities in the HEADER are always the capacities of F (Valid
---  states Logged_Cap (S) = F.Cap and Logged_Slice (S) = F.Slice). A store
---  that opens again with larger capacities can hold more than the old
---  HEADER allows. Then a replay of its log at the logged capacities would
---  fail. To prevent this, Open_From_Log writes the capacities of this
---  open into the HEADER (the six bytes data_cap ‖ slice) and keeps all
---  other bytes. The log is equal to the input byte for byte iff the
---  capacities are the logged capacities.
---  Caution: if a log opens again with larger capacities, a file binding
---  must persist those six bytes before it appends to the log. Use an
---  in-place write of bytes 74 .. 79, or write a new file and rename it.
---  This is the only write that is not at the end of the log.
+--  Capacities (for T18; DESIGN.md §10 item 10 (a), AUDIT.md A11): the
+--  slice is fixed for a collection (DESIGN.md §7; a binding opens every
+--  store with Slice_Max), and the HEADER's slice field is only a check.
+--  The data capacity is a parameter of each open: a store can open again
+--  with a larger or a smaller data_cap, as long as its log replays at
+--  that capacity (No_Space otherwise). The HEADER keeps the data_cap of
+--  the open that wrote it, so the log is never rewritten in place: the
+--  only writes are appends at Log_Length and the rename of Compact.
 --
---  Footprint (for a file binding): Open_From_Log replays against a copy
---  of its input (the image with the new capacities). Compact copies the
---  full log buffer before it writes the log again, so each of the two
---  needs stack or memory for one more log image (up to Log_Max bytes).
---  For this reason, the test main runs in a task with a large stack.
+--  Footprint (for a file binding): Open_From_Log replays against its
+--  input in place. Compact copies the full log buffer before it writes
+--  the log again, so it needs stack or memory for one more log image (up
+--  to Log_Max bytes). For this reason, the test main runs in a task with
+--  a large stack.
 --
 --  gnatprove proves these facts about Open_From_Log:
 --    * the result is Valid and its HEADER is well formed;
---    * its log is the input (except for the capacities, as above);
---    * its horizon is the horizon of the last EXPIRE entry (none if there
---      is no EXPIRE entry);
---    * the result is No_Space only for a log that does not fit, or for
---      logged capacities above the capacities of this open;
+--    * its log is the input, byte for byte;
+--    * its horizon is at most the horizon of the last EXPIRE entry (none
+--      if there is no EXPIRE entry);
+--    * the result is No_Space only for a log that does not fit, for a
+--      logged slice that is not the slice of this open, or for an entry
+--      after the HEADER (one that the data row of this open refuses);
 --    * the result is Malformed only for a HEADER that is not a HEADER, or
 --      for a log with entries after the HEADER;
---    * a log that is only a well-formed HEADER, with capacities that fit,
---      opens.
+--    * a log that is only a well-formed HEADER, with the slice of this
+--      open, opens;
+--    * Valid_Length is the length of the replayed prefix, and (S, F) is
+--      the replay of that prefix (T18-prefix, AUDIT.md H23).
 --  SPARK does not prove that replay accepts every log that a store writes
 --  and gives back its frontier (T18, Lean `auth_first`). This is a set
 --  statement. Lean proves it, and the tests here test it. A replay that
@@ -173,10 +197,11 @@
 --    * Expire computes the horizon of DESIGN.md §7 and removes exactly the
 --      expired DELs. It logs EXPIRE only as stated, and it leaves no held
 --      DEL at or below the horizon (T11 (a));
---    * Compact keeps F, the horizon and the records of the index. It
---      writes the log in the stated layout, with frames byte for byte;
---    * Open_From_Log returns a Valid pair. Its log is its input (except
---      for the capacities), and its horizon is the last logged horizon.
+--    * Compact keeps F, the horizon, the counters and the records of the
+--      index. It writes the log in the stated layout, with frames byte
+--      for byte, and the result is not due for compaction;
+--    * Open_From_Log returns a Valid pair. Its log is its input, and its
+--      horizon is at most the last logged horizon.
 --  This fact is not in the invariant, and the tests check it: the frame of
 --  each entry decodes to the header of the entry. The header contains h,
 --  a BLAKE2b hash of the content of the frame. gnatprove 14 has no
@@ -245,6 +270,23 @@ package Kome.Store with SPARK_Mode is
 
    function Horizon_Of_Code (C : U48) return Horizon_Value is
      (if C = No_Horizon_Code then No_Horizon else Time64 (C));
+
+   --  The authorization generation counter (AUDIT.md H11). A range type,
+   --  as CONVENTIONS.md asks: Put_Frame refuses (Auth_Full) an
+   --  authorization record at the bound, so the counter never wraps. No
+   --  replica applies 2**62 authorization records.
+   Auth_Gen_Max : constant := 2**62;
+   type Auth_Counter is range 0 .. Auth_Gen_Max with Size => 64;
+
+   --  Compaction as a store duty (AUDIT.md H26): the binding calls Compact
+   --  when Compact_Due (S) holds, that is, when the log has more than
+   --  2 * Entries (S) + Compact_Slack entries. Compact never auto-runs
+   --  inside Put_Frame. Then, before each operation, the log has at most
+   --  2 * |F| + Compact_Slack entries, and Open_From_Log verifies at most
+   --  that many signatures (one for each APPLY or APPLY_EXPIRED entry).
+   --  Compact_Slack is at least 2, so a compacted log (the HEADER, one
+   --  APPLY for each held record, at most one EXPIRE) is never due.
+   Compact_Slack : constant := 64;
 
    ---------------------------------------------------------------------------
    --  Frames and their headers (the wire boundary, Kome.Records).
@@ -325,6 +367,24 @@ package Kome.Store with SPARK_Mode is
    function Logged_Cap (S : Store) return Data_Size with Global => null;
    function Logged_Slice (S : Store) return Slice_Count with Global => null;
    function Horizon (S : Store) return Horizon_Value with Global => null;
+   --  The authorization generation (AUDIT.md H11): a monotone counter
+   --  that goes up by one with every ROSTER, REVOKE or GRANT that
+   --  Put_Frame holds, also through replay. A session records it at Admit
+   --  and evaluates the gate again when it has changed. Expire and Compact
+   --  keep it. After Open_From_Log it is the number of APPLY entries of
+   --  authorization records in the log.
+   function Auth_Gen (S : Store) return Auth_Counter with Global => null;
+   --  The expiry mark (AUDIT.md H28): a monotone lower bound for the write
+   --  floor of Kome.Emit.Choose (which takes it as Mark). It is 0 at Open.
+   --  It rises to the new horizon whenever Expire raises the horizon (so
+   --  it is the largest horizon the store ever applied: at least the t of
+   --  every DEL that Expire removed, and below maxceil), and to the t of
+   --  a DEL that Put_Frame applies for its effect (APPLY_EXPIRED). Nothing
+   --  lowers it. Open_From_Log rebuilds it from the logged EXPIRE and
+   --  APPLY_EXPIRED entries through the same steps, so after a reopen it
+   --  is at most the live mark (a raise that removed nothing is not
+   --  logged), and a compacted log's EXPIRE (horizon) carries it.
+   function Expire_Mark (S : Store) return U48 with Global => null;
    function Entries (S : Store) return Held_Count with
      Global => null,
      Post => Entries'Result <= S.Cap;
@@ -346,6 +406,11 @@ package Kome.Store with SPARK_Mode is
    function Entry_Start (S : Store; K : Positive) return Log_Size with
      Global => null,
      Pre => K <= Log_Entries (S);
+
+   --  The log is due for compaction (AUDIT.md H26; see Compact_Slack).
+   --  Under Valid, Entries (S) = Count (F).
+   function Compact_Due (S : Store) return Boolean is
+     (Log_Entries (S) > 2 * Entries (S) + Compact_Slack);
 
    --  At least one index entry is the record X. Opaque (quantified).
    function Indexed (S : Store; X : Header) return Boolean with Global => null;
@@ -460,6 +525,11 @@ package Kome.Store with SPARK_Mode is
                          and then not In_W (Regs (F), R.V.Author)
                          and then Kome.Registers.Count (Regs (F)) = Writers_Max)));
 
+   --  The authorization generation counter is at its bound, and R would
+   --  raise it (Auth_Full; AUDIT.md H11).
+   function Gen_Full (S : Store; R : Header) return Boolean is
+     (Is_Auth (R) and then Auth_Gen (S) = Auth_Gen_Max);
+
    --  Fewer than Need bytes of log are left.
    function Log_Short (S : Store; Need : Natural) return Boolean is
      (S.Log_Cap - Log_Length (S) < Need);
@@ -502,6 +572,7 @@ package Kome.Store with SPARK_Mode is
       and then (if Expired (H, Horizon (S))
                 then Drops_Any (F, H) and then Log_Short (S, Apply_Prefix + Len)
                 else not Data_Full (F, H) and then not Auth_Rule (F, H)
+                     and then not Gen_Full (S, H)
                      and then Log_Short (S, Apply_Prefix + Len)))
      with Pre => Len <= Kome.Records.Frame_Max;
 
@@ -554,6 +625,14 @@ package Kome.Store with SPARK_Mode is
       else Time64'Min (Time64 (Now), Time64 (Ceil (Regs (F))))
            - Time64 (Kome.Views.Del_TTL_Eff (F)))
      with Pre => Is_Frontier (F);
+
+   --  The clamp of the horizon is active (AUDIT.md N4): Expire (Now) would
+   --  bound the horizon by maxceil (F), not by Now. Advisory, for the
+   --  binding (shown beside Kome.Views.Ceiling_Stale): the horizon stays
+   --  where it is until a root raises the ceiling.
+   function Horizon_Frozen (F : Frontier.State; Now : U48) return Boolean is
+     (Now > Ceil (Regs (F)))
+     with Global => null, Pre => Is_Frontier (F);
 
    --  Expire (Now) logs EXPIRE. It does this if it raises the horizon and
    --  removes a record, or if it lowers the horizon.
@@ -626,24 +705,70 @@ package Kome.Store with SPARK_Mode is
      Post => Same_Bytes'Result =
        (for all K in 0 .. Len - 1 => Log_Byte (A, PA + K) = Log_Byte (B, PB + K));
 
-   --  In each part (authorization records, data records), the entries of
-   --  S are in the order of their positions in the index of Old_S. Its
-   --  Post defines it (one atom in the contract of Compact).
-   function In_Old_Order (Old_S, S : Store) return Boolean
-   with
-     Ghost, Global => null,
-     Post => In_Old_Order'Result =
-       (for all I in 1 .. Entries (S) =>
-          (for all J in I + 1 .. Entries (S) =>
-             (if Is_Data (Entry_At (S, I).H) = Is_Data (Entry_At (S, J).H)
-              then Indexed (Old_S, Entry_At (S, I).H)
-                   and then Indexed (Old_S, Entry_At (S, J).H)
-                   and then Position (Old_S, Entry_At (S, I).H)
-                            < Position (Old_S, Entry_At (S, J).H))));
-
    --  The offset where the frames of a compacted log end.
    function Body_End (S : Store) return Natural is
      (if Entries (S) = 0 then Header_Len else End_Of (Entry_At (S, Entries (S))));
+
+   --  The index clause of Compact: the same records, frame for frame, byte
+   --  for byte, with the authorization records first. Its Post defines it
+   --  (one atom in the contract of Compact; Lemma_Compact_Index in the
+   --  body proves it, so that no goal of the Post carries the whole
+   --  clause, AUDIT.md G17). The order inside each part is not stated:
+   --  nothing uses it (AUDIT.md A28).
+   function Compact_Index (Old_S, S : Store) return Boolean
+   with
+     Ghost, Global => null,
+     Post => Compact_Index'Result =
+       ((for all J in 1 .. Entries (Old_S) => Indexed (S, Entry_At (Old_S, J).H))
+        and then (for all I in 1 .. Entries (S) =>
+                    Indexed (Old_S, Entry_At (S, I).H)
+                    and then Entry_At (Old_S, Position (Old_S, Entry_At (S, I).H)).Len
+                             = Entry_At (S, I).Len
+                    and then End_Of (Entry_At (S, I)) <= Log_Length (S)
+                    and then End_Of (Entry_At (Old_S, Position (Old_S, Entry_At (S, I).H)))
+                             <= Log_Length (Old_S)
+                    and then Same_Bytes (S, Entry_At (S, I).Off,
+                                         Old_S,
+                                         Entry_At (Old_S, Position (Old_S, Entry_At (S, I).H)).Off,
+                                         Apply_Prefix + Entry_At (S, I).Len))
+        and then (for all I in 1 .. Entries (S) =>
+                    (for all J in I + 1 .. Entries (S) =>
+                       (if Is_Data (Entry_At (S, I).H) then Is_Data (Entry_At (S, J).H)))));
+
+   --  The layout clause of Compact: the HEADER bytes, the APPLYs with no
+   --  gaps, then EXPIRE (horizon) if the store has a horizon and the log
+   --  has room for it. Its Post defines it (Lemma_Compact_Layout proves
+   --  it). The last conjunct is the lemma of DESIGN.md §10 item 10 (b)
+   --  (AUDIT.md G23): Compact omits a horizon only when the old log had
+   --  fewer than Expire_Len bytes beyond the HEADER and the held APPLYs,
+   --  that is, only in the full-log state of AUDIT.md H3 (every other
+   --  entry is an EXPIRE of Expire_Len bytes or an APPLY of a verified
+   --  frame, which is longer, so the old log was exactly the HEADER and
+   --  the held APPLYs). Under Log_Fits this state is unreachable.
+   function Compact_Layout (Old_S, S : Store) return Boolean
+   with
+     Ghost, Global => null,
+     Post => Compact_Layout'Result =
+       (Log_Length (S) >= Header_Len
+        and then Log_Length (Old_S) >= Header_Len
+        and then Body_End (S) <= Log_Length (Old_S)
+        and then (for all K in 0 .. Header_Len - 1 => Log_Byte (S, K) = Log_Byte (Old_S, K))
+        and then (if Entries (S) > 0 then Entry_At (S, 1).Off = Header_Len)
+        and then (for all I in 1 .. Entries (S) - 1 =>
+                    Entry_At (S, I + 1).Off = End_Of (Entry_At (S, I)))
+        and then (for all I in 1 .. Entries (S) =>
+                    I + 1 <= Log_Entries (S)
+                    and then Entry_Start (S, I + 1) = Entry_At (S, I).Off)
+        and then (if Horizon (S) >= 0 and then S.Log_Cap - Body_End (S) >= Expire_Len
+                  then Log_Length (S) >= Body_End (S)
+                       and then Log_Length (S) - Body_End (S) = Expire_Len
+                       and then Log_Entries (S) = Entries (S) + 2
+                       and then Op_At (S, Body_End (S)) = Op_Expire
+                       and then Code_At (S, Body_End (S) + 1) = Horizon_Code (Horizon (S))
+                  else Log_Length (S) = Body_End (S)
+                       and then Log_Entries (S) = Entries (S) + 1)
+        and then (if Horizon (S) >= 0 and then Log_Length (S) = Body_End (S)
+                  then Log_Length (Old_S) - Body_End (S) < Expire_Len));
 
    ---------------------------------------------------------------------------
    --  Operations.
@@ -673,12 +798,16 @@ package Kome.Store with SPARK_Mode is
        and then Entries (S) = 0
        and then Log_Length (S) = Header_Len
        and then Log_Entries (S) = 1
-       and then Horizon (S) = No_Horizon;
+       and then Horizon (S) = No_Horizon
+       and then Auth_Gen (S) = 0
+       and then Expire_Mark (S) = 0;
 
    --  Apply one record and store its frame (DESIGN.md §7, steps 0-6 above).
    --  Before the call, the caller decodes and verifies Frame (Verified,
    --  that is, what Kome.Records.Decode_Verified accepts). The caller
-   --  gives the header H of Frame.
+   --  gives the header H of Frame. Off is always the log length before
+   --  the call: the offset of the appended entry, if the call appended
+   --  one (AUDIT.md G22).
    procedure Put_Frame
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -700,6 +829,7 @@ package Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
+       and Off = Log_Length (S'Old)
        and Result in OK | Dominated | Inadmissible | Malformed | No_Space | Auth_Full | Log_Full
        --  The order of DESIGN.md §7, each outcome as an iff.
        and (Result = Malformed) = Foreign_Root (S'Old, Frame)
@@ -710,7 +840,8 @@ package Kome.Store with SPARK_Mode is
                 and then not Holds (F'Old, H) and then Dom (F'Old, H))
        and (Result = Auth_Full)
              = (not Foreign_Root (S'Old, Frame) and then not Holds (F'Old, H)
-                and then not Dom (F'Old, H) and then Auth_Rule (F'Old, H))
+                and then not Dom (F'Old, H)
+                and then (Auth_Rule (F'Old, H) or else Gen_Full (S'Old, H)))
        and (Result = No_Space)
              = (not Foreign_Root (S'Old, Frame) and then Admitted (F'Old, H)
                 and then At_Bound (S'Old, F'Old, H, Frame'Length))
@@ -724,6 +855,16 @@ package Kome.Store with SPARK_Mode is
             then Unchanged (F'Old, F) and then S = S'Old)
        --  Append-only.
        and Log_Extends (S'Old, S)
+       --  The counters (AUDIT.md H11, H28): Auth_Gen goes up by one iff
+       --  the call held an authorization record; Expire_Mark rises to the
+       --  t of a DEL applied for its effect, and otherwise stays.
+       and (if Result = OK and then not Holds (F'Old, H) and then Is_Auth (H)
+            then Auth_Gen (S'Old) < Auth_Gen_Max and then Auth_Gen (S) = Auth_Gen (S'Old) + 1
+            else Auth_Gen (S) = Auth_Gen (S'Old))
+       and (if Result = OK and then not Holds (F'Old, H)
+               and then Expired (H, Horizon (S'Old)) and then Drops_Any (F'Old, H)
+            then Expire_Mark (S) = U48'Max (Expire_Mark (S'Old), H.V.T)
+            else Expire_Mark (S) = Expire_Mark (S'Old))
        --  OK: held and indexed, or an expired DEL applied for its effect.
        and (if Result = OK and then not Holds (F'Old, H) then
               (if Expired (H, Horizon (S'Old))
@@ -753,6 +894,7 @@ package Kome.Store with SPARK_Mode is
      Pre  => Valid (S, F),
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
+       and Auth_Gen (S) = Auth_Gen (S'Old)
        and Result in OK | Log_Full
        and (Result = Log_Full)
              = (Logs_Expire (S'Old, F'Old, Now) and then Log_Short (S'Old, Expire_Len))
@@ -760,13 +902,25 @@ package Kome.Store with SPARK_Mode is
        and Log_Extends (S'Old, S)
        and (if Result = OK then
               Horizon (S) = Horizon_At (F'Old, Now)
+              --  AUDIT.md H24: the horizon that Expire writes is at most
+              --  maxceil - del_ttl_eff of the frontier it was computed
+              --  on, so the clamp of replay never lowers it on the same
+              --  frontier.
+              and then Horizon (S) <= Horizon_At (F'Old, U48'Last)
               --  The held set is the old set minus exactly the DELs at or
               --  below the new horizon (none if the horizon did not rise).
               and then Expired_Out (F'Old, F, Horizon (S))
               and then (if Logs_Expire (S'Old, F'Old, Now)
                         then Appended_Expire (S'Old, S, Log_Length (S'Old), Horizon (S))
                         else Log_Length (S) = Log_Length (S'Old)
-                             and then Log_Entries (S) = Log_Entries (S'Old)))
+                             and then Log_Entries (S) = Log_Entries (S'Old))
+              --  AUDIT.md H28: the mark rises to the new horizon iff the
+              --  call raised the horizon (every DEL removed is at or
+              --  below it), and otherwise stays.
+              and then (if Horizon (S) > Horizon (S'Old)
+                        then Expire_Mark (S) = U48'Max (Expire_Mark (S'Old), U48 (Horizon (S)))
+                        else Expire_Mark (S) = Expire_Mark (S'Old)))
+       and Expire_Mark (S) >= Expire_Mark (S'Old)
        --  T11 (a): no held DEL is at or below the horizon.
        and (for all I in 1 .. Count (F) => not Expired (Held (F, I), Horizon (S)));
 
@@ -780,43 +934,15 @@ package Kome.Store with SPARK_Mode is
      Post => Valid (S, F)
        and Same_Identity (S'Old, S)
        and Horizon (S) = Horizon (S'Old)
+       and Auth_Gen (S) = Auth_Gen (S'Old)
+       and Expire_Mark (S) = Expire_Mark (S'Old)
        and Entries (S) = Entries (S'Old)
-       and Body_End (S) <= Log_Length (S'Old)
-       --  The same records, frame for frame, byte for byte.
-       and (for all J in 1 .. Entries (S'Old) => Indexed (S, Entry_At (S'Old, J).H))
-       and (for all I in 1 .. Entries (S) =>
-              Indexed (S'Old, Entry_At (S, I).H)
-              and then Entry_At (S'Old, Position (S'Old, Entry_At (S, I).H)).Len
-                       = Entry_At (S, I).Len
-              and then End_Of (Entry_At (S, I)) <= Log_Length (S)
-              and then End_Of (Entry_At (S'Old, Position (S'Old, Entry_At (S, I).H)))
-                       <= Log_Length (S'Old)
-              and then Same_Bytes (S, Entry_At (S, I).Off,
-                                   S'Old, Entry_At (S'Old, Position (S'Old, Entry_At (S, I).H)).Off,
-                                   Apply_Prefix + Entry_At (S, I).Len))
-       --  Authorization records first; each part in index order.
-       and (for all I in 1 .. Entries (S) =>
-              (for all J in I + 1 .. Entries (S) =>
-                 (if Is_Data (Entry_At (S, I).H) then Is_Data (Entry_At (S, J).H))))
-       and In_Old_Order (S'Old, S)
-       --  The layout: the HEADER bytes, the APPLYs with no gaps, then
-       --  EXPIRE.
-       and Log_Length (S) >= Header_Len
-       and Log_Length (S'Old) >= Header_Len
-       and (for all K in 0 .. Header_Len - 1 => Log_Byte (S, K) = Log_Byte (S'Old, K))
-       and (if Entries (S) > 0 then Entry_At (S, 1).Off = Header_Len)
-       and (for all I in 1 .. Entries (S) - 1 =>
-              Entry_At (S, I + 1).Off = End_Of (Entry_At (S, I)))
-       and (for all I in 1 .. Entries (S) =>
-              I + 1 <= Log_Entries (S) and then Entry_Start (S, I + 1) = Entry_At (S, I).Off)
-       and (if Horizon (S) >= 0 and then S.Log_Cap - Body_End (S) >= Expire_Len
-            then Log_Length (S) >= Body_End (S)
-                 and then Log_Length (S) - Body_End (S) = Expire_Len
-                 and then Log_Entries (S) = Entries (S) + 2
-                 and then Op_At (S, Body_End (S)) = Op_Expire
-                 and then Code_At (S, Body_End (S) + 1) = Horizon_Code (Horizon (S))
-            else Log_Length (S) = Body_End (S)
-                 and then Log_Entries (S) = Entries (S) + 1);
+       --  The same records, frame for frame, byte for byte, authorization
+       --  records first (Compact_Index); the layout (Compact_Layout).
+       and Compact_Index (S'Old, S)
+       and Compact_Layout (S'Old, S)
+       --  AUDIT.md H26: a compacted log is never due for compaction.
+       and not Compact_Due (S);
 
    --  The capacities that the HEADER of a log records.
    function Header_Cap (Input : Byte_Array) return Word is
@@ -828,9 +954,11 @@ package Kome.Store with SPARK_Mode is
      (Kome.Records.U16_Of (Input (HO_Slice), Input (HO_Slice + 1)))
      with Pre => Input'First = 0 and then Input'Last >= Header_Len - 1;
 
-   --  Input starts with a HEADER: its op, magic and version, and an ns that
-   --  is BLAKE2b-256 (root_pk ‖ salt)[0:16] of its root_pk and salt. These
-   --  are the checks that Open_From_Log does on the HEADER.
+   --  Input starts with a HEADER: its op, magic and version, an ns that
+   --  is BLAKE2b-256 (root_pk ‖ salt)[0:16] of its root_pk and salt, and
+   --  a data_cap in the range of Data_Size. These are the checks that
+   --  Open_From_Log does on the bytes of the HEADER. (The slice is a
+   --  check against the slice of this open, below.)
    function Header_Well_Formed (Input : Byte_Array) return Boolean is
      (Input'Last >= Header_Len - 1
       and then Input (0) = Op_Header
@@ -838,7 +966,8 @@ package Kome.Store with SPARK_Mode is
       and then Input (HO_Version) = Log_Version
       and then Input (HO_NS .. HO_NS + NS_Len - 1) =
                  Kome.Records.Collection_Id (Input (HO_Root .. HO_Root + Pubkey_Len - 1),
-                                             Input (HO_Salt .. HO_Salt + Salt_Len - 1)))
+                                             Input (HO_Salt .. HO_Salt + Salt_Len - 1))
+      and then Header_Cap (Input) <= Word (Data_Size'Last))
      with Pre => Input'First = 0;
 
    --  The K-th entry of the log is an EXPIRE entry.
@@ -853,44 +982,96 @@ package Kome.Store with SPARK_Mode is
      (Horizon_Of_Code (Code_At (S, Entry_Start (S, K) + 1)))
      with Pre => Is_Expire (S, K);
 
-   --  Horizon (S) is the horizon of the last EXPIRE entry of the log, or
-   --  none if the log has no EXPIRE entry. (This is true for a replayed
-   --  store. A live store can have a higher horizon that is only in
-   --  memory, DESIGN.md §7.)
+   --  Horizon (S) is at most the horizon of the last EXPIRE entry of the
+   --  log, or none if the log has no EXPIRE entry. (This is true for a
+   --  replayed store: replay clamps each logged horizon to the bound of
+   --  its frontier, AUDIT.md H24, and the EXPIREs that a store writes
+   --  meet the bound, so the horizon of the last EXPIRE is reached unless
+   --  del_ttl_eff rose after it. A live store can have a higher horizon
+   --  that is only in memory, DESIGN.md §7.)
    function Horizon_Logged (S : Store) return Boolean is
      (if (for some K in 1 .. Log_Entries (S) => Is_Expire (S, K))
       then (for some K in 1 .. Log_Entries (S) =>
               Is_Expire (S, K)
-              and then Horizon (S) = Expire_Horizon (S, K)
+              and then Horizon (S) <= Expire_Horizon (S, K)
               and then (for all K2 in K + 1 .. Log_Entries (S) => not Is_Expire (S, K2)))
       else Horizon (S) = No_Horizon);
 
+   --  The T18-prefix clause of Open_From_Log (AUDIT.md H23): (S, F) is a
+   --  Valid pair, its log is the first VL bytes of Input, and its HEADER
+   --  is the HEADER of Input. Its Post defines it (one atom in the
+   --  contract of Open_From_Log, so that no goal carries the whole
+   --  clause).
+   function Replayed_Prefix
+     (Input : Byte_Array; F : Frontier.State; S : Store; VL : Log_Size) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Input'First = 0,
+     Post => Replayed_Prefix'Result =
+       (Valid (S, F)
+        and then VL >= Header_Len
+        and then Input'Last < S.Log_Cap
+        and then Header_Well_Formed (Input)
+        and then Header_Slice (Input) = F.Slice
+        and then Log_Length (S) = VL
+        and then VL - 1 <= Input'Last
+        and then (for all J in 0 .. VL - 1 => Log_Byte (S, J) = Input (J))
+        and then Word (Logged_Cap (S)) = Header_Cap (Input)
+        and then Logged_Slice (S) = F.Slice
+        and then Horizon_Logged (S));
+
    --  Open a store again from its log (replay, T18). The discriminants of
-   --  F and S are the capacities for this open. They must be at least the
-   --  logged capacities. If not, the result is No_Space. The result is
-   --  also No_Space when the log does not fit S, that is,
+   --  F and S are the capacities for this open (AUDIT.md A11):
+   --    * the slice is fixed for a collection (DESIGN.md §7 requires the
+   --      same slice at every replica; a binding opens with Slice_Max).
+   --      The HEADER's slice field is only a check: a HEADER whose slice
+   --      is not F.Slice is refused (No_Space);
+   --    * the data capacity of this open can be above or below the logged
+   --      one. The HEADER keeps the data_cap of the open that wrote it
+   --      (the log is never rewritten in place). If the log does not
+   --      replay at F.Cap (the data row is full for an APPLY), the result
+   --      is No_Space, and Valid_Length names the prefix that did replay.
+   --  The result is also No_Space when the log does not fit S, that is,
    --  Input'Last >= S.Log_Cap (because Input'First = 0).
    --  The result is Malformed for:
    --    * a HEADER that is not a HEADER (op, magic, version,
-   --      ns = BLAKE2b-256 (root_pk ‖ salt)[0:16]);
+   --      ns = BLAKE2b-256 (root_pk ‖ salt)[0:16], a data_cap in range);
    --    * an entry that does not parse;
    --    * a frame that is not well-formed or not of the collection;
    --    * an authorization record whose root_pk is not the founding key;
-   --    * an APPLY that Put_Frame would not hold and index as a new record
-   --      (this includes an APPLY that Put_Frame refuses for room);
+   --    * an APPLY that Put_Frame would not hold and index as a new
+   --      record, except an APPLY of a record that is already held: as
+   --      the live Put_Frame does (OK, no change), replay keeps the entry
+   --      in the log and changes nothing else (AUDIT.md H23: a binding
+   --      that retried an append after a write error);
    --    * an APPLY_EXPIRED that is not an admitted, undominated DEL.
    --  Replay accepts an APPLY_EXPIRED of an admitted, undominated DEL that
    --  drops nothing. This entry changes only the log. No store writes such
    --  an entry, because Put_Frame logs APPLY_EXPIRED only when it drops a
    --  record.
-   --  On OK, the pair is Valid and the horizon is the last logged horizon.
-   --  The log is the input with the capacities of F in the HEADER. If the
-   --  HEADER already had the capacities of F, the log is the input itself.
+   --  Replay clamps each EXPIRE horizon to Horizon_At (F, U48'Last), the
+   --  bound maxceil - del_ttl_eff of the frontier at that point (AUDIT.md
+   --  H24), so a torn or corrupt EXPIRE cannot drop every DEL. Every
+   --  EXPIRE that Expire writes meets the bound (its Post), so replay of
+   --  a store's own log reaches the same horizons, unless a later roster
+   --  raised del_ttl_eff; then the reopened horizon is lower, which T18
+   --  allows (DESIGN.md §10 item 10 (b)).
+   --  Valid_Length (AUDIT.md H23) is the length of the longest prefix of
+   --  Input at an entry boundary that replays: on OK the whole input; on
+   --  Malformed or on No_Space from an entry, the start of the refused
+   --  entry (at least the HEADER). When it is positive, (S, F) is the
+   --  replay of exactly that prefix, Valid, with that prefix as its log.
+   --  A binding that finds a torn tail truncates the file to Valid_Length
+   --  and opens again, or uses (S, F) as they are. It is 0 when the HEADER
+   --  is refused or the log does not fit.
+   --  On OK, the pair is Valid, the horizon is at most the last logged
+   --  horizon, and the log is the input byte for byte.
    procedure Open_From_Log
-     (Input  : in     Byte_Array;
-      F      :    out Frontier.State;
-      S      :    out Store;
-      Result :    out Status)
+     (Input        : in     Byte_Array;
+      F            :    out Frontier.State;
+      S            :    out Store;
+      Valid_Length :    out Log_Size;
+      Result       :    out Status)
    with
      Global => null,
      Pre  => Input'First = 0
@@ -900,39 +1081,24 @@ package Kome.Store with SPARK_Mode is
      Post => Result in OK | Malformed | No_Space
        and (if Input'Last >= S.Log_Cap then Result = No_Space)
        --  Part of completeness: a log that is only a well-formed HEADER,
-       --  with capacities that fit, opens. The result is Malformed only
+       --  with the slice of this open, opens. The result is Malformed only
        --  for a HEADER that is not a HEADER, or for a log that has entries
        --  after the HEADER.
        and (if Input'Last = Header_Len - 1
               and then Input'Last < S.Log_Cap
               and then Header_Well_Formed (Input)
-              and then Header_Cap (Input) <= Word (F.Cap)
-              and then Header_Slice (Input) <= F.Slice
+              and then Header_Slice (Input) = F.Slice
             then Result = OK)
        and (if Result = Malformed then
               not Header_Well_Formed (Input) or else Input'Last >= Header_Len)
        and (if Result = No_Space then
               Input'Last >= S.Log_Cap
-              or else (Input'Last >= Header_Len - 1
-                       and then (Header_Cap (Input) > Word (F.Cap)
-                                 or else Header_Slice (Input) > F.Slice)))
-       and (if Result = OK then
-              Valid (S, F)
-              and then Input'Last < S.Log_Cap
-              and then Input'Last >= Header_Len - 1
-              and then Header_Well_Formed (Input)
-              and then Header_Cap (Input) <= Word (F.Cap)
-              and then Header_Slice (Input) <= F.Slice
-              and then Log_Length (S) = Input'Last + 1
-              and then (for all J in 0 .. Input'Last =>
-                          (if J < HO_Cap or else J >= Header_Len
-                           then Log_Byte (S, J) = Input (J)))
-              and then Logged_Cap (S) = F.Cap
-              and then Logged_Slice (S) = F.Slice
-              and then (if Header_Cap (Input) = Word (F.Cap)
-                          and then Header_Slice (Input) = F.Slice
-                        then (for all J in 0 .. Input'Last => Log_Byte (S, J) = Input (J)))
-              and then Horizon_Logged (S));
+              or else (Input'Last >= Header_Len - 1 and then Header_Slice (Input) /= F.Slice)
+              or else Input'Last >= Header_Len)
+       and (Valid_Length = 0 or else Valid_Length - 1 <= Input'Last)
+       and (if Result = OK then Valid_Length - 1 = Input'Last)
+       --  T18-prefix (AUDIT.md H23): the replayed prefix is a log.
+       and (if Valid_Length > 0 then Replayed_Prefix (Input, F, S, Valid_Length));
 
    --  The cell index (DESIGN.md §7 "cell -> (offset, v)"): the entry of
    --  the PUT on (NS, Ent, FH), if there is one.
@@ -971,7 +1137,6 @@ package Kome.Store with SPARK_Mode is
        and then Founding (S) = Kome.Keys.To_Key256 (Root_Key (S))
        and then Collection (S) =
                   Kome.Keys.To_Id128 (Kome.Records.Collection_Id (Root_Key (S), Salt_Of (S)))
-       and then Logged_Cap (S) = F.Cap
        and then Logged_Slice (S) = F.Slice
        and then S.Cap >= F.Cap + Signers_Max * F.Slice
        and then Log_Length (S) >= Header_Len;
@@ -1083,6 +1248,8 @@ private
       DCap : Data_Size     := 0;
       Slc  : Slice_Count   := 0;
       Hz   : Horizon_Value := No_Horizon;
+      AG   : Auth_Counter  := 0;       --  Auth_Gen (AUDIT.md H11)
+      EM   : U48           := 0;       --  Expire_Mark (AUDIT.md H28)
       NI   : Held_Count    := 0;
       Idx  : Entry_Array (1 .. Cap);
       LL   : Log_Size      := 0;
@@ -1098,6 +1265,8 @@ private
    function Logged_Cap (S : Store) return Data_Size is (S.DCap);
    function Logged_Slice (S : Store) return Slice_Count is (S.Slc);
    function Horizon (S : Store) return Horizon_Value is (S.Hz);
+   function Auth_Gen (S : Store) return Auth_Counter is (S.AG);
+   function Expire_Mark (S : Store) return U48 is (S.EM);
    function Entries (S : Store) return Held_Count is
      (if S.NI <= S.Cap then S.NI else S.Cap);
    function Entry_At (S : Store; I : Held_Index) return Index_Entry is (S.Idx (I));
@@ -1281,7 +1450,6 @@ private
       and then S.Fnd = Kome.Keys.To_Key256 (S.Root)
       and then S.NS = Kome.Keys.To_Id128 (S.NSb)
       and then S.NSb = Kome.Records.Collection_Id (S.Root, S.Slt)
-      and then S.DCap = F.Cap
       and then S.Slc = F.Slice
       and then S.Cap >= F.Cap + Signers_Max * F.Slice
       and then Head_OK (S.Log, S.LL, S.NSb, S.Root, S.Slt, S.DCap, S.Slc)
