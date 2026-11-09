@@ -20,7 +20,17 @@
 --      del_ttl_eff, a stale same-signer roster;
 --  (g) the hypothesis boundary: rosters that are equal in V but different
 --      in del_ttl (A2 fails) still give one ROSTER_eff in each order (full
---      tie-break).
+--      tie-break);
+--  (h) void is False off data (G8): a roster, a REVOKE, a GRANT and
+--      No_Header are never void, even with no GRANT of their signer, and
+--      a REVOKE of a roster's signer does not void the roster;
+--  (i) H15: a roster with a lower del_ttl does not dominate, so neither a
+--      thief's roster nor the root's own refresh lowers del_ttl_eff;
+--      Lemma_Del_TTL_Eff_Apply around each held roster;
+--  (j) A22: contested (rivals) is True exactly when an eligible roster of
+--      another signer is at the gen and the epoch of ROSTER_eff;
+--  (k) N3, N4: ceiling_lead and ceiling_stale against a wall clock, with
+--      no underflow and no overflow at the ends of U48.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -187,13 +197,27 @@ procedure Test_Views with SPARK_Mode => Off is
       for P of Void_Probes loop
          Lemma_Is_Void_Def (S, P);
       end loop;
+      --  G8: the definition on a non-data header and on each held record.
+      Lemma_Is_Void_Def (S, No_Header);
+      for I in 1 .. Kome.Frontier.Count (S) loop
+         Lemma_Is_Void_Def (S, Held (S, I));
+      end loop;
       Lemma_Roster_Eff_Def (S);
       Lemma_Del_TTL_Eff_Def (S);
+      Lemma_Contested_Def (S);
    end Def_Lemmas;
+
+   --  G8: no held ROSTER, REVOKE or GRANT is void.
+   function No_Auth_Void (S : State) return Boolean is
+     (for all I in 1 .. Kome.Frontier.Count (S) =>
+        (if Is_Auth (Held (S, I))
+         then not Is_Void (S, Held (S, I)) and not Revoke_Void (S, Held (S, I))));
 
    function Same_Auth_Views (A, B : State; Void_Probes : Header_List) return Boolean is
    begin
-      if Roster_Eff (A) /= Roster_Eff (B) or else Del_TTL_Eff (A) /= Del_TTL_Eff (B) then
+      if Roster_Eff (A) /= Roster_Eff (B) or else Del_TTL_Eff (A) /= Del_TTL_Eff (B)
+        or else Contested (A) /= Contested (B)
+      then
          return False;
       end if;
       for K of Keys loop
@@ -217,7 +241,10 @@ procedure Test_Views with SPARK_Mode => Off is
    --    * the lemma chain runs (and its contracts are evaluated);
    --    * the data views on each probe do not change, for all values of
    --      Status;
-   --    * root_void only grows.
+   --    * root_void only grows;
+   --    * a held roster never lowers del_ttl_eff (H15,
+   --      Lemma_Del_TTL_Eff_Apply);
+   --    * no authorization record is void (G8).
    procedure Apply_Auth
      (T : in out State; R : Header; Name : String; Expect : Status := OK)
    is
@@ -232,8 +259,16 @@ procedure Test_Views with SPARK_Mode => Off is
       for K of Keys loop
          Lemma_Root_Void_Monotone (Old, T, Key (K));
       end loop;
+      if R.K = K_Roster and then Holds (T, R) then
+         Lemma_Del_TTL_Eff_Apply (Old, T, R);
+      end if;
       Check ("T12: data views unchanged by " & Name & " (" & Status'Image (St) & ")",
-             St = Expect and then Same_Views (Old, T));
+             St = Expect and then Same_Views (Old, T)
+             and then (if R.K = K_Roster and then Holds (T, R)
+                       then Del_TTL_Eff (T) >= R.Del_TTL
+                            and then (Del_TTL_Eff (T) = Del_TTL_Eff (Old)
+                                      or else Del_TTL_Eff (T) = R.Del_TTL))
+             and then No_Auth_Void (T));
    end Apply_Auth;
 
    --  Apply a data record and check the converse: root_void, W_eff, void,
@@ -340,6 +375,15 @@ procedure Test_Views with SPARK_Mode => Off is
       Check ("empty state: a record with no grant is void, nothing root-void",
              Is_Void (S, P1) and not Revoke_Void (S, P1)
              and not Root_Void (S, Key (8)) and not Root_Void (S, Key (Fnd)));
+      --  (h) G8: void is False off data, even where the W_eff clause would
+      --  say otherwise (no GRANT of any signer is held here). No_Header is
+      --  a PUT (not canonical), so it is data, and here it is void.
+      Check ("G8: a roster, a REVOKE and a GRANT are never void; a DEL with no grant is",
+             not Is_Void (S, RF) and not Revoke_Void (S, RF)
+             and not Is_Void (S, X2) and not Revoke_Void (S, X2)
+             and not Is_Void (S, GF1) and not Revoke_Void (S, GF1)
+             and Is_Data (No_Header) and Is_Void (S, No_Header)
+             and Is_Void (S, D1) and not Contested (S));
       Def_Lemmas (S, Void_Probes);
 
       Apply_Auth (S, RF, "first roster");
@@ -500,12 +544,22 @@ procedure Test_Views with SPARK_Mode => Off is
       end;
 
       --  h decides between equal generations of two signers, in each
-      --  order.
+      --  order. (j) A22: such a pair is "contested" (rivals), until a root
+      --  issues gen + 1; a rival at another epoch, a root-voided rival, or
+      --  a fork of one signer is not.
       declare
-         RA : constant Header := Roster (5, 7, 100, 40);
-         RB : constant Header := Roster (6, 7, 200, 30);
-         A  : constant State := Run ([RA, RB]);
-         B  : constant State := Run ([RB, RA]);
+         RA  : constant Header := Roster (5, 7, 100, 40);
+         RB  : constant Header := Roster (6, 7, 200, 30);
+         RB1 : constant Header := Roster (6, 7, 200, 31, E => 1);   --  RB at epoch 1
+         RB8 : constant Header := Roster (6, 8, 200, 32);           --  6 resolves it
+         RA8 : constant Header := Roster (5, 8, 100, 42);           --  5 resolves it too
+         V6  : constant Header := Revoke (Fnd, 6, 0, 99);           --  root-void of 6
+         A   : constant State := Run ([RA, RB]);
+         B   : constant State := Run ([RB, RA]);
+         C1  : constant State := Run ([RA, RB1]);
+         C2  : constant State := Run ([RA, RB, RB8]);
+         C3  : constant State := Run ([RF, RA, RB, V6]);
+         C4  : constant State := Run ([RA, RB, RB8, RA8]);
       begin
          Check ("equal gen, two signers: both held, greater h is ROSTER_eff",
                 Holds (A, RA) and Holds (A, RB)
@@ -513,6 +567,84 @@ procedure Test_Views with SPARK_Mode => Off is
                 and Roster_Eff (B) = (Present => True, Hdr => RA));
          Lemma_Roster_Local (A, B);
          Check ("T5: Lemma_Roster_Local on equal generations", A2 (A));
+         Check ("A22: two signers at the gen and epoch of ROSTER_eff: contested, in each order",
+                Contested (A) and Contested (B)
+                and Rivals (RB, RA) and Rivals (RA, RB) and not Rivals (RA, RA));
+         Check ("A22: one roster, or a rival at another epoch, is not contested",
+                not Contested (Run ([RA])) and not Contested (Run ([RA, RB1]))
+                and Roster_Eff (C1) = (Present => True, Hdr => RB1)
+                and not Rivals (RA, RB1));
+         Check ("A22: gen + 1 by one of the roots resolves the contest",
+                not Contested (C2) and Roster_Eff (C2) = (Present => True, Hdr => RB8)
+                and Holds (C2, RA) and not Holds (C2, RB));
+         Check ("A22: a root-voided rival does not contest",
+                not Contested (C3) and Roster_Eff (C3) = (Present => True, Hdr => RA)
+                and Holds (C3, RB) and Root_Void (C3, Key (6)));
+         Check ("A22: two resolutions at gen + 1 contest again",
+                Contested (C4) and Roster_Eff (C4).Hdr.V.Seq = 8);
+         Lemma_Contested_Def (A);
+         Lemma_Contested_Def (C1);
+         Lemma_Contested_Def (C2);
+         Lemma_Contested_Def (C3);
+         Lemma_Contested_Def (New_State);
+         Def_Lemmas (C3, Void_Probes);
+      end;
+
+      --  (i) H15: domination is not lower in del_ttl. R's roster sets the
+      --  only long del_ttl. A thief with R's key signs gen + 1 with a
+      --  ceiling at least as high and a short del_ttl: it is held beside
+      --  the long one (not above it), ROSTER_eff is the thief's (higher
+      --  gen), and del_ttl_eff stays long. An honest refresh with a lower
+      --  del_ttl does the same. A refresh that keeps or raises del_ttl
+      --  dominates. The root-void of R ends the long life, as D10 says.
+      declare
+         Day  : constant U48 := 86_400_000;
+         RR1  : constant Header := Roster (8, 1, 5000, 60, TTL => Del_TTL_Max);
+         RT2  : constant Header := Roster (8, 2, 6000, 61, TTL => Del_TTL_Min);
+         RR2  : constant Header := Roster (8, 2, 6000, 62, TTL => 30 * Day);
+         RR3  : constant Header := Roster (8, 3, 6000, 63, TTL => Del_TTL_Max);
+         RR4  : constant Header := Roster (8, 4, 6000, 64, TTL => Del_TTL_Max);
+         VR   : constant Header := Revoke (Fnd, 8, 0, 65);
+         T    : State := New_State;
+         U    : State := New_State;
+      begin
+         Apply_Auth (T, RF, "founding roster (del_ttl default)");
+         Apply_Auth (T, RR1, "R's roster with the only long del_ttl");
+         Check ("H15: del_ttl_eff is R's long value", Del_TTL_Eff (T) = Del_TTL_Max);
+         Apply_Auth (T, RT2, "the thief's roster: gen + 1, ceiling >=, short del_ttl");
+         Check ("H15: the thief's short-ttl roster does not dominate the long one",
+                not Dominates (RT2, RR1) and not Dominates (RR1, RT2)
+                and Holds (T, RR1) and Holds (T, RT2)
+                and Roster_Eff (T) = (Present => True, Hdr => RT2)
+                and Del_TTL_Eff (T) = Del_TTL_Max and Max_Ceil (T) = 6000);
+         Check ("H15: ROSTER_FORK does not fire (different gens), not contested",
+                not Roster_Fork (T) and not Contested (T));
+         Apply_Auth (T, RR3, "a refresh that keeps del_ttl");
+         Check ("H15: a refresh with the same del_ttl dominates both",
+                Dominates (RR3, RR1) and Dominates (RR3, RT2)
+                and Holds (T, RR3) and not Holds (T, RR1) and not Holds (T, RT2)
+                and Del_TTL_Eff (T) = Del_TTL_Max);
+         Lemma_Dominates_Del_TTL (RR1, RR3);
+         Lemma_Dominates_Del_TTL (RT2, RR3);
+         Lemma_Roster_Eff_Unique (T, Index_In (T, RR3));
+         Check ("H15: T5 with the thief's antichain", Unique_Checked (T) = 2);
+         Def_Lemmas (T, Void_Probes);
+         --  The honest root lowers its own del_ttl: the two rosters stay.
+         U := T;
+         Apply_Auth (U, RR2, "a stale refresh with a lower del_ttl (dominated by RR3)",
+                     Expect => Dominated);
+         Apply_Auth (U, RR4, "a refresh with the same del_ttl at gen 4");
+         Apply_Auth (U, Roster (8, 5, 6000, 66, TTL => 30 * Day), "the root's own refresh with a lower del_ttl");
+         Check ("H15: the root's own refresh with a lower del_ttl is held beside the long one",
+                Holds (U, RR4) and Holds (U, Roster (8, 5, 6000, 66, TTL => 30 * Day))
+                and Del_TTL_Eff (U) = Del_TTL_Max
+                and Roster_Eff (U) = (Present => True, Hdr => Roster (8, 5, 6000, 66, TTL => 30 * Day)));
+         Apply_Auth (U, VR, "root-void of R");
+         Check ("H15/D10: the root-void of R ends the long tombstone life",
+                Root_Void (U, Key (8)) and Del_TTL_Eff (U) = Del_TTL_Default
+                and Roster_Eff (U) = (Present => True, Hdr => RF));
+         Lemma_Del_TTL_Local (U, Run ([VR, Roster (8, 5, 6000, 66, TTL => 30 * Day), RR4, RF]));
+         Def_Lemmas (U, Void_Probes);
       end;
 
       --  A2: epoch comes first in the ROSTER_eff order. A roster at a
@@ -554,6 +686,8 @@ procedure Test_Views with SPARK_Mode => Off is
          Check ("H1: ROSTER_FORK reports the pair, and nothing else",
                 Roster_Fork (A) and Roster_Fork (B)
                 and not Roster_Fork (Run ([R6])) and not Roster_Fork (Run ([R6, R7])));
+         Check ("A22: a fork of one signer is not a contest",
+                not Contested (A) and not Contested (B));
          Lemma_Roster_Fork_Def (A);
          Lemma_Roster_Fork_Def (Run ([R6]));
          Apply_Auth (C, R7, "a roster above both forks");
@@ -668,6 +802,15 @@ procedure Test_Views with SPARK_Mode => Off is
          for X of Header_List'[XRH, XRF, XR1, XR2, XR4, GRK2] loop
             Apply_Auth (C, X, "compromised root's record");
          end loop;
+         --  (h) G8: R's REVOKEs of H and of the founding key would void a
+         --  data record of theirs from t = 0. They do not void their
+         --  rosters: void is a flag on data only.
+         Check ("G8: a REVOKE of a roster's signer does not void the roster",
+                Revoked (C, Key (H)) and Revoked (C, Key (Fnd))
+                and not Is_Void (C, CRH) and not Revoke_Void (C, CRH)
+                and not Is_Void (C, CRF) and not Revoke_Void (C, CRF)
+                and Is_Void (C, Put (13, 'n', V (5, H, 1, 46)))
+                and No_Auth_Void (C));
          Apply_Data (C, PK2, "data of R's grantee", VP);
          Apply_Auth (C, CRR, "compromised root's roster at gen = its cap (H7)");
          Check ("before root-void: ROSTER_eff is R's roster, del_ttl_eff R's",
@@ -817,6 +960,30 @@ procedure Test_Views with SPARK_Mode => Off is
          Check ("boundary: cell is the same header in both orders",
                 Cell (A, NS, Ent (4), Fld ('n')) = (Present => True, Hdr => Q0)
                 and Cell (B, NS, Ent (4), Fld ('n')) = (Present => True, Hdr => Q0));
+      end;
+
+      --  ceiling_lead and ceiling_stale (N3, N4): advisory, per replica.
+      --  S holds rosters with ceiling_t up to 7000 (R2), so maxceil is
+      --  7000.
+      Check ("ceiling_lead: maxceil - now, 0 at and after maxceil, no underflow",
+             Max_Ceil (S) = 7000
+             and Ceiling_Lead (S, 0) = 7000 and Ceiling_Lead (S, 6999) = 1
+             and Ceiling_Lead (S, 7000) = 0 and Ceiling_Lead (S, 7001) = 0
+             and Ceiling_Lead (S, U48'Last) = 0);
+      Check ("ceiling_stale: only once the clock passes maxceil",
+             not Ceiling_Stale (S, 0) and not Ceiling_Stale (S, 7000)
+             and Ceiling_Stale (S, 7001) and Ceiling_Stale (S, U48'Last));
+      Check ("ceiling_lead and ceiling_stale on an empty state: 0 and stale at any time > 0",
+             Ceiling_Lead (New_State, 0) = 0 and Ceiling_Lead (New_State, 5) = 0
+             and not Ceiling_Stale (New_State, 0) and Ceiling_Stale (New_State, 1));
+      declare
+         T : State := New_State;
+      begin
+         Apply_Auth (T, Roster (Fnd, 1, U48'Last, 83), "a roster at the top ceiling");
+         Check ("ceiling_lead at the top of U48: no overflow, never stale",
+                Max_Ceil (T) = U48'Last and Ceiling_Lead (T, 0) = U48'Last
+                and Ceiling_Lead (T, U48'Last) = 0
+                and not Ceiling_Stale (T, U48'Last));
       end;
 
       --  far(p): advisory, with no overflow at the top of U48.

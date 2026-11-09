@@ -1079,7 +1079,9 @@ procedure Test_Store with SPARK_Mode => Off is
       SL  : Lattice (Cap, Slice);
       R1  : constant Byte_Array := Founding_Roster (1, 200 * Day);
       R2  : constant Byte_Array := Founding_Roster (2, 200 * Day);
-      RD  : constant Byte_Array := Founding_Roster (1, 180 * Day, 30 * Day);
+      --  RD's del_ttl is at most R2's: a roster with a longer del_ttl is
+      --  never dominated (AUDIT.md H15).
+      RD  : constant Byte_Array := Founding_Roster (1, 180 * Day, TTL);
       RS  : constant Byte_Array := Founding_Roster (1, 250 * Day, 9 * Day);
       PA  : constant Byte_Array := Put_Of (6, 'n', 150 * Day, 21, [1]);
       PB  : constant Byte_Array := Put_Of (7, 'n', 240 * Day, 22, [2]);

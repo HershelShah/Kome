@@ -53,6 +53,37 @@ crypto_ed25519_key_pair, crypto_ed25519_sign and crypto_ed25519_check.
 BLAKE2b, X25519, XChaCha20-Poly1305 and crypto_wipe come from
 monocypher.c.
 
+Bound symbols: the Import pragmas of spark/src/kome-crypto.adb name exactly
+these twelve functions.
+
+  monocypher.c
+    crypto_blake2b
+    crypto_blake2b_init
+    crypto_blake2b_update
+    crypto_blake2b_final
+    crypto_x25519_public_key
+    crypto_x25519
+    crypto_aead_lock
+    crypto_aead_unlock
+    crypto_wipe
+
+  monocypher-ed25519.c
+    crypto_ed25519_key_pair
+    crypto_ed25519_sign
+    crypto_ed25519_check
+
+The sources are compiled unmodified, with -ffunction-sections and linked
+with --gc-sections (spark/kome_spark.gpr). So a Kome binary holds the bound
+functions and what they reach, and nothing else of monocypher. What they
+reach from monocypher.c includes the curve arithmetic that
+monocypher-ed25519.c calls: crypto_eddsa_trim_scalar, crypto_eddsa_reduce,
+crypto_eddsa_mul_add, crypto_eddsa_scalarbase and
+crypto_eddsa_check_equation (shared by both EdDSA variants; they do not
+hash). The rest of monocypher.c is not linked: in particular crypto_argon2
+and the BLAKE2b-512 EdDSA API crypto_eddsa_key_pair, crypto_eddsa_sign,
+crypto_eddsa_check and crypto_eddsa_to_x25519. spark/check.sh runs nm on
+each test binary and fails if one of these is linked.
+
 Note on strictness: crypto_ed25519_check refuses S >= L. But, by design, it
 accepts non-canonical encodings of R and A (y >= p, or x = 0 with the sign
 bit set). Wycheproof ed25519_test.json tcId 151 is such a signature, and

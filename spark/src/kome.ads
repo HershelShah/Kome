@@ -1,20 +1,23 @@
 --  Root of Kome. This package holds the byte types, the integer ranges and
 --  the size bounds that all packages share. docs/design/DESIGN.md gives the
---  design. This code refines the proved model in lean/Kome/Frontier.lean.
---  Each section of DESIGN.md is a child package (Kome.Versions,
---  Kome.Headers, Kome.Frontier, ...). CONVENTIONS.md gives the rules that
---  each child follows.
+--  design. Eight child packages refine the proved model in
+--  lean/Kome/Frontier.lean: Kome.Versions, Kome.Headers, Kome.Registers,
+--  Kome.Frontier, Kome.Records, Kome.Store, Kome.Emit and Kome.Views. The
+--  others implement encodings, cryptography and protocols. Each DESIGN.md
+--  concept is one child package Kome.<Name>, in kome-<name>.ads and
+--  kome-<name>.adb. spark/CONVENTIONS.md gives the rules that each child
+--  follows.
 pragma Ada_2022;
 package Kome with SPARK_Mode, Pure is
 
    type Byte is mod 2**8 with Size => 8;
    type Byte_Array is array (Natural range <>) of Byte;
 
-   --  This is the only modular type. Use it only for the limbs of the
-   --  accumulator and for their byte encoding (Kome.Byteorder,
-   --  Kome.Accumulator, Kome.Digest). Semantic quantities use the range
-   --  types below, so that each overflow is a proof obligation and no value
-   --  is reserved (H6).
+   --  Byte and U64 are the only modular types. Byte is the wire unit. U64
+   --  is for the limbs of the accumulator and their byte encoding
+   --  (Kome.Byteorder, Kome.Accumulator, Kome.Digest) and for C storage in
+   --  Kome.Crypto. Semantic quantities use the range types below, so that
+   --  each overflow is a proof obligation and no value is reserved (H6).
    type U64 is mod 2**64 with Size => 64;
 
    --  DESIGN.md §2: t, seq, gen, ceiling_t, del_ttl, from_t and rev_seq are
