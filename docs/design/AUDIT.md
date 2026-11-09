@@ -4,11 +4,14 @@ Scope: docs/design (REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md), lean/Ko
 
 ## 0. Status
 
-Applied on branch `ccr-f1194bfd-dei9h4` after the audit, in the order that
-§1 recommends. Each item names what changed. On the final state, gnatprove
-at `--level=3` proves all 15,584 checks of the 16 packages with 0
-unproved, 1,069 tests pass, and `lake build` checks the 158 Lean theorems
-with no `sorry`.
+Applied on branch `ccr-f1194bfd-dei9h4` after the audit. Items 1 to 3 are
+the fix groups that §1 recommends first; item 4 is everything else in §2
+to §5. Each item names what changed. On the final state, gnatprove at
+`--level=3` proves all 18,097 checks of the 17 packages and the root package
+with 0 unproved, 1,329 tests pass, `lake build --wfail` checks the 183 Lean
+theorems with no `sorry`, and `lean/Kome/Axioms.lean` confirms that every
+declaration of `Kome.Frontier` uses only `propext`, `Classical.choice`
+and `Quot.sound`.
 
 1. Roster and gate integrity: H1 (domination strict in gen, `ROSTER_FORK`
    view, `Lemma_Equal_Gen_No_Dom`), A2 (epoch in `Header`, `ROSTER_eff` by
@@ -26,14 +29,151 @@ with no `sorry`.
    ceiling step). Lean: `grant` carries its cap, `wcap`, `adm` reads it.
 3. Expiry: H14 and A5 (`Cap_Lead` = 3 days `< Del_TTL_Min`; a DEL is
    emitted at `t ≥ maxceil − Cap_Lead`, `Kome.Emit.Del_Low`), H4, H35 and
-   A16 (A4′ restated over every frame copy, admitted and durable, bundles
+   A16 (A4 restated over every frame copy, admitted and durable, bundles
    closed under admission, the sync point), G1 (T4(b), T10, T11(b) scoped
    to `applyD`; Lean `applyH`, `NoLateDom`, `expire_applyAllH`,
    `auth_first_closed`).
+4. The rest of §2 to §5, by package.
+   - Headers, Views, Guard: H15 (roster domination also requires
+     `del_ttl ≤`; `Lemma_Dominates_Del_TTL`, `Lemma_Del_TTL_Eff_Apply`),
+     G8 (`Is_Void` and `Revoke_Void` hold only on data records), A22
+     (`Contested`, the `rivals` view), N3 and N4 (`Ceiling_Lead`,
+     `Ceiling_Stale`; `Horizon_Frozen` in Store).
+   - Lean: H15 (`dominates_ttl`, `delTtlEff_F`), N1 (`expire_expire`), G3
+     (`deletedAt`, `existsEnt`, `emitSeq` and the T5, T8, T9, T10
+     statements that §9 cited), A18 (`--wfail`, `Kome/Axioms.lean`).
+   - Crypto, Records, Epochs: H13 and A27 (`Is_Small_Order_Point`;
+     `Verify` refuses small-order keys; `Sign_Key_OK` = canonical, not
+     small-order, not the zero-seed key, required of root_pk, signer, the
+     GRANT subject, the REVOKE sign_pk and every ROSTER member sign_pk
+     (`Member_Keys_OK`), by `Make_*`, `Cert_OK`, Well_Formed and
+     `Store.Open`; box_pk is not `X25519_Public(0^32)`; `Key_Pair` and
+     `Seal_Link` refuse all-zero keys), A25 (`Verify` is a SPARK
+     expression over a private `Raw_Ed25519_Check` with no Post; the
+     assumed surface is that function plus the two binding axioms
+     `Lemma_Blake2b_Congruent` and `Lemma_X25519_Congruent`, each with a
+     `-gnata` test), A6 and G7 (`eph_sk` = BLAKE2b-256(`"kome/eph"` ‖ k_e
+     ‖ ns ‖ u16(e) ‖ signer ‖ u48(gen)), `Box_PK_Of`, `Box_Key` with the
+     derived secret; no caller randomness), G5 (the chain step is keyed
+     BLAKE2b-256 under k_{e+1} with message `"kome/prev"`; the bundle key
+     k_b is stated in §6 and §8 but not derived in SPARK yet), G16 (the
+     verification equation and the del_ttl refusal are normative; the
+     torsion and Wycheproof vectors are normative), E15 (REVOKE has no
+     `rev_seq`: a REVOKE frame is 269 bytes, its header seq is 0, an
+     OPEN is at most 4 054 bytes; the Lean `revoke` constructor has four
+     fields; records.txt, reconcile.txt and one root_pk of store.txt
+     regenerated), A26 (a data record's `h` is BLAKE2b-256(tag ‖ cid ‖
+     content) with `cid` = BLAKE2b-256(root_pk ‖ salt), `Cid_Of`; the cid
+     is implicit context, not on the wire, so frame bytes are unchanged;
+     `Store.Open` and `Open_From_Log` compute it once (`Store.Cid`) and
+     pass it to `Well_Formed`, `Decode_Verified`, `To_Header`, `Sign`,
+     `Make_Put` and `Make_Del`; `Put_Frame` requires `Verified (Cid (S),
+     Frame)`; `Write.Ready (P, Cid)`; authorization records are unchanged
+     since their content carries root_pk and salt; records.txt
+     regenerated; §10.9 interop needs `(root_pk, salt)`, not only `ns`).
+   - Emit: H22 (`CLAMPED` and `BORN_EXPIRED` out flags with `Is_Clamped`
+     and `Is_Born_Expired`), G21 (`Put_Target`, `Del_Target`,
+     `Lemma_Put_Target_Matches`, `Lemma_Del_Target_Matches`), H28 (the
+     expire mark is a floor term, `Floor_Time`), H18 (`Clone_Pair`).
+   - Store: G22 (`Off = Log_Length (S'Old)`), H24 (replay clamps each
+     EXPIRE to `Horizon_At (F, U48'Last)`; the `EXPIRE_NONE` entry was
+     declined: the code `2^48 − 1` decodes to "no horizon", which lies
+     below every clamp bound, so it can only lower the horizon; this is a
+     stated exception to REQUIREMENTS H6), H23 (`Valid_Length`,
+     `Replayed_Prefix`, T18-prefix proved; a duplicated APPLY replays as
+     OK; the binding truncates to `Valid_Length`), G17 and A28
+     (`Compact_Index` and `Compact_Layout` replace `In_Old_Order`), H11
+     (`Auth_Gen`, `AUTH_FULL` at 2^62), H28 (`Expire_Mark`: the largest
+     horizon applied), H26 (`Compact_Due` = more than `2·|F| + 64`
+     entries; the binding calls `Compact` when it holds, so replay checks
+     at most `2·|F| + 64` signatures), A11 (the HEADER slice is a check;
+     `data_cap` is chosen at each open, smaller allowed when replay fits;
+     no in-place rewrite; the constant `Slice_Max` is a binding duty, not
+     a Pre of `Open`), G23 (§10.10(b) cites `Compact_Layout`), N4
+     (`Horizon_Frozen`), G15 (`Store (Cap, Log_Cap, Bnd_Cap)` with
+     `Bnd_Cap ≥ Log_Cap / Min_Entry`; `Compact (S, F, Buf)` writes into the
+     binding's buffer and keeps no copy of the log; no whole-store
+     temporary in `Init` or `Open_From_Log`; about 1.7 × `Log_Cap` beside
+     the index; `Open_From_Log` still holds its input and the log, since a
+     streaming replay would change its contract).
+   - Write (new package `Kome.Write`): A10 (`Prepare` = Choose, Make,
+     Sign, with `Seq_Persist` that the binding persists before `Commit` =
+     `Store.Put_Frame`; `Seq_Self_At_Open` = max(stored, `Max_Own_Seq`);
+     `Open_Seq` with `SEQ_CORRUPT`; large seq jumps are not refused; the
+     Post of `Prepare` is T8 from `Choose`, and `Commit` keeps `Valid`; the
+     persist-before-append and send-after-durable duties are stated in
+     the package header as A5 restated), H18 (`Receive` = `Put_Frame`
+     plus the flag: an own record that is OK, not held before and not an
+     expired DEL sets `CLONE_SUSPECTED`; `Clone_View` = `Clone_Detected`
+     or `Clone_Pair`).
+   - Frontier: G25 (the data row is sorted entity-major `(ent, kind,
+     fh)`, `Data_Sorted` in `Is_Frontier`; `Apply` finds the entity run by
+     binary search and makes Dominates calls only inside it;
+     `Lemma_Dominator_In_Run`, `Lemma_Outside_Run`, `Lemma_No_Drop_Below`;
+     public contracts unchanged).
+   - Reconcile: G12 and A13 (the credential gate inside `Admit`, with
+     `Kome.Guard.Admits`), H11 (`Auth_Gen` re-check in `Receive` and
+     `Next_Phase`), H5 (`Select_Voids` with `Voids_OK` and
+     `Lemma_Voids_Cover`: one founding REVOKE per root-voided subject, at
+     most 15 subjects), G4 and H19 (a `g` byte binds every reply group to
+     the obligation FIFO; `Range_Fp` over the D15 prefix sums, at most 64
+     additions and one hash), A12 (`Snapshot_Of` with the Post
+     `Range_Fp = Frontier_Digest`), A14 (the responder sends OPEN only
+     after a matching OPEN; root-void frames go only to a peer that a held
+     roster lists), A8 (kind < 3 before kind ≥ 3 inside a batch).
+   - Build: E4 (the gpr is the single source of the proof switches), E5
+     (`PROOF_WIP` is gone; any unproved check fails), E12 (section
+     garbage collection and the `nm` check against `crypto_argon2` and
+     `crypto_eddsa_*`), E18, E19 (the module list from the source and
+     test files, `check.sh --list`, used by `all` and by the CI matrix),
+     E23 (module `kome`), A17 (the CI pull-request gate: `lean/build.sh`
+     and `PROVE=0 spark/check.sh all`), A18 (no `pragma Assume` or
+     `pragma Annotate`, enforced by `check.sh` and CONVENTIONS).
+   - Text only (DESIGN, REQUIREMENTS, IMPLEMENTATION_PLAN, README,
+     CONVENTIONS, header comments): H9, H10, H17, H20, H21, H25, H27, H29,
+     H30, H31, H32 (the transient is documented; no hash commitment), H33,
+     H34, H36; G2, G6, G9, G10 (already gone), G11, G13, G14, G18, G19,
+     G20, G24; A9, A15, A19, A20, A21, A23, A29, A30; N1 to N7; E1, E6,
+     E7, E8, E9, E10, E13, E14, E16, E17, E20, E21, E22, E24.
+   - Residue applied before item 4: E2, E3, E11.
 
-Residue applied: E2, E3, E11 (the pre-D4 vectors and tests, `build/`, the
-duplicate check), and the "decode clamps" wording of E8 in `kome.ads`.
-Everything else in §2 to §5 is still open.
+Declined or deferred, with the reason:
+- H12 (the `CEIL(s)` cell): deferred. The AUTH_FULL arrival-order case is
+  documented in §7 and §8 as a known gap, and `maxceil` can still differ
+  between honest replicas after a slice refusal.
+- A7 (drop the chain and segments): declined. The chain, the fixed
+  segments and the links stay; A6 removes the randomness instead.
+- A24 (frames by reference to the store with a generation counter):
+  deferred. The session pool stays at `Pool_Max` = 2^30; the change is to
+  the `Snapshot` type and every contract over it.
+- H24, `EXPIRE_NONE`: declined, as above.
+- A11, a `Slice_Max` Pre on `Store.Open`: declined; the tests use smaller
+  slices, so it stays a binding duty.
+- G15, a streaming `Open_From_Log`: declined, as above.
+- G5, the bundle key `k_b` in SPARK: not yet (phase 9 bundle layer).
+- A26, the cid in authorization records and a `Reconcile.Start` cid
+  parameter: not needed; Reconcile never decodes a data frame (received
+  frames go through `Write.Receive` and `Store.Put_Frame`).
+- Follow-ups not taken: `Kome.Headers.Canonical` could require `V.Seq = 0`
+  of a REVOKE, as it does of a GRANT; the store could check that an
+  authorization record's salt equals its own (step 0 checks root_pk, so
+  only the founding key could exploit the gap).
+
+Tested, not proved (each stated in the package header that owns it):
+the compact-room obligation of H3; the heap sort in `Snapshot_Of` (a
+final scan guards its Post); balanced splits, T7 termination and the
+session budgets; the session-wide claims "every applied data frame was
+applied while the gate held" and "`Complete` implies one full reply
+group per obligation" (each call's Post is proved, the induction is
+not written); the O(n log n) bound per session; `Prepare`'s self check
+(`Kome.Crypto` does not state that `Verify (Sign (M))` holds); the
+Crypto Posts (`Raw_Ed25519_Check` and the two congruence axioms).
+
+Inventory items of the audit that this closes (see §4): A5-persist-order
+(A10), E1-founding-slice (A4), IA-03 (H14), IA-05 (H16), IA-11 (A22),
+IA-12 (A2), IA-13 (G16, E8), IA-14 (H13), IA-16 (A12), IA-17 (A23),
+IA-20 (A16, H17), IA-22 (A21), IA-23 (H18), IA-27 (A6), IA-33 (H24,
+clamp only).
 
 ## 1. Summary
 
