@@ -760,6 +760,25 @@ package Kome.Crypto with SPARK_Mode, Preelaborate is
    function X25519_Shared (Secret : DH_Secret; Their_Public : Pubkey) return Shared_Secret
      with Ghost, Global => null;
 
+   --  Congruence of the two X25519 functions: they read only the bytes of
+   --  the secret, so two secrets with the same bytes give the same public
+   --  key and the same shared secret. This is true of each function of a
+   --  byte string, but the prover has no array extensionality (see
+   --  Lemma_Blake2b_Congruent): a secret computed into a buffer and the
+   --  ghost term that models it are different terms with equal elements.
+   --  Kome.Epochs uses it to carry the derived eph_sk (a wiped buffer) to
+   --  its ghost model Eph_Secret_Of (AUDIT.md A6, G7).
+   --
+   --  The body is SPARK_Mode Off like each other body here, so the Post is
+   --  an AXIOM of the same kind as Lemma_Blake2b_Congruent. The test main
+   --  checks it under -gnata.
+   procedure Lemma_X25519_Congruent (A, B : DH_Secret; Their_Public : Pubkey)
+     with Ghost, Global => null, Always_Terminates,
+          Pre  => A = B,
+          Post => X25519_Public (A) = X25519_Public (B)
+                  and then X25519_Shared (A, Their_Public)
+                           = X25519_Shared (B, Their_Public);
+
    ---------------------------------------------------------------------------
    --  XChaCha20-Poly1305 AEAD (crypto_aead_lock / crypto_aead_unlock)
    ---------------------------------------------------------------------------

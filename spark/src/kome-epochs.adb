@@ -179,29 +179,30 @@ package body Kome.Epochs with SPARK_Mode is
       C.Wipe (Buf);
    end Wrap_Key;
 
-   --  The wrap key depends only on the bytes of the shared secret. Box_Key
-   --  and Unbox_Key hold the secret that X25519 wrote. That secret is equal
-   --  (Ada "=", not the same term) to the ghost X25519_Shared that their
-   --  Posts name.
+   --  The wrap key depends only on the bytes of the shared secret and of
+   --  box_pk. Box_Key and Unbox_Key hold the secret that X25519 wrote, and
+   --  Box_Key holds the box_pk that X25519_Public wrote. These are equal
+   --  (Ada "=", not the same term) to the ghost X25519_Shared and the
+   --  Box_PK_Of that their Posts name.
    procedure Lemma_Wrap_Shared
      (S1, S2  : C.Shared_Secret;
-      Box_PK  : Pubkey;
+      P1, P2  : Pubkey;
       DH_PK   : Pubkey;
       Sign_PK : Pubkey;
       Ns      : Id128;
       E       : Epoch)
      with Ghost, Global => null,
-          Pre  => S1 = S2,
-          Post => Wrap_Key_Of (S1, Box_PK, DH_PK, Sign_PK, Ns, E)
-                  = Wrap_Key_Of (S2, Box_PK, DH_PK, Sign_PK, Ns, E)
+          Pre  => S1 = S2 and then P1 = P2,
+          Post => Wrap_Key_Of (S1, P1, DH_PK, Sign_PK, Ns, E)
+                  = Wrap_Key_Of (S2, P2, DH_PK, Sign_PK, Ns, E)
    is
    begin
       pragma Assert
         (for all K in 0 .. Wrap_Input_Len - 1 =>
-           Wrap_Byte (S1, Box_PK, DH_PK, Sign_PK, Ns, E, K)
-           = Wrap_Byte (S2, Box_PK, DH_PK, Sign_PK, Ns, E, K));
-      C.Lemma_Blake2b_Congruent (Wrap_Input (S1, Box_PK, DH_PK, Sign_PK, Ns, E),
-                                 Wrap_Input (S2, Box_PK, DH_PK, Sign_PK, Ns, E));
+           Wrap_Byte (S1, P1, DH_PK, Sign_PK, Ns, E, K)
+           = Wrap_Byte (S2, P2, DH_PK, Sign_PK, Ns, E, K));
+      C.Lemma_Blake2b_Congruent (Wrap_Input (S1, P1, DH_PK, Sign_PK, Ns, E),
+                                 Wrap_Input (S2, P2, DH_PK, Sign_PK, Ns, E));
    end Lemma_Wrap_Shared;
 
    --  The synthetic nonce of K under the key with the bytes Key_Bytes,
@@ -258,6 +259,10 @@ package body Kome.Epochs with SPARK_Mode is
       PK  : Pubkey;
    begin
       Eph_Secret (Epoch_Key, Ns, E, Signer, Gen, Eph);
+      --  Eph has the bytes of the ghost model, so X25519_Public gives the
+      --  same key on both (no array extensionality in the prover).
+      C.Lemma_X25519_Congruent
+        (Eph, Eph_Secret_Of (Epoch_Key, Ns, E, Signer, Gen), Signer);
       PK := C.X25519_Public (Eph);
       C.Wipe (Eph);
       return PK;
@@ -287,6 +292,10 @@ package body Kome.Epochs with SPARK_Mode is
       --  The derived ephemeral secret (A6) and the roster's box_pk (G7),
       --  the same for every member of the roster.
       Eph_Secret (Epoch_Key, Ns, E, Signer, Gen, Eph);
+      --  Carry the public key and the member's shared secret from the
+      --  buffer Eph to its ghost model Eph_Secret_Of (the Post).
+      C.Lemma_X25519_Congruent
+        (Eph, Eph_Secret_Of (Epoch_Key, Ns, E, Signer, Gen), Member_DH_PK);
       Box_PK := C.X25519_Public (Eph);
       pragma Assert (Box_PK = Box_PK_Of (Epoch_Key, Ns, E, Signer, Gen));
 
@@ -321,7 +330,8 @@ package body Kome.Epochs with SPARK_Mode is
       Lemma_Wrap_Shared (Shared,
                          C.X25519_Shared (Eph_Secret_Of (Epoch_Key, Ns, E, Signer, Gen),
                                           Member_DH_PK),
-                         Box_PK, Member_DH_PK, Member_Sign_PK, Ns, E);
+                         Box_PK, Box_PK_Of (Epoch_Key, Ns, E, Signer, Gen),
+                         Member_DH_PK, Member_Sign_PK, Ns, E);
       Nonce_Of (WK, Epoch_Key, N);
       Plain := Kome.Keys.To_Bytes (Epoch_Key);
       C.Lock (WK, N, Box_AD (Ns, E), Plain, Cipher, Mac);
@@ -373,7 +383,7 @@ package body Kome.Epochs with SPARK_Mode is
       Wrap_Key (Shared, Box_PK, C.X25519_Public (Member_Secret),
                 Member_Sign_PK, Ns, E, WK);
       Lemma_Wrap_Shared (Shared, C.X25519_Shared (Member_Secret, Box_PK),
-                         Box_PK, C.X25519_Public (Member_Secret),
+                         Box_PK, Box_PK, C.X25519_Public (Member_Secret),
                          Member_Sign_PK, Ns, E);
       C.Unlock (WK, N, Box_AD (Ns, E), Cipher_Of (Sealed), Tag_Of (Sealed),
                 Plain, Authentic);

@@ -1058,6 +1058,21 @@ procedure Test_Crypto with SPARK_Mode => Off is
          pragma Assert (X25519_Shared (A, X25519_Public (B))
                         = X25519_Shared (B, X25519_Public (A)));
          Check ("x25519_shared_function_matches_procedure", not Is_Zero (AB));
+         --  Lemma_X25519_Congruent is an axiom for the prover. Under -gnata
+         --  its Pre and Post run: a copy of A built byte by byte gives the
+         --  same public key and the same shared secret.
+         declare
+            A2 : DH_Secret := [others => 0];
+         begin
+            for I in A2'Range loop
+               A2 (I) := A (I);
+            end loop;
+            Lemma_X25519_Congruent (A, A2, X25519_Public (B));
+            pragma Assert (X25519_Shared (A2, X25519_Public (B)) = AB);
+            Check ("x25519_congruent_on_equal_bytes",
+                   X25519_Public (A2) = X25519_Public (A));
+            Wipe (A2);
+         end;
          Wipe (AB);
          Wipe (BA);
          Wipe (AC);

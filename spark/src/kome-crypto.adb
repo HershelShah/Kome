@@ -161,6 +161,10 @@ package body Kome.Crypto with SPARK_Mode => Off is
    --  the caller's data.
    procedure Lemma_Blake2b_Congruent (A, B : Byte_Array) is null;
 
+   --  An axiom for the prover (see the spec). Under -gnata the Pre and the
+   --  Post are evaluated on the caller's data.
+   procedure Lemma_X25519_Congruent (A, B : DH_Secret; Their_Public : Pubkey) is null;
+
    procedure Init (Ctx : out Blake2b_Context) is
    begin
       Ctx.Raw    := [others => 0];
