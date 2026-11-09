@@ -42,7 +42,7 @@ version order.
 | D6 | `wrap_key` hashes the DH output with `box_pk`, the two member keys, `ns` and `epoch`. The box nonce is synthetic, `BLAKE2b(wrap_key ‖ k_e)`. The member calculates it again and checks it. Bundle nonces are also synthetic. The chain step and the bundle key are keyed BLAKE2b, one PRF under one key (§6, T14). |
 | D7 | The accumulator is little-endian and recorded exactly. The tags are bytes (§8). |
 | D8 | The write path selects `(t, seq)` without `h`, and then it calculates the hash. The result does not depend on `h`. `seq_self` is per collection (§5). |
-| D9 | Kome persists only `F`. The log is a `HEADER` (`ns`, `root_pk`, `salt`, the data capacity of the open that wrote it, the slice as a check) and a journal of `APPLY`, `APPLY_EXPIRED` and `EXPIRE` entries. The store logs `EXPIRE` only when it removes a record or lowers the horizon. Compaction writes authorization records first, and the binding runs it whenever `Compact_Due` holds (more than `2·|F| + 64` entries). Replay gives the same frontier as a set (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
+| D9 | Kome persists only `F` in the log; `seq_self(ns)` is kept by the binding beside it (§5, A5). The log is a `HEADER` (`ns`, `root_pk`, `salt`, the data capacity of the open that wrote it, the slice as a check) and a journal of `APPLY`, `APPLY_EXPIRED` and `EXPIRE` entries. The store logs `EXPIRE` only when it removes a record or lowers the horizon. Compaction writes authorization records first, and the binding runs it whenever `Compact_Due` holds (more than `2·|F| + 64` entries). Replay gives the same frontier as a set (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
 | D10 | Expiry is an operation on the lattice state at `horizon = min(now_local, maxceil) − del_ttl_eff`. `del_ttl_eff` is the largest `del_ttl` of the rosters that are not root-voided (decode refuses a value outside `[Del_TTL_Min, Del_TTL_Max]`, §2 rule 3). A roster leaves `F` only under a roster of its signer with a `del_ttl` at least equal to its own, so `del_ttl_eff` never falls except when a root is root-voided: no root, stolen or honest, can make tombstone life shorter by domination (§3, §7). |
 | D11 | The order of checks is admission, duplicate, domination, room. A dominated record never needs room. No refusal changes anything (§7). |
 | D12 | `Value_Max` = 40 960, so every frame fits in one 48 KiB message (§2, §8). |
@@ -524,7 +524,17 @@ status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit 
    cell that the built record does not have, so the cell that *Choose*
    looks at is the cell that *Build* writes.
 2. *Build* the `PUT` or `DEL` content with that `(t, seq)`, and hash it.
-3. *Sign* and apply. Persist `seq_self(ns) := seq_emit` (A5).
+3. *Sign* and apply. Persist `seq_self(ns) := seq_emit` durably right
+   after *Choose* and before the `APPLY` is appended; send the frame only
+   after its `APPLY` is durable (A5). `Kome.Write` is this path:
+   `Prepare` (*Choose*, *Build*, *Sign*; it changes nothing and returns
+   the frame and the `seq_self` to persist), then the binding persists
+   `seq_self`, then `Commit` (`Store.Put_Frame`). On open,
+   `seq_self(ns) := max(stored, the largest seq of this device's records
+   held in F(ns))`. A seq store that cannot be read is reported as
+   `SEQ_CORRUPT`, apart from `SEQ_EXHAUSTED`, and the path starts from
+   the held records alone. Neither step refuses a large jump of `seq`:
+   own records leave `F` when they are dominated.
 
 `CLAMPED` means that the ceiling `min(maxceil, wcap)` held the write
 back: `t_emit` is below the clock, or not above the cell's floor (the
@@ -583,7 +593,13 @@ status. It is not a status: the write occurred. `Choose` raises it when a
 held record of this device has a `seq` above `seq_self(ns)`. A clone that
 writes at the owner's pace leaves a different trace in `F`: two records of
 this device with equal `seq` and different `h`. The view `Clone_Pair(F,
-self)` reports that, and the caller shows `CLONE_SUSPECTED` for either.
+self)` reports that, and the caller shows `CLONE_SUSPECTED` for either. It is also raised on the
+apply side (H18): a record signed by the device's own key that arrives
+from a peer and changes `F` (not a duplicate, not dominated, not an
+expired `DEL`) sets it (`Kome.Write.Receive`), and `Clone_View` reports
+either trace. With A5 (a frame leaves only after its `APPLY` is durable),
+a crash never makes the device's own lost frame come back from a peer, so
+the apply-side flag raises no false alarm.
 
 This is the honest statement of the residual risk: **LWW cannot undo the
 effect of a wall clock that was ahead**. If a writer pushed a cell's floor
@@ -1064,8 +1080,10 @@ Del_TTL_Min`, so the code is never a real horizon. It is a reserved value,
 which H6 forbids; an `EXPIRE_NONE` entry was considered and declined,
 because the code decodes to "no horizon", which is below every bound of
 the replay clamp (below), so an `EXPIRE` that reads as the code can only
-lower the horizon. Kome persists nothing else. The registers are functions
-of `F` (§4), and refused or dominated records changed nothing.
+lower the horizon. Kome persists nothing else in the log; the one other
+durable value is `seq_self(ns)`, which the binding keeps beside the store
+(§5, A5). The registers are functions of `F` (§4), and refused or
+dominated records changed nothing.
 
 **Deletion is not erasure.** A `DEL` frees the bytes of its entity in `F`,
 the index and the next compacted log. It does not erase them: the
@@ -1907,8 +1925,9 @@ its ID, and a new one takes the next free number.
   (a stale replica's, a relay's stored bundle, a saved frame, a backup) is
   delivered to a replica after that replica expired `d`. A lost log tail
   counts as a backup restore.
-- **A5** Writers persist `seq_self` per collection (Kome detects
-  violations).
+- **A5** Writers persist `seq_self` per collection, durably, after
+  *Choose* and before the `APPLY` is appended, and send a frame only after
+  its `APPLY` is durable (Kome detects violations: `CLONE_SUSPECTED`).
 - **A7 No record after revocation** (E7). No replica receives, from any
   source, a record that the subject of a `REVOKE` signed after that
   `REVOKE`, nor a record that a key granted by a root-voided root signed
@@ -2125,8 +2144,8 @@ clock, and A3 and A4 are the assumptions that bound it.
    `session_*` over Kome.Reconcile, and a digest whose value is equal to
    the sync fingerprint. There is no field-level delete; an item that must
    be removable on its own is its own entity. Statuses are Kome's
-   `Status`, including `AUTH_FULL`, `LOG_FULL` and, from the storage
-   binding, `DEGRADED` (§7). `CLONE_SUSPECTED`, `CLAMPED` and
+   `Status`, including `AUTH_FULL`, `LOG_FULL`, `SEQ_CORRUPT` (§5) and,
+   from the storage binding, `DEGRADED` (§7). `CLONE_SUSPECTED`, `CLAMPED` and
    `BORN_EXPIRED` are out flags next to a write's status (§5).
    `Ceiling_Stale` and `Horizon_Frozen` are replica statuses (§7), as is
    a `NO_SPACE` refusal of a peer-offered record. The key API generates

@@ -28,6 +28,7 @@ built.
 | 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 60 tests, 35 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 178 tests, 2,569 checks, 0 unproved |
 | 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first and `Compact_Due`, expiry at `Horizon_At` with the replay clamp, `Open_From_Log` with `Valid_Length` and `Replayed_Prefix`, the counters `Auth_Gen` and `Expire_Mark`, `Horizon_Frozen`) | §7 | T11, T18 | done. 109 tests, 4,511 checks, 0 unproved |
 | 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 61 tests, 322 checks, 0 unproved |
+| 4 | `Kome.Write` (the write path: `Prepare` = Choose, Make, Sign; the binding persists `seq_self`; `Commit` = `Store.Put_Frame`; `Seq_Self_At_Open`, `Open_Seq` with SEQ_CORRUPT; `Receive` with the apply-side CLONE_SUSPECTED, AUDIT.md A10, H18) | §5, §7 | T8 (through `Kome.Emit`) | done. 42 tests, 123 checks, 0 unproved |
 | 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `revoked`, `far`, `ROSTER_eff` by `(epoch, gen, h)`, `ROSTER_FORK`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 141 tests, 1,190 checks, 0 unproved |
 | 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
 | 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range. `Start` takes the peer's Noise key and prepares our OPEN, with the root-void set only for a peer that `Lists_Peer` finds in a held roster; `Select_Voids` (Post `Voids_OK`; `Lemma_Voids_Cover`) builds the set; `Receive` answers the initiator's OPEN, checks the HELLO credential and re-evaluates the gate (`Gate_Holds`) under a new `Auth_Gen`; `Admit` has the gate as `Pre`; `Next_Phase` sends the data root. `Snapshot_Of (F)` (Post `Range_Fp = Frontier_Digest`) over two `Frame_Table`s filled with `Add_Frame`; `Seal` builds the D15 `Prefix` table, and `Fingerprint_Of` reads a range from it. The obligation FIFO) | §8 | T7 (open) | done. 142 tests, 2,134 checks, 0 unproved |
@@ -64,6 +65,11 @@ No package has an unproved check. In this section, a gap is one of these:
   entries would still meet the contract. Lean proves T18 over sets
   (`auth_first`). For the implementation, tests check it (the reopen
   scenarios in `test_store.adb`, before and after `Compact`).
+- **Write: the self check of `Prepare`.** `Kome.Crypto` does not state
+  `Verify (Sign (M))` (A1), so `Prepare` verifies its own signed frame at
+  run time and gives `Malformed` if the check fails. With a key from
+  `Key_Pair` the check never fails: `test_write.adb` checks that every
+  Ready frame verifies; the `Malformed` branch is not reached in a test.
 - **Headers and Views: the `AUTH_FULL` arrival-order case for `maxceil`.**
   A refused roster does not count in `maxceil`, so two replicas that
   refuse different records of one over-quota signer can hold different
@@ -195,6 +201,15 @@ only as far as their formats and checks go.
   - These duties are stated against T18: every entry-boundary prefix of a
     log that the store wrote replays OK, and the binding only ever hands
     the store such a prefix.
+  - The write path (AUDIT.md A10; A5 restated): after
+    `Kome.Write.Prepare`, persist `Seq_Persist` as `seq_self(ns)` durably
+    (write and `fsync`) before `Kome.Write.Commit`; after `Commit`, make
+    the log durable to `Log_Length` before the frame is sent or put in a
+    bundle. On open, read the seq store and call `Kome.Write.Open_Seq`;
+    a seq store that does not read back (torn, bad checksum) is
+    `SEQ_CORRUPT`. Apply every frame from a peer with `Kome.Write.Receive`
+    and show `CLONE_SUSPECTED` when its flag, the `Prepare` flag or
+    `Kome.Write.Clone_View` holds (AUDIT.md H18).
 - **`Kome.Roster` (phase 8):**
   - `Build (epoch key, root_pk, salt, e, signer, gen, members)` computes
     `eph_sk` and `box_pk` and seals the boxes from one secret, then wipes
