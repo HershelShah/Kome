@@ -7,7 +7,7 @@ Scope: docs/design (REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md), lean/Ko
 Applied on branch `ccr-f1194bfd-dei9h4` after the audit. Items 1 to 3 are
 the fix groups that §1 recommends first; item 4 is everything else in §2
 to §5. Each item names what changed. On the final state, gnatprove at
-`--level=3` proves all 18,097 checks of the 17 packages and the root package
+`--level=3` proves all 18,301 checks of the 17 packages and the root package
 with 0 unproved, 1,329 tests pass, `lake build --wfail` checks the 183 Lean
 theorems with no `sorry`, and `lean/Kome/Axioms.lean` confirms that every
 declaration of `Kome.Frontier` uses only `propext`, `Classical.choice`
