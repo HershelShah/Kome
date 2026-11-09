@@ -1,4 +1,5 @@
 pragma Ada_2022;
+with Kome.Versions;
 package body Kome.Frontier with SPARK_Mode is
 
    --  Proof style (CONVENTIONS.md):
@@ -178,8 +179,39 @@ package body Kome.Frontier with SPARK_Mode is
                   Grant_Cap_Of (A, Writer (RG, I), W_Cap (RG, Writer (RG, I))))
       and then Distinct (RG));
 
+   --  The order of the data row (AUDIT.md G25): entity-major, by the key
+   --  (ent, kind, fh). Every held data record has ns = S.NS (Data_Item_OK),
+   --  so this is the order (ns, ent, kind, fh). A DEL (kind 3, fh = 0)
+   --  sorts first in its entity's run. The design's element key (DESIGN.md
+   --  §8: kind || ent || fh || h) is kind-major, so it would split an
+   --  entity's DEL from its PUTs; the row does not use it.
+   --
+   --  Ent_Lt is the unsigned big-endian order on Id128 (Kome.Keys.Id_Lt).
+   function Ent_Lt (A, B : Id128) return Boolean is
+     (A.W0 < B.W0 or else (A.W0 = B.W0 and then
+      (A.W1 < B.W1 or else (A.W1 = B.W1 and then
+      (A.W2 < B.W2 or else (A.W2 = B.W2 and then A.W3 < B.W3))))));
+
+   function Key_Lt (A, B : Header) return Boolean is
+     (Ent_Lt (A.Ent, B.Ent)
+      or else (A.Ent = B.Ent
+               and then (A.K < B.K or else (A.K = B.K and then Lt (A.FH, B.FH)))));
+
+   --  The first N records of H are strictly increasing in the key. On a
+   --  frontier the key is unique: two held data records with one key would
+   --  differ only in V, and the greater would dominate the other
+   --  (Lemma_Key_Total).
+   function Sorted_Row (H : Header_Array; N : Natural) return Boolean is
+     (H'First = 1 and then N <= H'Last
+      and then (for all I in 1 .. N =>
+                  (for all J in I + 1 .. N => Key_Lt (H (I), H (J)))));
+
+   function Data_Sorted (S : State) return Boolean is
+     (Sorted_Row (S.Data_H, Data_Count (S)));
+
    function Is_Frontier (S : State) return Boolean is
      (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Data_OK (S)
+      and then Data_Sorted (S)
       and then Auth_OK (S.A, S.NS) and then Coherent (S.A, S.RG));
 
    function Drops_Any (S : State; R : Header) return Boolean is
@@ -998,11 +1030,13 @@ package body Kome.Frontier with SPARK_Mode is
              and then Upd.Cap = Old.Cap and then Upd.ND = Old.ND and then Upd.NS = Old.NS
              and then (for all I in 1 .. Data_Count (Old) => Upd.Data_H (I) = Old.Data_H (I))
              and then Ceil (Upd.RG) >= Ceil (Old.RG)
-             and then Extends (Old.RG, Upd.RG),
-     Post => Data_OK (Upd)
+             and then Extends (Old.RG, Upd.RG)
+             and then Data_Sorted (Old),
+     Post => Data_OK (Upd) and then Data_Sorted (Upd)
    is
    begin
       pragma Assert (Data_Count (Upd) = Data_Count (Old));
+      pragma Assert (Data_Sorted (Upd));
       for I in 1 .. Data_Count (Upd) loop
          pragma Assert (Data_Item_OK (Old, Old.Data_H (I)));
          Lemma_Extends_In_W (Old.RG, Upd.RG, Upd.Data_H (I).V.Author);
@@ -1258,6 +1292,846 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Unchanged;
 
    ---------------------------------------------------------------------
+   --  The sorted data row (AUDIT.md G25)
+   --
+   --  The data row is sorted by Key_Lt (entity-major). Obligation (G25):
+   --  every dominator of a data record P lies in P's entity run, and so
+   --  does every record that P dominates (Lemma_Dominator_In_Run: the
+   --  dominator has P's entity, and its key is not above P's key). So
+   --  one binary search (Find_Run) gives the run of R's entity, and the
+   --  duplicate, domination and drop tests of Apply read only that run:
+   --  O(log |F| + fields of the entity) Dominates calls in place of
+   --  O(|F|). A record outside the run differs from R in its entity, so
+   --  it neither equals, dominates nor is dominated by R
+   --  (Lemma_Outside_Run).
+   ---------------------------------------------------------------------
+
+   procedure Lemma_Key_Lt_Trans (A, B, C : Header) with
+     Ghost, Global => null,
+     Pre  => Key_Lt (A, B) and then Key_Lt (B, C),
+     Post => Key_Lt (A, C)
+   is
+   begin
+      null;
+   end Lemma_Key_Lt_Trans;
+
+   procedure Lemma_Key_Not_Below (A, B, R : Header) with
+     Ghost, Global => null,
+     Pre  => Key_Lt (A, B) and then not Key_Lt (A, R),
+     Post => not Key_Lt (B, R)
+   is
+   begin
+      if Key_Lt (B, R) then
+         Lemma_Key_Lt_Trans (A, B, R);
+      end if;
+   end Lemma_Key_Not_Below;
+
+   --  The G25 obligation: a dominator Q of a data record P is a data
+   --  record of P's entity, and its key is not above P's key (a newer PUT
+   --  of the cell has P's key; a DEL of the entity sorts before P).
+   procedure Lemma_Dominator_In_Run (Q, P : Header) with
+     Ghost, Global => null,
+     Pre  => Dominates (Q, P) and then Is_Data (P)
+             and then Canonical (P) and then Canonical (Q),
+     Post => Is_Data (Q) and then Q.Ent = P.Ent and then not Key_Lt (P, Q)
+   is
+   begin
+      null;
+   end Lemma_Dominator_In_Run;
+
+   --  On a frontier the key is unique: two distinct data records of one
+   --  ns with one key are ordered by V, so one dominates the other.
+   procedure Lemma_Key_Total (X, Y : Header) with
+     Ghost, Global => null,
+     Pre  => Is_Data (X) and then Is_Data (Y)
+             and then Canonical (X) and then Canonical (Y)
+             and then X.NS = Y.NS and then X /= Y
+             and then not Dominates (X, Y) and then not Dominates (Y, X),
+     Post => Key_Lt (X, Y) or else Key_Lt (Y, X)
+   is
+   begin
+      Kome.Versions.Lemma_Trichotomy (X.V, Y.V);
+      if not Key_Lt (X, Y) and then not Key_Lt (Y, X) then
+         pragma Assert (X.Ent = Y.Ent and then X.K = Y.K and then X.FH = Y.FH);
+         pragma Assert (not Kome.Versions."=" (X.V, Y.V));
+         pragma Assert (Kome.Versions.Lt (X.V, Y.V) or else Kome.Versions.Lt (Y.V, X.V));
+         pragma Assert (False);
+      end if;
+   end Lemma_Key_Total;
+
+   --  A sorted row is monotone in the entity.
+   procedure Lemma_Ent_Mono (H : Header_Array; N : Natural; I, J : Positive) with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (H, N) and then I < J and then J <= N,
+     Post => Ent_Lt (H (I).Ent, H (J).Ent) or else H (I).Ent = H (J).Ent
+   is
+   begin
+      pragma Assert (Key_Lt (H (I), H (J)));
+   end Lemma_Ent_Mono;
+
+   procedure Lemma_Ent_Below (H : Header_Array; N : Natural; L, M : Positive; E : Id128) with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (H, N) and then L <= M and then M <= N
+             and then Ent_Lt (H (M).Ent, E),
+     Post => (for all I in L .. M => Ent_Lt (H (I).Ent, E))
+   is
+   begin
+      for I in L .. M - 1 loop
+         Lemma_Ent_Mono (H, N, I, M);
+         pragma Loop_Invariant (for all I2 in L .. I => Ent_Lt (H (I2).Ent, E));
+      end loop;
+   end Lemma_Ent_Below;
+
+   procedure Lemma_Ent_Above (H : Header_Array; N : Natural; M, U : Positive; E : Id128) with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (H, N) and then M < U and then U <= N + 1
+             and then not Ent_Lt (H (M).Ent, E),
+     Post => (for all I in M .. U - 1 => not Ent_Lt (H (I).Ent, E))
+   is
+   begin
+      for I in M + 1 .. U - 1 loop
+         Lemma_Ent_Mono (H, N, M, I);
+         pragma Loop_Invariant (for all I2 in M .. I => not Ent_Lt (H (I2).Ent, E));
+      end loop;
+   end Lemma_Ent_Above;
+
+   procedure Lemma_Ent_After (H : Header_Array; N : Natural; Lo, Hi : Positive; E : Id128) with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (H, N) and then Lo <= Hi and then Hi <= N + 1
+             and then (for all I in Lo .. N => not Ent_Lt (H (I).Ent, E))
+             and then (if Hi <= N then H (Hi).Ent /= E),
+     Post => (for all I in Hi .. N => Ent_Lt (E, H (I).Ent))
+   is
+   begin
+      if Hi <= N then
+         pragma Assert (not Ent_Lt (H (Hi).Ent, E));
+         pragma Assert (Ent_Lt (E, H (Hi).Ent));
+         for I in Hi + 1 .. N loop
+            Lemma_Ent_Mono (H, N, Hi, I);
+            pragma Loop_Invariant (for all I2 in Hi .. I => Ent_Lt (E, H (I2).Ent));
+         end loop;
+      end if;
+   end Lemma_Ent_After;
+
+   --  The run of entity E: Lo .. Hi - 1. One binary search finds Lo, the
+   --  first record whose entity is not below E (the entity's DEL, if it
+   --  is held, is there); a scan of the run finds Hi.
+   procedure Find_Run (H : Header_Array; N : Natural; E : Id128; Lo, Hi : out Positive) with
+     Global => null,
+     Pre  => Sorted_Row (H, N) and then N < Held_Max,
+     Post => Lo <= Hi and then Hi <= N + 1
+             and then (for all I in 1 .. Lo - 1 => Ent_Lt (H (I).Ent, E))
+             and then (for all I in Lo .. Hi - 1 => H (I).Ent = E)
+             and then (for all I in Hi .. N => Ent_Lt (E, H (I).Ent))
+   is
+      L : Positive := 1;
+      U : Positive := N + 1;
+      M : Positive;
+   begin
+      while L < U loop
+         pragma Loop_Invariant (L <= U and then U <= N + 1);
+         pragma Loop_Invariant (for all I in 1 .. L - 1 => Ent_Lt (H (I).Ent, E));
+         pragma Loop_Invariant (for all I in U .. N => not Ent_Lt (H (I).Ent, E));
+         pragma Loop_Variant (Decreases => U - L);
+         M := L + (U - L) / 2;
+         if Ent_Lt (H (M).Ent, E) then
+            Lemma_Ent_Below (H, N, L, M, E);
+            L := M + 1;
+         else
+            Lemma_Ent_Above (H, N, M, U, E);
+            U := M;
+         end if;
+      end loop;
+      pragma Assert (L = U);
+      Lo := L;
+      Hi := L;
+      while Hi <= N and then H (Hi).Ent = E loop
+         pragma Loop_Invariant (Lo <= Hi and then Hi <= N);
+         pragma Loop_Invariant (for all I in Lo .. Hi - 1 => H (I).Ent = E);
+         pragma Loop_Variant (Increases => Hi);
+         Hi := Hi + 1;
+      end loop;
+      Lemma_Ent_After (H, N, Lo, Hi, E);
+   end Find_Run;
+
+   procedure Lemma_Key_After (H : Header_Array; N : Natural; R : Header; P, Hi : Positive) with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (H, N) and then P <= Hi and then Hi <= N + 1
+             and then (if P < Hi then not Key_Lt (H (P), R))
+             and then (for all I in Hi .. N => Ent_Lt (R.Ent, H (I).Ent)),
+     Post => (for all I in P .. N => not Key_Lt (H (I), R))
+   is
+   begin
+      for I in P .. N loop
+         if I < Hi and then I > P then
+            pragma Assert (Key_Lt (H (P), H (I)));
+            Lemma_Key_Not_Below (H (P), H (I), R);
+         end if;
+         pragma Loop_Invariant (for all I2 in P .. I => not Key_Lt (H (I2), R));
+      end loop;
+   end Lemma_Key_After;
+
+   --  R's place in the run of its entity: the records before P have a key
+   --  below R's, the others do not.
+   procedure Find_Pos
+     (H : Header_Array; N : Natural; R : Header; Lo, Hi : Positive; P : out Positive)
+   with
+     Global => null,
+     Pre  => Sorted_Row (H, N) and then Lo <= Hi and then Hi <= N + 1
+             and then (for all I in 1 .. Lo - 1 => Ent_Lt (H (I).Ent, R.Ent))
+             and then (for all I in Lo .. Hi - 1 => H (I).Ent = R.Ent)
+             and then (for all I in Hi .. N => Ent_Lt (R.Ent, H (I).Ent)),
+     Post => P in Lo .. Hi
+             and then (for all I in 1 .. N =>
+                         (if I < P then Key_Lt (H (I), R) else not Key_Lt (H (I), R)))
+   is
+   begin
+      P := Lo;
+      while P < Hi and then Key_Lt (H (P), R) loop
+         pragma Loop_Invariant (Lo <= P and then P < Hi);
+         pragma Loop_Invariant (for all I in Lo .. P - 1 => Key_Lt (H (I), R));
+         pragma Loop_Variant (Increases => P);
+         P := P + 1;
+      end loop;
+      Lemma_Key_After (H, N, R, P, Hi);
+      pragma Assert (for all I in 1 .. Lo - 1 => Key_Lt (H (I), R));
+   end Find_Pos;
+
+   --  Outside the run of R's entity, no record equals R, dominates R or is
+   --  dominated by R (R is data, so each of the three needs R's entity).
+   procedure Lemma_Outside_Run (H : Header_Array; N : Natural; R : Header; Lo, Hi : Positive) with
+     Ghost, Global => null,
+     Pre  => H'First = 1 and then N <= H'Last and then Is_Data (R)
+             and then Lo <= Hi and then Hi <= N + 1
+             and then (for all I in 1 .. Lo - 1 => Ent_Lt (H (I).Ent, R.Ent))
+             and then (for all I in Hi .. N => Ent_Lt (R.Ent, H (I).Ent)),
+     Post => (for all I in 1 .. N =>
+                (if I < Lo or else I >= Hi then
+                   H (I) /= R and then not Dominates (H (I), R)
+                   and then not Dominates (R, H (I))))
+   is
+   begin
+      pragma Assert (for all I in 1 .. Lo - 1 => H (I).Ent /= R.Ent);
+      pragma Assert (for all I in Hi .. N => H (I).Ent /= R.Ent);
+   end Lemma_Outside_Run;
+
+   --  R dominates no record below its key (Lemma_Dominator_In_Run).
+   procedure Lemma_No_Drop_Below (H : Header_Array; N : Natural; R : Header; P : Positive) with
+     Ghost, Global => null,
+     Pre  => H'First = 1 and then N <= H'Last and then Is_Data (R) and then Canonical (R)
+             and then (for all I in 1 .. N => Is_Data (H (I)) and then Canonical (H (I)))
+             and then (for all I in 1 .. N => (if I < P then Key_Lt (H (I), R))),
+     Post => (for all I in 1 .. N => (if I < P then not Dominates (R, H (I))))
+   is
+   begin
+      for I in 1 .. N loop
+         if I < P and then Dominates (R, H (I)) then
+            Lemma_Dominator_In_Run (R, H (I));
+         end if;
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I => (if I2 < P then not Dominates (R, H (I2))));
+      end loop;
+   end Lemma_No_Drop_Below;
+
+   --  A subsequence of a sorted row is sorted.
+   procedure Lemma_Sub_Sorted
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (OH, ON) and then H'First = 1 and then N <= H'Last
+             and then Src'First = 1 and then Src'Last >= N
+             and then (for all J in 1 .. N => Src (J) in 1 .. ON and then H (J) = OH (Src (J)))
+             and then (for all J in 1 .. N =>
+                         (for all J2 in 1 .. N => (if J < J2 then Src (J) < Src (J2)))),
+     Post => Sorted_Row (H, N)
+   is
+   begin
+      for J in 1 .. N loop
+         pragma Assert
+           (for all J2 in J + 1 .. N => Key_Lt (OH (Src (J)), OH (Src (J2))));
+         pragma Loop_Invariant
+           (for all J3 in 1 .. J =>
+              (for all J2 in J3 + 1 .. N => Key_Lt (H (J3), H (J2))));
+      end loop;
+   end Lemma_Sub_Sorted;
+
+   --  Set the maps to the identity on 1 .. M.
+   procedure Identity_Maps (Src, Dst : in out Index_Map; M : Natural) with
+     Ghost, Global => null,
+     Pre  => Src'First = 1 and then Dst'First = 1
+             and then M <= Src'Last and then M <= Dst'Last
+             and then Src'Last <= Held_Max and then Dst'Last <= Held_Max,
+     Post => (for all J in 1 .. M => Src (J) = J and then Dst (J) = J)
+             and then (for all J in M + 1 .. Src'Last => Src (J) = Src'Old (J))
+             and then (for all J in M + 1 .. Dst'Last => Dst (J) = Dst'Old (J))
+   is
+   begin
+      for J in 1 .. M loop
+         Src (J) := J;
+         Dst (J) := J;
+         pragma Loop_Invariant (for all J2 in 1 .. J => Src (J2) = J2 and then Dst (J2) = J2);
+         pragma Loop_Invariant (for all J2 in J + 1 .. Src'Last => Src (J2) = Src'Loop_Entry (J2));
+         pragma Loop_Invariant (for all J2 in J + 1 .. Dst'Last => Dst (J2) = Dst'Loop_Entry (J2));
+      end loop;
+   end Identity_Maps;
+
+   --  The maps after an insertion at P into a row of N1 records (ON: the
+   --  length of the original row that Dst maps).
+   procedure Shift_Maps (Src, Dst : in out Index_Map; N1, ON : Natural; P : Positive) with
+     Ghost, Global => null,
+     Pre  => Src'First = 1 and then Dst'First = 1 and then N1 < Src'Last
+             and then Src'Last <= Held_Max
+             and then ON <= Dst'Last and then P <= N1 + 1
+             and then (for all I in 1 .. ON => Dst (I) <= N1),
+     Post => Src (P) = 0
+             and then (for all J in 1 .. P - 1 => Src (J) = Src'Old (J))
+             and then (for all J in P + 1 .. N1 + 1 => Src (J) = Src'Old (J - 1))
+             and then (for all I in 1 .. ON =>
+                         Dst (I) = (if Dst'Old (I) = 0 then 0
+                                    elsif Dst'Old (I) < P then Dst'Old (I)
+                                    else Dst'Old (I) + 1))
+   is
+   begin
+      for J in reverse P .. N1 loop
+         pragma Loop_Invariant (for all K in 1 .. J => Src (K) = Src'Loop_Entry (K));
+         pragma Loop_Invariant
+           (for all K in J + 2 .. N1 + 1 => Src (K) = Src'Loop_Entry (K - 1));
+         Src (J + 1) := Src (J);
+      end loop;
+      Src (P) := 0;
+      for I in 1 .. ON loop
+         pragma Loop_Invariant (for all K in I .. ON => Dst (K) = Dst'Loop_Entry (K));
+         pragma Loop_Invariant
+           (for all K in 1 .. I - 1 =>
+              Dst (K) = (if Dst'Loop_Entry (K) = 0 then 0
+                         elsif Dst'Loop_Entry (K) < P then Dst'Loop_Entry (K)
+                         else Dst'Loop_Entry (K) + 1));
+         if Dst (I) >= P then
+            Dst (I) := Dst (I) + 1;
+         end if;
+      end loop;
+   end Shift_Maps;
+
+   --  The row (H, N) is the old row (OH, ON) without some records that R
+   --  dominates. The records before P did not move; the others come from
+   --  P or later, in order. Dst gives the new place of each old record (0:
+   --  dropped).
+   function Mid_Row
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src, Dst : Index_Map) return Boolean
+   is
+     (OH'First = 1 and then H'First = 1 and then ON <= OH'Last and then N <= H'Last
+      and then Src'First = 1 and then Dst'First = 1
+      and then Src'Last >= N and then Dst'Last >= ON
+      and then P <= N + 1 and then N <= ON
+      and then (for all J in 1 .. N =>
+                  Src (J) in 1 .. ON and then H (J) = OH (Src (J))
+                  and then not Dominates (R, OH (Src (J)))
+                  and then (if J < P then Src (J) = J else Src (J) >= P))
+      and then (for all J in 1 .. N =>
+                  (for all J2 in J + 1 .. N => Src (J) < Src (J2)))
+      and then (for all I in 1 .. ON =>
+                  (if Dst (I) = 0 then Dominates (R, OH (I))
+                   else Dst (I) in 1 .. N and then Src (Dst (I)) = I)))
+   with Ghost;
+
+   --  The new row (H, N) is the old row without the records that R
+   --  dominates, with R at P: the records before P come from before P,
+   --  the records after P from P or later, in order.
+   --  (Kept_Src: the part on Src. Dst is the inverse of Src on the kept
+   --  records, Src (Dst (I)) = I, so no fact reads H at Dst (I): an array
+   --  read there would let the provers chain Src and Dst without end.)
+   function Kept_Src
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src : Index_Map) return Boolean
+   is
+     (OH'First = 1 and then H'First = 1 and then ON <= OH'Last and then N <= H'Last
+      and then Src'First = 1 and then Src'Last >= N
+      and then P <= N and then H (P) = R and then Src (P) = 0
+      and then (for all J in 1 .. N =>
+                  (if J /= P then
+                     Src (J) in 1 .. ON and then H (J) = OH (Src (J))
+                     and then not Dominates (R, OH (Src (J)))
+                     and then (if J < P then Src (J) < P else Src (J) >= P)))
+      and then (for all J in 1 .. N =>
+                  (for all J2 in J + 1 .. N =>
+                     (if J /= P and then J2 /= P then Src (J) < Src (J2)))))
+   with Ghost;
+
+   function Kept_Row
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src, Dst : Index_Map) return Boolean
+   is
+     (Kept_Src (OH, ON, H, N, R, P, Src)
+      and then Dst'First = 1 and then Dst'Last >= ON
+      and then (for all I in 1 .. ON =>
+                  (if Dst (I) = 0 then Dominates (R, OH (I))
+                   else Dst (I) in 1 .. N and then Dst (I) /= P
+                        and then Src (Dst (I)) = I)))
+   with Ghost;
+
+   --  The order conjunct of Kept_Row, alone.
+   procedure Lemma_Kept_Mono
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Kept_Src (OH, ON, H, N, R, P, Src),
+     Post => (for all J in 1 .. N =>
+                (for all J2 in J + 1 .. N =>
+                   (if J /= P and then J2 /= P then Src (J) < Src (J2))))
+             and then (for all J in 1 .. N =>
+                         (if J /= P then
+                            Src (J) in 1 .. ON and then H (J) = OH (Src (J))
+                            and then not Dominates (R, OH (Src (J)))
+                            and then (if J < P then Src (J) < P else Src (J) >= P)))
+   is
+   begin
+      null;
+   end Lemma_Kept_Mono;
+
+   procedure Lemma_Insert_Kept
+     (OH : Header_Array; ON : Natural; H1 : Header_Array; N1 : Natural;
+      H2 : Header_Array; N2 : Natural; R : Header; P : Positive;
+      Src1, Dst1, Src2, Dst2 : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Mid_Row (OH, ON, H1, N1, R, P, Src1, Dst1)
+             and then H2'First = 1 and then N2 = N1 + 1 and then N2 <= H2'Last
+             and then H2 (P) = R
+             and then (for all J in 1 .. P - 1 => H2 (J) = H1 (J))
+             and then (for all J in P + 1 .. N2 => H2 (J) = H1 (J - 1))
+             and then Src2'First = 1 and then Src2'Last >= N2
+             and then Dst2'First = 1 and then Dst2'Last >= ON
+             and then Src2 (P) = 0
+             and then (for all J in 1 .. P - 1 => Src2 (J) = Src1 (J))
+             and then (for all J in P + 1 .. N2 => Src2 (J) = Src1 (J - 1))
+             and then (for all I in 1 .. ON =>
+                         Dst2 (I) = (if Dst1 (I) = 0 then 0
+                                     elsif Dst1 (I) < P then Dst1 (I)
+                                     else Dst1 (I) + 1)),
+     Post => Kept_Row (OH, ON, H2, N2, R, P, Src2, Dst2)
+   is
+   begin
+      pragma Assert
+        (for all J in 1 .. P - 1 =>
+           Src2 (J) = J and then H2 (J) = OH (J) and then not Dominates (R, OH (J)));
+      pragma Assert
+        (for all J in P + 1 .. N2 =>
+           Src2 (J) = Src1 (J - 1) and then Src1 (J - 1) in P .. ON
+           and then H2 (J) = OH (Src2 (J)) and then not Dominates (R, OH (Src2 (J))));
+      pragma Assert
+        (for all J in 1 .. N2 =>
+           (if J /= P then
+              Src2 (J) in 1 .. ON and then H2 (J) = OH (Src2 (J))
+              and then not Dominates (R, OH (Src2 (J)))
+              and then (if J < P then Src2 (J) < P else Src2 (J) >= P)));
+      pragma Assert
+        (for all J in P + 1 .. N2 =>
+           (for all J2 in J + 1 .. N2 => Src2 (J) < Src2 (J2)));
+      pragma Assert
+        (for all J in 1 .. P - 1 =>
+           (for all J2 in J + 1 .. N2 => (if J2 /= P then Src2 (J) < Src2 (J2))));
+      pragma Assert
+        (for all J in 1 .. N2 =>
+           (for all J2 in J + 1 .. N2 =>
+              (if J /= P and then J2 /= P then Src2 (J) < Src2 (J2))));
+      pragma Assert (Kept_Src (OH, ON, H2, N2, R, P, Src2));
+      for I in 1 .. ON loop
+         if Dst1 (I) /= 0 then
+            pragma Assert (Src1 (Dst1 (I)) = I);
+            if Dst1 (I) < P then
+               pragma Assert (Dst2 (I) = Dst1 (I) and then Src2 (Dst1 (I)) = Src1 (Dst1 (I)));
+            else
+               pragma Assert (Dst2 (I) = Dst1 (I) + 1);
+               pragma Assert (Src2 (Dst1 (I) + 1) = Src1 (Dst1 (I)));
+            end if;
+         end if;
+         pragma Assert
+           (if Dst2 (I) = 0 then Dominates (R, OH (I))
+            else Dst2 (I) in 1 .. N2 and then Dst2 (I) /= P
+                 and then Src2 (Dst2 (I)) = I);
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              (if Dst2 (I2) = 0 then Dominates (R, OH (I2))
+               else Dst2 (I2) in 1 .. N2 and then Dst2 (I2) /= P
+                    and then Src2 (Dst2 (I2)) = I2));
+      end loop;
+   end Lemma_Insert_Kept;
+
+   --  The three row facts of a step, each on the arrays alone (a small
+   --  context): the new row (H, N) holds R at P and old records elsewhere
+   --  (Src).
+
+   procedure Lemma_Step_Antichain
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => OH'First = 1 and then H'First = 1 and then ON <= OH'Last and then N <= H'Last
+             and then Src'First = 1 and then Src'Last >= N
+             and then P <= N and then H (P) = R and then not Dominates (R, R)
+             and then (for all J in 1 .. N =>
+                         (if J /= P then Src (J) in 1 .. ON and then H (J) = OH (Src (J))))
+             and then (for all I in 1 .. ON =>
+                         (for all I2 in 1 .. ON => not Dominates (OH (I2), OH (I))))
+             and then (for all I in 1 .. ON => not Dominates (OH (I), R))
+             and then (for all J in 1 .. N =>
+                         (if J /= P then not Dominates (R, OH (Src (J))))),
+     Post => (for all J in 1 .. N =>
+                (for all J2 in 1 .. N => not Dominates (H (J2), H (J))))
+   is
+   begin
+      for J in 1 .. N loop
+         for J2 in 1 .. N loop
+            if J /= P and then J2 /= P then
+               pragma Assert (not Dominates (OH (Src (J2)), OH (Src (J))));
+            elsif J /= P then
+               pragma Assert (H (J2) = R and then not Dominates (R, OH (Src (J))));
+            elsif J2 /= P then
+               pragma Assert (H (J) = R and then not Dominates (OH (Src (J2)), R));
+            end if;
+            pragma Assert (not Dominates (H (J2), H (J)));
+            pragma Loop_Invariant
+              (for all J3 in 1 .. J2 => not Dominates (H (J3), H (J)));
+         end loop;
+         pragma Loop_Invariant
+           (for all J4 in 1 .. J =>
+              (for all J3 in 1 .. N => not Dominates (H (J3), H (J4))));
+      end loop;
+   end Lemma_Step_Antichain;
+
+   procedure Lemma_Step_Distinct
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => OH'First = 1 and then H'First = 1 and then ON <= OH'Last and then N <= H'Last
+             and then Src'First = 1 and then Src'Last >= N
+             and then P <= N and then H (P) = R
+             and then (for all J in 1 .. N =>
+                         (if J /= P then Src (J) in 1 .. ON and then H (J) = OH (Src (J))))
+             and then (for all J in 1 .. N =>
+                         (for all J2 in J + 1 .. N =>
+                            (if J /= P and then J2 /= P then Src (J) < Src (J2))))
+             and then (for all I in 1 .. ON =>
+                         (for all I2 in 1 .. ON =>
+                            (if I /= I2 then OH (I) /= OH (I2))))
+             and then (for all I in 1 .. ON => OH (I) /= R),
+     Post => (for all J in 1 .. N =>
+                (for all J2 in 1 .. N => (if J /= J2 then H (J) /= H (J2))))
+   is
+   begin
+      for J in 1 .. N loop
+         for J2 in 1 .. N loop
+            if J /= J2 then
+               if J /= P and then J2 /= P then
+                  if J < J2 then
+                     pragma Assert (Src (J) < Src (J2));
+                  else
+                     pragma Assert (Src (J2) < Src (J));
+                  end if;
+                  pragma Assert (OH (Src (J)) /= OH (Src (J2)));
+               elsif J /= P then
+                  pragma Assert (H (J2) = R and then OH (Src (J)) /= R);
+               else
+                  pragma Assert (H (J) = R and then OH (Src (J2)) /= R);
+               end if;
+               pragma Assert (H (J) /= H (J2));
+            end if;
+            pragma Loop_Invariant
+              (for all J3 in 1 .. J2 => (if J /= J3 then H (J) /= H (J3)));
+         end loop;
+         pragma Loop_Invariant
+           (for all J4 in 1 .. J =>
+              (for all J3 in 1 .. N => (if J4 /= J3 then H (J4) /= H (J3))));
+      end loop;
+   end Lemma_Step_Distinct;
+
+   procedure Lemma_Step_Sorted
+     (OH : Header_Array; ON : Natural; H : Header_Array; N : Natural;
+      R : Header; P : Positive; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Sorted_Row (OH, ON) and then H'First = 1 and then N <= H'Last
+             and then Src'First = 1 and then Src'Last >= N
+             and then P <= N and then H (P) = R
+             and then (for all J in 1 .. N =>
+                         (if J /= P then Src (J) in 1 .. ON and then H (J) = OH (Src (J))))
+             and then (for all J in 1 .. N =>
+                         (for all J2 in J + 1 .. N =>
+                            (if J /= P and then J2 /= P then Src (J) < Src (J2))))
+             and then (for all J in 1 .. P - 1 => Key_Lt (H (J), R))
+             and then (for all J in P + 1 .. N => Key_Lt (R, H (J))),
+     Post => Sorted_Row (H, N)
+   is
+   begin
+      for J in 1 .. N loop
+         for J2 in J + 1 .. N loop
+            if J /= P and then J2 /= P then
+               pragma Assert (Src (J) < Src (J2));
+               pragma Assert (Key_Lt (OH (Src (J)), OH (Src (J2))));
+            end if;
+            pragma Assert (Key_Lt (H (J), H (J2)));
+            pragma Loop_Invariant
+              (for all J3 in J + 1 .. J2 => Key_Lt (H (J), H (J3)));
+         end loop;
+         pragma Loop_Invariant
+           (for all J4 in 1 .. J =>
+              (for all J3 in J4 + 1 .. N => Key_Lt (H (J4), H (J3))));
+      end loop;
+   end Lemma_Step_Sorted;
+   --  The data row of Upd is a sorted frontier row: Kept_Row from a sorted
+   --  frontier row, R undominated and new, and R's place P in key order.
+   procedure Lemma_Data_Step
+     (Old, Upd : State; R : Header; P : Positive; Src : Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Shape (Old) and then Data_OK (Old) and then Data_Sorted (Old)
+             and then Upd.ND <= Upd.Cap and then Upd.NS = Old.NS
+             and then Kept_Src (Old.Data_H, Old.ND, Upd.Data_H, Upd.ND, R, P, Src)
+             and then (for all I in 1 .. Old.ND => Data_Item_OK (Upd, Old.Data_H (I)))
+             and then Data_Item_OK (Upd, R)
+             and then (for all I in 1 .. Old.ND =>
+                         Old.Data_H (I) /= R and then not Dominates (Old.Data_H (I), R))
+             and then (for all I in 1 .. Old.ND =>
+                         (if I < P then Key_Lt (Old.Data_H (I), R)
+                          else not Key_Lt (Old.Data_H (I), R))),
+     Post => Data_OK (Upd) and then Data_Sorted (Upd)
+   is
+      ON : constant Natural := Old.ND;
+      UN : constant Natural := Upd.ND;
+   begin
+      pragma Assert (Data_Count (Old) = ON and then Data_Count (Upd) = UN);
+      Lemma_Dominates_Irrefl (R);
+      Lemma_Kept_Mono (Old.Data_H, ON, Upd.Data_H, UN, R, P, Src);
+      --  R is below each later record (the key is unique, Lemma_Key_Total).
+      for J in P + 1 .. UN loop
+         pragma Assert (Src (J) in P .. ON);
+         pragma Assert (Data_Item_OK (Old, Old.Data_H (Src (J))));
+         Lemma_Key_Total (Old.Data_H (Src (J)), R);
+         pragma Assert (Key_Lt (R, Upd.Data_H (J)));
+         pragma Loop_Invariant (for all J2 in P + 1 .. J => Key_Lt (R, Upd.Data_H (J2)));
+      end loop;
+
+      pragma Assert (for all J in 1 .. UN => Data_Item_OK (Upd, Upd.Data_H (J)));
+
+      --  The facts of the three row lemmas.
+      pragma Assert
+        (for all J in 1 .. UN =>
+           (if J /= P then Src (J) in 1 .. ON and then Upd.Data_H (J) = Old.Data_H (Src (J))));
+      pragma Assert
+        (for all J in 1 .. UN => (if J /= P then not Dominates (R, Old.Data_H (Src (J)))));
+      pragma Assert
+        (for all J in 1 .. UN =>
+           (for all J2 in J + 1 .. UN =>
+              (if J /= P and then J2 /= P then Src (J) < Src (J2))));
+      pragma Assert (for all J in 1 .. P - 1 => Src (J) < P);
+      pragma Assert (for all J in 1 .. P - 1 => Key_Lt (Upd.Data_H (J), R));
+      pragma Assert
+        (for all I in 1 .. ON =>
+           (for all I2 in 1 .. ON => not Dominates (Old.Data_H (I2), Old.Data_H (I))));
+      pragma Assert
+        (for all I in 1 .. ON =>
+           (for all I2 in 1 .. ON =>
+              (if I /= I2 then Old.Data_H (I) /= Old.Data_H (I2))));
+      pragma Assert (Sorted_Row (Old.Data_H, ON));
+
+      Lemma_Step_Antichain (Old.Data_H, ON, Upd.Data_H, UN, R, P, Src);
+      Lemma_Step_Distinct (Old.Data_H, ON, Upd.Data_H, UN, R, P, Src);
+      Lemma_Step_Sorted (Old.Data_H, ON, Upd.Data_H, UN, R, P, Src);
+      pragma Assert (Data_OK (Upd));
+      pragma Assert (Data_Sorted (Upd));
+   end Lemma_Data_Step;
+
+   --  Commit a data record (Apply_Data decided every refusal): drop what R
+   --  beats (all in its entity run, at P or later) and hold R at P.
+   --    * R beats only the record at P: R takes its place.
+   --    * R beats no record: the records from P on move up by one.
+   --    * Otherwise: compact from P on, then insert.
+   procedure Commit_Data
+     (S : in out State; R : Header; Lo, Hi, P : Positive; Any_Drop, Other_Drop : Boolean)
+   with
+     Global => null,
+     Pre  => Is_Frontier (S) and then Canonical (R) and then R.NS = S.NS
+             and then Is_Data (R) and then Admitted (S, R)
+             and then Lo <= P and then P <= Hi and then Hi <= S.ND + 1
+             and then (for all I in 1 .. S.ND =>
+                         (if I < P then Key_Lt (S.Data_H (I), R)
+                          else not Key_Lt (S.Data_H (I), R)))
+             and then (for all I in 1 .. S.ND =>
+                         S.Data_H (I) /= R and then not Dominates (S.Data_H (I), R)
+                         and then (if I < Lo or else I >= Hi
+                                   then not Dominates (R, S.Data_H (I))))
+             and then Any_Drop
+                      = (for some I in Lo .. Hi - 1 => Dominates (R, S.Data_H (I)))
+             and then Other_Drop
+                      = (for some I in Lo .. Hi - 1 =>
+                           I /= P and then Dominates (R, S.Data_H (I)))
+             and then (S.ND < S.Cap or else Any_Drop),
+     Post => Is_Frontier (S)
+       and then S.NS = S'Old.NS and then S.Fnd = S'Old.Fnd
+       and then Holds (S, R)
+       and then Admitted (S, R)
+       and then Ceil (Regs (S)) = Ceil (Regs (S'Old))
+       and then Extends (Regs (S'Old), Regs (S))
+       and then Extends (Regs (S), Regs (S'Old))
+       and then (for all I in 1 .. Count (S) =>
+                   Holds (S'Old, Held (S, I)) or else Held (S, I) = R)
+       and then (for all I in 1 .. Count (S'Old) =>
+                   Holds (S, Held (S'Old, I)) or else Dominates (R, Held (S'Old, I)))
+   is
+      Old_S : constant State := S with Ghost;
+      N     : constant Data_Size := S.ND;
+      Cap   : constant Data_Size := S.Cap;
+      Src   : Index_Map (1 .. Cap) := [others => 0] with Ghost;
+      Dst   : Index_Map (1 .. Cap) := [others => 0] with Ghost;
+   begin
+      Lemma_Off_Mono (S);
+      pragma Assert (Data_Count (S) = N and then N <= Cap);
+      pragma Assert (Shape (Old_S) and then Auth_Shape (Old_S.A));
+      pragma Assert (Slots_OK (Old_S.A, Old_S.Fnd) and then Data_OK (Old_S));
+      pragma Assert (Data_Sorted (Old_S));
+      pragma Assert (Auth_OK (Old_S.A, Old_S.NS) and then Coherent (Old_S.A, Old_S.RG));
+      pragma Assert (Data_OK (S) and then Data_Sorted (S));
+      pragma Assert
+        (for all I in 1 .. N => Is_Data (S.Data_H (I)) and then Canonical (S.Data_H (I)));
+      Lemma_No_Drop_Below (S.Data_H, N, R, P);
+      --  What R beats lies in P .. Hi - 1 (AUDIT.md G25).
+      pragma Assert
+        (for all I in 1 .. N => (if Dominates (R, S.Data_H (I)) then I in P .. Hi - 1));
+
+      if Any_Drop and then not Other_Drop then
+         pragma Assert (P < Hi and then Dominates (R, S.Data_H (P)));
+         pragma Assert
+           (for all I in 1 .. N => (if I /= P then not Dominates (R, S.Data_H (I))));
+         S.Data_H (P) := R;
+         Identity_Maps (Src, Dst, N);
+         Src (P) := 0;
+         Dst (P) := 0;
+         pragma Assert (S.ND = N);
+         pragma Assert
+           (for all J in 1 .. N => (if J /= P then S.Data_H (J) = Old_S.Data_H (J)));
+         pragma Assert
+           (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Auth_OK (S.A, S.NS)
+            and then Coherent (S.A, S.RG));
+         pragma Assert
+           (for all I in 1 .. N => Data_Item_OK (S, Old_S.Data_H (I)));
+         pragma Assert (Data_Item_OK (S, R));
+      else
+         if Any_Drop then
+            declare
+               Kept    : Data_Size := P - 1;
+               Dropped : Data_Size := 0;
+            begin
+               for I in P .. N loop
+                  pragma Loop_Invariant (Kept + Dropped = I - 1 and then P - 1 <= Kept);
+                  pragma Loop_Invariant
+                    ((Dropped > 0)
+                     = (for some J in P .. I - 1 => Dominates (R, Old_S.Data_H (J))));
+                  pragma Loop_Invariant (S.ND = N);
+                  pragma Loop_Invariant
+                    (for all J in 1 .. P - 1 => S.Data_H (J) = Old_S.Data_H (J));
+                  pragma Loop_Invariant
+                    (for all J in I .. N => S.Data_H (J) = Old_S.Data_H (J));
+                  pragma Loop_Invariant
+                    (for all J in P .. Kept =>
+                       Src (J) in P .. I - 1
+                       and then S.Data_H (J) = Old_S.Data_H (Src (J))
+                       and then not Dominates (R, Old_S.Data_H (Src (J))));
+                  pragma Loop_Invariant
+                    (for all J in P .. Kept =>
+                       (for all J2 in J + 1 .. Kept => Src (J) < Src (J2)));
+                  pragma Loop_Invariant
+                    (for all J in P .. I - 1 =>
+                       (if Dominates (R, Old_S.Data_H (J)) then Dst (J) = 0
+                        else Dst (J) in P .. Kept and then Src (Dst (J)) = J));
+                  if I < Hi and then Dominates (R, S.Data_H (I)) then
+                     Dropped := Dropped + 1;
+                     Dst (I) := 0;
+                  else
+                     Kept := Kept + 1;
+                     S.Data_H (Kept) := S.Data_H (I);
+                     Src (Kept) := I;
+                     Dst (I) := Kept;
+                  end if;
+               end loop;
+               pragma Assert (Dropped > 0 and then Kept < N);
+               S.ND := Kept;
+            end;
+            Identity_Maps (Src, Dst, P - 1);
+         else
+            pragma Assert (for all I in 1 .. N => not Dominates (R, S.Data_H (I)));
+            Identity_Maps (Src, Dst, N);
+         end if;
+         pragma Assert (S.ND < S.Cap);
+         pragma Assert (Mid_Row (Old_S.Data_H, N, S.Data_H, S.ND, R, P, Src, Dst));
+         declare
+            H1   : constant Header_Array := S.Data_H with Ghost;
+            N1   : constant Data_Size := S.ND with Ghost;
+            Src1 : constant Index_Map := Src with Ghost;
+            Dst1 : constant Index_Map := Dst with Ghost;
+         begin
+            --  Insert R at P: the records from P on move up by one.
+            for J in reverse P .. S.ND loop
+               pragma Loop_Invariant (S.ND = N1);
+               pragma Loop_Invariant (for all K in 1 .. J => S.Data_H (K) = H1 (K));
+               pragma Loop_Invariant
+                 (for all K in J + 2 .. N1 + 1 => S.Data_H (K) = H1 (K - 1));
+               S.Data_H (J + 1) := S.Data_H (J);
+            end loop;
+            S.Data_H (P) := R;
+            S.ND := S.ND + 1;
+            pragma Assert (for all J in 1 .. P - 1 => S.Data_H (J) = H1 (J));
+            pragma Assert (for all J in P + 1 .. S.ND => S.Data_H (J) = H1 (J - 1));
+            pragma Assert
+              (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Auth_OK (S.A, S.NS)
+               and then Coherent (S.A, S.RG));
+            pragma Assert
+              (for all I in 1 .. N => Data_Item_OK (S, Old_S.Data_H (I)));
+            pragma Assert (Data_Item_OK (S, R));
+            Shift_Maps (Src, Dst, N1, N, P);
+            Lemma_Insert_Kept
+              (Old_S.Data_H, N, H1, N1, S.Data_H, S.ND, R, P, Src1, Dst1, Src, Dst);
+         end;
+      end if;
+      pragma Assert (Kept_Row (Old_S.Data_H, N, S.Data_H, S.ND, R, P, Src, Dst));
+
+      pragma Assert (S.Cap = Cap and then S.ND <= S.Cap and then S.NS = Old_S.NS);
+      pragma Assert (Old_S.ND = N);
+      pragma Assert (for all I in 1 .. N => Data_Item_OK (S, Old_S.Data_H (I)));
+      pragma Assert (Data_Item_OK (S, R));
+      pragma Assert
+        (for all I in 1 .. N =>
+           Old_S.Data_H (I) /= R and then not Dominates (Old_S.Data_H (I), R));
+      pragma Assert
+        (for all I in 1 .. N =>
+           (if I < P then Key_Lt (Old_S.Data_H (I), R)
+            else not Key_Lt (Old_S.Data_H (I), R)));
+      Lemma_Data_Step (Old_S, S, R, P, Src);
+      pragma Assert (Data_OK (S) and then Data_Sorted (S));
+      pragma Assert (S.A.Slice = Old_S.A.Slice and then S.A.NSlots = Old_S.A.NSlots);
+      pragma Assert (Shape (S));
+      pragma Assert (Slots_OK (S.A, S.Fnd));
+      pragma Assert (Auth_OK (S.A, S.NS));
+      pragma Assert (Coherent (S.A, S.RG));
+      pragma Assert (Is_Frontier (S));
+
+      pragma Assert
+        (for all I in 1 .. N =>
+           (if Dst (I) /= 0 then S.Data_H (Dst (I)) = Old_S.Data_H (I)));
+      pragma Assert (Step (Old_S, S, 0, R, Src, Dst));
+      Lemma_Step_Flat (Old_S, S, 0, R, Src, Dst);
+      Lemma_Row_Flat (S, 0, P);
+      pragma Assert (Holds (S, R));
+      Lemma_Extends_Refl (S.RG);
+      Lemma_All_Flat (Old_S);
+      pragma Assert
+        (for all I in 1 .. Count (Old_S) =>
+           Holds (S, Held (Old_S, I)) or else Dominates (R, Held (Old_S, I)));
+   end Commit_Data;
+
+   ---------------------------------------------------------------------
    --  Apply
    ---------------------------------------------------------------------
 
@@ -1287,21 +2161,28 @@ package body Kome.Frontier with SPARK_Mode is
                                Holds (S, Held (S'Old, I))
                                or else Dominates (R, Held (S'Old, I))))
    is
-      Old_S : constant State := S with Ghost;
-      Cap   : constant Data_Size := S.Cap;
-      N     : constant Data_Size := S.ND;
+      Cap : constant Data_Size := S.Cap;
+      N   : constant Data_Size := S.ND;
+      Lo, Hi, P : Positive;
    begin
       Lemma_Classify (S, R);
       Lemma_Off_Mono (S);
       pragma Assert (Data_Count (S) = N and then N <= Cap);
       pragma Assert (Row_For (S, R) = 0 and then Has_Row (S, R));
-      pragma Assert (Data_OK (S));
+      pragma Assert (Data_OK (S) and then Data_Sorted (S));
       Lemma_Extends_Refl (S.RG);
 
+      --  One binary search: the run of R's entity, and R's place in it.
+      --  Only the run can hold R, a dominator of R or a record that R
+      --  dominates (AUDIT.md G25).
+      Find_Run (S.Data_H, N, R.Ent, Lo, Hi);
+      Find_Pos (S.Data_H, N, R, Lo, Hi, P);
+      Lemma_Outside_Run (S.Data_H, N, R, Lo, Hi);
+
       --  Duplicate, or beaten by a held record?
-      for I in 1 .. N loop
+      for I in Lo .. Hi - 1 loop
          pragma Loop_Invariant
-           (for all J in 1 .. I - 1 =>
+           (for all J in Lo .. I - 1 =>
               S.Data_H (J) /= R and then not Dominates (S.Data_H (J), R));
          if S.Data_H (I) = R then
             pragma Assert (Row_At (S, 0, I) = R);
@@ -1322,105 +2203,39 @@ package body Kome.Frontier with SPARK_Mode is
             return;
          end if;
       end loop;
+      pragma Assert
+        (for all J in 1 .. N =>
+           S.Data_H (J) /= R and then not Dominates (S.Data_H (J), R));
       pragma Assert (not In_Row (S, 0, R));
       pragma Assert (not Dom_In_Row (S, 0, R));
 
       --  Room: decided before anything changes.
       declare
-         Any_Drop : Boolean := False;
-         Kept     : Data_Size := 0;
-         Dropped  : Data_Size := 0;
-         Src : Index_Map (1 .. Cap) := [others => 0] with Ghost;
-         Dst : Index_Map (1 .. Cap) := [others => 0] with Ghost;
+         Any_Drop   : Boolean := False;
+         Other_Drop : Boolean := False;
       begin
-         for I in 1 .. N loop
+         for I in Lo .. Hi - 1 loop
             pragma Loop_Invariant
-              (Any_Drop = (for some J in 1 .. I - 1 => Dominates (R, S.Data_H (J))));
+              (Any_Drop = (for some J in Lo .. I - 1 => Dominates (R, S.Data_H (J))));
+            pragma Loop_Invariant
+              (Other_Drop
+               = (for some J in Lo .. I - 1 => J /= P and then Dominates (R, S.Data_H (J))));
             if Dominates (R, S.Data_H (I)) then
                Any_Drop := True;
+               if I /= P then
+                  Other_Drop := True;
+               end if;
             end if;
          end loop;
+         pragma Assert
+           (for all J in 1 .. N =>
+              (if J < Lo or else J >= Hi then not Dominates (R, S.Data_H (J))));
          pragma Assert (Any_Drop = Drops_In_Row (S, 0, R));
          if N = Cap and then not Any_Drop then
             Result := No_Space;
             return;
          end if;
-
-         --  Drop what R beats and compact in place. Then hold R.
-         for I in 1 .. N loop
-            pragma Loop_Invariant (Kept + Dropped = I - 1);
-            pragma Loop_Invariant
-              ((Dropped > 0) = (for some J in 1 .. I - 1 => Dominates (R, Old_S.Data_H (J))));
-            pragma Loop_Invariant (S.ND = N);
-            pragma Loop_Invariant (for all J in I .. N => S.Data_H (J) = Old_S.Data_H (J));
-            pragma Loop_Invariant
-              (for all J in 1 .. Kept =>
-                 Src (J) in 1 .. I - 1
-                 and then S.Data_H (J) = Old_S.Data_H (Src (J))
-                 and then not Dominates (R, Old_S.Data_H (Src (J))));
-            pragma Loop_Invariant
-              (for all J in 1 .. Kept =>
-                 (for all J2 in 1 .. Kept => (if J < J2 then Src (J) < Src (J2))));
-            pragma Loop_Invariant
-              (for all J in 1 .. I - 1 =>
-                 (if Dominates (R, Old_S.Data_H (J)) then Dst (J) = 0
-                  else Dst (J) in 1 .. Kept and then S.Data_H (Dst (J)) = Old_S.Data_H (J)));
-            if not Dominates (R, S.Data_H (I)) then
-               Kept := Kept + 1;
-               S.Data_H (Kept) := S.Data_H (I);
-               Src (Kept) := I;
-               Dst (I) := Kept;
-            else
-               Dropped := Dropped + 1;
-               Dst (I) := 0;
-            end if;
-         end loop;
-         pragma Assert (Kept + Dropped = N);
-         pragma Assert (if Any_Drop then Dropped > 0);
-         pragma Assert (Kept < Cap);
-         Lemma_Dominates_Irrefl (R);
-
-         pragma Assert
-           (for all J in 1 .. Kept =>
-              Src (J) in 1 .. N and then S.Data_H (J) = Old_S.Data_H (Src (J)));
-         pragma Assert
-           (for all J in 1 .. Kept =>
-              (for all J2 in 1 .. Kept => (if J /= J2 then Src (J) /= Src (J2))));
-
-         S.ND := Kept + 1;
-         S.Data_H (Kept + 1) := R;
-         Src (Kept + 1) := 0;
-
-         --  Bridge: the data row is the kept records plus R.
-         pragma Assert (Data_Count (S) = Kept + 1);
-         pragma Assert
-           (for all J in 1 .. Kept => S.Data_H (J) = Old_S.Data_H (Src (J)));
-         pragma Assert (S.Data_H (Kept + 1) = R);
-         pragma Assert
-           (for all J in 1 .. N =>
-              (if Dst (J) = 0 then Dominates (R, Old_S.Data_H (J))
-               else Dst (J) in 1 .. Kept and then S.Data_H (Dst (J)) = Old_S.Data_H (J)));
-         pragma Assert (for all J in 1 .. Kept + 1 => Data_Item_OK (S, S.Data_H (J)));
-         pragma Assert
-           (for all J in 1 .. Kept + 1 =>
-              (for all J2 in 1 .. Kept + 1 =>
-                 not Dominates (S.Data_H (J2), S.Data_H (J))));
-         pragma Assert
-           (for all J in 1 .. Kept + 1 =>
-              (for all J2 in 1 .. Kept + 1 =>
-                 (if J /= J2 then S.Data_H (J) /= S.Data_H (J2))));
-         pragma Assert (Data_OK (S));
-         pragma Assert (Shape (S));
-         pragma Assert (Slots_OK (S.A, S.Fnd));
-         pragma Assert (Auth_OK (S.A, S.NS));
-         pragma Assert (Coherent (S.A, S.RG));
-         pragma Assert (Is_Frontier (S));
-
-         pragma Assert (Step (Old_S, S, 0, R, Src, Dst));
-         Lemma_Step_Flat (Old_S, S, 0, R, Src, Dst);
-         Lemma_Row_Flat (S, 0, Kept + 1);
-         pragma Assert (Holds (S, R));
-         Lemma_Extends_Refl (S.RG);
+         Commit_Data (S, R, Lo, Hi, P, Any_Drop, Other_Drop);
       end;
       Result := OK;
    end Apply_Data;
@@ -1573,8 +2388,9 @@ package body Kome.Frontier with SPARK_Mode is
       Lemma_Slots_Step (Old_S.A, S.A, S.Fnd, K0, Fresh);
       pragma Assert (Shape (S));
       pragma Assert (Slots_OK (S.A, S.Fnd));
+      pragma Assert (Data_Sorted (Old_S));
       Lemma_Data_OK_Regs (Old_S, S);
-      pragma Assert (Data_OK (S));
+      pragma Assert (Data_OK (S) and then Data_Sorted (S));
 
       pragma Assert (Auth_Step (Old_S.A, S.A, K0, R, Src, Dst));
       pragma Assert (S.NS = Old_S.NS);
@@ -1820,6 +2636,14 @@ package body Kome.Frontier with SPARK_Mode is
         (for all J in 1 .. Kept =>
            (for all J2 in 1 .. Kept => (if J /= J2 then S.Data_H (J) /= S.Data_H (J2))));
       pragma Assert (Data_OK (S));
+      --  A subsequence of the sorted row is sorted.
+      pragma Assert (Sorted_Row (Old_S.Data_H, N));
+      pragma Assert
+        (for all J in 1 .. Kept =>
+           (for all J2 in 1 .. Kept => (if J < J2 then Src (J) < Src (J2))));
+      pragma Assert (for all J in 1 .. Kept => Src (J) in 1 .. N);
+      Lemma_Sub_Sorted (Old_S.Data_H, N, S.Data_H, Kept, Src);
+      pragma Assert (Data_Sorted (S));
       pragma Assert (Shape (S));
       pragma Assert (Slots_OK (S.A, S.Fnd));
       pragma Assert (Auth_OK (S.A, S.NS));
@@ -1852,6 +2676,7 @@ package body Kome.Frontier with SPARK_Mode is
       Old_S : constant State := S with Ghost;
       Cap   : constant Data_Size := S.Cap;
       N     : constant Data_Size := S.ND;
+      Lo, Hi : Positive;
    begin
       if not (R.V.T <= Ceil (S.RG) and then In_W (S.RG, R.V.Author)
               and then R.V.T <= W_Cap (S.RG, R.V.Author))
@@ -1863,11 +2688,16 @@ package body Kome.Frontier with SPARK_Mode is
       Lemma_Off_Mono (S);
       pragma Assert (Data_Count (S) = N);
       pragma Assert (Row_For (S, R) = 0 and then Has_Row (S, R));
-      pragma Assert (Data_OK (S));
+      pragma Assert (Data_OK (S) and then Data_Sorted (S));
 
-      for I in 1 .. N loop
+      --  Only the run of R's entity can hold R, beat R or be beaten by R
+      --  (AUDIT.md G25).
+      Find_Run (S.Data_H, N, R.Ent, Lo, Hi);
+      Lemma_Outside_Run (S.Data_H, N, R, Lo, Hi);
+
+      for I in Lo .. Hi - 1 loop
          pragma Loop_Invariant
-           (for all J in 1 .. I - 1 =>
+           (for all J in Lo .. I - 1 =>
               S.Data_H (J) /= R and then not Dominates (S.Data_H (J), R));
          if S.Data_H (I) = R then
             pragma Assert (Row_At (S, 0, I) = R);
@@ -1893,38 +2723,54 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (not Dom_In_Row (S, 0, R));
 
       declare
-         Kept : Data_Size := 0;
+         Kept : Data_Size := Lo - 1;
          Src  : Index_Map (1 .. Cap) := [others => 0] with Ghost;
          Dst  : Index_Map (1 .. Cap) := [others => 0] with Ghost;
       begin
-         for I in 1 .. N loop
-            pragma Loop_Invariant (Kept <= I - 1);
+         --  Drop what R beats (all in the run) and compact from Lo on.
+         for I in Lo .. N loop
+            pragma Loop_Invariant (Lo - 1 <= Kept and then Kept <= I - 1);
             pragma Loop_Invariant (S.ND = N);
+            pragma Loop_Invariant
+              (for all J in 1 .. Lo - 1 => S.Data_H (J) = Old_S.Data_H (J));
             pragma Loop_Invariant (for all J in I .. N => S.Data_H (J) = Old_S.Data_H (J));
             pragma Loop_Invariant
-              (for all J in 1 .. Kept =>
-                 Src (J) in 1 .. I - 1
+              (for all J in Lo .. Kept =>
+                 Src (J) in Lo .. I - 1
                  and then S.Data_H (J) = Old_S.Data_H (Src (J))
                  and then not Dominates (R, Old_S.Data_H (Src (J))));
             pragma Loop_Invariant
-              (for all J in 1 .. Kept =>
-                 (for all J2 in 1 .. Kept => (if J < J2 then Src (J) < Src (J2))));
+              (for all J in Lo .. Kept =>
+                 (for all J2 in J + 1 .. Kept => Src (J) < Src (J2)));
             pragma Loop_Invariant
-              (for all J in 1 .. I - 1 =>
+              (for all J in Lo .. I - 1 =>
                  (if Dominates (R, Old_S.Data_H (J)) then Dst (J) = 0
-                  else Dst (J) in 1 .. Kept and then S.Data_H (Dst (J)) = Old_S.Data_H (J)));
-            if not Dominates (R, S.Data_H (I)) then
+                  else Dst (J) in Lo .. Kept
+                       and then S.Data_H (Dst (J)) = Old_S.Data_H (J)));
+            if I < Hi and then Dominates (R, S.Data_H (I)) then
+               Dst (I) := 0;
+            else
                Kept := Kept + 1;
                S.Data_H (Kept) := S.Data_H (I);
                Src (Kept) := I;
                Dst (I) := Kept;
-            else
-               Dst (I) := 0;
             end if;
          end loop;
+         Identity_Maps (Src, Dst, Lo - 1);
+         pragma Assert
+           (for all J in 1 .. Kept =>
+              Src (J) in 1 .. N and then S.Data_H (J) = Old_S.Data_H (Src (J))
+              and then not Dominates (R, Old_S.Data_H (Src (J))));
+         pragma Assert
+           (for all J in 1 .. Kept =>
+              (for all J2 in 1 .. Kept => (if J < J2 then Src (J) < Src (J2))));
          pragma Assert
            (for all J in 1 .. Kept =>
               (for all J2 in 1 .. Kept => (if J /= J2 then Src (J) /= Src (J2))));
+         pragma Assert
+           (for all J in 1 .. N =>
+              (if Dominates (R, Old_S.Data_H (J)) then Dst (J) = 0
+               else Dst (J) in 1 .. Kept and then S.Data_H (Dst (J)) = Old_S.Data_H (J)));
          S.ND := Kept;
 
          pragma Assert (Data_Count (S) = Kept);
@@ -1941,6 +2787,9 @@ package body Kome.Frontier with SPARK_Mode is
            (for all J in 1 .. Kept =>
               (for all J2 in 1 .. Kept => (if J /= J2 then S.Data_H (J) /= S.Data_H (J2))));
          pragma Assert (Data_OK (S));
+         pragma Assert (Sorted_Row (Old_S.Data_H, N));
+         Lemma_Sub_Sorted (Old_S.Data_H, N, S.Data_H, Kept, Src);
+         pragma Assert (Data_Sorted (S));
          pragma Assert (Shape (S));
          pragma Assert (Slots_OK (S.A, S.Fnd));
          pragma Assert (Auth_OK (S.A, S.NS));

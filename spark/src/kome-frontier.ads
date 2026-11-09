@@ -547,6 +547,14 @@ private
    --  Each discriminant is alone in a component constraint (RM 3.8(12)).
    --  For this reason, the authorization records are a matrix with
    --  Signers_Max rows of Slice records, not part of one array with the data.
+   --
+   --  Data_H (1 .. ND) is sorted entity-major by (ent, kind, fh), strictly
+   --  (AUDIT.md G25; the body's Data_Sorted, a conjunct of Is_Frontier).
+   --  An entity's records are one run, its DEL first. Every dominator of
+   --  a data record is in that record's run, so Apply finds the run with
+   --  one binary search and reads only the run. Clients see the order only
+   --  through Data_Held, Held and quantifiers over them: no public
+   --  contract names a position.
    type State (Cap : Data_Size; Slice : Slice_Count) is record
       NS     : Id128;
       Fnd    : Key256;

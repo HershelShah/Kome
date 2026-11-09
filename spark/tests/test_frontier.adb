@@ -9,7 +9,10 @@
 --      different row, and the founding key's REVOKE is held (E1, E2);
 --  (f) expiry (D10): Expire and Apply_Expired;
 --  (g) convergence: the same set in several orders, with duplicates and
---      records offered again, gives the same held set and registers (T4).
+--      records offered again, gives the same held set and registers (T4);
+--  (h) the sorted data row (AUDIT.md G25): insertion in the middle, an
+--      entity with many fields, an entity's DEL at the start of its run,
+--      replacement in place, and Expire / Apply_Expired keep the order.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -113,6 +116,23 @@ procedure Test_Frontier with SPARK_Mode => Off is
       return Ceil (Regs (X)) = Ceil (Regs (Y))
         and then Kome.Registers.Count (Regs (X)) = Kome.Registers.Count (Regs (Y));
    end Same_Held;
+
+   --  The data row is strictly increasing in (ent, kind, fh), the
+   --  entity-major key of Kome.Frontier (AUDIT.md G25).
+   function Key_Below (A, B : Header) return Boolean is
+     (A.Ent.W0 < B.Ent.W0
+      or else (A.Ent.W0 = B.Ent.W0
+               and then (A.Ent.W1 < B.Ent.W1
+                         or else (A.Ent.W1 = B.Ent.W1
+                                  and then (A.Ent.W2 < B.Ent.W2
+                                            or else (A.Ent.W2 = B.Ent.W2
+                                                     and then A.Ent.W3 < B.Ent.W3)))))
+      or else (A.Ent = B.Ent
+               and then (A.K < B.K or else (A.K = B.K and then Kome.Lt (A.FH, B.FH)))));
+
+   function Row_Sorted (S : State) return Boolean is
+     (for all I in 1 .. Data_Count (S) - 1 =>
+        Key_Below (Data_Held (S, I), Data_Held (S, I + 1)));
 
    --  Apply, and check that a refusal or a duplicate changed nothing.
    procedure App (S : in out State; R : Header; St : out Status) is
@@ -543,6 +563,91 @@ begin
       end loop;
       Check ("Is_Frontier after every apply", Ok);
       Lemmas (T);
+   end;
+
+   --  (h) The data row is sorted entity-major by (ent, kind, fh)
+   --  (AUDIT.md G25): an entity's DEL starts its run, its PUTs follow by
+   --  field, and Apply finds them with one binary search.
+   declare
+      S     : State := New_State (Cap => 64, Slice => 4);
+      Order : constant String := "qhcmatrjbklsdfognpei";   --  20 fields
+      N0    : Natural;
+      P0    : Natural := 0;
+      Up    : constant Header := Put (2, 'c', V (500, 1, 60, 700));
+      Mid   : constant Header := Put (2, 'h', V (510, 1, 61, 701));   --  'h' was dropped
+   begin
+      App (S, Roster (Fnd, 1, 50_000, 1), St);
+      App (S, Grant (Fnd, 1, 31), St);
+      App (S, Put (5, 'a', V (100, 1, 1, 10)), St);
+      App (S, Put (1, 'a', V (100, 1, 2, 11)), St);
+      App (S, Put (3, 'b', V (100, 1, 3, 12)), St);
+      App (S, Put (3, 'a', V (100, 1, 4, 13)), St);
+      Check ("insertion in the middle keeps the row sorted",
+             Data_Count (S) = 4 and then Row_Sorted (S)
+             and then Data_Held (S, 1).Ent = Ent (1)
+             and then Data_Held (S, 2) = Put (3, 'a', V (100, 1, 4, 13))
+             and then Data_Held (S, 3) = Put (3, 'b', V (100, 1, 3, 12))
+             and then Data_Held (S, 4).Ent = Ent (5));
+
+      --  An entity with many fields, applied out of order.
+      for I in Order'Range loop
+         App (S, Put (2, Order (I), V (U48 (100 + I), 1, U48 (I), 200 + I)), St);
+      end loop;
+      Check ("an entity with 20 fields: all held, row sorted, run contiguous",
+             St = OK and then Data_Count (S) = 24 and then Row_Sorted (S)
+             and then (for all I in 2 .. 21 => Data_Held (S, I).Ent = Ent (2))
+             and then Data_Held (S, 1).Ent = Ent (1)
+             and then Data_Held (S, 22).Ent = Ent (3));
+
+      --  A field update replaces its cell in place.
+      for I in 1 .. Data_Count (S) loop
+         if Data_Held (S, I).Ent = Ent (2) and then Data_Held (S, I).FH = Fld ('c') then
+            P0 := I;
+         end if;
+      end loop;
+      N0 := Data_Count (S);
+      App (S, Up, St);
+      Check ("a newer PUT of a held cell takes the cell's place",
+             St = OK and then Data_Count (S) = N0 and then P0 /= 0
+             and then Data_Held (S, P0) = Up and then Row_Sorted (S));
+
+      --  A DEL of the wide entity: held at the start of its run, drops the
+      --  older PUTs (t <= 110: the first 10 of Order) and keeps the others.
+      App (S, Del (2, V (110, 1, 50, 900)), St);
+      Check ("the DEL starts its entity's run and drops only older PUTs",
+             St = OK and then Data_Count (S) = 1 + 1 + 11 + 2 + 1
+             and then Data_Held (S, 2) = Del (2, V (110, 1, 50, 900))
+             and then (for all I in 3 .. 13 =>
+                         Data_Held (S, I).Ent = Ent (2) and then Data_Held (S, I).K = K_Put)
+             and then Row_Sorted (S));
+      App (S, Put (2, 'z', V (105, 1, 70, 902)), St);
+      Check ("a PUT older than its entity's DEL is Dominated",
+             St = Dominated and then Data_Count (S) = 16);
+      App (S, Put (2, 'q', V (101, 1, 1, 201)), St);
+      Check ("a PUT that the DEL dropped is Dominated when offered again",
+             St = Dominated and then Data_Count (S) = 16);
+      App (S, Mid, St);
+      Check ("a new field in the middle of a run is inserted in order",
+             St = OK and then Data_Count (S) = 17 and then Holds (S, Mid)
+             and then Row_Sorted (S));
+
+      --  A newer DEL replaces the DEL and drops more PUTs.
+      App (S, Del (2, V (115, 1, 51, 903)), St);
+      Check ("a newer DEL replaces the DEL at the run start",
+             St = OK and then Data_Held (S, 2) = Del (2, V (115, 1, 51, 903))
+             and then not Holds (S, Del (2, V (110, 1, 50, 900)))
+             and then Data_Count (S) = 17 - 6 + 1 and then Row_Sorted (S));
+
+      --  An expired DEL of entity 3 drops its PUTs and is not held.
+      Apply_Expired (S, Del (3, V (120, 1, 52, 904)), St);
+      Check ("Apply_Expired drops the run of entity 3 and keeps the row sorted",
+             St = OK and then Data_Count (S) = 12 - 2 and then Row_Sorted (S)
+             and then Data_Held (S, Data_Count (S)).Ent = Ent (5));
+      Expire (S, 200);
+      Check ("Expire removes the DEL and keeps the row sorted",
+             Data_Count (S) = 9 and then Row_Sorted (S)
+             and then Data_Held (S, 2).K = K_Put);
+      Lemmas (S);
    end;
 
    if Failed then
