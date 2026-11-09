@@ -1538,9 +1538,11 @@ package Kome.Reconcile with SPARK_Mode is
      Post   => OK = Hello_Wire_OK (Input)
                and then (if OK then Hello_Decoded (Input, H));
 
-   --  The cred bytes of the well-formed HELLO B.
+   --  The cred bytes of the well-formed HELLO B (an empty slice when
+   --  cred_len = 0, written so that no bound overflows).
    function Cred_Of (B : Byte_Array) return Byte_Array is
-     (B (B'First + Hello_Fixed .. B'Last))
+     (if B'Last - B'First = Hello_Fixed - 1 then B (B'First .. B'First - 1)
+      else B (B'First + Hello_Fixed .. B'Last))
    with Pre => Hello_Wire_OK (B);
 
    --  The signer of a ROSTER frame (its signer field, as the lattice sees

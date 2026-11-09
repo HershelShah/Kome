@@ -538,6 +538,28 @@ package body Kome.Reconcile with SPARK_Mode is
      (S.Pool (S.Offs (I) .. S.Offs (I) + S.Lens (I) - 1))
    with Pre => I <= S.Cap and then Frame_In_Pool (S, I);
 
+   --  Where the frame of held record I of F is in the pool of the
+   --  snapshot: the data frames first, then the authorization frames.
+   function Slot_Off
+     (F : Kome.Frontier.State; Data_T, Auth_T : Frame_Table; I : Elem_Index)
+      return Positive
+   is (if I <= Kome.Frontier.Data_Count (F) then Data_T.Offs (I)
+       else Data_T.Used + Auth_T.Offs (I - Kome.Frontier.Data_Count (F)))
+   with Pre => Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
+               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F)
+               and then I <= Kome.Frontier.Count (F)
+               and then Table_Valid (Auth_T)
+               and then Auth_T.Used <= Pool_Max - Data_T.Used;
+
+   function Slot_Len
+     (F : Kome.Frontier.State; Data_T, Auth_T : Frame_Table; I : Elem_Index)
+      return Frame_Size
+   is (if I <= Kome.Frontier.Data_Count (F) then Data_T.Lens (I)
+       else Auth_T.Lens (I - Kome.Frontier.Data_Count (F)))
+   with Pre => Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
+               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F)
+               and then I <= Kome.Frontier.Count (F);
+
    procedure Snapshot_Of
      (F      : Kome.Frontier.State;
       Data_T : Frame_Table;
@@ -555,7 +577,14 @@ package body Kome.Reconcile with SPARK_Mode is
          Result := Snap_No_Space;
          return;
       end if;
+      --  The pool: the data frames, then the authorization frames.
+      S.Pool (1 .. Used_D) := Data_T.Pool (1 .. Used_D);
+      S.Pool (Used_D + 1 .. Used_D + Used_A) := Auth_T.Pool (1 .. Used_A);
+      S.Used := Used_D + Used_A;
+      pragma Assert (for all X in 1 .. Used_D => S.Pool (X) = Data_T.Pool (X));
+      pragma Assert (for all X in 1 .. Used_A => S.Pool (Used_D + X) = Auth_T.Pool (X));
       if N = 0 then
+         pragma Assert (Valid (S));
          Lemma_Digest_Of_Empty (F, S);
          Result := Snap_OK;
          return;
@@ -569,13 +598,6 @@ package body Kome.Reconcile with SPARK_Mode is
          pragma Assert (Perm_Pair (Perm, Inv, N));
          Heap_Sort (F, Perm, Inv, N);
 
-         --  The pool: the data frames, then the authorization frames.
-         S.Pool (1 .. Used_D) := Data_T.Pool (1 .. Used_D);
-         S.Pool (Used_D + 1 .. Used_D + Used_A) := Auth_T.Pool (1 .. Used_A);
-         S.Used := Used_D + Used_A;
-         pragma Assert (for all X in 1 .. Used_D => S.Pool (X) = Data_T.Pool (X));
-         pragma Assert (for all X in 1 .. Used_A => S.Pool (Used_D + X) = Auth_T.Pool (X));
-
          --  The elements, in sorted order.
          for J in 1 .. N loop
             pragma Loop_Invariant (S.N = 0 and then S.Used = Used_D + Used_A);
@@ -588,8 +610,9 @@ package body Kome.Reconcile with SPARK_Mode is
                  and then S.Src (J2) = Perm (J2)
                  and then Raw_Key (S, J2) = Key_Of (Kome.Frontier.Held (F, Perm (J2)))
                  and then S.Hs (J2) = Kome.Frontier.Held (F, Perm (J2)).V.H
-                 and then Frame_In_Pool (S, J2)
-                 and then Raw_Frame (S, J2) = Record_Frame (F, Data_T, Auth_T, Perm (J2)));
+                 and then S.Offs (J2) = Slot_Off (F, Data_T, Auth_T, Perm (J2))
+                 and then S.Lens (J2) = Slot_Len (F, Data_T, Auth_T, Perm (J2))
+                 and then Frame_In_Pool (S, J2));
             R := Kome.Frontier.Held (F, Perm (J));
             S.Kinds (J) := Kind_Code (Kind'Pos (R.K));
             S.Ents (J)  := R.Ent;
@@ -601,16 +624,35 @@ package body Kome.Reconcile with SPARK_Mode is
                S.Lens (J) := Data_T.Lens (Perm (J));
                pragma Assert (Entry_In_Pool (Data_T, Perm (J)));
                pragma Assert (Frame_In_Pool (S, J));
-               pragma Assert (Raw_Frame (S, J) = Table_Frame (Data_T, Perm (J)));
             else
                S.Offs (J) := Used_D + Auth_T.Offs (Perm (J) - DC);
                S.Lens (J) := Auth_T.Lens (Perm (J) - DC);
                pragma Assert (Entry_In_Pool (Auth_T, Perm (J) - DC));
                pragma Assert (Frame_In_Pool (S, J));
-               pragma Assert (Raw_Frame (S, J) = Table_Frame (Auth_T, Perm (J) - DC));
             end if;
             pragma Assert (Raw_Key (S, J) = Key_Of (Kome.Frontier.Held (F, Perm (J))));
-            pragma Assert (Raw_Frame (S, J) = Record_Frame (F, Data_T, Auth_T, Perm (J)));
+            pragma Assert (S.Offs (J) = Slot_Off (F, Data_T, Auth_T, Perm (J))
+                           and then S.Lens (J) = Slot_Len (F, Data_T, Auth_T, Perm (J)));
+         end loop;
+         pragma Assert
+           (for all J in 1 .. N =>
+              Frame_In_Pool (S, J)
+              and then S.Offs (J) = Slot_Off (F, Data_T, Auth_T, Perm (J))
+              and then S.Lens (J) = Slot_Len (F, Data_T, Auth_T, Perm (J)));
+
+         --  The frames: S does not change in this loop, so each step
+         --  proves alone.
+         for J in 1 .. N loop
+            pragma Loop_Invariant
+              (for all J2 in 1 .. J - 1 =>
+                 Raw_Frame (S, J2) = Record_Frame (F, Data_T, Auth_T, Perm (J2)));
+            if Perm (J) <= DC then
+               pragma Assert (Entry_In_Pool (Data_T, Perm (J)));
+               pragma Assert (Raw_Frame (S, J) = Table_Frame (Data_T, Perm (J)));
+            else
+               pragma Assert (Entry_In_Pool (Auth_T, Perm (J) - DC));
+               pragma Assert (Raw_Frame (S, J) = Table_Frame (Auth_T, Perm (J) - DC));
+            end if;
          end loop;
          S.N := N;
          pragma Assert
@@ -1418,10 +1460,20 @@ package body Kome.Reconcile with SPARK_Mode is
    --  The reply of Respond and Receive: the fingerprint of our window of
    --  M comes from the prefix sums, and the result is Reply_Of (S, M)
    --  (the same Reply_Core on the same key).
-   procedure Fast_Reply (S : Snapshot; P : Prefix; M : Message; R : out Reply) with
+   procedure Fast_Reply
+     (S   : Snapshot;
+      P   : Prefix;
+      M   : Message;
+      Box : out Outbox;
+      Got : out Delivery)
+   with
      Global => null,
      Pre    => Valid (S) and then Sealed (S, P) and then Msg_OK (M),
-     Post   => R = Reply_Of (S, M)
+     Post   => Box = Reply_Of (S, M).Box and then Got = Reply_Of (S, M).Got
+               and then Outbox_OK (S, Box)
+               and then Delivers (S, M, Got)
+               and then Answers (S, M, Box)
+               and then Shrinks (S, M, Box)
    is
       W  : constant Span := Window (S, M.Lo, M.Hi);
       FP : Hash256;
@@ -1430,7 +1482,17 @@ package body Kome.Reconcile with SPARK_Mode is
       Kome.Keys.Lemma_Key_Eq_Is_Bytewise (FP, Range_Fp (S, W.First, W.Last));
       pragma Assert (Kome.Keys.To_Key256 (FP)
                      = Kome.Keys.To_Key256 (Range_Fp (S, W.First, W.Last)));
-      R := Reply_Core (S, M, Kome.Keys.To_Key256 (FP));
+      declare
+         R : constant Reply := Reply_Core (S, M, Kome.Keys.To_Key256 (FP));
+      begin
+         pragma Assert (Outbox_OK (S, R.Box) and then Delivers (S, M, R.Got)
+                        and then Answers (S, M, R.Box) and then Shrinks (S, M, R.Box));
+         pragma Assert (R = Reply_Of (S, M));
+         Box := R.Box;
+         Got := R.Got;
+         pragma Assert (Box = Reply_Of (S, M).Box);
+         pragma Assert (Got = Reply_Of (S, M).Got);
+      end;
    end Fast_Reply;
 
    procedure Respond
@@ -1440,11 +1502,8 @@ package body Kome.Reconcile with SPARK_Mode is
       Out_Box : out Outbox;
       Got     : out Delivery)
    is
-      R : Reply;
    begin
-      Fast_Reply (S, P, M, R);
-      Out_Box := R.Box;
-      Got := R.Got;
+      Fast_Reply (S, P, M, Out_Box, Got);
    end Respond;
 
    ----------------------------------------------------------------------
@@ -2496,6 +2555,129 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Sess.Q_Len = Base + Obligations_Upto (O, O.N));
    end Push_All;
 
+   --  The FIFO step of an accepted message M with the reply O: the head
+   --  leaves (its group is done) or advances (M continues it), then the
+   --  obligations of O are appended (Queue_Step).
+   procedure Step_Queue (Sess : in out Session; M : Message; O : Outbox) with
+     Global => null,
+     Pre  => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap
+             and then (if M.G /= 0 then Matches_Head (Sess, M))
+             and then Sess.Q_Len - (if Group_Done (Sess, M) then 1 else 0)
+                        + Obligations (O) <= Sess.Oblig_Cap,
+     Post => Sess = (Sess'Old with delta Q      => Sess.Q,
+                                         Q_Head => Sess.Q_Head,
+                                         Q_Len  => Sess.Q_Len)
+             and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap
+             and then Sess.Q_Len = Sess'Old.Q_Len
+                                   - (if Group_Done (Sess'Old, M) then 1 else 0)
+                                   + Obligations (O)
+             and then Queue_Step (Sess'Old, Sess, M, O)
+   is
+      Old      : constant Session := Sess with Ghost;
+      Done_Grp : constant Boolean := Group_Done (Sess, M);
+   begin
+      if Done_Grp then
+         Pop_Head (Sess);
+      elsif M.G /= 0 then
+         Advance_Head (Sess, M);
+      end if;
+      pragma Assert (Sess.Q_Len = Old.Q_Len - (if Done_Grp then 1 else 0));
+      pragma Assert
+        (for all K in 1 .. Sess.Q_Len =>
+           Open (Sess, K) = (if Done_Grp then Open (Old, K + 1)
+                             elsif K = 1 and then M.G /= 0
+                             then Advanced (Open (Old, 1), M)
+                             else Open (Old, K)));
+      declare
+         Mid : constant Session := Sess with Ghost;
+      begin
+         Push_All (Sess, O);
+         pragma Assert (Sess.Q_Len = Mid.Q_Len + Obligations (O));
+         pragma Assert (for all K in 1 .. Mid.Q_Len => Open (Sess, K) = Open (Mid, K));
+         pragma Assert
+           (for all K in 1 .. Mid.Q_Len =>
+              Open (Sess, K) = (if Done_Grp then Open (Old, K + 1)
+                                elsif K = 1 and then M.G /= 0
+                                then Advanced (Open (Old, 1), M)
+                                else Open (Old, K)));
+         pragma Assert
+           (for all T in 1 .. O.N =>
+              (if O.P (T).Kind /= P_Have
+                 and then Mid.Q_Len + Obligations_Upto (O, T) in 1 .. Sess.Q_Len
+               then
+                 Open (Sess, Mid.Q_Len + Obligations_Upto (O, T))
+                   = Fresh (O.P (T).Lo, O.P (T).Hi)));
+      end;
+      pragma Assert (Queue_Step (Old, Sess, M, O));
+   end Step_Queue;
+
+   --  Accept the RANGE, ELEMENTS or HAVE M in Auth or Data with the reply
+   --  O (within the budgets): the counters, the FIFO step and the phase.
+   procedure Accept_Data
+     (Sess     : in out Session;
+      S        : Snapshot;
+      M        : Message;
+      O        : Outbox;
+      Auth_Gen : U64)
+   with
+     Global => null,
+     Pre  => Valid (S) and then Outbox_OK (S, O) and then Session_OK (Sess)
+             and then Sess.P in Auth | Data and then Sess.Msgs < Sess.Budget
+             and then Root_Or_Owed (Sess, M)
+             and then Within_Budgets (Sess, S, M, O),
+     Post => Session_OK (Sess) and then not Sess.Aborted
+             and then Sess.Ranges = Sess'Old.Ranges + Num_Ranges (O)
+             and then Sess.Ranges <= Range_Budget (S)
+             and then Sess.Shipped = Sess'Old.Shipped + Item_Bytes (S, O)
+             and then Sess.Shipped <= Ship_Budget (S)
+             and then Sess.Q_Len =
+                        Sess'Old.Q_Len
+                        - (if Group_Done (Sess'Old, M) then 1 else 0)
+                        + Obligations (O)
+             and then Queue_Step (Sess'Old, Sess, M, O)
+             and then Sess.Gate_Gen = Auth_Gen
+             and then Sess.Auth_Root_Seen = (Sess'Old.Auth_Root_Seen or else M.G = 0)
+             and then Sess.P =
+                        (if Sess'Old.P = Data
+                           or else (M.G = 0 and then Sess'Old.Auth_Root_Seen)
+                         then (if Sess.Q_Len = 0 then Done else Data)
+                         else Auth)
+             and then Sess = (Sess'Old with delta
+                                Msgs           => Sess'Old.Msgs + 1,
+                                P              => Sess.P,
+                                Gate_Gen       => Auth_Gen,
+                                Q              => Sess.Q,
+                                Q_Head         => Sess.Q_Head,
+                                Q_Len          => Sess.Q_Len,
+                                Ranges         => Sess.Ranges,
+                                Shipped        => Sess.Shipped,
+                                Auth_Root_Seen => Sess.Auth_Root_Seen)
+   is
+      Old : constant Session := Sess with Ghost;
+   begin
+      Step_Queue (Sess, M, O);
+      declare
+         Mid : constant Session := Sess with Ghost;
+      begin
+         Sess.Ranges := Sess.Ranges + Num_Ranges (O);
+         Sess.Shipped := Sess.Shipped + Item_Bytes (S, O);
+         Sess.Msgs := Sess.Msgs + 1;
+         Sess.Gate_Gen := Auth_Gen;
+         if M.G = 0 then
+            if Sess.Auth_Root_Seen then
+               Sess.P := Data;          --  (b) the data root
+            end if;
+            Sess.Auth_Root_Seen := True;
+         end if;
+         if Sess.P = Data and then Sess.Q_Len = 0 then
+            Sess.P := Done;
+         end if;
+         pragma Assert (Sess.Q_Len = Mid.Q_Len and then Sess.Q_Head = Mid.Q_Head);
+         pragma Assert (for all K in 1 .. Sess.Q_Len => Open (Sess, K) = Open (Mid, K));
+         pragma Assert (Queue_Step (Old, Sess, M, O));
+      end;
+   end Accept_Data;
+
    ----------------------------------------------------------------------
    --  Session
    ----------------------------------------------------------------------
@@ -2563,6 +2745,8 @@ package body Kome.Reconcile with SPARK_Mode is
      Pre  => Valid (S)
              and then Sess.P = Gate and then Sess.Hello_Sent
              and then Sess.Peer_Hello_Seen and then Sess.Msgs <= Pre_Gate_Budget
+             and then Sess.Our_Open.Proto = Proto_Version
+             and then Sess.Our_Open.NS = Sess.NS
              and then not Sess.Aborted and then not Sess.Auth_Root_Seen
              and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len = 0,
      Post => After_Hellos (S, Sess, O) and then Session_OK (Sess)
@@ -2849,9 +3033,8 @@ package body Kome.Reconcile with SPARK_Mode is
                return;
             end if;
             declare
-               W        : constant Span := Window (S, M.Lo, M.Hi);
-               FP       : Hash256;
-               Done_Grp : constant Boolean := Group_Done (Sess, M);
+               W  : constant Span := Window (S, M.Lo, M.Hi);
+               FP : Hash256;
             begin
                --  The reply from the prefix sums: the same Reply_Core on
                --  the same key as Reply_Of (S, M), so it is that reply.
@@ -2862,84 +3045,29 @@ package body Kome.Reconcile with SPARK_Mode is
             declare
                R : constant Reply := Reply_Core (S, M, Kome.Keys.To_Key256 (FP));
             begin
+               pragma Assert (Outbox_OK (S, R.Box) and then Delivers (S, M, R.Got)
+                              and then Answers (S, M, R.Box)
+                              and then Shrinks (S, M, R.Box));
                pragma Assert (R = Reply_Of (S, M));
+               pragma Assert (R.Box = Reply_Of (S, M).Box and then R.Got = Reply_Of (S, M).Got);
                if not Within_Budgets (Sess, S, M, R.Box) then
                   Result := S_Limit;
                   pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
                   return;
                end if;
+               pragma Assert (Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input) = S_OK);
                Out_Box := R.Box;
                Got := R.Got;
-               Sess.Ranges := Sess.Ranges + Num_Ranges (Out_Box);
-               Sess.Shipped := Sess.Shipped + Item_Bytes (S, Out_Box);
-               Sess.Msgs := Sess.Msgs + 1;
-               Sess.Gate_Gen := Auth_Gen;
-               --  The FIFO: the head leaves or advances, then the
-               --  obligations of the reply are appended.
-               if Done_Grp then
-                  Pop_Head (Sess);
-               elsif M.G /= 0 then
-                  Advance_Head (Sess, M);
-               end if;
-               declare
-                  Mid : constant Session := Sess with Ghost;
-               begin
-                  Push_All (Sess, Out_Box);
-                  pragma Assert (Sess.Q_Len = Mid.Q_Len + Obligations (Out_Box));
-                  pragma Assert
-                    (for all K in 1 .. Mid.Q_Len =>
-                       Kome.Reconcile.Open (Sess, K)
-                         = (if Done_Grp then Kome.Reconcile.Open (Sess0, K + 1)
-                            elsif K = 1 and then M.G /= 0
-                            then Advanced (Kome.Reconcile.Open (Sess0, 1), M)
-                            else Kome.Reconcile.Open (Sess0, K)));
-               end;
-               pragma Assert (Queue_Step (Sess0, Sess, M, Out_Box));
-               if M.G = 0 then
-                  if Sess.Auth_Root_Seen then
-                     Sess.P := Data;          --  (b) the data root
-                  end if;
-                  Sess.Auth_Root_Seen := True;
-               end if;
-               if Sess.P = Data and then Sess.Q_Len = 0 then
-                  Sess.P := Done;
-               end if;
+               Accept_Data (Sess, S, M, Out_Box, Auth_Gen);
                Result := S_OK;
-               pragma Assert (Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input) = S_OK);
-               pragma Assert (Session_OK (Sess));
                pragma Assert (Out_Box = Reply_Of (S, M).Box);
+               pragma Assert (Got = Reply_Of (S, M).Got);
                pragma Assert (Decode_Facts (Input, M, True));
-               pragma Assert (Sess.Ranges = Sess0.Ranges + Num_Ranges (Out_Box));
-               pragma Assert (Sess.Shipped = Sess0.Shipped + Item_Bytes (S, Out_Box));
-               pragma Assert (Sess.Q_Len =
-                                Sess0.Q_Len
-                                - (if Group_Done (Sess0, M) then 1 else 0)
-                                + Obligations (Out_Box));
-               pragma Assert (Sess.Ranges <= Range_Budget (S)
-                              and then Sess.Shipped <= Ship_Budget (S));
-               pragma Assert (Outbox_OK (S, Out_Box));
                pragma Assert (M = Decode_Of (Input).M);
                pragma Assert (Msg_OK (M) and then Msg_In (M, Input));
                pragma Assert (if M.G = 0 then Root_OK (Sess0, M));
-               pragma Assert (Got = Reply_Of (S, M).Got);
                pragma Assert (Delivers (S, M, Got) and then Answers (S, M, Out_Box)
                               and then Shrinks (S, M, Out_Box));
-               pragma Assert (Sess.Auth_Root_Seen = (Sess0.Auth_Root_Seen or else M.G = 0));
-               pragma Assert (Sess.P =
-                                (if Sess0.P = Data
-                                   or else (M.G = 0 and then Sess0.Auth_Root_Seen)
-                                 then (if Sess.Q_Len = 0 then Done else Data)
-                                 else Auth));
-               pragma Assert (Sess = (Sess0 with delta
-                                        Msgs           => Sess0.Msgs + 1,
-                                        P              => Sess.P,
-                                        Gate_Gen       => Auth_Gen,
-                                        Q              => Sess.Q,
-                                        Q_Head         => Sess.Q_Head,
-                                        Q_Len          => Sess.Q_Len,
-                                        Ranges         => Sess.Ranges,
-                                        Shipped        => Sess.Shipped,
-                                        Auth_Root_Seen => Sess.Auth_Root_Seen));
             end;
             end;
          end;
