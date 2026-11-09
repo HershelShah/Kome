@@ -408,16 +408,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           --  Tgt = (K_Put, NS, Ent, FH).
           and then To_Header (Cid, Make_Put'Result) =
                      (K       => K_Put,
-                      NS      => To_Id128 (NS),
                       Ent     => To_Id128 (Ent),
                       FH      => To_Key256 (Kome.Crypto.Blake2b_256 (Field)),
                       V       => (T      => T,
                                   Author => To_Key256 (Author),
                                   Seq    => Seq,
                                   H      => To_Key256 (Hash (Cid, Make_Put'Result.C))),
-                      Issuer  => Zero_Key,
-                      Del_TTL => 0,
-                      Epoch   => 0)
+                      Issuer  => Zero_Key)
           and then Kome.Headers.Canonical (To_Header (Cid, Make_Put'Result));
 
    --  tag ‖ content, the frame without its signature.
@@ -535,16 +532,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  del_ttl 0.
    function To_Header (Cid : Hash256; R : Put_Record) return Header is
      (K       => K_Put,
-      NS      => To_Id128 (R.C.NS),
       Ent     => To_Id128 (R.C.Ent),
       FH      => To_Key256 (Kome.Crypto.Blake2b_256 (R.C.Field (0 .. R.C.FLen - 1))),
       V       => (T      => R.C.T,
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (Cid, R.C))),
-      Issuer  => Zero_Key,
-      Del_TTL => 0,
-      Epoch   => 0);
+      Issuer  => Zero_Key);
 
    --  D3: the header is canonical.
    procedure Lemma_Header_Canonical (Cid : Hash256; R : Put_Record) with
@@ -673,16 +667,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  has no field (FH 0), no issuer and del_ttl 0.
    function To_Header (Cid : Hash256; R : Del_Record) return Header is
      (K       => K_Del,
-      NS      => To_Id128 (R.C.NS),
       Ent     => To_Id128 (R.C.Ent),
       FH      => Zero_Key,
       V       => (T      => R.C.T,
                   Author => To_Key256 (R.C.Author),
                   Seq    => R.C.Seq,
                   H      => To_Key256 (Hash (Cid, R.C))),
-      Issuer  => Zero_Key,
-      Del_TTL => 0,
-      Epoch   => 0);
+      Issuer  => Zero_Key);
 
    procedure Lemma_Header_Canonical (Cid : Hash256; R : Del_Record) with
      Ghost, Global => null,
@@ -709,16 +700,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
           and then (for all I in Sig'Range => Make_Del'Result.Signature (I) = 0)
           and then To_Header (Cid, Make_Del'Result) =
                      (K       => K_Del,
-                      NS      => To_Id128 (NS),
                       Ent     => To_Id128 (Ent),
                       FH      => Zero_Key,
                       V       => (T      => T,
                                   Author => To_Key256 (Author),
                                   Seq    => Seq,
                                   H      => To_Key256 (Hash (Cid, Make_Del'Result.C))),
-                      Issuer  => Zero_Key,
-                      Del_TTL => 0,
-                      Epoch   => 0)
+                      Issuer  => Zero_Key)
           and then Kome.Headers.Canonical (To_Header (Cid, Make_Del'Result));
 
    procedure Lemma_Decode_Encode (R : Del_Record) with
@@ -1129,16 +1117,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  Del_TTL = del_ttl; no entity, no field.
    function To_Header (R : Roster_Record) return Header is
      (K       => K_Roster,
-      NS      => To_Id128 (R.C.NS),
       Ent     => Zero_Id,
       FH      => Zero_Key,
       V       => (T      => R.C.Ceiling_T,
                   Author => Signer_Key (R),
                   Seq    => R.C.Gen,
                   H      => To_Key256 (Hash (R.C))),
-      Issuer  => Signer_Key (R),
-      Del_TTL => R.C.Del_TTL,
-      Epoch   => R.C.Epoch);
+      Issuer  => Signer_Key (R));
 
    --  D3: the header is canonical when del_ttl is in range and gen is at
    --  most ceiling_t (Well_Formed requires both).
@@ -1326,16 +1311,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  has no sequence number (AUDIT.md E15), so seq is 0.
    function To_Header (R : Revoke_Record) return Header is
      (K       => K_Revoke,
-      NS      => To_Id128 (R.C.NS),
       Ent     => Zero_Id,
       FH      => Zero_Key,
       V       => (T      => R.C.From_T,
                   Author => To_Key256 (R.C.Sign_PK),
                   Seq    => 0,
                   H      => To_Key256 (Hash (R.C))),
-      Issuer  => Signer_Key (R),
-      Del_TTL => 0,
-      Epoch   => 0);
+      Issuer  => Signer_Key (R));
 
    procedure Lemma_Header_Canonical (R : Revoke_Record) with
      Ghost, Global => null,
@@ -1517,16 +1499,13 @@ package Kome.Records with SPARK_Mode, Preelaborate is
    --  The lattice header: V = (cap, subject, 0, h).
    function To_Header (R : Grant_Record) return Header is
      (K       => K_Grant,
-      NS      => To_Id128 (R.C.NS),
       Ent     => Zero_Id,
       FH      => Zero_Key,
       V       => (T      => Grant_Cap (R),
                   Author => To_Key256 (R.C.Subject),
                   Seq    => 0,
                   H      => To_Key256 (Hash (R.C))),
-      Issuer  => Signer_Key (R),
-      Del_TTL => 0,
-      Epoch   => 0);
+      Issuer  => Signer_Key (R));
 
    procedure Lemma_Header_Canonical (R : Grant_Record) with
      Ghost, Global => null,

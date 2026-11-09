@@ -14,21 +14,33 @@ package body Kome.Guard with SPARK_Mode is
 
    procedure Lemma_Gate_Refuses_Revoked (S : State; R : Roster_Record; DH : Pubkey) is null;
 
-   procedure Note_Open (G : in out Guard_State; Before, After : State) is
-      E : constant Header_View := Roster_Eff (Before);
+   procedure Lemma_Quarantine_Set (S : State; I : Held_Index) is
    begin
-      if E.Present and then Root_Void (After, E.Hdr.Issuer) then
-         G.Quarantined := True;
-      end if;
-   end Note_Open;
+      Lemma_Roster_Max_Unique (S, I);
+   end Lemma_Quarantine_Set;
 
-   procedure Note_Credential (G : in out Guard_State; After : State; Cred : Header) is
+   procedure Lemma_Quarantine_Refuses (S : State; R : Roster_Record; DH : Pubkey) is null;
+
+   procedure Lemma_Quarantine_Cleared (S : State; I : Held_Index) is
    begin
-      if Cred.K = K_Roster and then Cred.Issuer = Founding (After)
-        and then Roster_Eff (After) = (Present => True, Hdr => Cred)
-      then
-         G.Quarantined := False;
-      end if;
-   end Note_Credential;
+      --  No held roster is above Held (S, I): every other one has a lower
+      --  gen.
+      for J in 1 .. Count (S) loop
+         if Held (S, J).K = K_Roster then
+            if J = I then
+               Lemma_Roster_Lt_Irrefl (Held (S, I));
+            else
+               pragma Assert (Held (S, J).V.Seq < Held (S, I).V.Seq);
+            end if;
+         end if;
+         pragma Loop_Invariant
+           (for all J2 in 1 .. J =>
+              (if Held (S, J2).K = K_Roster
+               then not Roster_Lt (Held (S, I), Held (S, J2))));
+      end loop;
+      Lemma_Roster_Max_Unique (S, I);
+      Lemma_Roster_Eff_Unique (S, I);
+      pragma Assert (not Root_Void (S, Roster_Max (S).Hdr.Issuer));
+   end Lemma_Quarantine_Cleared;
 
 end Kome.Guard;

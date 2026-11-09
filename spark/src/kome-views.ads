@@ -1,87 +1,85 @@
 --  Kome.Views: the pure views over one collection's frontier
---  (DESIGN.md §3 "Views", §6 C9, root revocation D2 and D1′). A State is
---  one collection (Kome.Frontier.Collection (S)) with one founding key
+--  (DESIGN.md §3 "Views", §6 C9, root revocation D2 and D1′; SIMPLIFY.md
+--  S10, S12, S13). A State is one collection with one founding key
 --  (Kome.Frontier.Founding (S)). Each view is a function of only the held
 --  records and the founding key. It reads them through the public
 --  functions of Kome.Frontier (Count, Held, Founding), so it is a
 --  function of F and of nothing else (T5). The lemmas below give this as
 --  SPARK facts:
 --
---    cell(ns, ent, f)    := the unique PUT in F on (ns, ent, f)     -- Option
---    deleted_at(ns, ent) := max { d.v | d ∈ F, DEL on (ns, ent) }   -- Option
---    exists(ns, ent)     := ∃ f. cell(ns, ent, f) ≠ None
+--    cell(ent, f)        := the unique PUT in F on (ent, f)          -- Option
+--    deleted_at(ent)     := max { d.v | d ∈ F, DEL on ent }          -- Option
+--    exists(ent)         := ∃ f. cell(ent, f) ≠ None
 --    root_void(k)        := k ≠ root_pk ∧ ∃ x ∈ F : REVOKE, x.subject = k,
 --                                                   x.issuer = root_pk
 --    W_eff(F)            := { g.subject | g ∈ F, GRANT, ¬ root_void(g.issuer) }
+--    revoked_at(k, t)    := ∃ x ∈ F : REVOKE, x.subject = k, x.from_t ≤ t,
+--                                     ¬ root_void(x.issuer)
 --    void(p)             := p is a PUT or a DEL ∧
---                           ((∃ x ∈ F : REVOKE, x.subject = p.author,
---                               p.t ≥ x.from_t, ¬ root_void(x.issuer))
---                            ∨ p.author ∉ W_eff(F))            -- false off data (AUDIT.md G8)
---    ROSTER_eff          := the maximal ROSTER r ∈ F with ¬ root_void(r.issuer),
---                           by (epoch, gen, h), ties by (signer, ceiling_t, del_ttl)
---    del_ttl_eff         := max { r.del_ttl | r ∈ F, ROSTER, ¬ root_void(r.issuer) },
---                           or Del_TTL_Default if there is none
---    revoked(k)          := ∃ x ∈ F : REVOKE, x.subject = k, ¬ root_void(x.issuer)
---                           (any from_t; the session gate reads it, AUDIT.md A3)
---    ROSTER_FORK         := ∃ r, r' ∈ F : ROSTER, r ≠ r', same signer, same gen
---                           (a restored or cloned root; AUDIT.md H1)
+--                           (revoked_at(p.author, p.t) ∨ p.author ∉ W_eff(F))
+--                                                    -- false off data (AUDIT.md G8)
+--    revoked(k)          := revoked_at(k, 2^48 − 1)  (any from_t; the session
+--                                                    gate reads it, AUDIT.md A3)
+--    ROSTER_eff          := the (gen, h)-maximal ROSTER r ∈ F with
+--                           ¬ root_void(r.issuer), ties by (signer, ceiling_t)
 --    contested           := ∃ r ∈ F : ROSTER, ¬ root_void(r.signer),
---                             r.gen = ROSTER_eff.gen, r.epoch = ROSTER_eff.epoch,
---                             r.signer ≠ ROSTER_eff.signer
---                           (rivals: concurrent additions by two roots; AUDIT.md A22)
+--                             r ≠ ROSTER_eff, r.gen = ROSTER_eff.gen
+--    quarantined         := the (gen, h)-maximal ROSTER of F, root-voided ones
+--                           included, has a root-voided signer
 --    far(p)              := p.t > now_local + slack                -- advisory
---    ceiling_lead        := maxceil − now_local, or 0                -- advisory (AUDIT.md N3)
---    ceiling_stale       := now_local > maxceil                      -- advisory (AUDIT.md N4)
+--    skew(now)           := now_local − maxceil (signed)           -- advisory
+--
+--  REVOKEs of one (issuer, subject) dominate by a lower from_t
+--  (Kome.Headers, SIMPLIFY.md S5), so the frontier keeps the least from_t
+--  of each key. Every view above reads only "some REVOKE of the key with
+--  from_t ≤ t", which that least from_t decides, so domination does not
+--  change it (Frontier.lean `isMinFrom_F`).
 --
 --  Each quantified view is opaque (declared here, defined in the body).
 --  Other units read it through its Lemma_<View>_Def, which gives exactly
 --  the definition above (CONVENTIONS.md rule 2). Only the facts without a
---  quantifier are postconditions.
+--  quantifier are postconditions or public expressions.
 --
 --  Uniqueness (T5). On a frontier, each held record is canonical (D3,
 --  Kome.Headers.Canonical; Kome.Frontier.Lemma_Frontier_Held). This is all
 --  of the hypothesis that `cell_unique` in Lean calls `hinj` for PUT and
 --  DEL. Each field that a canonical PUT or DEL uses is in its cell key or
 --  its V, so two held PUTs on one cell are one record (Lemma_Cell_Unique,
---  Lemma_Del_Unique, unconditional). For ROSTER_eff, the order is Lean's
---  full roster tuple (epoch, gen, h, signer, ceiling_t, del_ttl)
---  (Roster_Lt).
---  On a canonical roster of the collection, that tuple determines the
---  header, so ROSTER_eff does not depend on the order on a frontier,
---  without A2 (Lemma_Roster_Unique, Lemma_Roster_Eff_Unique). This is
---  exactly what Frontier.lean `rosterEff_congr` gives for the model. A2
+--  Lemma_Del_Unique, unconditional). For ROSTER_eff and the quarantine,
+--  the order is Lean's roster key (gen, h, signer, ceiling_t) (`rkey`,
+--  Roster_Lt). On a canonical roster that tuple determines the header, so
+--  the maxima do not depend on the order on a frontier, without A2
+--  (Lemma_Roster_Unique, Lemma_Roster_Eff_Unique, Lemma_Roster_Max_Unique).
+--  This is what Frontier.lean `rkey_inj` gives for the model. A2
 --  (Unique_Versions) stays only as an alternative hypothesis for states
 --  that are not frontiers.
 --
 --  Lemmas (T5, T12):
 --    Lemma_<View>_Def          the definitions of the opaque views;
 --    Lemma_Cell_Unique / Lemma_Del_Unique / Lemma_Roster_Unique /
---    Lemma_Roster_Eff_Unique   the maximum is unique (T5, `cell_unique`);
+--    Lemma_Roster_Eff_Unique / Lemma_Roster_Max_Unique
+--                              the maximum is unique (T5, `cell_unique`);
 --    Lemma_Roster_Eff_Present  a founding roster makes ROSTER_eff present;
 --    Lemma_Root_Void_Slot      root_void read through slot 1 (the founding
 --                              key's row) of Kome.Frontier;
 --    Lemma_Data_Local / Lemma_Cell_Local / Lemma_Views_Local
 --                              the data views depend only on held PUT/DEL;
---    Lemma_Root_Void_Local / Lemma_W_Eff_Local / Lemma_Void_Local /
---    Lemma_Roster_Local / Lemma_Del_TTL_Local
+--    Lemma_Root_Void_Local / Lemma_W_Eff_Local / Lemma_Revoked_At_Local /
+--    Lemma_Void_Local / Lemma_Roster_Local
 --                              the authorization views depend only on held
 --                              ROSTER/REVOKE/GRANT and the founding key;
---    Lemma_Dominates_Del_TTL / Lemma_Del_TTL_Eff_Apply
---                              a dominating roster is not lower in del_ttl,
---                              so to apply a roster never lowers
---                              del_ttl_eff (H15);
 --    Lemma_Apply_Auth_Local    to apply a ROSTER, REVOKE or GRANT keeps the
 --                              PUT/DEL records (T12);
 --    Lemma_Apply_Data_Local    to apply a PUT or DEL keeps the
 --                              ROSTER/REVOKE/GRANT records;
---    Lemma_Root_Void_Monotone / Lemma_W_Eff_Monotone / Lemma_Void_Monotone /
---    Lemma_Apply_Keeps_Revokes root_void grows; for a fixed root_void set,
---                              W_eff and the REVOKE clause of void grow
---                              (T12).
+--    Lemma_Root_Void_Monotone / Lemma_W_Eff_Monotone /
+--    Lemma_Revoked_At_Monotone / Lemma_Apply_Keeps_Revokes
+--                              root_void grows; for a fixed root_void set,
+--                              W_eff and revoked_at grow (T12); an Apply
+--                              covers every REVOKE it drops.
 pragma Ada_2022;
 with Kome.Versions;  use Kome.Versions;
 with Kome.Headers;   use Kome.Headers;
-with Kome.Registers;
 with Kome.Frontier;  use Kome.Frontier;
 package Kome.Views with SPARK_Mode is
 
@@ -91,9 +89,9 @@ package Kome.Views with SPARK_Mode is
    --  canonical (Kome.Frontier.Lemma_Frontier_Held).
    All_Ones   : constant Key256  := (others => 16#FFFF_FFFF#);
    No_Header  : constant Header  :=
-     (K => K_Put, NS => Zero_Id, Ent => Zero_Id, FH => Zero_Key,
+     (K => K_Put, Ent => Zero_Id, FH => Zero_Key,
       V => (T => 0, Author => Zero_Key, Seq => 0, H => Zero_Key),
-      Issuer => All_Ones, Del_TTL => 0, Epoch => 0);
+      Issuer => All_Ones);
    No_Version : constant Version := (others => <>);
 
    --  Option-like results. If Present is False, the payload is the default
@@ -113,22 +111,21 @@ package Kome.Views with SPARK_Mode is
    --  unfold them).
    ---------------------------------------------------------------------------
 
-   --  A PUT on the cell (ns, ent, fh).
-   function Put_On (X : Header; NS, Ent : Id128; FH : Key256) return Boolean is
-     (X.K = K_Put and then X.NS = NS and then X.Ent = Ent and then X.FH = FH);
+   --  A PUT on the cell (ent, fh).
+   function Put_On (X : Header; Ent : Id128; FH : Key256) return Boolean is
+     (X.K = K_Put and then X.Ent = Ent and then X.FH = FH);
 
-   --  A PUT on a field of the entity (ns, ent).
-   function Put_In (X : Header; NS, Ent : Id128) return Boolean is
-     (X.K = K_Put and then X.NS = NS and then X.Ent = Ent);
+   --  A PUT on a field of the entity.
+   function Put_In (X : Header; Ent : Id128) return Boolean is
+     (X.K = K_Put and then X.Ent = Ent);
 
-   --  A DEL of the entity (ns, ent).
-   function Del_On (X : Header; NS, Ent : Id128) return Boolean is
-     (X.K = K_Del and then X.NS = NS and then X.Ent = Ent);
+   --  A DEL of the entity.
+   function Del_On (X : Header; Ent : Id128) return Boolean is
+     (X.K = K_Del and then X.Ent = Ent);
 
    --  A REVOKE of Subject, by any issuer. The revoked key is V.Author of
    --  the REVOKE, and from_t is its V.T (Kome.Headers: V = (from_t,
-   --  subject, 0, h)). No collection test: each held record has
-   --  NS = Collection (S).
+   --  subject, 0, h)).
    function Revokes (X : Header; Subject : Key256) return Boolean is
      (X.K = K_Revoke and then X.V.Author = Subject);
 
@@ -137,58 +134,31 @@ package Kome.Views with SPARK_Mode is
    function Root_Revokes (X : Header; Fnd, K : Key256) return Boolean is
      (X.K = K_Revoke and then X.Issuer = Fnd and then X.V.Author = K);
 
-   --  X is a REVOKE that voids P: P's author is the subject and
-   --  P.t >= from_t (DESIGN.md §3 `void`). root_void decides if X's issuer
-   --  counts (Revoke_Void below).
-   function Voids (X, P : Header) return Boolean is
-     (Revokes (X, P.V.Author) and then P.V.T >= X.V.T);
+   --  X is a REVOKE of K that applies at time T: from_t <= T (DESIGN.md
+   --  §3 `void`). root_void decides if X's issuer counts (Revoked_At).
+   function Revokes_At (X : Header; K : Key256; T : U48) return Boolean is
+     (Revokes (X, K) and then X.V.T <= T);
 
-   --  A GRANT of K (V = (0, subject, 0, h)), by any issuer.
+   --  A GRANT of K (V = (cap, subject, 0, h)), by any issuer.
    function Grants (X : Header; K : Key256) return Boolean is
      (X.K = K_Grant and then X.V.Author = K);
 
-   --  Two different rosters of one signer at the same gen. Neither
-   --  dominates the other (Kome.Headers.Lemma_Equal_Gen_No_Dom), so a
-   --  frontier holds both. Only a root restored from backup, or a second
-   --  device with the same root key, makes such a pair (AUDIT.md H1).
-   function Forked (X, Y : Header) return Boolean is
-     (X.K = K_Roster and then Y.K = K_Roster and then X /= Y
-      and then X.V.Author = Y.V.Author and then X.V.Seq = Y.V.Seq);
-
-   --  X is a rival of the roster E: a roster at the same gen and the same
-   --  epoch, by another signer (AUDIT.md A22). Two roots that add a member
-   --  at the same time make such a pair; h decides ROSTER_eff between them,
-   --  and the loser's newcomer is shut out until a root issues gen + 1 with
-   --  the union of the members.
-   function Rivals (X, E : Header) return Boolean is
-     (X.K = K_Roster and then X.V.Seq = E.V.Seq and then X.Epoch = E.Epoch
-      and then X.V.Author /= E.V.Author);
-
-   --  The ROSTER_eff order: Frontier.lean `rkLt`, lexicographic on
-   --  (epoch, gen, h, signer, ceiling_t, del_ttl). The V of a roster is
-   --  (ceiling_t, signer, gen, h). Epoch comes first, so a roster at a
-   --  newer epoch is effective whatever its gen: a concurrent or stale
-   --  roster cannot undo a removal (which raises the epoch), and the
-   --  founding roster that opens a segment beats every roster of the old
-   --  segment (AUDIT.md A2, H6). Then Kome.Headers.Gen_Lt (the (gen, h)
-   --  order of DESIGN.md §3). The rest is the tie-break of DESIGN.md §3
-   --  and T5:
-   --    * only rosters that are equal in (epoch, gen, h) get to it
-   --      (impossible under A2);
-   --    * it makes the order strict and total on that tuple
-   --      (Lemma_Roster_Lt_Total).
+   --  The roster order of ROSTER_eff and of the quarantine: Frontier.lean
+   --  `rkLt`, lexicographic on the roster key `rkey` = (gen, h, signer,
+   --  ceiling_t) (SIMPLIFY.md S4). The V of a roster is (ceiling_t,
+   --  signer, gen, h). First Kome.Headers.Gen_Lt (the (gen, h) order of
+   --  DESIGN.md §3); signer and ceiling_t are tie-breakers only:
+   --    * only rosters that are equal in (gen, h) get to them (impossible
+   --      under A2);
+   --    * they make the order strict and total on V (Lemma_Roster_Lt_Total).
    --  As a result, the maximum does not depend on the held array's order.
    --  A dominating roster is greater in this order: domination needs
-   --  epoch' >= epoch and gen' > gen.
+   --  gen' > gen (Frontier.lean `dominates_rkLt`).
    function Roster_Lt (A, B : Header) return Boolean is
-     (A.Epoch < B.Epoch
-      or else (A.Epoch = B.Epoch
-        and then (Gen_Lt (A, B)
-          or else (A.V.Seq = B.V.Seq and then A.V.H = B.V.H
-            and then (Lt (A.V.Author, B.V.Author)
-              or else (A.V.Author = B.V.Author
-                and then (A.V.T < B.V.T
-                  or else (A.V.T = B.V.T and then A.Del_TTL < B.Del_TTL))))))));
+     (Gen_Lt (A, B)
+      or else (A.V.Seq = B.V.Seq and then A.V.H = B.V.H
+        and then (Lt (A.V.Author, B.V.Author)
+          or else (A.V.Author = B.V.Author and then A.V.T < B.V.T))));
 
    --  far(p): an advisory flag only. The lattice never reads it (DESIGN.md
    --  §3). It does not use the sum Now + Slack, which can be more than U48.
@@ -214,27 +184,31 @@ package Kome.Views with SPARK_Mode is
    --  and GRANT records: the inputs of each authorization view.
    function Same_Auth (S1, S2 : State) return Boolean with Ghost, Global => null;
 
+   --  S holds a REVOKE of X's (issuer, subject) with a from_t at most X's:
+   --  X itself, or the REVOKE that dominated it (SIMPLIFY.md S5).
+   function Covered (S : State; X : Header) return Boolean with Ghost, Global => null;
+
    ---------------------------------------------------------------------------
    --  The data views (T5: each is a function of the held PUT and DEL).
    ---------------------------------------------------------------------------
 
-   --  cell(ns, ent, fh): the live PUT on the cell, if there is one. On a
+   --  cell(ent, fh): the live PUT on the cell, if there is one. On a
    --  frontier, it is the only one (Lemma_Cell_Unique). In general, it is a
    --  maximal one.
-   function Cell (S : State; NS, Ent : Id128; FH : Key256) return Header_View with
+   function Cell (S : State; Ent : Id128; FH : Key256) return Header_View with
      Global => null,
-     Post   => (if Cell'Result.Present then Put_On (Cell'Result.Hdr, NS, Ent, FH)
+     Post   => (if Cell'Result.Present then Put_On (Cell'Result.Hdr, Ent, FH)
                 else Cell'Result.Hdr = No_Header);
 
-   --  deleted_at(ns, ent): the maximal DEL version on the entity, if there
-   --  is one.
-   function Deleted_At (S : State; NS, Ent : Id128) return Version_View with
+   --  deleted_at(ent): the maximal DEL version on the entity, if there is
+   --  one.
+   function Deleted_At (S : State; Ent : Id128) return Version_View with
      Global => null,
      Post   => (if not Deleted_At'Result.Present then Deleted_At'Result.V = No_Version);
 
-   --  exists(ns, ent): a live PUT on the entity. There is no presence bit:
-   --  a deleted entity is a DEL and nothing else (DESIGN.md §3).
-   function Exists (S : State; NS, Ent : Id128) return Boolean with
+   --  exists(ent): a live PUT on the entity. There is no presence bit: a
+   --  deleted entity is a DEL and nothing else (DESIGN.md §3).
+   function Exists (S : State; Ent : Id128) return Boolean with
      Global => null;
 
    ---------------------------------------------------------------------------
@@ -251,9 +225,9 @@ package Kome.Views with SPARK_Mode is
    --    * A REVOKE issued by a certified root never root-voids a key. If it
    --      names a different root, it only voids that key's data records.
    --    * All records that a root-voided root issued, before or after, stop
-   --      to count in each view. Its rosters leave ROSTER_eff and
-   --      del_ttl_eff, its REVOKEs stop voiding (Revoke_Void), and its
-   --      GRANTs leave W_eff.
+   --      to count in each view. Its rosters leave ROSTER_eff, its REVOKEs
+   --      stop voiding (Revoked_At), and its GRANTs leave W_eff. Its
+   --      rosters still count for the quarantine.
    --  Admission never reads root_void (T4'). In the core's two-level API,
    --  the REVOKEs that it reads are exactly the REVOKEs of slot 1
    --  (Lemma_Root_Void_Slot).
@@ -262,27 +236,31 @@ package Kome.Views with SPARK_Mode is
      Post   => (if Root_Void'Result then K /= Founding (S));
 
    --  k ∈ W_eff(F) (D1′): a held GRANT of k with an issuer that is not
-   --  root_void. W (Kome.Registers, admission) counts each held GRANT. The
-   --  only difference between the two is the grants of root-voided issuers.
-   --  Admission must keep these grants (monotone, §4), and the views ignore
-   --  them.
+   --  root_void. W (Kome.Frontier.In_W, admission) counts each held
+   --  GRANT. The only difference between the two is the grants of
+   --  root-voided issuers. Admission must keep these grants (monotone,
+   --  §4), and the views ignore them.
    function W_Eff (S : State; K : Key256) return Boolean with
      Global => null;
 
-   --  The REVOKE clause of void(p): P is a PUT or a DEL, and F holds a
-   --  REVOKE of p's author, with from_t <= p.t and with an issuer that is
-   --  not root_void. Like void, it is False off data (AUDIT.md G8).
-   function Revoke_Void (S : State; P : Header) return Boolean with
-     Global => null,
-     Post   => (if Revoke_Void'Result then Is_Data (P));
+   --  revoked_at(k, t) (SIMPLIFY.md S13; Frontier.lean `revokeVoids`): F
+   --  holds a REVOKE of k with from_t <= t, from an issuer that is not
+   --  root_void. The one revocation view: Revoke_Void and Revoked below are
+   --  defined from it. Admission never reads it (T4').
+   function Revoked_At (S : State; K : Key256; T : U48) return Boolean with
+     Global => null;
+
+   --  The REVOKE clause of void(p): P is a PUT or a DEL, and its author is
+   --  revoked at P.t. Like void, it is False off data (AUDIT.md G8).
+   function Revoke_Void (S : State; P : Header) return Boolean is
+     (Is_Data (P) and then Revoked_At (S, P.V.Author, P.V.T));
 
    --  revoked(k): a held REVOKE of k, with any from_t, from an issuer that
    --  is not root_void. The session gate reads it (DESIGN.md §6, AUDIT.md
    --  A3): a member whose sign_pk is revoked passes no gate, even before
-   --  the roster that removes it arrives. Like Revoke_Void, it grows with F
-   --  for a fixed root_void set. Admission never reads it (T4').
-   function Revoked (S : State; K : Key256) return Boolean with
-     Global => null;
+   --  the roster that removes it arrives.
+   function Revoked (S : State; K : Key256) return Boolean is
+     (Revoked_At (S, K, U48'Last));
 
    --  void(p) := p is a PUT or a DEL, and (Revoke_Void (S, p) or else
    --  p.author ∉ W_eff) (DESIGN.md §3). The flag is defined on data
@@ -305,138 +283,110 @@ package Kome.Views with SPARK_Mode is
    --  its entity and is still a tombstone.
    --
    --  Monotonicity (T12): for a fixed root_void set, the REVOKE clause grows
-   --  with F (Lemma_Void_Monotone). The W_eff clause is ANTI-monotone (a
-   --  GRANT can un-void), so void as a whole is not monotone in F.
-   function Is_Void (S : State; P : Header) return Boolean with
-     Global => null,
-     Post   => (if Is_Void'Result then Is_Data (P));
+   --  with F (Lemma_Revoked_At_Monotone). The W_eff clause is ANTI-monotone
+   --  (a GRANT can un-void), so void as a whole is not monotone in F.
+   function Is_Void (S : State; P : Header) return Boolean is
+     (Is_Data (P) and then (Revoke_Void (S, P) or else not W_Eff (S, P.V.Author)));
 
-   --  A roster eligible for ROSTER_eff and del_ttl_eff: its issuer is not
-   --  root_void. The founding key is never root_void, so each founding
-   --  roster is eligible.
+   --  A roster eligible for ROSTER_eff: its issuer is not root_void. The
+   --  founding key is never root_void, so each founding roster is
+   --  eligible.
    function Eligible (S : State; X : Header) return Boolean is
      (X.K = K_Roster and then not Root_Void (S, X.Issuer));
 
-   --  ROSTER_eff (DESIGN.md §3, §6 C9): the Roster_Lt-maximal eligible
-   --  held roster, so it is also maximal in (gen, h) (Gen_Lt).
+   --  ROSTER_eff (DESIGN.md §3, §6 C9; SIMPLIFY.md S4): the Roster_Lt-
+   --  maximal eligible held roster, so it is maximal in (gen, h) (Gen_Lt).
    --    * It is None if no held roster is eligible.
    --    * It is present if F holds a roster issued by the founding key
    --      (Lemma_Roster_Eff_Present).
    --    * On a frontier, it is the unique eligible roster that no eligible
    --      roster beats (Lemma_Roster_Eff_Unique).
-   --  The tie-break on the full tuple, as `rkLt` in Lean, makes it
-   --  independent of the held array's order. This is true in the
-   --  model (`rosterEff_congr`) and here, without A2. The product order can
-   --  keep a stale roster of one signer (lower gen, higher ceiling_t) next
-   --  to a newer one. That stale roster never becomes ROSTER_eff.
+   --  The tie-break on the full roster key, as `rkLt` in Lean, makes it
+   --  independent of the held array's order. The product order can keep a
+   --  stale roster of one signer (lower gen, higher ceiling_t) next to a
+   --  newer one. That stale roster never becomes ROSTER_eff.
    function Roster_Eff (S : State) return Header_View with
      Global => null,
      Post   => (if Roster_Eff'Result.Present then Eligible (S, Roster_Eff'Result.Hdr)
                 else Roster_Eff'Result.Hdr = No_Header);
 
-   --  ROSTER_FORK (AUDIT.md H1): F holds two different rosters of one
-   --  signer at the same gen. It plays for rosters the role that
-   --  CLONE_SUSPECTED plays for data: the signer was restored from a
-   --  backup, or runs on two devices. The signer resolves it by issuing a
-   --  roster above both (gen = 1 + the largest gen that it holds, after it
-   --  reconciles). The flag does not depend on root_void: a fork of a
-   --  root-voided root is still a fork.
-   function Roster_Fork (S : State) return Boolean with
-     Global => null;
+   --  The Roster_Lt-maximal held roster, root-voided ones included (the
+   --  quarantine reads it; SIMPLIFY.md S10).
+   function Roster_Max (S : State) return Header_View with
+     Global => null,
+     Post   => (if Roster_Max'Result.Present then Roster_Max'Result.Hdr.K = K_Roster
+                else Roster_Max'Result.Hdr = No_Header);
 
-   --  contested (AUDIT.md A22, "rivals"): F holds an eligible roster at
-   --  the gen and the epoch of ROSTER_eff, by another signer. Two roots
-   --  that each add a newcomer at the same time make such a pair. h decides
-   --  ROSTER_eff between them, and the loser's newcomer is not a member
-   --  until a root issues gen + 1 with the union of the members. The flag
-   --  tells a root to do so. It is False if ROSTER_eff is absent. Like
-   --  ROSTER_eff, it ignores root-voided rosters.
+   --  contested (SIMPLIFY.md S12; AUDIT.md H1, A22): F holds an eligible
+   --  roster other than ROSTER_eff at the gen of ROSTER_eff. A root
+   --  restored from backup (two rosters of one signer at one gen) and two
+   --  roots that each add a newcomer at the same time (rivals) both make
+   --  one. h decides ROSTER_eff between them. The rule for a root: issue
+   --  at a gen above every held roster with the confirmed union of the
+   --  members. It is False if ROSTER_eff is absent. Like ROSTER_eff, it
+   --  ignores root-voided rosters.
    function Contested (S : State) return Boolean with
      Global => null,
      Post   => (if Contested'Result then Roster_Eff (S).Present);
 
-   --  del_ttl_eff (D10, DESIGN.md §3, §7): the largest del_ttl of the
-   --  eligible held rosters, or Del_TTL_Default if there is none. It is a
-   --  maximum, so a root can make tombstone life longer, but it can never
-   --  make it shorter than a different root's value. When a root is
-   --  root-voided, the longer life that it set stops. A dominating roster
-   --  is not lower in del_ttl (Kome.Headers.Dominates, AUDIT.md H15), so
-   --  to apply a roster never lowers this value either
-   --  (Lemma_Del_TTL_Eff_Apply). Kome.Store computes the expiry horizon
-   --  from it. On a frontier, each held roster is canonical, so its
-   --  del_ttl is in range, and this value is too.
-   function Del_TTL_Eff (S : State) return U48 with
-     Global => null,
-     Pre    => Is_Frontier (S),
-     Post   => Del_TTL_Eff'Result in Del_TTL_Min .. Del_TTL_Max;
+   --  quarantined (SIMPLIFY.md S10, AUDIT.md H2): the maximal held roster,
+   --  root-voided ones included, has a root-voided signer. A founding
+   --  REVOKE that voids the signer of the newest roster sets it: ROSTER_eff
+   --  then falls back to an older roster, which can list members that the
+   --  voided root had removed. The recovery roster of the founding key (or
+   --  of any root that is not voided), at a gen above the voided root's,
+   --  clears it (Kome.Guard). A thief can set gen high, but its rosters
+   --  stay in the maximum only while no recovery roster beats them.
+   function Quarantined (S : State) return Boolean is
+     (Roster_Max (S).Present and then Root_Void (S, Roster_Max (S).Hdr.Issuer));
 
-   --  maxceil(F) and W(F) as named views (Kome.Frontier keeps its
-   --  registers equal to them; Lemma_Ceil_Bound, Lemma_W_Sound, ...).
-   function Max_Ceil (S : State) return U48 is (Kome.Registers.Ceil (Regs (S)));
-
-   function Is_Writer (S : State; K : Key256) return Boolean is
-     (Kome.Registers.In_W (Regs (S), K));
-
-   --  ceiling_lead (AUDIT.md N3): how far maxceil is ahead of this
-   --  replica's wall clock, maxceil − now_local, or 0 if the clock has
-   --  passed maxceil. A per-replica advisory, like Is_Far: the lattice
-   --  never reads it. A large lead means a roster (or a GRANT's cap) was
-   --  issued far ahead of real time; the issuer rule bounds it, and a
-   --  status reports it when it passes a bound. No receiver-side rule can
-   --  refuse it (a late joiner with maxceil = 0 would discard the only
-   --  surviving roster). It never underflows: it is 0 when Now >= maxceil.
-   function Ceiling_Lead (S : State; Now : U48) return U48 is
-     (if Max_Ceil (S) > Now then Max_Ceil (S) - Now else 0)
-   with Global => null;
-
-   --  ceiling_stale (AUDIT.md N4): this replica's wall clock has passed
-   --  maxceil. From then on, each DEL that it writes is clamped to
-   --  t = maxceil, which is above the frozen horizon
-   --  min(now_local, maxceil) − del_ttl_eff, so no tombstone of this
-   --  replica expires until a roster with a higher ceiling arrives (A3
-   --  also gates expiry). The transport and the C ABI show it. Advisory,
-   --  per replica: the lattice never reads it. Ceiling_Stale implies
-   --  Ceiling_Lead = 0; the converse fails at Now = maxceil.
-   function Ceiling_Stale (S : State; Now : U48) return Boolean is
-     (Now > Max_Ceil (S))
+   --  skew (SIMPLIFY.md S7, AUDIT.md N3, N4): this replica's wall clock
+   --  minus maxceil, signed. A per-replica advisory, like Is_Far: the
+   --  lattice never reads it. A negative value means that maxceil is ahead
+   --  of the clock (a roster or a GRANT's cap issued far ahead of real
+   --  time); a positive value means the clock has passed maxceil, so each
+   --  DEL that the replica writes is clamped to t = maxceil until a roster
+   --  with a higher ceiling arrives.
+   function Skew (S : State; Now : U48) return Time64 is
+     (Time64 (Now) - Time64 (Max_Ceil (S)))
    with Global => null;
 
    ---------------------------------------------------------------------------
    --  Definitions of the opaque views.
    ---------------------------------------------------------------------------
 
-   procedure Lemma_Cell_Def (S : State; NS, Ent : Id128; FH : Key256) with
+   procedure Lemma_Cell_Def (S : State; Ent : Id128; FH : Key256) with
      Ghost, Global => null,
      Post =>
-       Cell (S, NS, Ent, FH).Present =
-         (for some I in 1 .. Count (S) => Put_On (Held (S, I), NS, Ent, FH))
+       Cell (S, Ent, FH).Present =
+         (for some I in 1 .. Count (S) => Put_On (Held (S, I), Ent, FH))
        and then
-       (if Cell (S, NS, Ent, FH).Present then
-          Put_On (Cell (S, NS, Ent, FH).Hdr, NS, Ent, FH)
-          and then (for some I in 1 .. Count (S) => Held (S, I) = Cell (S, NS, Ent, FH).Hdr)
+       (if Cell (S, Ent, FH).Present then
+          Put_On (Cell (S, Ent, FH).Hdr, Ent, FH)
+          and then (for some I in 1 .. Count (S) => Held (S, I) = Cell (S, Ent, FH).Hdr)
           and then (for all I in 1 .. Count (S) =>
-                      (if Put_On (Held (S, I), NS, Ent, FH)
-                       then not Lt (Cell (S, NS, Ent, FH).Hdr.V, Held (S, I).V)))
-        else Cell (S, NS, Ent, FH).Hdr = No_Header);
+                      (if Put_On (Held (S, I), Ent, FH)
+                       then not Lt (Cell (S, Ent, FH).Hdr.V, Held (S, I).V)))
+        else Cell (S, Ent, FH).Hdr = No_Header);
 
-   procedure Lemma_Deleted_At_Def (S : State; NS, Ent : Id128) with
+   procedure Lemma_Deleted_At_Def (S : State; Ent : Id128) with
      Ghost, Global => null,
      Post =>
-       Deleted_At (S, NS, Ent).Present =
-         (for some I in 1 .. Count (S) => Del_On (Held (S, I), NS, Ent))
+       Deleted_At (S, Ent).Present =
+         (for some I in 1 .. Count (S) => Del_On (Held (S, I), Ent))
        and then
-       (if Deleted_At (S, NS, Ent).Present then
+       (if Deleted_At (S, Ent).Present then
           (for some I in 1 .. Count (S) =>
-             Del_On (Held (S, I), NS, Ent) and then Held (S, I).V = Deleted_At (S, NS, Ent).V)
+             Del_On (Held (S, I), Ent) and then Held (S, I).V = Deleted_At (S, Ent).V)
           and then (for all I in 1 .. Count (S) =>
-                      (if Del_On (Held (S, I), NS, Ent)
-                       then not Lt (Deleted_At (S, NS, Ent).V, Held (S, I).V)))
-        else Deleted_At (S, NS, Ent).V = No_Version);
+                      (if Del_On (Held (S, I), Ent)
+                       then not Lt (Deleted_At (S, Ent).V, Held (S, I).V)))
+        else Deleted_At (S, Ent).V = No_Version);
 
-   procedure Lemma_Exists_Def (S : State; NS, Ent : Id128) with
+   procedure Lemma_Exists_Def (S : State; Ent : Id128) with
      Ghost, Global => null,
-     Post => Exists (S, NS, Ent) =
-               (for some I in 1 .. Count (S) => Put_In (Held (S, I), NS, Ent));
+     Post => Exists (S, Ent) =
+               (for some I in 1 .. Count (S) => Put_In (Held (S, I), Ent));
 
    procedure Lemma_Root_Void_Def (S : State; K : Key256) with
      Ghost, Global => null,
@@ -452,20 +402,36 @@ package Kome.Views with SPARK_Mode is
                   Grants (Held (S, I), K)
                   and then not Root_Void (S, Held (S, I).Issuer));
 
+   procedure Lemma_Revoked_At_Def (S : State; K : Key256; T : U48) with
+     Ghost, Global => null,
+     Post => Revoked_At (S, K, T) =
+               (for some I in 1 .. Count (S) =>
+                  Revokes_At (Held (S, I), K, T)
+                  and then not Root_Void (S, Held (S, I).Issuer));
+
+   --  Corollaries of Lemma_Revoked_At_Def for the two views defined from
+   --  it.
    procedure Lemma_Is_Void_Def (S : State; P : Header) with
      Ghost, Global => null,
      Post => Revoke_Void (S, P) =
                (Is_Data (P)
                 and then (for some I in 1 .. Count (S) =>
-                            Voids (Held (S, I), P)
+                            Revokes_At (Held (S, I), P.V.Author, P.V.T)
                             and then not Root_Void (S, Held (S, I).Issuer)))
              and then
              Is_Void (S, P) =
                (Is_Data (P)
                 and then ((for some I in 1 .. Count (S) =>
-                             Voids (Held (S, I), P)
+                             Revokes_At (Held (S, I), P.V.Author, P.V.T)
                              and then not Root_Void (S, Held (S, I).Issuer))
                           or else not W_Eff (S, P.V.Author)));
+
+   procedure Lemma_Revoked_Def (S : State; K : Key256) with
+     Ghost, Global => null,
+     Post => Revoked (S, K) =
+               (for some I in 1 .. Count (S) =>
+                  Revokes (Held (S, I), K)
+                  and then not Root_Void (S, Held (S, I).Issuer));
 
    procedure Lemma_Roster_Eff_Def (S : State) with
      Ghost, Global => null,
@@ -478,22 +444,22 @@ package Kome.Views with SPARK_Mode is
           and then (for some I in 1 .. Count (S) => Held (S, I) = Roster_Eff (S).Hdr)
           and then (for all I in 1 .. Count (S) =>
                       (if Eligible (S, Held (S, I))
-                       then not Roster_Lt (Roster_Eff (S).Hdr, Held (S, I))
-                            and then Held (S, I).Epoch <= Roster_Eff (S).Hdr.Epoch))
+                       then not Roster_Lt (Roster_Eff (S).Hdr, Held (S, I))))
         else Roster_Eff (S).Hdr = No_Header);
 
-   procedure Lemma_Revoked_Def (S : State; K : Key256) with
+   procedure Lemma_Roster_Max_Def (S : State) with
      Ghost, Global => null,
-     Post => Revoked (S, K) =
-               (for some I in 1 .. Count (S) =>
-                  Revokes (Held (S, I), K)
-                  and then not Root_Void (S, Held (S, I).Issuer));
-
-   procedure Lemma_Roster_Fork_Def (S : State) with
-     Ghost, Global => null,
-     Post => Roster_Fork (S) =
-               (for some I in 1 .. Count (S) =>
-                  (for some J in 1 .. Count (S) => Forked (Held (S, I), Held (S, J))));
+     Post =>
+       Roster_Max (S).Present =
+         (for some I in 1 .. Count (S) => Held (S, I).K = K_Roster)
+       and then
+       (if Roster_Max (S).Present then
+          Roster_Max (S).Hdr.K = K_Roster
+          and then (for some I in 1 .. Count (S) => Held (S, I) = Roster_Max (S).Hdr)
+          and then (for all I in 1 .. Count (S) =>
+                      (if Held (S, I).K = K_Roster
+                       then not Roster_Lt (Roster_Max (S).Hdr, Held (S, I))))
+        else Roster_Max (S).Hdr = No_Header);
 
    procedure Lemma_Contested_Def (S : State) with
      Ghost, Global => null,
@@ -501,25 +467,8 @@ package Kome.Views with SPARK_Mode is
                (Roster_Eff (S).Present
                 and then (for some I in 1 .. Count (S) =>
                             Eligible (S, Held (S, I))
-                            and then Rivals (Held (S, I), Roster_Eff (S).Hdr)));
-
-   --  A REVOKE that voids P also makes P's author revoked.
-   procedure Lemma_Revoke_Void_Revoked (S : State; P : Header) with
-     Ghost, Global => null,
-     Pre  => Revoke_Void (S, P),
-     Post => Revoked (S, P.V.Author);
-
-   procedure Lemma_Del_TTL_Eff_Def (S : State) with
-     Ghost, Global => null,
-     Pre  => Is_Frontier (S),
-     Post =>
-       (if (for some I in 1 .. Count (S) => Eligible (S, Held (S, I))) then
-          (for some I in 1 .. Count (S) =>
-             Eligible (S, Held (S, I)) and then Held (S, I).Del_TTL = Del_TTL_Eff (S))
-          and then (for all I in 1 .. Count (S) =>
-                      (if Eligible (S, Held (S, I))
-                       then Held (S, I).Del_TTL <= Del_TTL_Eff (S)))
-        else Del_TTL_Eff (S) = Del_TTL_Default);
+                            and then Held (S, I) /= Roster_Eff (S).Hdr
+                            and then Held (S, I).V.Seq = Roster_Eff (S).Hdr.V.Seq));
 
    --  root_void in the core's two-level API: slot 1 is the founding key's
    --  row, so the REVOKEs that root_void reads are the REVOKEs of slot 1.
@@ -541,13 +490,10 @@ package Kome.Views with SPARK_Mode is
      Ghost, Global => null,
      Post => not Canonical (No_Header);
 
-   --  Roster_Lt is a strict total order on (Epoch, V, Del_TTL).
+   --  Roster_Lt is a strict total order on V.
    procedure Lemma_Roster_Lt_Total (A, B : Header) with
      Ghost, Global => null,
-     Post => Roster_Lt (A, B)
-             or else (A.V = B.V and then A.Del_TTL = B.Del_TTL
-                      and then A.Epoch = B.Epoch)
-             or else Roster_Lt (B, A);
+     Post => Roster_Lt (A, B) or else A.V = B.V or else Roster_Lt (B, A);
 
    --  A dominating roster is greater in the ROSTER_eff order (Frontier.lean
    --  `dominates_rkLt`).
@@ -560,6 +506,11 @@ package Kome.Views with SPARK_Mode is
      Ghost, Global => null,
      Post => not Roster_Lt (A, A);
 
+   procedure Lemma_Roster_Lt_Trans (A, B, C : Header) with
+     Ghost, Global => null,
+     Pre  => Roster_Lt (A, B) and then Roster_Lt (B, C),
+     Post => Roster_Lt (A, C);
+
    --  T5, Frontier.lean `cell_unique`: two held PUTs on one cell of a
    --  frontier are the same record at the same index. (If not, the newer
    --  dominates the older. Equal versions of canonical PUTs on one cell are
@@ -570,7 +521,7 @@ package Kome.Views with SPARK_Mode is
      Pre  => Is_Frontier (S)
              and then I <= Count (S) and then J <= Count (S)
              and then Held (S, I).K = K_Put
-             and then Put_On (Held (S, J), Held (S, I).NS, Held (S, I).Ent, Held (S, I).FH),
+             and then Put_On (Held (S, J), Held (S, I).Ent, Held (S, I).FH),
      Post => Held (S, I).V = Held (S, J).V
              and then Held (S, I) = Held (S, J) and then I = J;
 
@@ -580,17 +531,14 @@ package Kome.Views with SPARK_Mode is
      Pre  => Is_Frontier (S)
              and then I <= Count (S) and then J <= Count (S)
              and then Held (S, I).K = K_Del
-             and then Del_On (Held (S, J), Held (S, I).NS, Held (S, I).Ent),
+             and then Del_On (Held (S, J), Held (S, I).Ent),
      Post => Held (S, I).V = Held (S, J).V
              and then Held (S, I) = Held (S, J) and then I = J;
 
-   --  T5 for ROSTER_eff: two held rosters of a frontier that are
-   --  Roster_Lt-incomparable (for example two maximal eligible rosters) are
-   --  the same record at the same index. No A2: the compared tuple includes
-   --  del_ttl. The other fields of a canonical roster are its collection,
-   --  zeros and its signer. (Under the product order, an antichain of
-   --  rosters for each signer is possible. Its members are different in
-   --  this tuple.)
+   --  T5 for the roster maxima (Frontier.lean `rkey_inj`): two held
+   --  rosters of a frontier that are Roster_Lt-incomparable are the same
+   --  record at the same index. No A2: the compared key is the whole V,
+   --  and the other fields of a canonical roster are zeros and its signer.
    procedure Lemma_Roster_Unique (S : State; I, J : Held_Index) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S)
@@ -613,6 +561,17 @@ package Kome.Views with SPARK_Mode is
                           then not Roster_Lt (Held (S, I), Held (S, J)))),
      Post => Roster_Eff (S) = (Present => True, Hdr => Held (S, I));
 
+   --  The same for the maximal roster.
+   procedure Lemma_Roster_Max_Unique (S : State; I : Held_Index) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (S)
+             and then I <= Count (S)
+             and then Held (S, I).K = K_Roster
+             and then (for all J in 1 .. Count (S) =>
+                         (if Held (S, J).K = K_Roster
+                          then not Roster_Lt (Held (S, I), Held (S, J)))),
+     Post => Roster_Max (S) = (Present => True, Hdr => Held (S, I));
+
    --  DESIGN.md §3: ROSTER_eff is present if F holds a roster issued by the
    --  founding key (the collection's first roster is one). The reason
    --  is that the founding key is never root_void.
@@ -622,17 +581,17 @@ package Kome.Views with SPARK_Mode is
                 Held (S, I).K = K_Roster and then Held (S, I).Issuer = Founding (S)),
      Post => Roster_Eff (S).Present;
 
-   --  exists(ns, ent) = ∃ f. cell(ns, ent, f) ≠ None, in the two
-   --  directions. If a cell is present, the entity exists. If an entity
-   --  exists, it has a present cell at the field of one of its held PUTs.
-   procedure Lemma_Exists_Cell (S : State; NS, Ent : Id128; FH : Key256) with
+   --  exists(ent) = ∃ f. cell(ent, f) ≠ None, in the two directions. If a
+   --  cell is present, the entity exists. If an entity exists, it has a
+   --  present cell at the field of one of its held PUTs.
+   procedure Lemma_Exists_Cell (S : State; Ent : Id128; FH : Key256) with
      Ghost, Global => null,
-     Post => (if Cell (S, NS, Ent, FH).Present then Exists (S, NS, Ent))
+     Post => (if Cell (S, Ent, FH).Present then Exists (S, Ent))
              and then
-             (if Exists (S, NS, Ent) then
+             (if Exists (S, Ent) then
                 (for some I in 1 .. Count (S) =>
-                   Put_In (Held (S, I), NS, Ent)
-                   and then Cell (S, NS, Ent, Held (S, I).FH).Present));
+                   Put_In (Held (S, I), Ent)
+                   and then Cell (S, Ent, Held (S, I).FH).Present));
 
    ---------------------------------------------------------------------------
    --  Laws: locality (T5, T12).
@@ -640,11 +599,11 @@ package Kome.Views with SPARK_Mode is
 
    --  deleted_at and exists are functions of only the held PUT and DEL
    --  records. They need no hypothesis on the records.
-   procedure Lemma_Data_Local (S1, S2 : State; NS, Ent : Id128) with
+   procedure Lemma_Data_Local (S1, S2 : State; Ent : Id128) with
      Ghost, Global => null,
      Pre  => Same_Data (S1, S2),
-     Post => Deleted_At (S1, NS, Ent) = Deleted_At (S2, NS, Ent)
-             and then Exists (S1, NS, Ent) = Exists (S2, NS, Ent);
+     Post => Deleted_At (S1, Ent) = Deleted_At (S2, Ent)
+             and then Exists (S1, Ent) = Exists (S2, Ent);
 
    --  cell is a function of the held PUT and DEL records:
    --    * its presence and version, always;
@@ -652,21 +611,21 @@ package Kome.Views with SPARK_Mode is
    --      canonical, or S1 satisfies A2.
    --  (Same_Data carries each PUT of S2 into S1, so a hypothesis on S1
    --  only is sufficient.)
-   procedure Lemma_Cell_Local (S1, S2 : State; NS, Ent : Id128; FH : Key256) with
+   procedure Lemma_Cell_Local (S1, S2 : State; Ent : Id128; FH : Key256) with
      Ghost, Global => null,
      Pre  => Same_Data (S1, S2),
-     Post => Cell (S1, NS, Ent, FH).Present = Cell (S2, NS, Ent, FH).Present
-             and then Cell (S1, NS, Ent, FH).Hdr.V = Cell (S2, NS, Ent, FH).Hdr.V
+     Post => Cell (S1, Ent, FH).Present = Cell (S2, Ent, FH).Present
+             and then Cell (S1, Ent, FH).Hdr.V = Cell (S2, Ent, FH).Hdr.V
              and then
              (if Is_Frontier (S1)
                  or else (for all I in 1 .. Count (S1) =>
                             (if Held (S1, I).K = K_Put then Canonical (Held (S1, I))))
                  or else Unique_Versions (S1)
-              then Cell (S1, NS, Ent, FH) = Cell (S2, NS, Ent, FH));
+              then Cell (S1, Ent, FH) = Cell (S2, Ent, FH));
 
    --  T5 / T12: the three data views together (Lemma_Data_Local and
    --  Lemma_Cell_Local).
-   procedure Lemma_Views_Local (S1, S2 : State; NS, Ent : Id128; FH : Key256) with
+   procedure Lemma_Views_Local (S1, S2 : State; Ent : Id128; FH : Key256) with
      Ghost, Global => null,
      Pre  => Same_Data (S1, S2)
              and then
@@ -674,12 +633,12 @@ package Kome.Views with SPARK_Mode is
               or else (for all I in 1 .. Count (S1) =>
                          (if Held (S1, I).K = K_Put then Canonical (Held (S1, I))))
               or else Unique_Versions (S1)),
-     Post => Cell (S1, NS, Ent, FH) = Cell (S2, NS, Ent, FH)
-             and then Deleted_At (S1, NS, Ent) = Deleted_At (S2, NS, Ent)
-             and then Exists (S1, NS, Ent) = Exists (S2, NS, Ent);
+     Post => Cell (S1, Ent, FH) = Cell (S2, Ent, FH)
+             and then Deleted_At (S1, Ent) = Deleted_At (S2, Ent)
+             and then Exists (S1, Ent) = Exists (S2, Ent);
 
-   --  root_void, W_eff and void are functions of the founding key and the
-   --  held REVOKE and GRANT records.
+   --  root_void, W_eff, revoked_at and void are functions of the founding
+   --  key and the held REVOKE and GRANT records.
    procedure Lemma_Root_Void_Local (S1, S2 : State; K : Key256) with
      Ghost, Global => null,
      Pre  => Same_Auth (S1, S2),
@@ -690,6 +649,11 @@ package Kome.Views with SPARK_Mode is
      Pre  => Same_Auth (S1, S2),
      Post => W_Eff (S1, K) = W_Eff (S2, K);
 
+   procedure Lemma_Revoked_At_Local (S1, S2 : State; K : Key256; T : U48) with
+     Ghost, Global => null,
+     Pre  => Same_Auth (S1, S2),
+     Post => Revoked_At (S1, K, T) = Revoked_At (S2, K, T);
+
    procedure Lemma_Void_Local (S1, S2 : State; P : Header) with
      Ghost, Global => null,
      Pre  => Same_Auth (S1, S2),
@@ -698,65 +662,16 @@ package Kome.Views with SPARK_Mode is
 
    --  ROSTER_eff is a function of the founding key and the held ROSTER and
    --  REVOKE records:
-   --    * its presence and its order tuple (V, del_ttl), always;
-   --    * its full header, if S1 is a frontier (canonical rosters of one
-   --      collection) or satisfies A2.
+   --    * its presence and its order key V, always;
+   --    * its full header, if S1 is a frontier (canonical rosters) or
+   --      satisfies A2.
    procedure Lemma_Roster_Local (S1, S2 : State) with
      Ghost, Global => null,
      Pre  => Same_Auth (S1, S2),
      Post => Roster_Eff (S1).Present = Roster_Eff (S2).Present
              and then Roster_Eff (S1).Hdr.V = Roster_Eff (S2).Hdr.V
-             and then Roster_Eff (S1).Hdr.Del_TTL = Roster_Eff (S2).Hdr.Del_TTL
              and then (if Is_Frontier (S1) or else Unique_Versions (S1)
                        then Roster_Eff (S1) = Roster_Eff (S2));
-
-   --  The same for del_ttl_eff (T5).
-   procedure Lemma_Del_TTL_Local (S1, S2 : State) with
-     Ghost, Global => null,
-     Pre  => Is_Frontier (S1) and then Is_Frontier (S2) and then Same_Auth (S1, S2),
-     Post => Del_TTL_Eff (S1) = Del_TTL_Eff (S2);
-
-   --  H15: a roster that dominates a roster is not lower in del_ttl
-   --  (Kome.Headers.Dominates, the roster clause). So the del_ttl
-   --  contribution of a dominated roster to del_ttl_eff is never lost.
-   procedure Lemma_Dominates_Del_TTL (P, Q : Header) with
-     Ghost, Global => null,
-     Pre  => P.K = K_Roster and then Dominates (Q, P),
-     Post => P.Del_TTL <= Q.Del_TTL;
-
-   --  H15, the obligation on the view (Frontier.lean `delTtlEff_F`): to
-   --  apply a roster R never lowers del_ttl_eff. The hypotheses are the
-   --  postcondition of Kome.Frontier.Apply for Before = S'Old, After = S
-   --  when R is held after it: After ⊆ Before ∪ {R}, and each record of
-   --  Before is in After or R dominates it. Then
-   --    * each eligible roster of Before is at most del_ttl_eff (After):
-   --      it is still held, or R dominates it and is not lower in del_ttl
-   --      and is eligible (same signer);
-   --    * so del_ttl_eff does not go down while an eligible roster is held;
-   --    * del_ttl_eff (After) is del_ttl_eff (Before) or R's del_ttl.
-   --  (Before = After is allowed, so a duplicate satisfies the hypotheses
-   --  too. A refused R is not held, and then Apply leaves the state
-   --  unchanged.)
-   procedure Lemma_Del_TTL_Eff_Apply (Before, After : State; R : Header) with
-     Ghost, Global => null,
-     Pre  => Is_Frontier (Before) and then Is_Frontier (After)
-             and then Founding (After) = Founding (Before)
-             and then R.K = K_Roster and then Holds (After, R)
-             and then (for all I in 1 .. Count (After) =>
-                         Holds (Before, Held (After, I)) or else Held (After, I) = R)
-             and then (for all I in 1 .. Count (Before) =>
-                         Holds (After, Held (Before, I))
-                         or else Dominates (R, Held (Before, I))),
-     Post => (for all I in 1 .. Count (Before) =>
-                (if Eligible (Before, Held (Before, I))
-                 then Held (Before, I).Del_TTL <= Del_TTL_Eff (After)))
-             and then (if Eligible (After, R) then R.Del_TTL <= Del_TTL_Eff (After))
-             and then (if (for some I in 1 .. Count (Before) =>
-                             Eligible (Before, Held (Before, I)))
-                       then Del_TTL_Eff (Before) <= Del_TTL_Eff (After))
-             and then (Del_TTL_Eff (After) = Del_TTL_Eff (Before)
-                       or else (Eligible (After, R)
-                                and then Del_TTL_Eff (After) = R.Del_TTL));
 
    --  T12 (revocation locality): to apply a ROSTER, REVOKE or GRANT never
    --  adds or removes a PUT or DEL. The postcondition of
@@ -774,9 +689,9 @@ package Kome.Views with SPARK_Mode is
      Post => Same_Data (Before, After);
 
    --  The converse: to apply a PUT or a DEL never adds or removes a ROSTER,
-   --  REVOKE or GRANT, so it does not change root_void, W_eff, void,
-   --  ROSTER_eff or del_ttl_eff. The hypotheses are the same, plus
-   --  "Founding (S) = Founding (S'Old)" from Apply.
+   --  REVOKE or GRANT, so it does not change root_void, W_eff, revoked_at,
+   --  void, ROSTER_eff, contested or the quarantine. The hypotheses are
+   --  the same, plus "Founding (S) = Founding (S'Old)" from Apply.
    procedure Lemma_Apply_Data_Local (Before, After : State; R : Header) with
      Ghost, Global => null,
      Pre  => Is_Data (R)
@@ -788,12 +703,14 @@ package Kome.Views with SPARK_Mode is
                          or else Dominates (R, Held (Before, I))),
      Post => Same_Auth (Before, After);
 
-   --  T12, Frontier.lean `rootVoid_mono`: root_void is monotone in F.
+   --  T12, Frontier.lean `rootVoid_mono`: root_void is monotone in F, as
+   --  long as each REVOKE of S1 is covered in S2 (held, or dominated by a
+   --  held REVOKE of its key, Lemma_Apply_Keeps_Revokes).
    procedure Lemma_Root_Void_Monotone (S1, S2 : State; K : Key256) with
      Ghost, Global => null,
      Pre  => Founding (S1) = Founding (S2)
              and then (for all I in 1 .. Count (S1) =>
-                         (if Held (S1, I).K = K_Revoke then Holds (S2, Held (S1, I)))),
+                         (if Held (S1, I).K = K_Revoke then Covered (S2, Held (S1, I)))),
      Post => (if Root_Void (S1, K) then Root_Void (S2, K));
 
    --  T12: for a fixed root_void set, W_eff is monotone in F (so a GRANT
@@ -808,33 +725,37 @@ package Kome.Views with SPARK_Mode is
                                = Root_Void (S2, Held (S1, I).Issuer))),
      Post => (if W_Eff (S1, K) then W_Eff (S2, K));
 
-   --  T12: for a fixed root_void set, the REVOKE clause of void is monotone
-   --  in F (a REVOKE can only void). The W_eff clause is anti-monotone (a
-   --  GRANT can un-void, DESIGN.md T12), so this lemma is only for the
-   --  REVOKE clause, Revoke_Void.
-   procedure Lemma_Void_Monotone (S1, S2 : State; P : Header) with
+   --  T12 (Frontier.lean `revokeVoids_mono`): for a fixed root_void set,
+   --  revoked_at is monotone in F (a REVOKE can only void). The W_eff
+   --  clause of void is anti-monotone (a GRANT can un-void, DESIGN.md T12),
+   --  so this lemma is only for the REVOKE clause.
+   procedure Lemma_Revoked_At_Monotone (S1, S2 : State; K : Key256; T : U48) with
      Ghost, Global => null,
      Pre  => (for all I in 1 .. Count (S1) =>
                 (if Held (S1, I).K = K_Revoke
-                 then Holds (S2, Held (S1, I))
+                 then Covered (S2, Held (S1, I))
                       and then Root_Void (S1, Held (S1, I).Issuer)
                                = Root_Void (S2, Held (S1, I).Issuer))),
-     Post => (if Revoke_Void (S1, P) then Revoke_Void (S2, P));
+     Post => (if Revoked_At (S1, K, T) then Revoked_At (S2, K, T));
 
-   --  T12 (part), Frontier.lean `revoke_never_dominated`: Apply never loses
-   --  a REVOKE, so with Lemma_Root_Void_Monotone, root_void only grows.
-   --  The hypothesis is the "nothing lost except by domination" clause of
-   --  Apply.
+   --  T12 (part), Frontier.lean `dominates_revoke` and `isMinFrom_F`: Apply
+   --  never loses the least from_t of a REVOKE key: each REVOKE of Before
+   --  is covered in After (held, or dominated by R, a held REVOKE of its
+   --  key with a from_t not above its own). With Lemma_Root_Void_Monotone,
+   --  root_void only grows. The hypotheses are the "nothing lost except by
+   --  domination" clause of Apply and Holds (After, R).
    procedure Lemma_Apply_Keeps_Revokes (Before, After : State; R : Header) with
      Ghost, Global => null,
-     Pre  => (for all I in 1 .. Count (Before) =>
-                Holds (After, Held (Before, I)) or else Dominates (R, Held (Before, I))),
+     Pre  => Holds (After, R)
+             and then (for all I in 1 .. Count (Before) =>
+                         Holds (After, Held (Before, I))
+                         or else Dominates (R, Held (Before, I))),
      Post => (for all I in 1 .. Count (Before) =>
-                (if Held (Before, I).K = K_Revoke then Holds (After, Held (Before, I))));
+                (if Held (Before, I).K = K_Revoke then Covered (After, Held (Before, I))));
 
 private
 
-   --  The three ghost predicates. The views are completed in the body, but
+   --  The ghost predicates. The views are completed in the body, but
    --  these are completed here. gnatprove 14 shows private-part expression
    --  functions to clients (CONVENTIONS.md, "Proof hygiene"), so a
    --  client's prover can unfold them.
@@ -859,5 +780,10 @@ private
       and then
       (for all I in 1 .. Count (S2) =>
          (if Is_Auth (Held (S2, I)) then Holds (S1, Held (S2, I)))));
+
+   function Covered (S : State; X : Header) return Boolean is
+     (for some J in 1 .. Count (S) =>
+        Held (S, J).K = K_Revoke and then Held (S, J).Issuer = X.Issuer
+        and then Held (S, J).V.Author = X.V.Author and then Held (S, J).V.T <= X.V.T);
 
 end Kome.Views;
