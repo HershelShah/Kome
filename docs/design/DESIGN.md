@@ -479,17 +479,19 @@ from a peer. So a far-future record of one collection can never carry into
 another collection on the device.
 
 ```
-floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))     -- for DEL: max over all fields and deleted_at
-u            := max(now_ms, floor.t + 1 if floor exists, low, mark + 1 if mark < maxceil)
-                where low := maxceil − Cap_Lead for a DEL (0 if maxceil < Cap_Lead), and 0 for a PUT,
-                and mark is the store's expire mark (§7)
-t_emit       := min(u, maxceil)
-clamped      := u > maxceil                                   -- out flag: t_emit < now_ms
+floor(cell)  := max(cell(ns,ent,f).v, deleted_at(ns,ent))     -- for DEL: max over all fields and deleted_at;
+                                                              -- the zero version when the cell has no record
+ceil         := min(maxceil, wcap(self))                      -- one writer's ceiling (§4)
+floor_t      := max(floor.t, mark)                            -- mark is the store's expire mark (§7)
+low          := maxceil − Cap_Lead for a DEL (0 if maxceil < Cap_Lead), and 0 for a PUT
+u            := max(now_ms, low, floor_t + 1)
+t_emit       := min(u, ceil)
+clamped      := t_emit < max(now_ms, floor_t + 1)             -- out flag: the ceiling held the write back
 born_expired := DEL ∧ t_emit + del_ttl_eff ≤ now_ms           -- out flag
 seq_emit     := seq_self(ns) + 1, and above every seq of this device's records held in F(ns);
                 at 2^48 − 1 the write fails SEQ_EXHAUSTED, no record is produced
 v_emit       := (t_emit, self_pk, seq_emit, h)
-status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit = maxceil) else OK
+status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit = ceil) else OK
 ```
 
 **The write path has three steps (D8).** `h` hashes content that contains
@@ -505,9 +507,12 @@ status       := SHADOWED if floor exists ∧ v_emit < floor   (only when t_emit 
 2. *Build* the `PUT` or `DEL` content with that `(t, seq)`, and hash it.
 3. *Sign* and apply. Persist `seq_self(ns) := seq_emit` (A5).
 
-`CLAMPED` means that `maxceil` is behind the clock: the write was
-back-dated to the ceiling, and it loses against any concurrent write at
-the ceiling by a higher key. `BORN_EXPIRED` means that a `DEL` would be
+`CLAMPED` means that the ceiling `min(maxceil, wcap)` held the write
+back: `t_emit` is below the clock, or not above the cell's floor (the
+expire mark included). The write was back-dated to the ceiling, and it
+loses against any concurrent write at the ceiling by a higher key. The
+floor term always exists: a cell with no record has the zero version, so
+a write with `now_ms = 0` and no floor gets `t_emit = 1`. `BORN_EXPIRED` means that a `DEL` would be
 expired already at a replica whose horizon follows a fresh `maxceil` (a
 device that was offline for longer than `del_ttl_eff` under a stale
 ceiling). Such a `DEL` is applied at those replicas for its effect and not
