@@ -441,14 +441,17 @@ procedure Test_Digest with SPARK_Mode => Off is
       Check ("frontier_empty_digest_is_empty_fp",
              Frontier_Digest (Z) = Fingerprint (Kome.Digest.Empty));
       --  The two replicas first take the roster and the grants (so that
-      --  the records are admissible). Then they take the same four records:
-      --  X in order, Y in reverse order. In Y, Recs (1) comes after
-      --  Recs (3), which beats it on cell (1, 1), so it is Dominated. In X,
-      --  it is held and then dropped.
+      --  the records are admissible): X in order, Y in reverse order, so
+      --  their slots hold them in different orders. Then they take the
+      --  same four records: X in order, Y in reverse order. In Y, Recs (1)
+      --  comes after Recs (3), which beats it on cell (1, 1), so it is
+      --  Dominated. In X, it is held and then dropped. (The data row is
+      --  sorted by key, AUDIT.md G25, so the two data rows end in the same
+      --  order; the slot order differs.)
       for I in Auth'Range loop
          Apply (X, Auth (I), St);
          Check ("frontier_x_auth" & I'Image & "_ok", St = OK);
-         Apply (Y, Auth (I), St);
+         Apply (Y, Auth (Auth'Last + 1 - I), St);
          Check ("frontier_y_auth" & I'Image & "_ok", St = OK);
       end loop;
       for I in Recs'Range loop
