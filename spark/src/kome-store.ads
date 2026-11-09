@@ -779,7 +779,9 @@ package Kome.Store with SPARK_Mode is
    --  Slice)). It writes the HEADER with the capacities of F. The
    --  precondition connects F to the founding key, so the decoder, the
    --  capacity rows and root_void agree on the founding key (DESIGN.md §7
-   --  step 0, and E6 of §1).
+   --  step 0, and E6 of §1). The founding key is a usable signing key:
+   --  not small-order and not the public key of the all-zero seed
+   --  (Sign_Key_OK; AUDIT.md H13, A27).
    procedure Open (Root_PK : Pubkey; Salt : Kome.Salt; F : Frontier.State; S : out Store) with
      Global => null,
      Pre  => Is_Frontier (F)
@@ -787,7 +789,8 @@ package Kome.Store with SPARK_Mode is
        and then Kome.Keys.To_Id128 (Kome.Records.Collection_Id (Root_PK, Salt)) = Collection (F)
        and then Kome.Keys.To_Key256 (Root_PK) = Frontier.Founding (F)
        and then S.Cap >= F.Cap + Signers_Max * F.Slice
-       and then S.Log_Cap >= Header_Len,
+       and then S.Log_Cap >= Header_Len
+       and then Kome.Records.Sign_Key_OK (Root_PK),
      Post => Valid (S, F)
        and then Collection (S) = Collection (F)
        and then Founding (S) = Frontier.Founding (F)
