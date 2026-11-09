@@ -17,7 +17,7 @@ unproved checks, no `pragma Assume` or `pragma Annotate`.
 |---|---|---|---|
 | S1 | Every record kind hashes as `h = BLAKE2b-256(tag ‖ cid ‖ content)`, with `cid = BLAKE2b-256(root_pk ‖ salt ‖ u48(del_ttl))`. No frame carries `ns`, `root_pk` or `salt`. The verifier supplies the cid from the store, the session or the bundle. `ns = cid[0..15]` stays the routing identifier (Noise prologue, bundle header, file names). | well-formed rule 2's `ns` check, replay step 0, `Foreign_Root`, `With_Cid`, the two decode/sign APIs; 16 B per data frame, 64 B per authorization frame | wire, spark, docs |
 | S2 | `del_ttl` is fixed at founding: a u48 in the HEADER and in the cid, in `[Del_TTL_Min, Del_TTL_Max]`. It is no longer a ROSTER field, not a component of roster domination, and there is no `del_ttl_eff` view. `Kome.Store.Del_TTL (S)` returns it. | roster field, 4th product component, `del_ttl_eff` and its lemmas (SPARK and Lean), the recovery rule "del_ttl ≥ previous", `Choose`'s `Del_TTL` input | wire, lean, spark, docs |
-| S3 | The founding key self-certifies: every signer block is `signer[32] cert_cap:u48 cert_sig[64]` with `cert_sig = Sign(root_sk, "kome/root" ‖ cid ‖ signer ‖ u48(cert_cap))`. For the founding key `cert_cap = 2^48 − 1` and the cert is signed by itself. `wcap(k) = cert_cap` for every signer, no sentinel case. | the zero-cert founding exception, the `U48'Last` branch in `wcap`, two decode paths | wire, spark, docs |
+| S3 | The founding key self-certifies: every signer block is `signer[32] cert_cap:u48 cert_sig[64]` with `cert_sig = Sign(root_sk, BLAKE2b-256("kome/root" ‖ cid ‖ signer ‖ u48(cert_cap)))` (the signature covers the 32-byte hash, as `h` does). For the founding key `cert_cap = 2^48 − 1` and the cert is signed by itself. `wcap(k) = cert_cap` for every signer, no sentinel case. | the zero-cert founding exception, the `U48'Last` branch in `wcap`, two decode paths | wire, spark, docs |
 | S4 | No epoch. Every ROSTER carries a fresh collection key `k_g` for its gen, boxed to each member: `k_g = Hedge(issuer_sk, "kome/key", cid ‖ u48(gen), rnd)` (the A6 hedge: a weak RNG alone does not reveal it). `ROSTER_eff` is the `(gen, h)`-maximum of the non-root-voided rosters; domination stays strict in gen. A refresh (same members, new ceiling) is a new gen with a new key. `bundle_key(F)` is the key my entry in `ROSTER_eff` unboxes; a sender keeps the previous key for the H17 store-and-forward bundle. `eph_sk`, box nonces and the bundle key all derive from `k_g` in one style, `f(k_g, label ‖ context)` with `f` = keyed BLAKE2b-256. The stolen-root bound is H7's: `gen ≤ ceiling_t`. | the hash chain, 4 096-epoch segments, segment tops and their delivery, `links[]` (15 × 74 B per roster), `Seal_Link`/`Open_Link`, the ceremony self-check (A15), the re-key-on-divergence rule, the 16-segment end-of-life bound, the `epoch` header field, the unkeyed derivation style | wire, lean, spark, docs |
 | S5 | A REVOKE is dominated by a REVOKE of the same `(issuer, subject)` with a lower `from_t`, or an equal `from_t` and a greater `h`. `void`, `revoked` and `root_void` read the minimum `from_t`, which is unchanged. No REVOKE dominates a data record (T2′ as before). | the honest-issuer rule "emit only if no lower from_t is held", the least-`h` choice, one slice entry per repeated REVOKE | lean, spark, docs |
 | S6 | Registers are views. `Max_Ceil (F)`, `In_W (F, k)` and `W_Cap (F, k)` are opaque functions over the authorization rows of `Frontier.State`, each with a `_Def` lemma, like the other views. `Kome.Registers` is deleted. The binding may cache them outside the proof. | `Kome.Registers`, the `Regs` component, `Coherent` and its step lemmas, `Extends`/`Added` clauses, the "W full" `Auth_Full` case (unreachable today), `Writers_Max` as a state bound | spark, docs |
@@ -49,16 +49,19 @@ Frames (`tag:u8 ‖ content ‖ sig[64]`; `SIGNER = signer[32] cert_cap:u48 cert
 ```
 0 ROSTER  SIGNER box_pk[32] gen:u48 ceiling_t:u48 n_members:u8
           members[n_members] { sign_pk[32] dh_pk[32] nonce[24] box[48] }   (box holds k_g, S4)
-1 REVOKE  SIGNER sign_pk[32] from_t:u48                                     (221 B)
+1 REVOKE  SIGNER sign_pk[32] from_t:u48                                     (205 B)
 2 GRANT   SIGNER subject[32]
 3 DEL     ent[16] t:u48 seq:u48 author[32]                                  (125 B)
 4 PUT     ent[16] flen:u8 field[flen] t:u48 seq:u48 author[32] vlen:u16 value[vlen]
 h = BLAKE2b-256(tag ‖ cid ‖ content) for every kind.
 cid = BLAKE2b-256(root_pk ‖ salt ‖ u48(del_ttl)); ns = cid[0..15].
-cert_sig = Sign(root_sk, "kome/root" ‖ cid ‖ signer ‖ u48(cert_cap)).
+cert_sig = Sign(root_sk, BLAKE2b-256("kome/root" ‖ cid ‖ signer ‖ u48(cert_cap))).
+Offsets: ROSTER signer 1, cert_cap 33, cert_sig 39, box_pk 103, gen 135, ceiling_t 141, n_members 147,
+members 148 (212 + 136·n, at most 8 916); REVOKE sign_pk 103, from_t 135; GRANT subject 103;
+DEL ent 1, t 17, seq 23, author 29; PUT ent 1, flen 17, field 18. Frame_Max = 41 120.
 ```
 
-Keys (S4): `k_g = Hedge(issuer_sk, "kome/key", cid ‖ u48(gen), rnd)`; `f(k, m) = keyed BLAKE2b-256(key = k, msg = m)`; `eph_sk = f(k_g, "kome/eph" ‖ cid ‖ u48(gen) ‖ signer)`; member box nonce = `f(k_g, "kome/box" ‖ dh_pk)[0..23]`; `bundle_key = f(k_g, "kome/bundle")`. `Kome.Epochs` keeps its name but holds only these derivations and the boxes.
+Keys (S4): `k_g = Hedge(issuer_sk, "kome/key", cid ‖ u48(gen), rnd)`; `f(k, m) = keyed BLAKE2b-256(key = k, msg = m)`; `eph_sk = f(k_g, "kome/eph" ‖ cid ‖ u48(gen) ‖ signer)`; member box nonce = `f(k_g, "kome/box" ‖ dh_pk)[0..23]`; `wrap_key = f(X25519(eph_sk, dh_pk), "kome/wrap" ‖ box_pk ‖ dh_pk ‖ sign_pk ‖ cid ‖ u48(gen))`; the box is XChaCha20-Poly1305(wrap_key, nonce, AD = cid ‖ u48(gen), k_g) and the opener refuses an all-zero `k_g`; `bundle_key = f(k_g, "kome/bundle")` and a bundle's AD is `cid ‖ u48(gen)`. `Kome.Epochs` keeps its name but holds only these derivations and the boxes.
 
 Log (S15): `HEADER = "KOME" 01 root_pk[32] salt[16] del_ttl:u48`; `APPLY = 01 len:u24 frame`; `SEQ = 02 seq:u48`.
 
