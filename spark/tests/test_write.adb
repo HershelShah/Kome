@@ -222,7 +222,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (a) PUT and DEL through Prepare / Commit; (b) read-your-writes.
    ---------------------------------------------------------------------------
    declare
-      S     : Store_T (ICap, LCap);
+      S     : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L     : Lattice (Cap, Slice);
       P, P2 : Prepared;
       Seq_P : U48;
@@ -261,7 +261,7 @@ procedure Test_Write with SPARK_Mode => Off is
       Check ("(a) Commit DEL: held, and the PUT of the entity is gone",
              St = OK and then Holds (L, Rec (P)) and then not Holds (L, Rec (P2)));
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -278,7 +278,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (c) the statuses of Prepare; (e) the flags.
    ---------------------------------------------------------------------------
    declare
-      S     : Store_T (ICap, LCap);
+      S     : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L     : Lattice (Cap, Slice);
       P     : Prepared;
       Seq_P : U48;
@@ -337,7 +337,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (d) the statuses of Commit.
    ---------------------------------------------------------------------------
    declare
-      S     : Store_T (ICap, LCap);
+      S     : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L     : Lattice (Cap, Slice);
       P     : Prepared;
       Seq_P : U48;
@@ -362,7 +362,7 @@ procedure Test_Write with SPARK_Mode => Off is
       end;
       --  Commit to a store of the collection that lacks the grant.
       declare
-         S2 : Store_T (ICap, LCap);
+         S2 : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
          L2 : Lattice (Cap, Slice);
       begin
          Setup (S2, L2, Granted => False);
@@ -377,7 +377,7 @@ procedure Test_Write with SPARK_Mode => Off is
 
    --  No_Space: a data row of one record.
    declare
-      S     : Store_T (1 + Signers_Max * Slice, LCap);
+      S     : Store_T (1 + Signers_Max * Slice, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L     : Lattice (1, Slice);
       P     : Prepared;
       Seq_P : U48 := 0;
@@ -399,7 +399,7 @@ procedure Test_Write with SPARK_Mode => Off is
    declare
       Need : constant Natural :=
         Header_Len + 5 + Roster_Frame'Length + 2 * (5 + Grant_Frame (Dev_PK)'Length) + 10;
-      S     : Store_T (ICap, Need);
+      S     : Store_T (ICap, Need, Kome.Store.Bnd_Cap_For (Need));
       L     : Lattice (Cap, Slice);
       P     : Prepared;
       Seq_P : U48;
@@ -417,7 +417,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (f) Open_Seq.
    ---------------------------------------------------------------------------
    declare
-      S     : Store_T (ICap, LCap);
+      S     : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L     : Lattice (Cap, Slice);
       Sq    : U48;
       St    : Status;
@@ -441,7 +441,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (g) The crash scenario of A10.
    ---------------------------------------------------------------------------
    declare
-      S        : Store_T (ICap, LCap);
+      S        : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L        : Lattice (Cap, Slice);
       P, Lost  : Prepared;
       Seq_Self : U48 := 0;
@@ -459,7 +459,7 @@ procedure Test_Write with SPARK_Mode => Off is
       Prep (S, L, W_Put, 11, 'b', [2], 2 * Day, Dev_SK, Seq_Self, Lost, Seq_P, St);
       Stored := Seq_P;                          --  2, persisted before the APPLY
       declare
-         R  : Store_T (ICap, LCap);
+         R  : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
          RL : Lattice (Cap, Slice);
       begin
          Reopen (S, R, RL, St);
@@ -487,7 +487,7 @@ procedure Test_Write with SPARK_Mode => Off is
    --  (h) H18: the same-pace clone; (i) no flag for the other cases.
    ---------------------------------------------------------------------------
    declare
-      S1, S2   : Store_T (ICap, LCap);
+      S1, S2   : Store_T (ICap, LCap, Kome.Store.Bnd_Cap_For (LCap));
       L1, L2   : Lattice (Cap, Slice);
       P1, P2   : Prepared;
       Q1, Q2   : U48 := 0;

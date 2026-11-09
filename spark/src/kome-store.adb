@@ -480,7 +480,7 @@ package body Kome.Store with SPARK_Mode is
    with
      Global => null,
      Pre  => Log'First = 0 and then LL <= Log'Last and then Log'Last <= Log_Max
-             and then Bnd'First = 1 and then Bnd'Last = Log'Last and then NB <= Bnd'Last
+             and then Bnd'First = 1 and then Bnd'Last >= Log'Last / Min_Entry and then NB <= Bnd'Last
              and then (Op = Op_Apply or else Op = Op_Apply_Expired)
              and then Frame'Length in Frame_Size
              and then Apply_Prefix + Frame'Length <= Log'Last - LL
@@ -517,6 +517,10 @@ package body Kome.Store with SPARK_Mode is
       B3      : constant Byte := Kome.Keys.Byte_Of_Word (W, 3);
    begin
       pragma Assert (Old_NB <= P / Min_Entry);
+      --  AUDIT.md G15: the new entry has at least Min_Entry bytes, so the
+      --  chain has a slot for it.
+      pragma Assert (P + Min_Entry <= Log'Last);
+      pragma Assert (P / Min_Entry + 1 <= Log'Last / Min_Entry);
       pragma Assert (Old_NB < Bnd'Last);
       Kome.Keys.Lemma_Word_Round_Trip (W);
       pragma Assert (Kome.Keys.Word_Of (B0, B1, B2, B3) = W);
@@ -550,7 +554,7 @@ package body Kome.Store with SPARK_Mode is
    with
      Global => null,
      Pre  => Log'First = 0 and then LL <= Log'Last and then Log'Last <= Log_Max
-             and then Bnd'First = 1 and then Bnd'Last = Log'Last and then NB <= Bnd'Last
+             and then Bnd'First = 1 and then Bnd'Last >= Log'Last / Min_Entry and then NB <= Bnd'Last
              and then Expire_Len <= Log'Last - LL
              and then Chain (Log, LL, Bnd, NB),
      Post => LL = LL'Old + Expire_Len
@@ -576,6 +580,8 @@ package body Kome.Store with SPARK_Mode is
       P       : constant Log_Size := LL;
    begin
       pragma Assert (Old_NB <= P / Min_Entry);
+      pragma Assert (P + Min_Entry <= Log'Last);
+      pragma Assert (P / Min_Entry + 1 <= Log'Last / Min_Entry);
       pragma Assert (Old_NB < Bnd'Last);
       Kome.Records.Lemma_U48_Round_Trip (Code);
       Log (P)     := Op_Expire;
@@ -1426,7 +1432,7 @@ package body Kome.Store with SPARK_Mode is
    with
      Global => null,
      Pre  => Log'First = 0 and then LL <= Log'Last and then Log'Last <= Log_Max
-       and then Bnd'First = 1 and then Bnd'Last = Log'Last and then NB <= Bnd'Last
+       and then Bnd'First = 1 and then Bnd'Last >= Log'Last / Min_Entry and then NB <= Bnd'Last
        and then Idx'First = 1 and then NI <= Idx'Last
        and then (Op = Op_Apply or else Op = Op_Apply_Expired)
        and then Frame'Length in Frame_Size
@@ -1483,7 +1489,7 @@ package body Kome.Store with SPARK_Mode is
    with
      Global => null,
      Pre  => Log'First = 0 and then LL <= Log'Last and then Log'Last <= Log_Max
-       and then Bnd'First = 1 and then Bnd'Last = Log'Last and then NB <= Bnd'Last
+       and then Bnd'First = 1 and then Bnd'Last >= Log'Last / Min_Entry and then NB <= Bnd'Last
        and then Idx'First = 1 and then NI <= Idx'Last
        and then Expire_Len <= Log'Last - LL
        and then Head_OK (Log, LL, NSb, Root, Slt, DCap, Slc)
@@ -1913,6 +1919,7 @@ package body Kome.Store with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Old_S.LL <= Old_S.Log_Cap and then S.LL <= S.Log_Cap
        and then Old_S.NB <= Old_S.Log_Cap and then S.NB <= S.Log_Cap
+       and then Old_S.NB <= Old_S.Bnd_Cap and then S.NB <= S.Bnd_Cap
        and then Old_S.LL <= S.Log_Cap and then Old_S.NB <= S.Log_Cap
        and then S.LL = Old_S.LL + Expire_Len
        and then (for all P in 0 .. Old_S.LL - 1 => S.Log (P) = Old_S.Log (P))
@@ -2036,7 +2043,7 @@ package body Kome.Store with SPARK_Mode is
    procedure Init (S : out Store; Root : Pubkey; Slt : Salt; DCap : Data_Size; Slc : Slice_Count)
    with
      Global => null,
-     Pre  => S.Log_Cap >= Header_Len,
+     Pre  => S.Log_Cap >= Header_Len and then S.Bnd_Cap >= Bnd_Cap_For (S.Log_Cap),
      Post => S.NS = Kome.Keys.To_Id128 (Kome.Records.Collection_Id (Root, Slt))
        and then S.NS = Kome.Keys.To_Id128 (S.NSb)
        and then S.NSb = Kome.Records.Collection_Id (S.Root, S.Slt)
@@ -2061,24 +2068,24 @@ package body Kome.Store with SPARK_Mode is
       Hdr : constant Byte_Array (0 .. Header_Len - 1) :=
         [for J in 0 .. Header_Len - 1 => Header_Byte (Root, Slt, NSb, DCap, Slc, J)];
    begin
-      S := (Cap     => S.Cap,
-            Log_Cap => S.Log_Cap,
-            NS      => Kome.Keys.To_Id128 (NSb),
-            NSb     => NSb,
-            Fnd     => Kome.Keys.To_Key256 (Root),
-            Root    => Root,
-            Slt     => Slt,
-            DCap    => DCap,
-            Slc     => Slc,
-            Hz      => No_Horizon,
-            AG      => 0,
-            EM      => 0,
-            NI      => 0,
-            Idx     => [others => (H => <>, Off => 0, Len => 1)],
-            LL      => Header_Len,
-            Log     => [others => 0],
-            NB      => 1,
-            Bnd     => [others => 0]);
+      --  Component by component: an aggregate for the whole store would
+      --  be built in a temporary and copied (AUDIT.md G15).
+      S.NS   := Kome.Keys.To_Id128 (NSb);
+      S.NSb  := NSb;
+      S.Fnd  := Kome.Keys.To_Key256 (Root);
+      S.Root := Root;
+      S.Slt  := Slt;
+      S.DCap := DCap;
+      S.Slc  := Slc;
+      S.Hz   := No_Horizon;
+      S.AG   := 0;
+      S.EM   := 0;
+      S.NI   := 0;
+      S.Idx  := [others => (H => <>, Off => 0, Len => 1)];
+      S.LL   := Header_Len;
+      S.Log  := [others => 0];
+      S.NB   := 1;
+      S.Bnd  := [others => 0];
       S.Log (0 .. Header_Len - 1) := Hdr;
       Kome.Keys.Lemma_Word_Round_Trip (Word (DCap));
       Kome.Records.Lemma_U16_Round_Trip (Slc);
@@ -2112,6 +2119,7 @@ package body Kome.Store with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Is_Frontier (F) and then Count (F) = 0
        and then S.NI = 0 and then S.Log_Cap >= Header_Len
+       and then S.Bnd_Cap >= Bnd_Cap_For (S.Log_Cap)
        and then S.LL = Header_Len and then S.NB = 1
        and then Collection (F) = S.NS
        and then Frontier.Founding (F) = S.Fnd
@@ -3375,6 +3383,22 @@ package body Kome.Store with SPARK_Mode is
       end if;
    end Set_Chain;
 
+   --  One element of a copied range (a small context for the instance).
+   procedure Lemma_Range_At
+     (A : Byte_Array; PA : Natural; B : Byte_Array; PB : Natural; Len, K : Natural)
+   with
+     Ghost, Global => null,
+     Pre  => A'First = 0 and then B'First = 0
+       and then A'Last <= Log_Max and then B'Last <= Log_Max
+       and then K < Len
+       and then PA <= A'Last and then Len - 1 <= A'Last - PA
+       and then PB <= B'Last and then Len - 1 <= B'Last - PB
+       and then (for all M in 0 .. Len - 1 => A (PA + M) = B (PB + M)),
+     Post => A (PA + K) = B (PB + K);
+
+   procedure Lemma_Range_At
+     (A : Byte_Array; PA : Natural; B : Byte_Array; PB : Natural; Len, K : Natural) is null;
+
    --  One copied range, from the log arrays to the stores.
    procedure Lemma_Same_From
      (S, Old_S : Store; New_Log, Old_Log : Byte_Array; PA, PB, Len : Natural)
@@ -3397,6 +3421,7 @@ package body Kome.Store with SPARK_Mode is
    begin
       pragma Assert (Log_Length (S) = S.LL and then Log_Length (Old_S) = Old_S.LL);
       for K in 0 .. Len - 1 loop
+         Lemma_Range_At (New_Log, PA, Old_Log, PB, Len, K);
          pragma Assert (New_Log (PA + K) = Old_Log (PB + K));
          pragma Assert (S.Log (PA + K) = New_Log (PA + K));
          pragma Assert (Old_S.Log (PB + K) = Old_Log (PB + K));
@@ -3644,7 +3669,7 @@ package body Kome.Store with SPARK_Mode is
    with
      Ghost, Global => null,
      Pre  => S.NI = N and then N <= S.Cap
-       and then S.LL <= S.Log_Cap and then S.NB <= S.Log_Cap
+       and then S.LL <= S.Log_Cap and then S.NB <= S.Log_Cap and then S.NB <= S.Bnd_Cap
        and then Old_S.Log_Cap = S.Log_Cap
        and then Old_S.LL <= Old_S.Log_Cap
        and then Old_S.LL >= Header_Len
@@ -3696,11 +3721,14 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Compact_Layout (Old_S, S));
    end Lemma_Compact_Layout;
 
-   procedure Compact (S : in out Store; F : Frontier.State) is
+   procedure Compact (S : in out Store; F : Frontier.State; Buf : in out Byte_Array) is
       Old_S   : constant Store := S with Ghost;
       N       : constant Held_Count := S.NI;
       Old_LL  : constant Log_Size := S.LL;
-      Old_Log : constant Byte_Array := S.Log;    --  the file to write again
+      --  The old file. Only the proof names it: the code reads S.Log,
+      --  which does not change until the new log replaces it (AUDIT.md
+      --  G15: no copy of the log).
+      Old_Log : constant Byte_Array := S.Log with Ghost;
       Old_Idx : constant Entry_Array := S.Idx;
       P       : constant Prefix := Prefix_Of (Old_Idx, N, Old_LL);
       Src     : Index_Map (1 .. N) := [others => 0];
@@ -3708,6 +3736,7 @@ package body Kome.Store with SPARK_Mode is
       W       : Log_Size := Header_Len;
       K       : Held_Count := 0;
       Ex      : Boolean;
+      New_LL  : Log_Size;
    begin
       pragma Assert (Valid (Old_S, F));
       pragma Assert (Entries (Old_S) = N);
@@ -3715,30 +3744,51 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Log_Length (Old_S) = Old_LL);
       pragma Assert (for all I in 1 .. N => Frame_OK (Old_Log, Old_LL, Old_Idx (I)));
       pragma Assert (for all I in 1 .. N => End_Of (Old_Idx (I)) <= Old_LL);
-      pragma Assert (Copied (Old_Log, Old_Idx, N, P.CA (N), S.Log, W, S.Idx, K, Src));
+      --  The HEADER (the same bytes), into the binding's buffer.
+      Buf (0 .. Header_Len - 1) := S.Log (0 .. Header_Len - 1);
+      pragma Assert (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Old_Log (Q));
+      pragma Assert (Copied (Old_Log, Old_Idx, N, P.CA (N), Buf, W, S.Idx, K, Src));
       --  Pass 1 copies the authorization records, in index order. Pass 2
-      --  copies the data records, in index order. Both passes write S.Log from
-      --  Header_Len.
-      Copy_Part (Old_Log, Old_LL, Old_Idx, N, P, False, S.Log, W, S.Idx, K, Src, Dst);
-      Copy_Part (Old_Log, Old_LL, Old_Idx, N, P, True, S.Log, W, S.Idx, K, Src, Dst);
+      --  copies the data records, in index order. Both passes read S.Log
+      --  and write Buf from Header_Len.
+      Copy_Part (S.Log, Old_LL, Old_Idx, N, P, False, Buf, W, S.Idx, K, Src, Dst);
+      pragma Assert (S.Log = Old_Log);
+      Copy_Part (S.Log, Old_LL, Old_Idx, N, P, True, Buf, W, S.Idx, K, Src, Dst);
+      pragma Assert (S.Log = Old_Log);
       pragma Assert (K = N);
       pragma Assert (W = Header_Len + P.SA (N) + P.SD (N));
       pragma Assert (W <= Old_LL);
       pragma Assert (W >= Header_Len + Min_Entry * N);
-      Lemma_Copied_Unfold (Old_Log, Old_Idx, N, P.CA (N), S.Log, W, S.Idx, N, Src);
+      Lemma_Copied_Unfold (Old_Log, Old_Idx, N, P.CA (N), Buf, W, S.Idx, N, Src);
       pragma Assert (for all J in 1 .. N => Is_Data (S.Idx (J).H) = (J > P.CA (N)));
       pragma Assert (for all J in 1 .. N => Dst (J) in 1 .. N and then Src (Dst (J)) = J);
-      Lemma_Copied_Frames (S.Log, W, Old_Log, Old_LL, Old_Idx, N, S.Idx, Src);
+      Lemma_Copied_Frames (Buf, W, Old_Log, Old_LL, Old_Idx, N, S.Idx, Src);
       Lemma_Copied_Sorted (Old_Idx, N, S.Idx, Src, P.CA (N));
       Lemma_Copied_Records (F, Old_Idx, N, S.Idx, Src, Dst);
 
       --  EXPIRE (horizon), if there is one and it fits.
-      Write_Tail (S.Log, S.LL, Ex, W, S.Hz, S.Idx, N, Old_Log, Old_Idx, Src);
+      Write_Tail (Buf, New_LL, Ex, W, S.Hz, S.Idx, N, S.Log, Old_Idx, Src);
       pragma Assert (Ex = (S.Hz >= 0 and then S.Log_Cap - W >= Expire_Len));
+      pragma Assert (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Old_Log (Q));
+
+      --  The new log replaces the old one.
+      S.Log := Buf;
+      S.LL := New_LL;
+      pragma Assert (for all Q in 0 .. S.Log_Cap => S.Log (Q) = Buf (Q));
+      pragma Assert (Framed (S.Log, W, S.Idx, N));
+      pragma Assert
+        (for all J in 1 .. N =>
+           Bytes_Eq (S.Log, S.Idx (J).Off, Old_Log, Old_Idx (Src (J)).Off,
+                     Apply_Prefix + S.Idx (J).Len));
       pragma Assert (for all Q in 0 .. Header_Len - 1 => S.Log (Q) = Old_Log (Q));
 
-      --  The chain of the new log.
+      --  The chain of the new log (AUDIT.md G15: N + 2 entries of at
+      --  least Min_Entry bytes fit Log_Cap, so they fit Bnd).
       pragma Assert (N + 2 <= S.Log_Cap);
+      pragma Assert (Header_Len + Min_Entry * N <= S.Log_Cap);
+      pragma Assert ((Header_Len + Min_Entry * N) / Min_Entry = Header_Len / Min_Entry + N);
+      pragma Assert (N + 2 <= S.Log_Cap / Min_Entry);
+      pragma Assert (N + 2 <= S.Bnd_Cap);
       Set_Chain (S.Bnd, S.Idx, N, Ex, W);
       S.NB := (if Ex then N + 2 else N + 1);
       pragma Assert (S.Log (0) = Op_Header);
@@ -3808,6 +3858,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Live (F, S.Idx, S.NI) and then Covered (F, S.Idx, S.NI)
                      and then Fresh (F, S.Hz));
       pragma Assert (Valid (S, F));
+      --  The new file image is the binding's buffer.
+      pragma Assert (Log_Length (S) = S.LL);
+      pragma Assert (for all J in 0 .. Log_Length (S) - 1 => Buf (J) = Log_Byte (S, J));
    end Compact;
 
    ---------------------------------------------------------------------------
@@ -4598,24 +4651,23 @@ package body Kome.Store with SPARK_Mode is
    begin
       Valid_Length := 0;
       F := Frontier.Empty (Zero_Id, Zero_Key, F.Cap, F.Slice);
-      S := (Cap     => S.Cap,
-            Log_Cap => S.Log_Cap,
-            NS      => Zero_Id,
-            NSb     => [others => 0],
-            Fnd     => Zero_Key,
-            Root    => [others => 0],
-            Slt     => [others => 0],
-            DCap    => 0,
-            Slc     => 0,
-            Hz      => No_Horizon,
-            AG      => 0,
-            EM      => 0,
-            NI      => 0,
-            Idx     => [others => (H => <>, Off => 0, Len => 1)],
-            LL      => 0,
-            Log     => [others => 0],
-            NB      => 0,
-            Bnd     => [others => 0]);
+      --  Component by component, as in Init (no temporary store).
+      S.NS   := Zero_Id;
+      S.NSb  := [others => 0];
+      S.Fnd  := Zero_Key;
+      S.Root := [others => 0];
+      S.Slt  := [others => 0];
+      S.DCap := 0;
+      S.Slc  := 0;
+      S.Hz   := No_Horizon;
+      S.AG   := 0;
+      S.EM   := 0;
+      S.NI   := 0;
+      S.Idx  := [others => (H => <>, Off => 0, Len => 1)];
+      S.LL   := 0;
+      S.Log  := [others => 0];
+      S.NB   := 0;
+      S.Bnd  := [others => 0];
       if Input'Last >= S.Log_Cap then
          Result := No_Space;
          return;

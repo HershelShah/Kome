@@ -189,12 +189,21 @@ only as far as their formats and checks go.
     `Open_From_Log` again; never serve a record whose entry is not on
     disk.
   - Preallocate `Log_Cap`, chosen with `Kome.Store.Log_Fits`; compact and
-    retry on `LOG_FULL`.
+    retry on `LOG_FULL`. Declare the store as
+    `Store (Cap, Log_Cap, Bnd_Cap_For (Log_Cap))`: the entry boundaries
+    take `Log_Cap / 6` slots (AUDIT.md G15).
+  - Memory (AUDIT.md G15): a store holds about `1.7 · Log_Cap` bytes
+    (the log, and `Log_Cap / 6` four-byte boundaries) beside its index.
+    `Compact` takes one more buffer of `Log_Cap + 1` bytes from the
+    binding and keeps no copy of the log. During `Open_From_Log` the
+    input (the file, best mapped) and the store's log are both
+    resident.
   - Take an exclusive lock on the log for the life of the open.
   - `fsync` before a record is visible to `Reconcile` or `Emit`
     (the sync point).
-  - `Compact` = write the new log, `fsync` it, rename it over the old
-    one, `fsync` the directory.
+  - `Compact (S, F, Buf)` leaves the new log in `Buf`
+    (`Buf (0 .. Log_Length (S) - 1)`): write it as the new file, `fsync`
+    it, rename it over the old one, `fsync` the directory.
   - On a torn tail, truncate to `Valid_Length` and open again; on a
     corrupt entry, open the prefix before it, report `DEGRADED`, and
     sync. Never skip an entry in the middle.
