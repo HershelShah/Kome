@@ -24,15 +24,15 @@ built.
 | Phase | Packages | DESIGN.md | Lean | State |
 |---|---|---|---|---|
 | 0 | `Kome` (bounds, status), `Kome.Byteorder` (little-endian u64, D7) | §2 bounds, §8 | — | done. Byteorder: 6 tests, 47 checks, 0 unproved |
-| 1 | `Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier` (per-signer authorization slices, `Expire`) | §2, §3, §4, §7 | T1, T2', T4', T11 | done. Versions: 11 tests, 13 checks, 0 unproved. Headers: 28 tests, 33 checks, 0 unproved. Registers: 8 tests, 201 checks, 0 unproved. Frontier: 58 tests, 2,455 checks, 0 unproved |
-| 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys), `Kome.Records` (canonical encoding, signer certificates, hashing, signing, well-formedness; a data record's `h`, `Well_Formed`, `Decode_Verified`, `To_Header`, `Sign`, `Make_Put` and `Make_Del` take the collection context `cid = Cid_Of (root_pk, salt)`, AUDIT.md A26; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 69 tests, 51 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 198 tests, 2,580 checks, 0 unproved |
-| 3 | `Kome.Store` (HEADER plus an APPLY/APPLY_EXPIRED/EXPIRE journal, index, `Compact` with authorization records first and `Compact_Due`, expiry at `Horizon_At` with the replay clamp, `Open_From_Log` with `Valid_Length` and `Replayed_Prefix`, the counters `Auth_Gen` and `Expire_Mark`, `Horizon_Frozen`; `Cid (S)` computed once at open, and `Verified (Cid (S), frame)` for `Put_Frame` and replay, AUDIT.md A26) | §7 | T11, T18 | done. 144 tests, 4,777 checks, 0 unproved |
-| 4 | `Kome.Emit` (`Choose` without h, chase, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED) | §5 | T8, T9, T13 | done. 100 tests, 388 checks, 0 unproved |
-| 4 | `Kome.Write` (the write path: `Prepare` = Choose, Make, Sign under `Cid (S)`, and `Commit` requires `Ready (P, Cid (S))`; the binding persists `seq_self`; `Commit` = `Store.Put_Frame`; `Seq_Self_At_Open`, `Open_Seq` with SEQ_CORRUPT; `Receive` with the apply-side CLONE_SUSPECTED, AUDIT.md A10, H18) | §5, §7 | T8 (through `Kome.Emit`) | done. 44 tests, 123 checks, 0 unproved |
-| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `void`, `revoked`, `far`, `ROSTER_eff` by `(epoch, gen, h)`, `ROSTER_FORK`, `del_ttl_eff`) | §3, §6 | T5, T12 | done. 169 tests, 1,394 checks, 0 unproved |
-| 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint, D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
-| 7 | `Kome.Reconcile` (OPEN, HELLO, the auth range then the data range. `Start` takes the peer's Noise key and prepares our OPEN, with the root-void set only for a peer that `Lists_Peer` finds in a held roster; `Select_Voids` (Post `Voids_OK`; `Lemma_Voids_Cover`) builds the set; `Receive` answers the initiator's OPEN, checks the HELLO credential and re-evaluates the gate (`Gate_Holds`) under a new `Auth_Gen`; `Admit` has the gate as `Pre`; `Next_Phase` sends the data root. `Snapshot_Of (F)` (Post `Range_Fp = Frontier_Digest`) over two `Frame_Table`s filled with `Add_Frame`; `Seal` builds the D15 `Prefix` table, and `Fingerprint_Of` reads a range from it. The obligation FIFO) | §8 | T7 (open) | done. 197 tests, 3,427 checks, 0 unproved |
-| 8 | `Kome.Epochs` (the keyed BLAKE2b-256 chain step, the derived box secret `eph_sk`, synthetic-nonce boxes, fixed segment boundaries, segment links; the bundle key `k_b` is not derived here), `Kome.Guard` (the REVOKE-aware gate and the quarantine flag), `Kome.Roster` (`Build` by construction, certification, segments, recovery, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 80 tests, 290 checks, 0 unproved. Guard done: 21 tests, 26 checks, 0 unproved. `Kome.Roster` not started |
+| 1 | `Kome.Versions`, `Kome.Headers` (`Header (Kind, Ent, FH, V, Issuer)`; domination with the REVOKE clause, S5), `Kome.Frontier` (per-signer authorization slices, payload tags with `Run` and `Slot`, the admission views `Max_Ceil`, `In_W` and `W_Cap` with `Lemma_Views_Step`, `Expire (F, Hz)`, `Set_Tag`) | §2, §3, §4, §7 | T1, T2', T4', T11 | done. Versions: 11 tests, 13 checks, 0 unproved. Headers: 28 tests, 33 checks, 0 unproved. Frontier: 58 tests, 2,455 checks, 0 unproved |
+| 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys; `Hedge`; `Blake2b_512`), `Kome.Records` (canonical encoding, self-certified founding key and signer certificates over the `cid`, hashing, signing, well-formedness; every kind's `h`, `Well_Formed`, `Decode_Verified`, `To_Header`, `Sign` and `Make_*` take the collection context `cid = Cid_Of (root_pk, salt, del_ttl)` first, S1; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 69 tests, 51 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 198 tests, 2,580 checks, 0 unproved |
+| 3 | `Kome.Store` (`Store (Log_Cap)`; the log HEADER, then APPLY and SEQ entries, S15; tags `(Off, Len)` in the frontier slots and `Read_Frame`, no index, S14; `Put_Frame` with automatic expiry at `hz(F)` (`Put_Done`, `Applied_H`, Lean `applyH`); `Seq_Self` from the log, S16; `Digest_Auth`/`Digest_Data` kept by run and slot diffs, S21; `Compact` in row order with retagging, `SEQ (seq_self)` and `Busy` while `Pinned`; `Pin`/`Unpin`; `Open_From_Log` in trusted mode with `Valid_Length` and `Replayed_Prefix`; `Compact_Due`, `Log_Fits`), `Kome.Frames` (the opaque predicate `Frame_Is (Frame, Cid, X)`, so that the store's tag lemmas do not unfold the record parsers) | §7 | T11, T18 | done. Store: 144 tests, 4,777 checks, 0 unproved. Frames: 9 tests, 13 checks, 0 unproved |
+| 4 | `Kome.Emit` (`Choose` without h, chase, the one lower bound `maxceil − Cap_Lead`, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED, CLAMPED) | §5 | T8, T9, T13 | done. 100 tests, 388 checks, 0 unproved |
+| 4 | `Kome.Write` (the write path: `Write` = Choose, Make, Sign under `Cid (S)` and `Store.Put_Frame` in one call, S16, with the S17 outcomes; `Receive` with the apply-side CLONE_SUSPECTED; `Clone_View`, AUDIT.md H18) | §5, §7 | T8 (through `Kome.Emit`) | done. 44 tests, 123 checks, 0 unproved |
+| 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `revoked_at`, `void`, `revoked`, `far`, `ROSTER_eff` and `Roster_Max` by the roster key `(gen, h, signer, ceiling_t)`, `contested`, `quarantined`, `skew`) | §3, §6 | T5, T12 | done. 169 tests, 1,394 checks, 0 unproved |
+| 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint with eight BLAKE2b-512 chunks per element, S20; D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
+| 7 | `Kome.Reconcile` (no OPEN, S11: `Start (Sess, As, Cid, Peer_DH)` and the `Prologue`; HELLO with the credential check in `Receive`; `Admit` takes the two digest states and has `Gate_Open` as `Pre`; `Receive` and `Next_Phase` evaluate the gate on every call, S9; entity-major element keys, S18; RANGE with `k + 1` bounds, ELEMENTS/HAVE with `lo`, `hi` and frame-only items, ROOT, tiling replies, S19; `Snapshot_Of (F, T, S)` by source index over one frame table, built only when the digests differ, with Post `Frontier_Digest`; `Seal` builds the D15 `Prefix` table, and `Fingerprint_Of` reads a range from it; the obligation FIFO) | §8 | T7 (open) | done. 197 tests, 3,427 checks, 0 unproved |
+| 8 | `Kome.Epochs` (the hedged per-gen key `Key_For_Gen`, `Eph_SK_Of`, `Box_PK_Of`, `Box_Nonce`, synthetic-nonce boxes `Box_Key`/`Unbox_Key`, `Bundle_Key_Of`; S4), `Kome.Guard` (the REVOKE-aware gate, `Admits = Gate ∧ ¬ Quarantined`, no state), `Kome.Roster` (`Build` by construction, certification, recovery, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 80 tests, 290 checks, 0 unproved. Guard done: 21 tests, 26 checks, 0 unproved. `Kome.Roster` not started |
 | 9 | Transports (Noise XK with per-collection static keys, sealed bundles), the storage binding, C ABI | §7, §8, §10.6 | — | not started |
 | 10 | Typed fields (C10) | §4, §10.7 | T15–T17 (not stated) | when an application needs them |
 
@@ -47,40 +47,36 @@ No package has an unproved check. In this section, a gap is one of these:
 
 ### Tested, not proved
 
-- **Store: each entry's frame decodes to its header.** `Frame_OK`
-  (`kome-store.ads`) checks the op byte, the length word and the tag. It
-  does not check `Header_Of (Cid (S), frame) = E.H`. So `Valid` does not carry
-  that fact, which is true only at the precondition of `Put_Frame`. To
-  prove it, `Kome.Records` needs a `To_Header` congruence lemma for each
-  record kind. (The BLAKE2b lemma, `Kome.Crypto.Lemma_Blake2b_Congruent`,
-  exists.) The log-growth lemmas and the copy in `Compact` also need a
-  congruence step for each entry. `Every_Frame_Matches` tests the fact after
-  every `Put_Frame` and `Compact`.
 - **Store: replay completeness (T18, D9).** gnatprove proves that
-  `Open_From_Log` opens a log that holds just a HEADER with the slice of
-  the open, and T18-prefix: when `Valid_Length > 0`, the result is the
-  Valid replay of exactly that prefix (`Replayed_Prefix`), and on OK
-  `Valid_Length − 1 = Input'Last`. It does not prove that replay accepts
-  every log that a store writes. A replay that refused every log with
-  entries would still meet the contract. Lean proves T18 over sets
-  (`auth_first`). For the implementation, tests check it (the reopen
-  scenarios in `test_store.adb`, before and after `Compact`).
-- **Write: the self check of `Prepare`.** `Kome.Crypto` does not state
-  `Verify (Sign (M))` (A1), so `Prepare` verifies its own signed frame at
+  `Open_From_Log` opens a log that holds just a well-formed HEADER, and
+  T18-prefix: when `Valid_Length > 0`, the result is the `Valid` replay of
+  exactly that prefix (`Replayed_Prefix`), and on OK `Valid_Length − 1 =
+  Input'Last`. It does not prove that replay accepts every log that a
+  store writes and gives back its frontier. A replay that refused every
+  log with entries would still meet the contract. Lean proves T18 over
+  sets (`auth_first`). For the implementation, tests check it (the reopen
+  scenarios in `test_store.adb`, before and after `Compact`). Replay runs
+  in trusted mode (`Trusted_Frame`); the proof does not use that
+  assumption, and the test main checks it on each log that it reopens.
+- **Store: the copy order of `Compact`.** The Post (`Retagged`,
+  `Compact_Layout`) states the HEADER bytes, that every record's APPLY
+  ends before the final `SEQ (seq_self)`, and `Count + 1` entries; `Valid`
+  gives that each tag holds its record's frame. That the APPLYs are
+  contiguous and in row order (`Ord`) is tested only (the old
+  byte-for-byte clause), and so is the fact that a compacted log never
+  gets `Log_Full` (the held frames are disjoint parts of the old log; the
+  check makes it a refusal).
+- **Write: its own frame check.** `Kome.Crypto` does not state
+  `Verify (Sign (M))` (A1), so `Write` verifies its own signed frame at
   run time and gives `Malformed` if the check fails. With a key from
   `Key_Pair` the check never fails: `test_write.adb` checks that every
-  Ready frame verifies; the `Malformed` branch is not reached in a test.
+  written frame verifies; the `Malformed` branch is not reached in a test.
 - **Headers and Views: the `AUTH_FULL` arrival-order case for `maxceil`.**
   A refused roster does not count in `maxceil`, so two replicas that
   refuse different records of one over-quota signer can hold different
   ceilings (DESIGN.md §7, §8). The fix is a reserved `CEIL (s)` cell per
   slot outside the slice (AUDIT.md H12). It is deferred; the design
   documents the case instead.
-- **Frontier: `Auth_Full` case (c), W full (E1, E2).** The documentation
-  says that this case is unreachable on a frontier. (|W| is at most the
-  number of held GRANTs, which is at most `Writers_Max`.) But the counting
-  argument is not proved. `Coherent` proves that every writer has a held
-  grant. It does not prove the cardinality bound.
 - **Digest: the D15 call bound.** The Post of `Range_Sum` proves the cost
   formula (at most 64 Adds and 1 Sub). But only a review of the body shows
   that the out counts are equal to the calls that the body makes. An
@@ -88,99 +84,123 @@ No package has an unproved check. In this section, a gap is one of these:
   `Add` stateful, so this is a design decision.
 - **Reconcile** (the "Tested, not proved" list in `kome-reconcile.ads`):
   - T7 (termination and convergence; also open in Lean).
-  - `Decode` accepts every ELEMENTS/HAVE that carries items.
-  - The item and frame bytes inside an encoded ELEMENTS/HAVE.
-  - Split balance (child counts `⌊n/16⌋` or `⌈n/16⌉`), and so the
+  - `Decode` accepts every RANGE and every ELEMENTS/HAVE that carries
+    items (a proof shows that it accepts every ROOT and every confirm).
+  - The bytes of an encoded RANGE after its `k`, and the items of an
+    encoded ELEMENTS/HAVE (the Posts state the head; a test checks the
+    round trip).
+  - Split balance (child counts `⌊n/16⌋` or `⌈n/16⌉`) and the cuts on
+    multiples of 64 for a window of at least 1 024 elements, and so the
     `log₁₆` round bound and the `O(n log n)` fingerprint work.
   - The honest-session derivations behind `Msg_Budget`, `Range_Budget`,
     `Ship_Budget` and the sufficient `Oblig_Cap`.
-  - That the heap sort of `Snapshot_Of` sorts (a final scan checks the
-    result, so the Post holds in every case).
   - The session-wide statements "every accepted message was accepted
-    while the gate held under `Gate_Gen`" and "Complete implies one full
-    reply group for each obligation" (inductions over the per-call Posts
-    of `Admit`, `Receive` and `Next_Phase`).
+    while `Gate_Open` held at each call" and "Complete implies one tiling
+    answer for each obligation" (inductions over the per-call Posts of
+    `Admit`, `Receive` and `Next_Phase`).
 - **Crypto: assumed Posts.** The bodies are `SPARK_Mode Off`, so their
-  Posts are assumptions. `Verify` is a SPARK expression, so its Post is
-  proved; the assumed part of it is the private `Raw_Ed25519_Check` (no
-  Post), and with it two binding axioms of the same kind,
-  `Lemma_Blake2b_Congruent` and `Lemma_X25519_Congruent` (AUDIT.md A25).
-  A test under `-gnata` checks each axiom. Known answers check the rest:
-  RFC 8032 §7.1 and a Wycheproof subset (`vectors/crypto.txt`).
+  Posts are assumptions: among them `Hedge` (keyed BLAKE2b-256 under the
+  signing seed) and `Blake2b_512`, which has no Post (its known answers
+  come through `vectors/digest.txt`). `Verify` is a SPARK expression, so
+  its Post is proved; the assumed part of it is the private
+  `Raw_Ed25519_Check` (no Post), and with it two binding axioms of the
+  same kind, `Lemma_Blake2b_Congruent` and `Lemma_X25519_Congruent`
+  (AUDIT.md A25). A test under `-gnata` checks each axiom. Known answers
+  check the rest: RFC 8032 §7.1 and a Wycheproof subset
+  (`vectors/crypto.txt`), and the hedge lines of the same file.
 - **Proved but not executed under `-gnata`.** gnatprove proves these
   `Assertion_Policy (... => Ignore)` regions, but the test mains do not run
-  them. If the tests ran them, each call would cost quadratic time:
-  - `kome-accumulator.adb`: four limb-loop regions (`Add`, `Sub` and their
-    chain lemmas)
-  - `kome-digest.adb`: four prefix-sum and state regions
-  - `kome-epochs.adb`: the `Derive` loop invariant
+  them. If the tests ran them, each call would cost quadratic time or
+  worse (`spark/CONVENTIONS.md`):
+  - `kome-accumulator.adb`: four limb-loop regions (`Assert` and
+    `Loop_Invariant` in `Lemma_Add_Chain`, `Lemma_Sub_Chain`,
+    `Lemma_Value_Bounds`, `Lemma_Limbs_Bytes`).
+  - `kome-digest.adb`: four prefix-sum and state regions (`Loop_Invariant`,
+    `Assert` and `Ghost` in `Digest_Of`, `State_Of`, `Build_Prefix`, and
+    also `Pre` and `Post` in `Range_Sum`).
+  - `kome-frontier.adb`: `Pre => Ignore` around `Lemma_Item`,
+    `Lemma_Distinct_Held` and `Lemma_Tag_Of_P`; `Loop_Invariant` and
+    `Assert` in `Lemma_All_Flat`, `Lemma_Classify`, `Lemma_Step_Flat`,
+    `Lemma_Step_Tags`, `Lemma_Distinct_Held`, `Lemma_Data_Flat`,
+    `Lemma_Src_Split` and `Lemma_Sub_Antichain`; `Loop_Invariant` in
+    `Lemma_Off_Mono`, `Find_Held`, `Max_Ceil_Impl`, `W_Cap_Impl`,
+    `Lemma_Retag_Data` and `Lemma_Retag_Flat`.
+  - `kome-store.adb`: `Loop_Invariant` in `Lemma_Tags_Kept`,
+    `Lemma_Tags_Same`, `Lemma_Tags_Apply`, `Lemma_Tags_Expire`,
+    `Lemma_Self_Tags`, `Lemma_Copied_Kept`, `Copy_Frames`,
+    `Lemma_Rest_Same`, `Lemma_Hashes_Same`, `Lemma_Offs_Step`,
+    `Lemma_Slot_Flat`, `Lemma_Auth_Flat`, `Lemma_Expire_Flat`,
+    `Lemma_Seq_Apply`, `Lemma_Seq_Sub`, `Lemma_Applied_H` and
+    `Lemma_Digest_Split`; `Loop_Invariant`, `Assert` and `Ghost` in
+    `Data_Range_Sum` and `Auth_Range_Sum`.
+  - `kome-write.adb`: `Loop_Invariant` in `Lemma_Seq_Base`.
+  - `kome-reconcile.adb`: `Loop_Invariant`, `Assert`, `Ghost`, `Pre` and
+    `Post` inside `Snapshot_Of` (the insertions would be cubic, because
+    `Valid` is pairwise); the Post of `Snapshot_Of` itself executes.
+
+  Building with `-XMode=release` turns every contract check off, not only
+  these regions (`spark/kome_spark.gpr`).
 
 ### Duties of layers not yet built
 
 The message formats and their checks exist. But the steps that enforce
-them belong to callers that are not built yet. So D13 and E3 are closed
-only as far as their formats and checks go.
+them belong to callers that are not built yet. So D13 is closed only as
+far as its formats and checks go.
 
 - **Transport (phase 9)** (the caller duties listed in `kome-reconcile.ads`):
   - Run Noise XK with the per-collection static key `dh_sk_ns = KDF
     (device secret, ns)`, the responder's static key taken from
-    `ROSTER_eff` or the enrollment credential, and `ns` in the prologue.
-    Refuse a low-order peer static key (DESIGN.md §8; AUDIT.md H20, A29).
-  - OPEN: `Start` and `Receive` send our OPEN (the responder only after a
-    matching OPEN of the initiator) and build the root-void set with
-    `Select_Voids` (one founding REVOKE per root-voided subject, at most
-    15 subjects), sent only to a peer that `Lists_Peer` finds in a held
-    roster, and `n_rv = 0` otherwise (AUDIT.md H5, A14). The caller fills
-    the authorization `Frame_Table` from `Read_Frame`, entry `I` the frame
-    of the `I`-th authorization record (the hypothesis of
-    `Lemma_Voids_Cover`). Verify and apply the peer's OPEN frames
-    (`Is_Founding_Revoke`) before the gate, then `Kome.Guard.Note_Open`
-    (the quarantine flag).
-  - HELLO: drop the credential and abort, before verification, if `F`
-    holds a founding REVOKE of its signer (AUDIT.md G12). Otherwise check
-    it (`Roster_Lists_DH`), apply it, `Kome.Guard.Note_Credential`, and
-    evaluate the gate (`Kome.Guard.Admits`: the flag and the REVOKE-aware
-    gate). Pass the store's current `Auth_Gen` to `Admit`, `Receive` and
-    `Next_Phase`, converted from `Kome.Store.Auth_Counter` to the `U64`
-    that `Kome.Reconcile` takes; those calls evaluate the gate again when
-    it moved past the session's `Gate_Gen` and abort when it fails
-    (AUDIT.md H11). While the flag is set, take no sealed bundle and seal
-    none.
+    `ROSTER_eff` or the enrollment credential, and
+    `Kome.Reconcile.Prologue (Cid)` (`"kome/1" ‖ ns ‖ 01`) as the
+    prologue. Refuse a low-order peer static key (DESIGN.md §8; AUDIT.md
+    H20, A29).
+  - HELLO: `Receive` refuses a credential that is not a roster that lists
+    the peer's key, or whose signer is root-voided (AUDIT.md G12, A13).
+    Otherwise decode, verify and apply the credential, decode the record
+    of `ROSTER_eff`, and call `Admit` when `Gate_Open` holds, with the
+    store's `Digest_Auth (S)` and `Digest_Data (S)`. This is also how a
+    quarantined replica takes the recovery roster (S11).
+  - The gate on every call: pass the decoded record of `ROSTER_eff` of
+    the current `F` to every `Receive` and `Next_Phase`; they evaluate
+    `Gate_Open` and abort when it fails (S9). While
+    `Kome.Views.Quarantined` holds, take no sealed bundle and seal none.
+  - The snapshot (S21): when the session enters `Auth`, call
+    `Kome.Store.Pin`, fill the frame table from `Read_Frame (S, Tag_Off
+    (Tag (F, I)))` in the flat order of `F` (entry `I` the frame of
+    `Held (F, I)`), call `Snapshot_Of` and `Seal`, pass the snapshot to
+    every later call, and `Unpin` when the session ends, whatever its end.
   - Joining (DESIGN.md §6): open a new store from the hand-off `(root_pk,
-    salt, roster frame)`, and while `F` holds no non-root-voided roster
-    that lists the device's own `dh_pk`, accept only a credential that
-    lists both the peer's key and the device's own, and let no other
+    salt, del_ttl, roster frame)`, and while `F` holds no non-root-voided
+    roster that lists the device's own `dh_pk`, accept only a credential
+    that lists both the peer's key and the device's own, and let no other
     credential change `ROSTER_eff` (AUDIT.md H10).
-  - Between the auth phase and the data phase, call `Expire (Now)` if
-    `del_ttl_eff` changed (AUDIT.md G18).
-  - Verify ELEMENTS/HAVE items, check each item's key, and apply every
-    item of kind < 3 before any item of kind ≥ 3 (D14). Report
-    `SUSPECT_RELAY` for a peer that delivers a record whose author is
-    already void, and report a `NO_SPACE` refusal of a peer-offered
+  - Verify ELEMENTS/HAVE items, pass each item's key, and apply the
+    delivered frames in element-key order (the one ordering rule, D14).
+    Report `SUSPECT_RELAY` for a peer that delivers a record whose author
+    is already void, and report a `NO_SPACE` refusal of a peer-offered
     record as a replica status (DESIGN.md §7, §8).
-  - Derive the bundle key `k_b = f (k_e, "kome/bundle" ‖ ns)` with
-    `Kome.Crypto.Blake2b_256_Keyed`; no SPARK package derives it yet.
-    Seal bundles as `ns ‖ nonce ‖ AEAD` with the epoch in the AD only,
-    padded to fixed buckets, under `bundle_key (F)` (the key that the
-    device's own entry of `ROSTER_eff` unboxes, never a key cached by
-    epoch number), with synthetic nonces, closed under admission (each
-    author's GRANTs and the largest-ceiling roster first). For a set
-    period after an epoch change, also send an authorization-only bundle
-    under the old key (DESIGN.md §6, §8; AUDIT.md A9, G11, H17).
+  - Bundles: derive `bundle_key (F)` with `Kome.Epochs.Bundle_Key_Of`
+    from the `k_g` that the device's own entry of `ROSTER_eff` unboxes
+    (never a key cached by `gen`). Seal bundles as `ns ‖ nonce ‖ AEAD`
+    with `cid ‖ u48 (gen)` in the AD only, padded to fixed buckets, with
+    synthetic nonces, closed under admission (each author's GRANTs and the
+    largest-ceiling roster first). For a set period after `ROSTER_eff`
+    changes, keep the previous key and also send an authorization-only
+    bundle under it (DESIGN.md §6, §8; AUDIT.md A9, G11, H17).
   - Durability (AUDIT.md A21, H35): make the log durable to `Log_Length`
-    before a session is Complete, before a bundle is acknowledged or
-    deleted from a mailbox, before relaying an applied record, and before
-    continuing after an authorization record (DESIGN.md §8).
-  - Rate-limit pre-gate work and session openings per peer.
-- **Storage binding (phase 9)** (DESIGN.md §7; AUDIT.md A11, G13, H23,
-  H26):
-  - Open every store with `Slice_Max` (`Store.Open` does not require
-    it; replay refuses a HEADER with another slice), and choose `data_cap`
-    at each open; a smaller one is allowed when the log replays at it.
-  - Call `Compact` whenever `Compact_Due (S)` holds (more than
-    `2 · Entries (S) + Compact_Slack` log entries, `Compact_Slack = 64`).
-    `Put_Frame` never compacts on its own. Then replay verifies at most
-    `2 · |F| + 64` signatures.
+    before a session is Complete, before an own frame is sent, before a
+    bundle is acknowledged or deleted from a mailbox, before relaying an
+    applied record, and before continuing after an authorization record
+    (DESIGN.md §8).
+  - Rate-limit session openings per peer.
+- **Storage binding (phase 9)** (DESIGN.md §7; AUDIT.md G13, H23, H26):
+  - Choose the data capacity (`Cap` of `F`) at each open; a smaller one is
+    allowed when the log replays at it. `Slice_Max` is a constant, so
+    there is no slice to choose.
+  - Call `Compact` whenever `Compact_Due (S, F)` holds (more than
+    `2 · Count (F) + Compact_Slack` log entries, `Compact_Slack = 64`) and
+    no session pins the store; on `Busy`, compact after the session.
+    `Put_Frame` never compacts on its own.
   - Append each entry at the `Log_Length (S)` from before the call
     (`pwrite` at that offset; `Put_Frame` returns it as `Off`), so that a
     retry after a write error overwrites and never duplicates. The append
@@ -188,67 +208,58 @@ only as far as their formats and checks go.
   - On any write error, discard the in-memory `(S, F)` and run
     `Open_From_Log` again; never serve a record whose entry is not on
     disk.
-  - Preallocate `Log_Cap`, chosen with `Kome.Store.Log_Fits`; compact and
-    retry on `LOG_FULL`. Declare the store as
-    `Store (Cap, Log_Cap, Bnd_Cap_For (Log_Cap))`: the entry boundaries
-    take `Log_Cap / 6` slots (AUDIT.md G15).
-  - Memory (AUDIT.md G15): a store holds about `1.7 · Log_Cap` bytes
-    (the log, and `Log_Cap / 6` four-byte boundaries) beside its index.
-    `Compact` takes one more buffer of `Log_Cap + 1` bytes from the
-    binding and keeps no copy of the log. During `Open_From_Log` the
-    input (the file, best mapped) and the store's log are both
-    resident.
+  - Preallocate `Log_Cap`, chosen with `Kome.Store.Log_Fits (Cap,
+    Log_Cap)`; compact and retry on `LOG_FULL`. Declare the store as
+    `Store (Log_Cap)`.
+  - Memory: a store holds its log and the two digest states; the tags are
+    in the frontier's slots. `Compact` takes one more buffer of `Log_Cap +
+    1` bytes from the binding and keeps no copy of the log. During
+    `Open_From_Log` the input (the file, best mapped) and the store's log
+    are both resident.
   - Take an exclusive lock on the log for the life of the open.
   - `fsync` before a record is visible to `Reconcile` or `Emit`
     (the sync point).
-  - `Compact (S, F, Buf)` leaves the new log in `Buf`
+  - `Compact (S, F, Buf, Result)` leaves the new log in `Buf`
     (`Buf (0 .. Log_Length (S) - 1)`): write it as the new file, `fsync`
     it, rename it over the old one, `fsync` the directory.
   - On a torn tail, truncate to `Valid_Length` and open again; on a
     corrupt entry, open the prefix before it, report `DEGRADED`, and
-    sync. Never skip an entry in the middle.
+    sync. Never skip an entry in the middle. The log's integrity is the
+    host's: replay does not verify signatures (S15).
   - These duties are stated against T18: every entry-boundary prefix of a
     log that the store wrote replays OK, and the binding only ever hands
     the store such a prefix.
-  - The write path (AUDIT.md A10; A5 restated): after
-    `Kome.Write.Prepare`, persist `Seq_Persist` as `seq_self(ns)` durably
-    (write and `fsync`) before `Kome.Write.Commit`; after `Commit`, make
-    the log durable to `Log_Length` before the frame is sent or put in a
-    bundle. On open, read the seq store and call `Kome.Write.Open_Seq`;
-    a seq store that does not read back (torn, bad checksum) is
-    `SEQ_CORRUPT`. Apply every frame from a peer with `Kome.Write.Receive`
-    and show `CLONE_SUSPECTED` when its flag, the `Prepare` flag or
-    `Kome.Write.Clone_View` holds (AUDIT.md H18).
+  - The write path (S16): write with `Kome.Write.Write`; make the log
+    durable to `Log_Length` before the frame is sent or put in a bundle
+    (A5, A21). Apply every frame from a peer with `Kome.Write.Receive`
+    and show `CLONE_SUSPECTED` when its flag or `Kome.Write.Clone_View`
+    holds (AUDIT.md H18).
 - **`Kome.Roster` (phase 8):**
-  - `Build (epoch key, root_pk, salt, e, signer, gen, members)` computes
-    `eph_sk` and `box_pk` and seals the boxes from one secret, then wipes
-    it; `Make_Roster` is private to it (AUDIT.md A6, G7). Post:
-    `Box_PK = X25519_Public (eph_sk)`. It meets the Pres of what it calls:
-    an epoch key that is not `Zero_Key` (`Box_Key`, `Seal_Link`), and
-    `Sign_Key_OK` of `root_pk` and the signer (`Make_Roster`).
-  - Let only the founding key open a segment, at `Segment_Top + 1`
-    (`Kome.Epochs.Segment_Start`), on root-void, at the top of a segment,
-    or in the top-leaked procedure (a new segment with no REVOKE).
-    Draw and deliver the segment tops (E3); refuse an all-zero top.
-  - Ceremony self-check: before a root's first roster in a segment, open
-    the founding opener's link `{from_epoch = s}` with `Open_Link` from
-    the received top, and refuse a top that opens none (AUDIT.md A15).
+  - `Build (k_g, cid, signer, gen, members)` computes `eph_sk` and
+    `box_pk` and seals the boxes from one secret, then wipes it;
+    `Make_Roster` is private to it (AUDIT.md A6, G7). Post: `Box_PK =
+    X25519_Public (eph_sk)`. It meets the Pres of what it calls: a `k_g`
+    that is not `Zero_Key` (`Box_Key`), and `Sign_Key_OK` of the signer
+    (`Make_Roster`).
+  - Draw `rnd` for each roster and derive `k_g` with
+    `Kome.Epochs.Key_For_Gen`; draw again if it is `Zero_Key`.
+  - The founding ceremony: `Make_Cert (root_sk, cid, root_pk,
+    Founding_Cap)`, the self-certificate that every founding-key record
+    carries.
   - Issue the recovery steps in DESIGN.md §6 order (re-grants, member
     REVOKEs, re-signed revocations, then `REVOKE (R, 0)`, then the
-    roster), and check the roster: no revoked `sign_pk`, `ceiling_t >
-    maxceil`, `del_ttl ≥` the `del_ttl_eff` before the ceremony with the
-    voided root counted (AUDIT.md H8, H16, H30, H32).
+    recovery roster at a `gen` above every held roster), and check the
+    result: no revoked `sign_pk`, `ceiling_t > maxceil`, and the recovery
+    roster is `Roster_Max` and `ROSTER_eff` (AUDIT.md H8, H16, H30, H32).
   - Enforce the honest-issuer rules (DESIGN.md §10.3): reconcile first;
-    `gen = 1 + max` over `gen ≤ 2^47`, else `STOLEN_ROOT_SUSPECTED`; the
-    epoch at least the largest held; re-key on divergence (AUDIT.md H9);
-    the rivals union (AUDIT.md A22); a superset of `ROSTER_eff`'s members
-    at the same epoch, and a sixty-fifth member refused (AUDIT.md N7);
-    `ceiling_t` and `cert_cap ≤ now + Cap_Lead`, and never within `2^47`
-    of `2^48 − 1` (AUDIT.md N3); the founding reserve of 15 entries; a
-    REVOKE only when no held REVOKE of the subject by this issuer has a
-    `from_t` at or below the new one (AUDIT.md A20); `from_t = maxceil
-    (F) + 1` for a lost key and 0 for a stolen one, in the revoke API
-    (AUDIT.md H33). Seal no box for a `Revoked` member.
+    `gen = 1 + max` over `gen ≤ 2^47`, else `STOLEN_ROOT_SUSPECTED`; on
+    `contested`, a `gen` above every held roster with the confirmed union
+    of the members (AUDIT.md A22, S12); a sixty-fifth member refused
+    (AUDIT.md N7); `ceiling_t` and `cert_cap ≤ now + Cap_Lead`, and never
+    within `2^47` of `2^48 − 1` (AUDIT.md N3); the founding reserve of 15
+    entries; `from_t = maxceil (F) + 1` for a lost key and 0 for a stolen
+    one, in the revoke API (AUDIT.md H33). Seal no box for a `Revoked`
+    member.
   - Keep the ceremony log of every `Make_Cert` on the founding device,
     and read "the largest cap ever certified" from it. There is no `CERT`
     record kind, and no view of `F` can give this value (AUDIT.md G24).
@@ -260,15 +271,14 @@ only as far as their formats and checks go.
     `dh_pk` rotation and the periodic re-keying of members (AUDIT.md N6,
     H25).
   - The generate-only key API (AUDIT.md A30).
-- **Round 0 (C8 IBLT) is not built, and no phase owns it.** DESIGN.md §8
-  describes it as prose; `Kome.Reconcile` has no wire tag, no
-  fetch-by-hash message and no pending-weight rule for it.
+- **Round 0 (C8 IBLT) is an optional extension** (DESIGN.md §10.8, S23):
+  not built, and no phase owns it.
 - **Typed fields (phase 10)** are specified in DESIGN.md §4 and §10.7
   and not built. T15–T17 are not stated.
 
 ### Open decisions
 
-None is open. These two were decided last:
+None is open. These were decided last:
 
 - Small-order Ed25519 public keys are decided as "refuse":
   `Kome.Crypto.Verify` refuses a small-order public key (the eight
@@ -276,15 +286,20 @@ None is open. These two were decided last:
   non-canonical key or the key of the all-zero seed as `root_pk`,
   signer, GRANT subject, REVOKE `sign_pk` or ROSTER member `sign_pk`
   (`Kome.Records.Sign_Key_OK`). `Make_Roster`, `Make_Revoke` and
-  `Make_Grant` require `Sign_Key_OK` of `root_pk` and the signer (and of
-  the subject, for a GRANT or a REVOKE), `Make_Cert` and `Cert_OK` of
-  the signer, and `Store.Open` of the founding key. The Wycheproof small-order keys
-  (tcIds 152-180) are invalid vectors (AUDIT.md H13).
-- The `EXPIRE_NONE` op of AUDIT.md H24 is declined. The `EXPIRE` entry
-  encodes "no horizon" as `2^48 − 1`, a reserved value. The code decodes
-  to "no horizon", which is below every bound of the replay clamp, so an
-  `EXPIRE` that reads as it can only lower the horizon (DESIGN.md §7).
-  This departs from REQUIREMENTS.md H6 ("no sentinel values").
+  `Make_Grant` require `Sign_Key_OK` of the signer (and of the subject,
+  for a GRANT or a REVOKE), `Make_Cert` of the signer, `Cert_OK` of
+  `root_pk` and the signer, and `Store.Open` of the founding key. The
+  Wycheproof small-order keys (tcIds 152-180) are invalid vectors
+  (AUDIT.md H13).
+- The "no horizon" code `2^48 − 1` and its exception to REQUIREMENTS.md
+  H6 are gone: the horizon is a function of `F` and the log has no expiry
+  entry (SIMPLIFY.md S7).
+- The authorization element key is `tag ‖ 0^17 ‖ signer ‖ h`: the zero
+  bytes come before the signer so that both key layouts keep their fields
+  at the same places (SIMPLIFY.md, "As built").
+- `Snapshot_Of` insertion-sorts the authorization slots, which are kept
+  in arrival order; a linear merge would need the frontier to keep its
+  slots ordered by signer (DESIGN.md §10.11).
 
 ### Missing tests
 
@@ -294,3 +309,6 @@ None is open. These two were decided last:
   passes the tests, and only the proof catches it.
 - **Records:** No test decodes a PUT frame as DEL. (A test for the opposite
   direction exists.)
+- **Views:** `test_views` no longer fills a slice, so it does not test
+  `Auth_Full` (that takes 512 records); `test_frontier` fills one slice to
+  `Slice_Max`.
