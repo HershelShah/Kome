@@ -380,15 +380,32 @@ package body Kome.Reconcile with SPARK_Mode is
    end Lemma_Digest_Of_Empty;
 
    --  Element J of S is the held record Src of F, with its frame length
-   --  in T.
+   --  in T. A function with a body, not an expression function: its
+   --  meaning is the Post, so a goal Good (F, T, S, I) keeps the term
+   --  Good (F, T, S, I), which instantiates a hypothesis "for all J =>
+   --  Good (F, T, S, J)" (an inlined body would not).
    function Good
      (F : Kome.Frontier.State; T : Frame_Table; S : Snapshot; J : Elem_Index)
       return Boolean
-   is (S.E (J).Src <= Kome.Frontier.Count (F)
-       and then S.E (J).Src <= T.N
-       and then Key (S, J) = Key_Of (Kome.Frontier.Held (F, S.E (J).Src))
-       and then T.Lens (S.E (J).Src) = S.E (J).Len)
-   with Ghost, Pre => J <= S.N and then J <= S.Cap;
+   with Ghost, Global => null,
+     Post => Good'Result =
+               (J <= S.N and then J <= S.Cap
+                and then S.E (J).Src <= Kome.Frontier.Count (F)
+                and then S.E (J).Src <= T.N and then T.N <= T.Cap
+                and then Key (S, J) = Key_Of (Kome.Frontier.Held (F, S.E (J).Src))
+                and then T.Lens (S.E (J).Src) = S.E (J).Len);
+
+   function Good
+     (F : Kome.Frontier.State; T : Frame_Table; S : Snapshot; J : Elem_Index)
+      return Boolean
+   is
+   begin
+      return (J <= S.N and then J <= S.Cap
+                and then S.E (J).Src <= Kome.Frontier.Count (F)
+                and then S.E (J).Src <= T.N and then T.N <= T.Cap
+                and then Key (S, J) = Key_Of (Kome.Frontier.Held (F, S.E (J).Src))
+                and then T.Lens (S.E (J).Src) = S.E (J).Len);
+   end Good;
 
    --  The sources of a sorted snapshot of held records are distinct:
    --  two elements with one source would have one key.
@@ -403,13 +420,23 @@ package body Kome.Reconcile with SPARK_Mode is
    begin
       for I in 1 .. S.N loop
          for J in 1 .. S.N loop
+            pragma Assert (Good (F, T, S, I));
+            pragma Assert (Good (F, T, S, J));
             if I < J then
                pragma Assert (Key_Lt (Key (S, I), Key (S, J)));
                Lemma_Key_Lt_Irrefl (Key (S, I));
+               if S.E (I).Src = S.E (J).Src then
+                  pragma Assert (Key (S, I) = Key (S, J));
+                  Lemma_Key_Lt_Irrefl (Key (S, I));
+               end if;
                pragma Assert (S.E (I).Src /= S.E (J).Src);
             elsif J < I then
                pragma Assert (Key_Lt (Key (S, J), Key (S, I)));
                Lemma_Key_Lt_Irrefl (Key (S, J));
+               if S.E (I).Src = S.E (J).Src then
+                  pragma Assert (Key (S, J) = Key (S, I));
+                  Lemma_Key_Lt_Irrefl (Key (S, J));
+               end if;
                pragma Assert (S.E (I).Src /= S.E (J).Src);
             end if;
             pragma Loop_Invariant
@@ -498,7 +525,7 @@ package body Kome.Reconcile with SPARK_Mode is
 
          --  The pairwise order after the insertion, one row at a time.
          procedure Order with
-           Ghost, Global => (Input => (S, Old, K, P)),
+           Ghost, Global => (Input => (S, K, P), Proof_In => Old),
            Pre  => Valid (Old) and then S.N = Old.N + 1 and then P <= S.N
                    and then Key (S, P) = K
                    and then (for all X in 1 .. P - 1 =>
@@ -582,6 +609,61 @@ package body Kome.Reconcile with SPARK_Mode is
          Result := Snap_OK;
       end Insert;
 
+      --  After an insertion at Pos, every element is still Good: those
+      --  before Pos are the old ones, those after it the old ones moved
+      --  up by one, and Pos is the new one.
+      procedure Shift (Old, S : Snapshot; Pos : Elem_Index) with
+        Ghost, Global => (Proof_In => (F, T)),
+        Pre  => S.N = Old.N + 1 and then Pos <= S.N
+                and then (for all J in 1 .. Old.N => Good (F, T, Old, J))
+                and then Good (F, T, S, Pos)
+                and then (for all J in 1 .. Pos - 1 =>
+                            S.E (J) = Old.E (J) and then S.Hs (J) = Old.Hs (J))
+                and then (for all J in Pos + 1 .. S.N =>
+                            S.E (J) = Old.E (J - 1) and then S.Hs (J) = Old.Hs (J - 1)),
+        Post => (for all J in 1 .. S.N => Good (F, T, S, J))
+      is
+      begin
+         for J in 1 .. S.N loop
+            if J < Pos then
+               pragma Assert (Good (F, T, Old, J));
+               pragma Assert (S.E (J) = Old.E (J) and then S.Hs (J) = Old.Hs (J));
+            elsif J > Pos then
+               pragma Assert (Good (F, T, Old, J - 1));
+               pragma Assert (S.E (J) = Old.E (J - 1) and then S.Hs (J) = Old.Hs (J - 1));
+            end if;
+            pragma Assert (Good (F, T, S, J));
+            pragma Loop_Invariant (for all J2 in 1 .. J => Good (F, T, S, J2));
+         end loop;
+      end Shift;
+
+      --  The facts of Good, element by element (each goal names Good
+      --  (F, T, S, J), so the hypothesis instantiates).
+      procedure Unpack with
+        Ghost, Global => (Input => S, Proof_In => (F, T)),
+        Pre  => T.N <= T.Cap and then (for all J in 1 .. S.N => Good (F, T, S, J)),
+        Post => Linked (S, T)
+                and then (for all I in 1 .. S.N =>
+                   (S.E (I).Src <= Kome.Frontier.Count (F)
+                       and then S.E (I).Src <= T.N
+                       and then Key (S, I) = Key_Of (Kome.Frontier.Held (F, S.E (I).Src))
+                       and then T.Lens (S.E (I).Src) = S.E (I).Len
+                       and then S.Hs (I) = Kome.Frontier.Held (F, S.E (I).Src).V.H))
+      is
+      begin
+         for J in 1 .. S.N loop
+            pragma Assert (Good (F, T, S, J));
+            pragma Assert (Key (S, J).H = S.Hs (J));
+            pragma Loop_Invariant
+              (for all I in 1 .. J =>
+                 (S.E (I).Src <= Kome.Frontier.Count (F)
+                       and then S.E (I).Src <= T.N
+                       and then Key (S, I) = Key_Of (Kome.Frontier.Held (F, S.E (I).Src))
+                       and then T.Lens (S.E (I).Src) = S.E (I).Len
+                       and then S.Hs (I) = Kome.Frontier.Held (F, S.E (I).Src).V.H));
+         end loop;
+      end Unpack;
+
       procedure Empty_Digest with
         Ghost, Global => (Input => (F, S)),
         Pre  => Kome.Frontier.Count (F) = 0 and then S.N = 0,
@@ -638,17 +720,15 @@ package body Kome.Reconcile with SPARK_Mode is
             Old : constant Snapshot := S with Ghost;
             R   : constant Header := Kome.Frontier.Held (F, I);
          begin
+            pragma Assert (for all J in 1 .. Old.N => Good (F, T, Old, J));
             Insert (S, Key_Of (R), T.Lens (I), I, Pos, St);
             if St /= Snap_OK then
                Clear (S);
                Result := Snap_Unsorted;
                return;
             end if;
-            pragma Assert (for all J in 1 .. Pos - 1 => Key (S, J) = Key (Old, J));
-            pragma Assert (for all J in Pos + 1 .. S.N => Key (S, J) = Key (Old, J - 1));
             pragma Assert (Good (F, T, S, Pos));
-            pragma Assert (for all J in 1 .. Pos - 1 => Good (F, T, S, J));
-            pragma Assert (for all J in Pos + 1 .. S.N => Good (F, T, S, J));
+            Shift (Old, S, Pos);
          end;
       end loop;
 
@@ -661,22 +741,21 @@ package body Kome.Reconcile with SPARK_Mode is
             Old : constant Snapshot := S with Ghost;
             R   : constant Header := Kome.Frontier.Held (F, I);
          begin
+            pragma Assert (for all J in 1 .. Old.N => Good (F, T, Old, J));
             Insert (S, Key_Of (R), T.Lens (I), I, Pos, St);
             if St /= Snap_OK then
                Clear (S);
                Result := Snap_Unsorted;
                return;
             end if;
-            pragma Assert (for all J in 1 .. Pos - 1 => Key (S, J) = Key (Old, J));
-            pragma Assert (for all J in Pos + 1 .. S.N => Key (S, J) = Key (Old, J - 1));
             pragma Assert (Good (F, T, S, Pos));
-            pragma Assert (for all J in 1 .. Pos - 1 => Good (F, T, S, J));
-            pragma Assert (for all J in Pos + 1 .. S.N => Good (F, T, S, J));
+            Shift (Old, S, Pos);
          end;
       end loop;
 
       pragma Assert (S.N = N);
       pragma Assert (for all J in 1 .. N => Good (F, T, S, J));
+      Unpack;
       pragma Assert (Linked (S, T));
       Distinct;
       pragma Assert
@@ -1246,7 +1325,9 @@ package body Kome.Reconcile with SPARK_Mode is
             pragma Loop_Invariant
               (for all T2 in 1 .. O.N =>
                  Plan_OK (S, O.P (T2)) and then O.P (T2).Kind = P_Have
-                 and then O.P (T2).N = 1 and then O.P (T2).Items (1) = L (T2));
+                 and then O.P (T2).N = 1 and then O.P (T2).Items (1) = L (T2)
+                 and then O.P (T2).Items (1) <= Count (S)
+                 and then not In_Msg (M, Key (S, O.P (T2).Items (1))));
             pragma Loop_Invariant (if T > 1 then O.P (1).Lo = M.Lo);
             pragma Loop_Invariant (if T > 1 then O.P (T - 1).Hi = Key (S, L (T)));
             pragma Loop_Invariant
@@ -1278,8 +1359,15 @@ package body Kome.Reconcile with SPARK_Mode is
                pragma Assert (List_Size (S, O.P (T).Items, 1) = Item_Size (S, X));
                pragma Assert (In_Window (Key (S, O.P (T).Items (1)), Lo_T, Hi_T));
                pragma Assert (Plan_OK (S, O.P (T)));
+               pragma Assert (not In_Msg (M, Key (S, L (T))));
+               pragma Assert (not In_Msg (M, Key (S, O.P (T).Items (1))));
             end;
          end loop;
+         pragma Assert
+           (for all T2 in 1 .. O.N =>
+              (for all U in 1 .. O.P (T2).N =>
+                 U = 1 and then O.P (T2).Items (U) <= Count (S)
+                 and then not In_Msg (M, Key (S, O.P (T2).Items (U)))));
          pragma Assert (O.N = C);
          pragma Assert (O.P (O.N).Hi = M.Hi);
          pragma Assert (Tiles (O, M.Lo, M.Hi));
@@ -2000,6 +2088,45 @@ package body Kome.Reconcile with SPARK_Mode is
    procedure Lemma_Items_OK
      (K : Msg_Kind; Lo, Hi : Elem_Key; N : Item_Count; Items : In_Items) is null;
 
+   --  A 32-byte string equal byte by byte to B (O .. O + 31) is that
+   --  slice (array equality across the slide, in a small context).
+   procedure Lemma_Fp_Slice (B : Byte_Array; O : Natural; X : Hash256) with
+     Ghost, Global => null,
+     Pre  => O >= B'First and then O <= B'Last and then B'Last - O >= 31
+             and then (for all I in 0 .. 31 => X (I) = B (O + I)),
+     Post => X = B (O .. O + 31);
+
+   procedure Lemma_Fp_Slice (B : Byte_Array; O : Natural; X : Hash256) is null;
+
+   --  Range_Fields from its four fields with the k of the head spelled
+   --  out (the declare expression of Range_Fields, in a small context).
+   procedure Lemma_Range_Fields (B : Byte_Array; J : Positive; M : Message) with
+     Ghost, Global => null,
+     Pre  => Range_Head_OK (B, J)
+             and then M.Lo = Wire_Key (B, B'First + Bound_At (J - 1))
+             and then M.Hi = Wire_Key (B, B'First + Bound_At (J))
+             and then U48 (M.Count)
+                        = Wire_U48 (B, B'First + Part_At (Natural (B (B'First + Range_O_K)), J))
+             and then M.Fp = B (B'First + Part_At (Natural (B (B'First + Range_O_K)), J)
+                                + Count_Len
+                                .. B'First + Part_At (Natural (B (B'First + Range_O_K)), J)
+                                   + Count_Len + 31),
+     Post => Range_Fields (B, J, M);
+
+   procedure Lemma_Range_Fields (B : Byte_Array; J : Positive; M : Message) is
+      K : constant Part_Index := Natural (B (B'First + Range_O_K));
+   begin
+      pragma Assert (M.Fp = B (B'First + Part_At (K, J) + Count_Len
+                               .. B'First + Part_At (K, J) + Count_Len + 31));
+   end Lemma_Range_Fields;
+
+   --  Decode_Raw refuses only an input that is neither a ROOT nor a
+   --  confirm for part 1 (the completeness half of Decode_Facts).
+   function Refused (Input : Byte_Array; Part : Positive) return Boolean is
+     (not (Root_Wire_OK (Input) and then Part = 1)
+      and then not (Empty_Wire_OK (Input) and then Part = 1))
+   with Ghost;
+
    procedure Decode_Raw
      (Input  : Byte_Array;
       Part   : Positive;
@@ -2026,6 +2153,7 @@ package body Kome.Reconcile with SPARK_Mode is
       if Input'Last < Input'First
         or else Input'Last - Input'First >= Max_Message_Len
       then
+         pragma Assert (Refused (Input, Part));
          return;
       end if;
 
@@ -2035,12 +2163,14 @@ package body Kome.Reconcile with SPARK_Mode is
       begin
          if Tag = Tag_Root then
             if Input'Last - F /= Root_Len - 1 or else Part /= 1 then
+               pragma Assert (Refused (Input, Part));
                return;
             end if;
             declare
                C : constant U48 := Wire_U48 (Input, F + Root_O_Count);
             begin
                if C > Elem_Max then
+                  pragma Assert (Refused (Input, Part));
                   return;
                end if;
                M := (Kind   => M_Range,
@@ -2059,6 +2189,7 @@ package body Kome.Reconcile with SPARK_Mode is
 
          elsif Tag = Tag_Range then
             if Input'Last - F < 1 then
+               pragma Assert (Refused (Input, Part));
                return;
             end if;
             declare
@@ -2068,6 +2199,7 @@ package body Kome.Reconcile with SPARK_Mode is
                  or else Input'Last - F /= Range_Msg_Len (KB) - 1
                  or else Part > KB
                then
+                  pragma Assert (Refused (Input, Part));
                   return;
                end if;
                --  The whole message: strictly ascending bounds and counts
@@ -2077,6 +2209,7 @@ package body Kome.Reconcile with SPARK_Mode is
                                  Wire_Key (Input, F + Bound_At (I)))
                     or else Wire_U48 (Input, F + Part_At (KB, I)) > Elem_Max
                   then
+                     pragma Assert (Refused (Input, Part));
                      return;
                   end if;
                end loop;
@@ -2084,21 +2217,37 @@ package body Kome.Reconcile with SPARK_Mode is
                   Lo : constant Elem_Key := Wire_Key (Input, F + Bound_At (Part - 1));
                   Hi : constant Elem_Key := Wire_Key (Input, F + Bound_At (Part));
                   C  : constant U48 := Wire_U48 (Input, F + Part_At (KB, Part));
+                  KP : constant Part_Index := Natural (Input (Input'First + Range_O_K));
+                  FO : constant Natural := Input'First + Part_At (KP, Part) + Count_Len;
+                  FP : Hash256 := [others => 0];
                begin
                   if not Key_Lt (Lo, Hi) or else C > Elem_Max then
+                     pragma Assert (Refused (Input, Part));
                      return;
                   end if;
+                  --  The fingerprint of the part, byte by byte (the
+                  --  slice equality then follows in a small context).
+                  for I in 0 .. 31 loop
+                     FP (I) := Input (FO + I);
+                     pragma Loop_Invariant (for all I2 in 0 .. I => FP (I2) = Input (FO + I2));
+                  end loop;
                   M := (Kind   => M_Range,
                         Root   => False,
                         Lo     => Lo,
                         Hi     => Hi,
                         Count  => Elem_Count (C),
-                        Fp     => Input (F + Part_At (KB, Part) + Count_Len
-                                         .. F + Part_At (KB, Part) + Count_Len + 31),
+                        Fp     => FP,
                         N      => 0,
                         Items  => No_Items);
+                  pragma Assert (M.Fp = FP);
+                  pragma Assert (for all I in 0 .. 31 => M.Fp (I) = Input (FO + I));
+                  Lemma_Fp_Slice (Input, FO, M.Fp);
+                  pragma Assert
+                    (M.Fp = Input (Input'First + Part_At (KP, Part) + Count_Len
+                                   .. Input'First + Part_At (KP, Part) + Count_Len + 31));
                   pragma Assert (Msg_OK (M));
                   pragma Assert (Range_Head_OK (Input, Part));
+                  Lemma_Range_Fields (Input, Part, M);
                   pragma Assert (Range_Fields (Input, Part, M));
                   OK := True;
                end;
@@ -2106,6 +2255,7 @@ package body Kome.Reconcile with SPARK_Mode is
 
          elsif Tag = Tag_Elements or else Tag = Tag_Have then
             if Part /= 1 or else Input'Last - F < Elems_Fixed - 1 then
+               pragma Assert (Refused (Input, Part));
                return;
             end if;
             declare
@@ -2115,6 +2265,7 @@ package body Kome.Reconcile with SPARK_Mode is
                Items : In_Items := No_Items;
             begin
                if not Key_Lt (Lo, Hi) or else not PL.OK then
+                  pragma Assert (Refused (Input, Part));
                   return;
                end if;
                for T in 1 .. PL.N loop
@@ -2128,6 +2279,7 @@ package body Kome.Reconcile with SPARK_Mode is
                   if not In_Window (Keys (T), Lo, Hi)
                     or else (T > 1 and then not Key_Lt (Keys (T - 1), Keys (T)))
                   then
+                     pragma Assert (Refused (Input, Part));
                      return;
                   end if;
                   Items (T) := (Key => Keys (T), Off => PL.Off (T), Len => PL.Len (T));
@@ -2226,8 +2378,19 @@ package body Kome.Reconcile with SPARK_Mode is
       end loop;
    end Advance_Head;
 
-   function Queue_Step (Old, Upd : Session; M : Message; O : Outbox) return Boolean is
-     (declare
+   --  The definition of Queue_Step, as the Post of a function with a
+   --  body: a goal Queue_Step (A, B, M, O) keeps its term, so the Post of
+   --  a callee that names Queue_Step of an equal session proves it by
+   --  congruence, with no instantiation of the quantifiers.
+   function Queue_Step_Impl (Old, Upd : Session; M : Message; O : Outbox) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Old.Q_Head <= Old.Oblig_Cap and then Old.Q_Len <= Old.Oblig_Cap
+            and then Upd.Q_Head <= Upd.Oblig_Cap and then Upd.Q_Len <= Upd.Oblig_Cap
+            and then Upd.Oblig_Cap = Old.Oblig_Cap
+            and then (if not M.Root then Matches_Head (Old, M)),
+     Post => Queue_Step_Impl'Result =
+       (declare
         Pop  : constant Natural := (if Group_Done (Old, M) then 1 else 0);
         Base : constant Natural := Old.Q_Len - Pop;
       begin
@@ -2242,6 +2405,28 @@ package body Kome.Reconcile with SPARK_Mode is
                        and then Base + Obligations_Upto (O, T) in 1 .. Upd.Q_Len
                      then Open (Upd, Base + Obligations_Upto (O, T))
                             = Fresh (O.P (T).Lo, O.P (T).Hi))));
+
+   function Queue_Step_Impl (Old, Upd : Session; M : Message; O : Outbox) return Boolean is
+   begin
+      return (declare
+        Pop  : constant Natural := (if Group_Done (Old, M) then 1 else 0);
+        Base : constant Natural := Old.Q_Len - Pop;
+      begin
+        Upd.Q_Len = Base + Obligations (O)
+        and then (for all K in 1 .. Base =>
+                    Open (Upd, K) = (if Pop = 1 then Open (Old, K + 1)
+                                     elsif K = 1 and then not M.Root
+                                     then Advanced (Open (Old, 1), M)
+                                     else Open (Old, K)))
+        and then (for all T in 1 .. O.N =>
+                    (if O.P (T).Kind /= P_Have
+                       and then Base + Obligations_Upto (O, T) in 1 .. Upd.Q_Len
+                     then Open (Upd, Base + Obligations_Upto (O, T))
+                            = Fresh (O.P (T).Lo, O.P (T).Hi))));
+   end Queue_Step_Impl;
+
+   function Queue_Step (Old, Upd : Session; M : Message; O : Outbox) return Boolean is
+     (Queue_Step_Impl (Old, Upd, M, O));
 
    procedure Lemma_Queue_Step_Def (Old, Upd : Session; M : Message; O : Outbox) is null;
 
@@ -2450,6 +2635,10 @@ package body Kome.Reconcile with SPARK_Mode is
              and then not Sess.Aborted and then not Sess.Auth_Root_Seen
              and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len = 0,
      Post => After_Hellos (Sess, R) and then Session_OK (Sess)
+             and then Sess.R = Sess'Old.R and then Sess.Cid = Sess'Old.Cid
+             and then Sess.Peer_DH = Sess'Old.Peer_DH and then Sess.Our_N = Sess'Old.Our_N
+             and then Sess.Our_Digest = Sess'Old.Our_Digest
+             and then Sess.Msgs = Sess'Old.Msgs and then not Sess.Aborted
              and then Sess = (Sess'Old with delta
                                 P              => Sess.P,
                                 Budget         => Sess.Budget,
@@ -2524,7 +2713,680 @@ package body Kome.Reconcile with SPARK_Mode is
       Result := S_OK;
    end Next_Phase;
 
-   procedure Receive
+   --  The parts below take every argument of the Post, and each body
+   --  reads only its own.
+   pragma Warnings (Off, "formal parameter * is not referenced");
+   pragma Warnings (GNATprove, Off, "unused variable",
+                    Reason => "each part of the Post of Receive reads only its own arguments");
+
+   --  The Post of Receive with the entry state named Old, in seven parts.
+   --  Each part is a function with a body whose meaning is its Post, so a
+   --  goal that names a part keeps its term. Each exit path of
+   --  Receive_Impl asserts the parts for its own path (small VCs), and the
+   --  Post of Receive is one unfolding step from Receive_Post.
+   --  Receive's Post: the session invariant, the unchanged fields and the outbox.
+   function Recv_Fields
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap,
+     Post => Recv_Fields'Result =
+       (Session_OK (Sess)
+       and then Sess.R = Old.R and then Sess.Cid = Old.Cid
+       and then Sess.Peer_DH = Old.Peer_DH
+       and then Sess.Our_N = Old.Our_N
+       and then Sess.Our_Digest = Old.Our_Digest
+       and then Outbox_OK (S, Out_Box));
+
+   function Recv_Fields
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       (Session_OK (Sess)
+       and then Sess.R = Old.R and then Sess.Cid = Old.Cid
+       and then Sess.Peer_DH = Old.Peer_DH
+       and then Sess.Our_N = Old.Our_N
+       and then Sess.Our_Digest = Old.Our_Digest
+       and then Outbox_OK (S, Out_Box));
+   end Recv_Fields;
+
+   --  Receive's Post: the status is Status_Of.
+   function Recv_Status
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box),
+     Post => Recv_Status'Result =
+       (Result = Status_Of (Old, S, F, Eff, Input, Part, Keys));
+
+   function Recv_Status
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       (Result = Status_Of (Old, S, F, Eff, Input, Part, Keys));
+   end Recv_Status;
+
+   --  Receive's Post: refusals change nothing; Done; the counter; elements only in Auth and Data.
+   function Recv_Kinds
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box),
+     Post => Recv_Kinds'Result =
+       ((if Result in S_Malformed | S_Unexpected | S_Limit then
+                   Sess = Old and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send)
+       and then (if Old.P = Done then Result = S_Unexpected)
+       and then (if Result = S_OK then
+                   Sess.Msgs = Old.Msgs + 1 and then not Sess.Aborted)
+       and then (if Result = S_OK and then M.Kind in M_Range | M_Elements | M_Have
+                 then Old.P in Auth | Data));
+
+   function Recv_Kinds
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       ((if Result in S_Malformed | S_Unexpected | S_Limit then
+                   Sess = Old and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send)
+       and then (if Old.P = Done then Result = S_Unexpected)
+       and then (if Result = S_OK then
+                   Sess.Msgs = Old.Msgs + 1 and then not Sess.Aborted)
+       and then (if Result = S_OK and then M.Kind in M_Range | M_Elements | M_Have
+                 then Old.P in Auth | Data));
+   end Recv_Kinds;
+
+   --  Receive's Post: an inadmissible HELLO credential aborts.
+   function Recv_Hello_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box),
+     Post => Recv_Hello_Abort'Result =
+       ((if Result = S_Aborted and then Old.P = Gate then
+                   M.Kind = M_Hello and then not Old.Peer_Hello_Seen
+                   and then Hello_Wire_OK (Input)
+                   and then not Cred_Admissible (F, Old.Peer_DH, Cred_Of (Input))
+                   and then Peer = Empty_Hello
+                   and then Sess = (Old with delta P => Done, Aborted => True)
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send));
+
+   function Recv_Hello_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       ((if Result = S_Aborted and then Old.P = Gate then
+                   M.Kind = M_Hello and then not Old.Peer_Hello_Seen
+                   and then Hello_Wire_OK (Input)
+                   and then not Cred_Admissible (F, Old.Peer_DH, Cred_Of (Input))
+                   and then Peer = Empty_Hello
+                   and then Sess = (Old with delta P => Done, Aborted => True)
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send));
+   end Recv_Hello_Abort;
+
+   --  Receive's Post: an accepted HELLO.
+   function Recv_Hello_OK
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box),
+     Post => Recv_Hello_OK'Result =
+       ((if Result = S_OK and then Old.P = Gate then
+                   M.Kind = M_Hello and then not Old.Peer_Hello_Seen
+                   and then Hello_Wire_OK (Input) and then Hello_Decoded (Input, Peer)
+                   and then Cred_Admissible (F, Old.Peer_DH, Cred_Of (Input))
+                   and then Sess = (Old with delta
+                                      Peer_Hello_Seen => True,
+                                      Peer_Auth       => Sess.Peer_Auth,
+                                      Peer_Data       => Sess.Peer_Data,
+                                      Peer_Digest     => Sess.Peer_Digest,
+                                      Msgs            => Old.Msgs + 1,
+                                      P               => Sess.P,
+                                      Budget          => Sess.Budget,
+                                      Q               => Sess.Q,
+                                      Q_Len           => Sess.Q_Len,
+                                      Auth_Root_Seen  => Sess.Auth_Root_Seen)
+                   and then Sess.Peer_Digest = Kome.Keys.To_Key256 (Peer.Digest)
+                   and then Sess.Peer_Auth = Claim (Peer.N_Auth)
+                   and then Sess.Peer_Data = Claim (Peer.N_Data)
+                   and then Got = No_Delivery and then Out_Box.N = 0
+                   and then (if Sess.Hello_Sent then After_Hellos (Sess, Root)
+                             else Sess.P = Gate and then not Root.Send
+                                  and then Sess.Budget = Old.Budget
+                                  and then Sess.Q_Len = 0)));
+
+   function Recv_Hello_OK
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       ((if Result = S_OK and then Old.P = Gate then
+                   M.Kind = M_Hello and then not Old.Peer_Hello_Seen
+                   and then Hello_Wire_OK (Input) and then Hello_Decoded (Input, Peer)
+                   and then Cred_Admissible (F, Old.Peer_DH, Cred_Of (Input))
+                   and then Sess = (Old with delta
+                                      Peer_Hello_Seen => True,
+                                      Peer_Auth       => Sess.Peer_Auth,
+                                      Peer_Data       => Sess.Peer_Data,
+                                      Peer_Digest     => Sess.Peer_Digest,
+                                      Msgs            => Old.Msgs + 1,
+                                      P               => Sess.P,
+                                      Budget          => Sess.Budget,
+                                      Q               => Sess.Q,
+                                      Q_Len           => Sess.Q_Len,
+                                      Auth_Root_Seen  => Sess.Auth_Root_Seen)
+                   and then Sess.Peer_Digest = Kome.Keys.To_Key256 (Peer.Digest)
+                   and then Sess.Peer_Auth = Claim (Peer.N_Auth)
+                   and then Sess.Peer_Data = Claim (Peer.N_Data)
+                   and then Got = No_Delivery and then Out_Box.N = 0
+                   and then (if Sess.Hello_Sent then After_Hellos (Sess, Root)
+                             else Sess.P = Gate and then not Root.Send
+                                  and then Sess.Budget = Old.Budget
+                                  and then Sess.Q_Len = 0)));
+   end Recv_Hello_OK;
+
+   --  Receive's Post: a closed gate in Auth or Data aborts.
+   function Recv_Gate_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box),
+     Post => Recv_Gate_Abort'Result =
+       ((if Result = S_Aborted and then Old.P in Auth | Data then
+                   not Gate_Open (Old.Cid, F, Eff, Old.Peer_DH)
+                   and then Sess = (Old with delta P => Done, Aborted => True)
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send));
+
+   function Recv_Gate_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       ((if Result = S_Aborted and then Old.P in Auth | Data then
+                   not Gate_Open (Old.Cid, F, Eff, Old.Peer_DH)
+                   and then Sess = (Old with delta P => Done, Aborted => True)
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send));
+   end Recv_Gate_Abort;
+
+   --  Receive's Post: an accepted RANGE part, ROOT, ELEMENTS or HAVE.
+   function Recv_Data_OK
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box)
+             and then (if Result = S_OK then Sess.Msgs = Old.Msgs + 1),
+     Post => Recv_Data_OK'Result =
+       ((if Result = S_OK and then Old.P in Auth | Data then
+                   M.Kind in M_Range | M_Elements | M_Have
+                   and then not Root.Send
+                   and then M = Bind (Old, Decode_Of (Input, Part, Keys).M)
+                   and then Decode_Facts (Input, Part, Keys, Decode_Of (Input, Part, Keys).M, True)
+                   and then Msg_OK (M)
+                   and then Root_Or_Owed (Old, M)
+                   and then Gate_Open (Old.Cid, F, Eff, Old.Peer_DH)
+                   and then Out_Box = Reply_Of (S, M).Box
+                   and then Got = Reply_Of (S, M).Got
+                   and then Delivers (S, M, Got)
+                   and then Answers (S, M, Out_Box)
+                   and then Shrinks (S, M, Out_Box)
+                   and then Sess.Ranges = Old.Ranges + Num_Ranges (Out_Box)
+                   and then Sess.Ranges <= Range_Budget (S)
+                   and then Sess.Shipped = Old.Shipped + Item_Bytes (S, Out_Box)
+                   and then Sess.Shipped <= Ship_Budget (S)
+                   and then Sess.Q_Len =
+                              Old.Q_Len
+                              - (if Group_Done (Old, M) then 1 else 0)
+                              + Obligations (Out_Box)
+                   and then Queue_Step (Old, Sess, M, Out_Box)
+                   and then Sess.Auth_Root_Seen = (Old.Auth_Root_Seen or else M.Root)
+                   and then Sess.P =
+                              (if Old.P = Data
+                                 or else (M.Root and then Old.Auth_Root_Seen)
+                               then (if Sess.Q_Len = 0 then Done else Data)
+                               else Auth)
+                   and then Sess = (Old with delta
+                                      Msgs           => Old.Msgs + 1,
+                                      P              => Sess.P,
+                                      Q              => Sess.Q,
+                                      Q_Head         => Sess.Q_Head,
+                                      Q_Len          => Sess.Q_Len,
+                                      Ranges         => Sess.Ranges,
+                                      Shipped        => Sess.Shipped,
+                                      Auth_Root_Seen => Sess.Auth_Root_Seen)));
+
+   function Recv_Data_OK
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       ((if Result = S_OK and then Old.P in Auth | Data then
+                   M.Kind in M_Range | M_Elements | M_Have
+                   and then not Root.Send
+                   and then M = Bind (Old, Decode_Of (Input, Part, Keys).M)
+                   and then Decode_Facts (Input, Part, Keys, Decode_Of (Input, Part, Keys).M, True)
+                   and then Msg_OK (M)
+                   and then Root_Or_Owed (Old, M)
+                   and then Gate_Open (Old.Cid, F, Eff, Old.Peer_DH)
+                   and then Out_Box = Reply_Of (S, M).Box
+                   and then Got = Reply_Of (S, M).Got
+                   and then Delivers (S, M, Got)
+                   and then Answers (S, M, Out_Box)
+                   and then Shrinks (S, M, Out_Box)
+                   and then Sess.Ranges = Old.Ranges + Num_Ranges (Out_Box)
+                   and then Sess.Ranges <= Range_Budget (S)
+                   and then Sess.Shipped = Old.Shipped + Item_Bytes (S, Out_Box)
+                   and then Sess.Shipped <= Ship_Budget (S)
+                   and then Sess.Q_Len =
+                              Old.Q_Len
+                              - (if Group_Done (Old, M) then 1 else 0)
+                              + Obligations (Out_Box)
+                   and then Queue_Step (Old, Sess, M, Out_Box)
+                   and then Sess.Auth_Root_Seen = (Old.Auth_Root_Seen or else M.Root)
+                   and then Sess.P =
+                              (if Old.P = Data
+                                 or else (M.Root and then Old.Auth_Root_Seen)
+                               then (if Sess.Q_Len = 0 then Done else Data)
+                               else Auth)
+                   and then Sess = (Old with delta
+                                      Msgs           => Old.Msgs + 1,
+                                      P              => Sess.P,
+                                      Q              => Sess.Q,
+                                      Q_Head         => Sess.Q_Head,
+                                      Q_Len          => Sess.Q_Len,
+                                      Ranges         => Sess.Ranges,
+                                      Shipped        => Sess.Shipped,
+                                      Auth_Root_Seen => Sess.Auth_Root_Seen)));
+   end Recv_Data_OK;
+
+   --  Recv_Status from the status, in a small context (the exit paths
+   --  of Receive_Impl carry the whole reply in theirs).
+   procedure Lemma_Recv_Status
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap and then Session_OK (Sess)
+             and then Outbox_OK (S, Out_Box)
+             and then Result = Status_Of (Old, S, F, Eff, Input, Part, Keys),
+     Post => Recv_Status (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got,
+                          Root, Result);
+
+   procedure Lemma_Recv_Status
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   is null;
+
+   --  Recv_Kinds on a refusal, from its facts in a small context.
+   procedure Lemma_Recv_Kinds_Refused
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap
+             and then Session_OK (Sess) and then Outbox_OK (S, Out_Box)
+             and then Result in S_Malformed | S_Unexpected | S_Limit
+             and then Old.P /= Done
+             and then Sess = Old and then Out_Box.N = 0 and then Got = No_Delivery
+             and then not Root.Send,
+     Post => Recv_Kinds (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+
+   procedure Lemma_Recv_Kinds_Refused
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   is null;
+
+   --  Recv_Hello_Abort on a refused HELLO credential, from its facts in a
+   --  small context.
+   procedure Lemma_Recv_Hello_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap
+             and then Session_OK (Sess) and then Outbox_OK (S, Out_Box)
+             and then Result = S_Aborted and then Old.P = Gate
+             and then M.Kind = M_Hello and then not Old.Peer_Hello_Seen
+             and then Hello_Wire_OK (Input)
+             and then not Cred_Admissible (F, Old.Peer_DH, Cred_Of (Input))
+             and then Peer = Empty_Hello
+             and then Sess = (Old with delta P => Done, Aborted => True)
+             and then Out_Box.N = 0 and then Got = No_Delivery and then not Root.Send,
+     Post => Recv_Hello_Abort (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+
+   procedure Lemma_Recv_Hello_Abort
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status)
+   is null;
+
+   function Receive_Post
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then Session_OK (Old) and then Sess.Oblig_Cap = Old.Oblig_Cap,
+     Post => Receive_Post'Result =
+       (Recv_Fields (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Status (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Kinds (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Hello_Abort (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Hello_OK (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Gate_Abort (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Data_OK (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+
+   function Receive_Post
+     (Old, Sess : Session;
+      S         : Snapshot;
+      F         : Kome.Frontier.State;
+      Eff       : Kome.Records.Roster_Record;
+      Input     : Byte_Array;
+      Part      : Positive;
+      Keys      : Key_List;
+      M         : Message;
+      Peer      : Hello;
+      Out_Box   : Outbox;
+      Got       : Delivery;
+      Root      : Root_Out;
+      Result    : Session_Status) return Boolean
+   is
+   begin
+      return
+       (Recv_Fields (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Status (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Kinds (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Hello_Abort (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Hello_OK (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Gate_Abort (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result)
+         and then Recv_Data_OK (Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+   end Receive_Post;
+
+   pragma Warnings (GNATprove, On, "unused variable");
+   pragma Warnings (On, "formal parameter * is not referenced");
+
+   --  The body of Receive. Its Post is Receive_Post of the entry state, so
+   --  Receive's own Post is one step from it (Receive_Post).
+   procedure Receive_Impl
+     (Sess       : in out Session;
+      S          : Snapshot;
+      P          : Prefix;
+      F          : Kome.Frontier.State;
+      Eff        : Kome.Records.Roster_Record;
+      Input      : Byte_Array;
+      Part       : Positive;
+      Keys       : Key_List;
+      M          : out Message;
+      Peer       : out Hello;
+      Out_Box    : out Outbox;
+      Got        : out Delivery;
+      Root       : out Root_Out;
+      Result     : out Session_Status)
+   with
+     Global => null,
+     Pre    => Valid (S) and then Session_OK (Sess)
+               and then (if Sess.P in Auth | Data then Same_Snapshot (Sess, S)
+                                                       and then Sealed (S, P)),
+     Post   => Receive_Post (Sess'Old, Sess, S, F, Eff, Input, Part, Keys, M, Peer,
+                             Out_Box, Got, Root, Result);
+
+   procedure Receive_Impl
      (Sess       : in out Session;
       S          : Snapshot;
       P          : Prefix;
@@ -2552,11 +3414,41 @@ package body Kome.Reconcile with SPARK_Mode is
       if Sess.P = Done then
          Result := S_Unexpected;
          pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+         pragma Assert (Recv_Fields
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         Lemma_Recv_Status
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+         pragma Assert (Recv_Kinds
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Gate_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Data_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
          return;
       end if;
       if Input'Last < Input'First then
          Result := S_Malformed;
          pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+         pragma Assert (Recv_Fields
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         Lemma_Recv_Status
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+         pragma Assert (Recv_Kinds
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Gate_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Data_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
          return;
       end if;
 
@@ -2566,16 +3458,61 @@ package body Kome.Reconcile with SPARK_Mode is
          if Sess.P /= Gate or else Sess.Peer_Hello_Seen then
             Result := S_Unexpected;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          if Sess.Msgs = Sess.Budget then
             Result := S_Limit;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          if not Hello_Wire_OK (Input) then
             Result := S_Malformed;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          --  The credential check (A13, G12), before the decode: a refused
@@ -2586,6 +3523,31 @@ package body Kome.Reconcile with SPARK_Mode is
             Result := S_Aborted;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             pragma Assert (Session_OK (Sess));
+            pragma Assert (Sess.R = Sess0.R and then Sess.Cid = Sess0.Cid
+                           and then Sess.Peer_DH = Sess0.Peer_DH
+                           and then Sess.Our_N = Sess0.Our_N
+                           and then Sess.Our_Digest = Sess0.Our_Digest);
+            pragma Assert (Sess = (Sess0 with delta P => Done, Aborted => True));
+            pragma Assert (not Cred_Admissible (F, Sess0.Peer_DH, Cred_Of (Input)));
+            pragma Assert (M.Kind = M_Hello and then not Sess0.Peer_Hello_Seen
+                           and then Hello_Wire_OK (Input) and then Peer = Empty_Hello
+                           and then Out_Box.N = 0 and then Got = No_Delivery
+                           and then not Root.Send);
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          Decode_Hello (Input, Peer, OK);
@@ -2617,12 +3579,48 @@ package body Kome.Reconcile with SPARK_Mode is
                                   Q               => Sess.Q,
                                   Q_Len           => Sess.Q_Len,
                                   Auth_Root_Seen  => Sess.Auth_Root_Seen));
+         pragma Assert (Sess.R = Sess0.R and then Sess.Cid = Sess0.Cid
+                        and then Sess.Peer_DH = Sess0.Peer_DH
+                        and then Sess.Our_N = Sess0.Our_N
+                        and then Sess.Our_Digest = Sess0.Our_Digest);
+         pragma Assert (Out_Box = Empty_Box and then Outbox_OK (S, Out_Box));
+         pragma Assert (Sess.Msgs = Sess0.Msgs + 1 and then not Sess.Aborted);
+         pragma Assert (Recv_Fields
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         Lemma_Recv_Status
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+         pragma Assert (Recv_Kinds
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Hello_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Gate_Abort
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Recv_Data_OK
+           (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+         pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
 
       else
          --  RANGE part, ROOT, ELEMENTS, HAVE: only in Auth and Data.
          if Sess.P not in Auth | Data then
             Result := S_Unexpected;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          --  The gate, after the last batch (S9).
@@ -2632,11 +3630,41 @@ package body Kome.Reconcile with SPARK_Mode is
             Result := S_Aborted;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             pragma Assert (Session_OK (Sess));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          if Sess.Msgs = Sess.Budget then
             Result := S_Limit;
             pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+            pragma Assert (Recv_Fields
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            Lemma_Recv_Status
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+            pragma Assert (Recv_Kinds
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Hello_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Gate_Abort
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Recv_Data_OK
+              (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+            pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             return;
          end if;
          declare
@@ -2645,6 +3673,21 @@ package body Kome.Reconcile with SPARK_Mode is
             if not D.OK then
                Result := S_Malformed;
                pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+               pragma Assert (Recv_Fields
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               Lemma_Recv_Status
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+               pragma Assert (Recv_Kinds
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Gate_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Data_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
                return;
             end if;
             M := Bind (Sess, D.M);
@@ -2654,6 +3697,21 @@ package body Kome.Reconcile with SPARK_Mode is
             if not Root_Or_Owed (Sess, M) then
                Result := S_Unexpected;
                pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+               pragma Assert (Recv_Fields
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               Lemma_Recv_Status
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+               pragma Assert (Recv_Kinds
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Gate_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Data_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
                return;
             end if;
             declare
@@ -2677,9 +3735,31 @@ package body Kome.Reconcile with SPARK_Mode is
                if not Within_Budgets (Sess, S, M, R.Box) then
                   Result := S_Limit;
                   pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
+                  pragma Assert (Sess = Sess0);
+                  pragma Assert (Out_Box.N = 0 and then Got = No_Delivery
+                                 and then not Root.Send);
+                  pragma Assert (Recv_Fields
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+                  Lemma_Recv_Status
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+                  pragma Assert (Sess0.P in Auth | Data);
+                  Lemma_Recv_Kinds_Refused
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+                  pragma Assert (Recv_Hello_Abort
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+                  pragma Assert (Recv_Hello_OK
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+                  pragma Assert (Recv_Gate_Abort
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+                  pragma Assert (Recv_Data_OK
+                    (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+                  pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
                   return;
                end if;
                pragma Assert (Status_Of (Sess0, S, F, Eff, Input, Part, Keys) = S_OK);
+               pragma Assert (Sess = Sess0);
+               pragma Assert (Root_Or_Owed (Sess0, M));
+               pragma Assert (Gate_Open (Sess0.Cid, F, Eff, Sess0.Peer_DH));
                Out_Box := R.Box;
                Got := R.Got;
                Accept_Data (Sess, S, M, Out_Box);
@@ -2691,10 +3771,84 @@ package body Kome.Reconcile with SPARK_Mode is
                pragma Assert (Msg_OK (M));
                pragma Assert (Delivers (S, M, Got) and then Answers (S, M, Out_Box)
                               and then Shrinks (S, M, Out_Box));
+               --  The Post of this path, conjunct by conjunct.
+               pragma Assert (Session_OK (Sess) and then not Sess.Aborted);
+               pragma Assert (Sess.R = Sess0.R and then Sess.Cid = Sess0.Cid
+                              and then Sess.Peer_DH = Sess0.Peer_DH
+                              and then Sess.Our_N = Sess0.Our_N
+                              and then Sess.Our_Digest = Sess0.Our_Digest);
+               pragma Assert (Outbox_OK (S, Out_Box));
+               pragma Assert (Sess.Msgs = Sess0.Msgs + 1);
+               pragma Assert (M.Kind in M_Range | M_Elements | M_Have
+                              and then not Root.Send);
+               pragma Assert (M = Bind (Sess0, Decode_Of (Input, Part, Keys).M));
+               pragma Assert
+                 (Decode_Facts (Input, Part, Keys, Decode_Of (Input, Part, Keys).M, True));
+               pragma Assert (Root_Or_Owed (Sess0, M));
+               pragma Assert (Out_Box = Reply_Of (S, M).Box and then Got = Reply_Of (S, M).Got);
+               pragma Assert (Sess.Ranges = Sess0.Ranges + Num_Ranges (Out_Box)
+                              and then Sess.Ranges <= Range_Budget (S));
+               pragma Assert (Sess.Shipped = Sess0.Shipped + Item_Bytes (S, Out_Box)
+                              and then Sess.Shipped <= Ship_Budget (S));
+               pragma Assert (Sess.Q_Len =
+                                Sess0.Q_Len
+                                - (if Group_Done (Sess0, M) then 1 else 0)
+                                + Obligations (Out_Box));
+               pragma Assert (Queue_Step (Sess0, Sess, M, Out_Box));
+               pragma Assert (Sess.Auth_Root_Seen = (Sess0.Auth_Root_Seen or else M.Root));
+               pragma Assert (Sess.P =
+                                (if Sess0.P = Data
+                                   or else (M.Root and then Sess0.Auth_Root_Seen)
+                                 then (if Sess.Q_Len = 0 then Done else Data)
+                                 else Auth));
+               pragma Assert (Sess = (Sess0 with delta
+                                        Msgs           => Sess0.Msgs + 1,
+                                        P              => Sess.P,
+                                        Q              => Sess.Q,
+                                        Q_Head         => Sess.Q_Head,
+                                        Q_Len          => Sess.Q_Len,
+                                        Ranges         => Sess.Ranges,
+                                        Shipped        => Sess.Shipped,
+                                        Auth_Root_Seen => Sess.Auth_Root_Seen));
+               pragma Assert (Recv_Fields
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               Lemma_Recv_Status
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
+               pragma Assert (Recv_Kinds
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Hello_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Gate_Abort
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Recv_Data_OK
+                 (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
+               pragma Assert (Receive_Post (Sess0, Sess, S, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result));
             end;
             end;
          end;
       end if;
+   end Receive_Impl;
+
+   procedure Receive
+     (Sess       : in out Session;
+      S          : Snapshot;
+      P          : Prefix;
+      F          : Kome.Frontier.State;
+      Eff        : Kome.Records.Roster_Record;
+      Input      : Byte_Array;
+      Part       : Positive;
+      Keys       : Key_List;
+      M          : out Message;
+      Peer       : out Hello;
+      Out_Box    : out Outbox;
+      Got        : out Delivery;
+      Root       : out Root_Out;
+      Result     : out Session_Status)
+   is
+   begin
+      Receive_Impl (Sess, S, P, F, Eff, Input, Part, Keys, M, Peer, Out_Box, Got, Root, Result);
    end Receive;
 
 end Kome.Reconcile;
