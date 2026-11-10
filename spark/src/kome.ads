@@ -92,7 +92,9 @@ package Kome with SPARK_Mode, Pure is
    --  the signer signed).
    --  Slice_Max is a compile-time constant of every state (SIMPLIFY.md
    --  S15): the frontier holds at most Signers_Max * Slice_Max = 8_192
-   --  authorization records.
+   --  authorization records. A ROSTER that finds no room there still
+   --  counts for maxceil: the state keeps one ceiling cell beside the
+   --  slices (Kome.Frontier.Raise_Ceil; AUDIT.md H12).
    Signers_Max : constant := 16;
    Slice_Max   : constant := 512;
 
@@ -131,7 +133,8 @@ package Kome with SPARK_Mode, Pure is
    --  Kome.Frontier, Kome.Store, Kome.Emit). They are also the result codes
    --  of the C ABI, when it exists (DESIGN.md §10.6). Each operation that can
    --  fail returns one of these codes. On failure, it does not change the
-   --  store.
+   --  store. Ceil_Only is not a failure: the store changed (the ceiling
+   --  cell, and the expiry that follows), though the record is not held.
    type Status is
      (OK,
       Dominated,        --  record applied: a held record already beats it
@@ -144,9 +147,14 @@ package Kome with SPARK_Mode, Pure is
                         --  table, is full; nothing changed (DESIGN.md §7)
       Log_Full,         --  the record fits F but not the log; nothing
                         --  changed: compact and retry (DESIGN.md §7, E2)
-      Busy);            --  Kome.Store.Compact while a reconciliation
+      Busy,             --  Kome.Store.Compact while a reconciliation
                         --  session holds a snapshot of the log
                         --  (Kome.Store.Pinned, SIMPLIFY.md S21); nothing
                         --  changed: compact after the session
+      Ceil_Only);       --  a ROSTER that is not held and whose ceiling, above
+                        --  maxceil, is now recorded in the ceiling cell: its
+                        --  signer's slice (or the slot table) has no room
+                        --  (Put_Frame), or it came as the ceiling frame of a
+                        --  HELLO (Put_Ceil) (DESIGN.md §7, §8; AUDIT.md H12)
 
 end Kome;
