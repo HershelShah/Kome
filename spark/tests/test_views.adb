@@ -29,7 +29,11 @@
 --      voided;
 --  (j) contested (S12): an eligible roster other than ROSTER_eff at its
 --      gen, from another signer (rivals) or the same one (a fork);
---  (k) skew (S7): now − maxceil, signed, at the ends of U48.
+--  (k) skew (S7): now − maxceil, signed, at the ends of U48;
+--  (l) the ceiling cell (AUDIT.md H12): a roster in the cell changes
+--      maxceil and skew and no other view, where the same roster in a row
+--      quarantines; a root-void of the cell's signer does nothing to the
+--      cell.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
@@ -926,6 +930,95 @@ procedure Test_Views with SPARK_Mode => Off is
          Check ("skew at the top of U48: no overflow",
                 Max_Ceil (T) = U48'Last and Skew (T, 0) = -Time64 (U48'Last)
                 and Skew (T, U48'Last) = 0);
+      end;
+
+      --  (l) The ceiling cell (AUDIT.md H12; DESIGN.md §4, §7). Only
+      --  maxceil reads it, and skew through maxceil. R is a stolen root
+      --  that the founding key has voided; RR is the recovery roster; R3
+      --  is the thief's roster at a gen above RR's.
+      declare
+         C0 : constant U48 := 1000;
+         C2 : constant U48 := 90_000;
+         R0 : constant Header := Roster (Fnd, 5, C0, 100);
+         G  : constant Header := Grant (Fnd, 1, 101, Cap => C0);
+         VR : constant Header := Revoke (Fnd, 8, 0, 102);       --  root_void of R
+         RR : constant Header := Roster (Fnd, 9, C0, 103);
+         XM : constant Header := Revoke (Fnd, 2, 50, 104);      --  a revoked member
+         PW : constant Header := Put (1, 'n', V (900, 1, 1, 105));
+         PX : constant Header := Put (2, 'n', V (60, 2, 1, 106));   --  void if admitted
+         R3 : constant Header := Roster (8, 20, C2, 107);
+         VP : constant Header_List := [PW, PX];
+         S      : State := Run ([R0, G, VR, RR, XM, PW]);
+         Before : constant State := S;
+         T      : State := S;
+         U      : State := Run ([R0, G, RR, PW]);
+      begin
+         Check ("H12: before the raise: the recovery roster is ROSTER_eff, no quarantine",
+                Roster_Eff (S) = (Present => True, Hdr => RR)
+                and Roster_Max (S) = (Present => True, Hdr => RR)
+                and not Holds (S, R0) and not Contested (S) and not Quarantined (S)
+                and Root_Void (S, Key (8)) and Revoked (S, Key (2))
+                and In_W (S, Key (1)) and W_Cap (S, Key (1)) = C0
+                and Max_Ceil (S) = C0 and Skew (S, 5000) = 4000
+                and not Has_Ceil (S));
+         Raise_Ceil (S, R3, 77);
+         --  The views are functions of the held records: the locality
+         --  lemmas run across the raise (their Same_Data and Same_Auth
+         --  hypotheses are evaluated).
+         Lemma_Roster_Local (Before, S);
+         for K of Keys loop
+            Lemma_Root_Void_Local (Before, S, Key (K));
+            Lemma_W_Eff_Local (Before, S, Key (K));
+            Lemma_Revoked_At_Local (Before, S, Key (K), 250);
+         end loop;
+         for P of VP loop
+            Lemma_Void_Local (Before, S, P);
+         end loop;
+         for P of Probes loop
+            Lemma_Views_Local (Before, S, Ent (P.E), Fld (P.F));
+         end loop;
+         Check ("H12: the cell holds the roster, and no row does",
+                Has_Ceil (S) and Ceil_Held (S) = R3 and Ceil_Live (S)
+                and not Holds (S, R3) and Slot_Of (S, Key (8)) = 0
+                and Kome.Frontier.Count (S) = Kome.Frontier.Count (Before));
+         Check ("H12: a roster in the cell changes no roster view, gate input or quarantine",
+                Roster_Eff (S) = (Present => True, Hdr => RR)
+                and Roster_Max (S) = (Present => True, Hdr => RR)
+                and not Contested (S) and not Quarantined (S)
+                and Same_Auth_Views (Before, S, VP));
+         Check ("H12: a roster in the cell changes no revocation view, W or wcap",
+                Root_Void (S, Key (8)) and Revoked (S, Key (2))
+                and (for all K of Keys =>
+                       In_W (Before, Key (K)) = In_W (S, Key (K))
+                       and then W_Cap (Before, Key (K)) = W_Cap (S, Key (K))
+                       and then Revoked_At (Before, Key (K), 250) = Revoked_At (S, Key (K), 250)));
+         Check ("H12: a roster in the cell changes no data view", Same_Views (Before, S));
+         Check ("H12: maxceil and skew follow the cell",
+                Max_Ceil (S) = C2 and Held_Ceil (S) = C0
+                and Skew (S, 5000) = 5000 - Time64 (C2) and Skew (S, C2) = 0
+                and Skew (Before, 5000) = 4000);
+         Def_Lemmas (S, VP);
+
+         --  For contrast: the same roster applied to a row.
+         Apply_Auth (T, R3, "the thief's roster in a row");
+         Check ("H12: for contrast, the same roster in a row quarantines",
+                Holds (T, R3) and Quarantined (T)
+                and Roster_Max (T) = (Present => True, Hdr => R3)
+                and Roster_Eff (T) = (Present => True, Hdr => RR)
+                and Max_Ceil (T) = C2 and not Has_Ceil (T));
+
+         --  A root-void of the cell's signer does nothing to the cell or
+         --  to maxceil, and does not quarantine: the cell's roster is not
+         --  a held record.
+         Raise_Ceil (U, R3, 78);
+         Check ("H12: before the root-void: the cell's signer is not voided",
+                not Root_Void (U, Key (8)) and Max_Ceil (U) = C2 and not Quarantined (U));
+         Apply_Auth (U, VR, "the founding REVOKE of the cell's signer");
+         Check ("H12: a root-void of the cell's signer leaves the cell and maxceil",
+                Root_Void (U, Key (8)) and Has_Ceil (U) and Ceil_Held (U) = R3
+                and Ceil_Tag (U) = 78 and Max_Ceil (U) = C2 and not Quarantined (U)
+                and Roster_Eff (U) = (Present => True, Hdr => RR));
+         Def_Lemmas (U, VP);
       end;
 
       --  far(p): advisory, with no overflow at the top of U48.

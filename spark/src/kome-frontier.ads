@@ -2,24 +2,42 @@
 --  (DESIGN.md §3, §4, §7; Frontier.lean `F`, `adm`, `applyD`, `expire`).
 --
 --  The state is the frontier F: the held records, each with an opaque
---  payload tag (below). Nothing else in the state is important.
---  Admission reads three views of F (SIMPLIFY.md S6):
+--  payload tag (below), and the ceiling cell (below). Nothing else in the
+--  state is important.
+--  Admission reads three views of the state (SIMPLIFY.md S6):
 --    * Max_Ceil (F), maxceil(F): the largest ceiling_t of the held
---      rosters;
+--      rosters (Held_Ceil) and of the ceiling cell;
 --    * In_W (F, k), k ∈ W(F): k is the subject of a held GRANT;
 --    * W_Cap (F, k), wcap(F, k): the largest cap of the held GRANTs of k
 --      (AUDIT.md A1).
---  They are opaque functions over the authorization rows, each with a
---  _Def lemma (Lemma_Max_Ceil_Def, Lemma_In_W_Def, Lemma_W_Cap_Def). They
---  are not stored: a binding may cache them outside the proof. A record
---  that is not held never raises them: a dominated roster or grant
---  changes nothing (DESIGN.md §4, D1′). Domination does not make them
---  lose a value (T4', Kome.Headers.Lemma_Dominator_Same_Key;
---  Lemma_Views_Step):
+--  They are opaque functions over the authorization rows (Max_Ceil also
+--  reads the ceiling cell), each with a _Def lemma (Lemma_Held_Ceil_Def
+--  and Lemma_Max_Ceil_Def, Lemma_In_W_Def, Lemma_W_Cap_Def). They are not
+--  stored: a binding may cache them outside the proof. A record that is
+--  not held never raises In_W or W_Cap, and raises Max_Ceil only through
+--  the ceiling cell: a dominated roster or grant changes nothing
+--  (DESIGN.md §4, D1′). Domination does not make them lose a value (T4',
+--  Kome.Headers.Lemma_Dominator_Same_Key; Lemma_Views_Step):
 --    * a roster leaves F only under a roster of its signer with a ceiling
 --      that is at least its own ceiling;
 --    * a grant leaves F only under a grant of the same issuer and subject
 --      with a cap that is at least its own cap.
+--
+--  The ceiling cell (AUDIT.md H12; DESIGN.md §7). The state has one cell
+--  outside the rows. It holds one roster, with a payload tag, that is not
+--  a held record: Count, Held, Tag, Holds, Dom, Drops_Any, Run and Slot do
+--  not read it, and only Max_Ceil does. Raise_Ceil writes it, for a
+--  roster whose ceiling is above Max_Ceil. Kome.Store calls Raise_Ceil
+--  for a roster that does not enter a row (Apply answered Auth_Full, or
+--  the roster is the ceiling frame of a peer's HELLO), so a refusal for
+--  room never keeps maxceil below a roster that the replica was offered.
+--  Apply, Expire and Set_Tag never change the cell (Ceil_Same), and a
+--  held record never leaves the rows because of it. The cell is a
+--  max-register on the ceiling: Raise_Ceil requires a ceiling strictly
+--  above Max_Ceil, which is at least the ceiling of the roster that the
+--  cell held. There is no relation between the cell and the rows: the
+--  cell's roster can also be held, and a held roster can have a ceiling
+--  at or above the cell's (the cell is then not Ceil_Live).
 --
 --  Payload tags (SIMPLIFY.md S14). Each held record carries a Tag : U64
 --  that the lattice ignores: Is_Frontier, Admitted, Dom and the views do
@@ -52,6 +70,8 @@
 --  Order of Apply (D11, DESIGN.md §7): admission, duplicate, domination,
 --  room, commit. Nothing changes before the room decision. On each
 --  refusal, nothing changes (T13): the Post says `Unchanged (S'Old, S)`.
+--  (Kome.Store decides after an Auth_Full whether the roster goes to the
+--  ceiling cell; Apply itself never writes the cell.)
 --
 --  Expiry (D10, DESIGN.md §7, SIMPLIFY.md S7): `Expire (F, Hz)` removes
 --  the DELs with t <= Hz from the data row (G1: it is scoped to data) and
@@ -68,7 +88,11 @@
 --    * T11 (a) (Expire leaves a frontier with no expired DEL and the same
 --      authorization rows);
 --    * T12 (an authorization record changes only its own row);
---    * T13 (bounds; each refusal leaves the state unchanged).
+--    * T13 (bounds; each refusal leaves the state unchanged);
+--    * T19, the part of this package (AUDIT.md H12): Raise_Ceil gives
+--      Max_Ceil = Ceil_Of (R) for a roster above Max_Ceil and keeps the
+--      rows (Same_Held); Lemma_Ceil_Bound bounds the ceiling of a held or
+--      dominated record by Max_Ceil. Kome.Store states the step.
 --
 --  gnatprove 14 workaround (documented, keep it): State has no
 --  Dynamic_Predicate, because gnatprove 14 crashes when it sees an
@@ -191,9 +215,47 @@ package Kome.Frontier with SPARK_Mode is
    --  The admission views (SIMPLIFY.md S6; opaque, with _Def lemmas)
    ---------------------------------------------------------------------
 
-   --  maxceil(F): the largest ceiling_t of the held rosters, 0 if none
-   --  (Frontier.lean `maxCeil`).
+   --  The largest ceiling_t of the held rosters, 0 if none (Frontier.lean
+   --  `maxCeil` of the held list). Opaque; Lemma_Held_Ceil_Def. This is the
+   --  function that Max_Ceil was before the ceiling cell.
+   function Held_Ceil (S : State) return U48 with Global => null;
+
+   --  The ceiling cell (AUDIT.md H12; DESIGN.md §7): whether it holds a
+   --  roster, the roster, and its payload tag.
+   function Has_Ceil (S : State) return Boolean with Global => null;
+   function Ceil_Held (S : State) return Header with
+     Global => null,
+     Pre    => Has_Ceil (S);
+   function Ceil_Tag (S : State) return U64 with
+     Global => null,
+     Pre    => Has_Ceil (S);
+
+   --  The ceiling that the cell carries, 0 if it is empty.
+   function Ceil_Value (S : State) return U48 is
+     (if Has_Ceil (S) then Ceil_Of (Ceil_Held (S)) else 0);
+
+   --  maxceil(F): the larger of Held_Ceil and the ceiling cell (opaque;
+   --  Lemma_Max_Ceil_Def).
    function Max_Ceil (S : State) return U48 with Global => null;
+
+   --  The cell is the only reason for maxceil: it is strictly above every
+   --  held roster. A replica sends the cell's frame in its HELLO exactly
+   --  then (DESIGN.md §8). When a held roster has the cell's ceiling or
+   --  more, that roster is an element and travels as one.
+   function Ceil_Live (S : State) return Boolean is
+     (Has_Ceil (S) and then Ceil_Value (S) > Held_Ceil (S));
+
+   --  The two states have the same cell, tag included. Quantifier-free.
+   function Ceil_Same (Old, Upd : State) return Boolean is
+     (Has_Ceil (Old) = Has_Ceil (Upd)
+      and then (if Has_Ceil (Old)
+                then Ceil_Held (Upd) = Ceil_Held (Old)
+                     and then Ceil_Tag (Upd) = Ceil_Tag (Old)));
+
+   --  R is a roster whose ceiling is above maxceil: the cell takes it.
+   --  "Dominates" for the cell: a strict order on ceilings.
+   function Raises_Ceil (S : State; R : Header) return Boolean is
+     (R.K = K_Roster and then R.V.T > Max_Ceil (S));
 
    --  k ∈ W(F): F holds a GRANT of k (from any issuer).
    function In_W (S : State; K : Key256) return Boolean with Global => null;
@@ -237,13 +299,19 @@ package Kome.Frontier with SPARK_Mode is
    --      authorization records issued by Slot_Key (S, K);
    --    * slot 1 belongs to the founding key, slot keys are distinct, and
    --      each used slot after slot 1 is not empty;
-   --    * the rows are within their capacities.
+   --    * the rows are within their capacities;
+   --    * the ceiling cell, if it holds a record, holds a canonical roster
+   --      with a ceiling of at least 1 (Lemma_Frontier_Ceil).
    --  It does not read the tags.
    function Is_Frontier (S : State) return Boolean with Global => null;
 
-   --  Nothing observable changed, tags included (opaque, ghost;
-   --  Lemma_Unchanged). Clients use this, not "=", on State (see the
-   --  header comment).
+   --  The rows are the same, tags included; the ceiling cell can differ
+   --  (opaque, ghost; Lemma_Same_Held).
+   function Same_Held (Old, Upd : State) return Boolean with Ghost, Global => null;
+
+   --  Nothing observable changed, tags and the ceiling cell included
+   --  (opaque, ghost; Lemma_Unchanged). Clients use this, not "=", on
+   --  State (see the header comment).
    function Unchanged (Old, Upd : State) return Boolean with Ghost, Global => null;
 
    ---------------------------------------------------------------------
@@ -300,7 +368,8 @@ package Kome.Frontier with SPARK_Mode is
                and then Slot_Key (Empty'Result, 1) = Founding
                and then Slot_Count (Empty'Result, 1) = 0
                and then Max_Ceil (Empty'Result) = 0
-               and then Is_Frontier (Empty'Result);
+               and then Is_Frontier (Empty'Result)
+               and then not Has_Ceil (Empty'Result);
 
    --  Apply one record R with payload tag T (DESIGN.md §7 steps 1-6).
    --    * OK means that R is held, now or before. A duplicate is a no-op
@@ -310,7 +379,8 @@ package Kome.Frontier with SPARK_Mode is
    --    * Inadmissible, No_Space and Auth_Full are refusals.
    --  Each outcome other than a new hold leaves the state Unchanged. A new
    --  hold of a data record changes only R's run (Outside_Run), and of an
-   --  authorization record only its signer's slot (Outside_Slot).
+   --  authorization record only its signer's slot (Outside_Slot). No
+   --  outcome changes the ceiling cell (Ceil_Same).
    procedure Apply (S : in out State; R : Header; T : U64; Result : out Status) with
      Global => null,
      Pre    => Is_Frontier (S) and then Canonical (R),
@@ -354,7 +424,8 @@ package Kome.Frontier with SPARK_Mode is
                       (if Held (S, I) = R then Tag (S, I) = T
                                     else Has_Tag (S'Old, Held (S, I), Tag (S, I))))
                    and then (if Is_Data (R) then Outside_Run (S'Old, S, R.Ent)
-                             else Outside_Slot (S'Old, S, R.Issuer)));
+                             else Outside_Slot (S'Old, S, R.Issuer)))
+       and then Ceil_Same (S'Old, S);
 
    --  Tombstone expiry at the horizon Hz (D10, DESIGN.md §7, T11 (a),
    --  SIMPLIFY.md S7): remove from the data row exactly the DELs with
@@ -385,7 +456,8 @@ package Kome.Frontier with SPARK_Mode is
                    and then Has_Tag (S'Old, Data_Held (S, I), Data_Tag (S, I)))
        and then (for all I in 1 .. Data_Count (S'Old) =>
                    Expired (Data_Held (S'Old, I), Hz)
-                   or else Holds (S, Data_Held (S'Old, I)));
+                   or else Holds (S, Data_Held (S'Old, I)))
+       and then Ceil_Same (S'Old, S);
 
    --  Give the record at flat index I the payload tag T (SIMPLIFY.md S14:
    --  Kome.Store.Compact moves the record's frame in the log and writes
@@ -412,7 +484,36 @@ package Kome.Frontier with SPARK_Mode is
        and then (for all J in 1 .. Data_Count (S) => Data_Held (S, J) = Data_Held (S'Old, J))
        and then (for all J in 1 .. Count (S) =>
                    Held (S, J) = Held (S'Old, J)
-                   and then Tag (S, J) = (if J = I then T else Tag (S'Old, J)));
+                   and then Tag (S, J) = (if J = I then T else Tag (S'Old, J)))
+       and then Ceil_Same (S'Old, S);
+
+   --  Put the roster R with payload tag T in the ceiling cell (AUDIT.md
+   --  H12). Kome.Store calls it for a roster whose ceiling is above maxceil
+   --  and that does not enter a row: Apply refused it with Auth_Full, or it
+   --  is the ceiling frame of a peer's HELLO. The rows do not change. The
+   --  record that the cell held, if any, is gone: it was not a held record,
+   --  and R's ceiling is above its ceiling.
+   procedure Raise_Ceil (S : in out State; R : Header; T : U64) with
+     Global => null,
+     Pre    => Is_Frontier (S) and then Canonical (R) and then Raises_Ceil (S, R),
+     Post   => Is_Frontier (S)
+       and then Founding (S) = Founding (S'Old)
+       and then Same_Held (S'Old, S)
+       and then Has_Ceil (S) and then Ceil_Held (S) = R and then Ceil_Tag (S) = T
+       and then Max_Ceil (S) = Ceil_Of (R);
+
+   --  Give the cell's record the payload tag T (Kome.Store.Compact moves
+   --  the record's frame in the log and writes its new place). Only that
+   --  tag changes.
+   procedure Set_Ceil_Tag (S : in out State; T : U64) with
+     Global => null,
+     Pre    => Is_Frontier (S) and then Has_Ceil (S),
+     Post   => Is_Frontier (S)
+       and then Founding (S) = Founding (S'Old)
+       and then Same_Held (S'Old, S)
+       and then Has_Ceil (S) and then Ceil_Held (S) = Ceil_Held (S'Old)
+       and then Ceil_Tag (S) = T
+       and then Max_Ceil (S) = Max_Ceil (S'Old);
 
    ---------------------------------------------------------------------
    --  Lemmas
@@ -515,17 +616,39 @@ package Kome.Frontier with SPARK_Mode is
      Pre  => Is_Frontier (S) and then Has_Tag (S, X, T),
      Post => Tag_Of (S, X) = T;
 
+   --  The ceiling cell of a frontier holds a canonical roster, and its
+   --  ceiling is at least 1.
+   procedure Lemma_Frontier_Ceil (S : State) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (S) and then Has_Ceil (S),
+     Post => Ceil_Held (S).K = K_Roster and then Canonical (Ceil_Held (S))
+             and then Ceil_Value (S) = Ceil_Held (S).V.T
+             and then Ceil_Value (S) >= 1;
+
    --  The definitions of the admission views (SIMPLIFY.md S6).
-   --  maxceil(F) bounds the ceiling of each held record, and it is the
+   --  Held_Ceil bounds the ceiling of each held record, and it is the
    --  ceiling of a held roster, or 0.
-   procedure Lemma_Max_Ceil_Def (S : State) with
+   procedure Lemma_Held_Ceil_Def (S : State) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S),
-     Post => (for all I in 1 .. Count (S) => Ceil_Of (Held (S, I)) <= Max_Ceil (S))
-             and then (Max_Ceil (S) = 0
+     Post => (for all I in 1 .. Count (S) => Ceil_Of (Held (S, I)) <= Held_Ceil (S))
+             and then (Held_Ceil (S) = 0
                        or else (for some I in 1 .. Count (S) =>
                                   Held (S, I).K = K_Roster
-                                  and then Held (S, I).V.T = Max_Ceil (S)));
+                                  and then Held (S, I).V.T = Held_Ceil (S)));
+
+   --  maxceil is the larger of the held rosters' ceiling and the cell's.
+   procedure Lemma_Max_Ceil_Def (S : State) with
+     Ghost, Global => null,
+     Post => Max_Ceil (S) = U48'Max (Held_Ceil (S), Ceil_Value (S));
+
+   --  A held or dominated record carries no ceiling above Held_Ceil
+   --  (Kome.Headers.Lemma_Dominator_Same_Key). Kome.Store uses it for the
+   --  step of T19.
+   procedure Lemma_Ceil_Bound (S : State; R : Header) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (S) and then (Holds (S, R) or else Dom (S, R)),
+     Post => Ceil_Of (R) <= Held_Ceil (S) and then Ceil_Of (R) <= Max_Ceil (S);
 
    --  k ∈ W iff F holds a GRANT of k.
    procedure Lemma_In_W_Def (S : State; K : Key256) with
@@ -554,7 +677,8 @@ package Kome.Frontier with SPARK_Mode is
    --  `wcap_F`: across a step whose result holds R, is a filter of
    --  Before ++ [R] and loses nothing except by domination (the Post of
    --  Apply when Result = OK), the views are those of Before joined with
-   --  R's contribution.
+   --  R's contribution. Max_Ceil follows Held_Ceil when the two states
+   --  carry the same ceiling in the cell (Apply: Ceil_Same).
    procedure Lemma_Views_Step (Before, After : State; R : Header; K : Key256) with
      Ghost, Global => null,
      Pre  => Is_Frontier (Before) and then Is_Frontier (After)
@@ -564,7 +688,9 @@ package Kome.Frontier with SPARK_Mode is
              and then (for all I in 1 .. Count (Before) =>
                          Holds (After, Held (Before, I))
                          or else Dominates (R, Held (Before, I))),
-     Post => Max_Ceil (After) = U48'Max (Max_Ceil (Before), Ceil_Of (R))
+     Post => Held_Ceil (After) = U48'Max (Held_Ceil (Before), Ceil_Of (R))
+             and then (if Ceil_Value (After) = Ceil_Value (Before)
+                       then Max_Ceil (After) = U48'Max (Max_Ceil (Before), Ceil_Of (R)))
              and then In_W (After, K)
                       = (In_W (Before, K) or else (R.K = K_Grant and then R.V.Author = K))
              and then W_Cap (After, K)
@@ -573,7 +699,8 @@ package Kome.Frontier with SPARK_Mode is
                          else W_Cap (Before, K));
 
    --  Two frontiers with the same authorization rows have the same
-   --  admission views (Expire gives the hypothesis).
+   --  admission views (Expire gives the hypothesis); for Max_Ceil, when
+   --  their cells also carry the same ceiling.
    procedure Lemma_Same_Auth_Views (S1, S2 : State; K : Key256) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S1) and then Is_Frontier (S2)
@@ -582,7 +709,9 @@ package Kome.Frontier with SPARK_Mode is
              and then (for all K2 in 1 .. Slots_Used (S1) =>
                          (for all J in 1 .. Slot_Count (S1, K2) =>
                             Auth_Held (S1, K2, J) = Auth_Held (S2, K2, J))),
-     Post => Max_Ceil (S1) = Max_Ceil (S2)
+     Post => Held_Ceil (S1) = Held_Ceil (S2)
+             and then (if Ceil_Value (S1) = Ceil_Value (S2)
+                       then Max_Ceil (S1) = Max_Ceil (S2))
              and then In_W (S1, K) = In_W (S2, K)
              and then W_Cap (S1, K) = W_Cap (S2, K);
 
@@ -676,9 +805,36 @@ package Kome.Frontier with SPARK_Mode is
      Ghost, Global => null,
      Post => Unchanged (S, S);
 
-   --  What Unchanged means through the public view. It is executable: the
+   --  What Same_Held means through the public view. It is executable: the
    --  counts of the state bound each quantifier, so -gnata runs it.
    --  (For In_W and W_Cap, Lemma_Same_Auth_Views.)
+   procedure Lemma_Same_Held (Old, Upd : State) with
+     Ghost, Global => null,
+     Pre  => Same_Held (Old, Upd),
+     Post => Old.Cap = Upd.Cap
+             and then Founding (Upd) = Founding (Old)
+             and then Held_Ceil (Upd) = Held_Ceil (Old)
+             and then Data_Count (Upd) = Data_Count (Old)
+             and then (for all I in 1 .. Data_Count (Old) =>
+                         Data_Held (Upd, I) = Data_Held (Old, I)
+                         and then Data_Tag (Upd, I) = Data_Tag (Old, I))
+             and then Slots_Used (Upd) = Slots_Used (Old)
+             and then (for all K in Slot_Index =>
+                         Slot_Count (Upd, K) = Slot_Count (Old, K)
+                         and then Off (Upd, K) = Off (Old, K))
+             and then (for all K in 1 .. Slots_Used (Old) =>
+                         Slot_Key (Upd, K) = Slot_Key (Old, K)
+                         and then (for all J in 1 .. Slot_Count (Old, K) =>
+                                     Auth_Held (Upd, K, J) = Auth_Held (Old, K, J)
+                                     and then Auth_Tag (Upd, K, J) = Auth_Tag (Old, K, J)))
+             and then Auth_Count (Upd) = Auth_Count (Old)
+             and then Count (Upd) = Count (Old)
+             and then (for all I in 1 .. Count (Old) =>
+                         Held (Upd, I) = Held (Old, I) and then Tag (Upd, I) = Tag (Old, I));
+
+   --  What Unchanged means through the public view: the rows are the same
+   --  (Same_Held, Lemma_Same_Held) and so is the ceiling cell. It is
+   --  executable, as Lemma_Same_Held is.
    procedure Lemma_Unchanged (Old, Upd : State) with
      Ghost, Global => null,
      Pre  => Unchanged (Old, Upd),
@@ -701,7 +857,9 @@ package Kome.Frontier with SPARK_Mode is
              and then Auth_Count (Upd) = Auth_Count (Old)
              and then Count (Upd) = Count (Old)
              and then (for all I in 1 .. Count (Old) =>
-                         Held (Upd, I) = Held (Old, I) and then Tag (Upd, I) = Tag (Old, I));
+                         Held (Upd, I) = Held (Old, I) and then Tag (Upd, I) = Tag (Old, I))
+             and then Ceil_Same (Old, Upd)
+             and then Same_Held (Old, Upd);
 
 private
 
@@ -723,12 +881,27 @@ private
    subtype Auth_Total is Natural range 0 .. Signers_Max * Slice_Max;
    type Slot_Offs   is array (Slot_Index) of Off_Value;
 
+   --  The ceiling cell (AUDIT.md H12): the roster with the largest ceiling
+   --  that reached this replica without entering a row, and its payload
+   --  tag (Kome.Store: the place of its CEIL entry in the log).
+   --  The header and the tag are two components, not one Entry_Rec: with
+   --  an Entry_Rec as a record component of Auth_Rows, gnatprove 14 no
+   --  longer proves the row lemmas of the body (Lemma_Same_Auth_Views is
+   --  the smallest case), although no row lemma reads the cell.
+   type Ceil_Cell is record
+      Present : Boolean := False;
+      Hdr     : Header;
+      Tag     : U64 := 0;
+   end record;
+
    --  The authorization rows:
    --    * one row of Slice_Max records for each signer slot;
    --    * the number of records in each row (NA);
    --    * the signer of each slot (Keys);
    --    * the number of used slots;
-   --    * the offsets of the flat view, and the total.
+   --    * the offsets of the flat view, and the total;
+   --    * the ceiling cell (C). It is here, not beside the rows, so that
+   --      Max_Ceil stays a function of this record. No row view reads it.
    --  They are a separate record, so an operation on the data row keeps
    --  this component equal as a whole (then the prover needs no frame
    --  lemma).
@@ -739,6 +912,7 @@ private
       NSlots : Slot_Number := 0;
       Offs   : Slot_Offs   := [others => 0];
       NAuth  : Auth_Total  := 0;
+      C      : Ceil_Cell;
    end record;
 
    --  Records in slot K.
@@ -775,6 +949,10 @@ private
    function Off (S : State; K : Slot_Index) return Natural is (S.A.Offs (K));
 
    function Auth_Count (S : State) return Held_Count is (S.A.NAuth);
+
+   function Has_Ceil (S : State) return Boolean is (S.A.C.Present);
+   function Ceil_Held (S : State) return Header is (S.A.C.Hdr);
+   function Ceil_Tag (S : State) return U64 is (S.A.C.Tag);
 
    function Count (S : State) return Held_Count is
      (Data_Count (S) + Auth_Count (S));

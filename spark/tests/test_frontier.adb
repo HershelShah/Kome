@@ -17,11 +17,20 @@
 --      replacement in place, and Expire keeps the order;
 --  (i) payload tags, runs and slots (S14): a new record has its tag, the
 --      others keep theirs, a data Apply changes only its run and an
---      authorization Apply only its slot.
+--      authorization Apply only its slot;
+--  (j) the ceiling cell (AUDIT.md H12; DESIGN.md §7): Raise_Ceil and
+--      Set_Ceil_Tag keep the rows, only Max_Ceil reads the cell, no other
+--      operation changes it, and with the capture rule of Kome.Store a
+--      roster that a full slice or a full slot table refuses still raises
+--      Max_Ceil, so the audit scenario gives the same Max_Ceil in both
+--      arrival orders.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Exceptions;   use Ada.Exceptions;
+with Ada.Assertions;
+with Ada.Strings.Fixed;
+with Contract_Mode;    use Contract_Mode;
 with Kome;             use Kome;
 with Kome.Versions;    use Kome.Versions;
 with Kome.Headers;     use Kome.Headers;
@@ -81,17 +90,54 @@ procedure Test_Frontier with SPARK_Mode => Off is
       V => (T => From_T, Author => Key (Subject), Seq => 0, H => Hsh (H)),
       Issuer => Key (Issuer));
 
+   --  V = (from_t, subject, 0, h) for a subject beyond the 256 of Key.
+   function Revoke_K (Issuer : Byte; Subject : Key256; From_T : U48; H : Natural)
+     return Header is
+     (K => K_Revoke, Ent => Zero_Id, FH => Zero_Key,
+      V => (T => From_T, Author => Subject, Seq => 0, H => Hsh (H)),
+      Issuer => Key (Issuer));
+
    function New_State (Cap : Data_Size := 64) return State is (Empty (Key (Fnd), Cap));
 
-   --  Each public view of two states agrees, tags included. This is how
-   --  the test reads Unchanged, which is ghost. The Post of Apply also
-   --  checks Unchanged.
-   function Same_State (X, Y : State) return Boolean is
+   --  A call that its precondition must refuse (run only when
+   --  Contracts_On).
+   Pre_Tag : constant String := "failed precondition from kome-frontier.ads";
+
+   generic
+      with procedure Run;
+   function Refused return Boolean;
+   function Refused return Boolean is
+   begin
+      Run;
+      return False;
+   exception
+      when E : Ada.Assertions.Assertion_Error =>
+         declare
+            Msg : constant String := Ada.Exceptions.Exception_Message (E);
+         begin
+            if Ada.Strings.Fixed.Index (Msg, Pre_Tag) = 0 then
+               Put_Line ("  unexpected assertion: " & Msg);
+               return False;
+            end if;
+            return True;
+         end;
+   end Refused;
+
+   --  The two states have the same ceiling cell, tag included (Ceil_Same,
+   --  read by the test).
+   function Same_Cell (X, Y : State) return Boolean is
+     (Has_Ceil (X) = Has_Ceil (Y)
+      and then (if Has_Ceil (X)
+                then Ceil_Held (X) = Ceil_Held (Y) and then Ceil_Tag (X) = Ceil_Tag (Y)));
+
+   --  The rows of two states agree, tags included. This is how the test
+   --  reads Same_Held, which is ghost.
+   function Same_Rows (X, Y : State) return Boolean is
    begin
       if Kome.Frontier.Count (X) /= Kome.Frontier.Count (Y)
         or else Data_Count (X) /= Data_Count (Y)
         or else Slots_Used (X) /= Slots_Used (Y)
-        or else Max_Ceil (X) /= Max_Ceil (Y)
+        or else Held_Ceil (X) /= Held_Ceil (Y)
       then
          return False;
       end if;
@@ -106,14 +152,21 @@ procedure Test_Frontier with SPARK_Mode => Off is
          end if;
       end loop;
       return True;
-   end Same_State;
+   end Same_Rows;
+
+   --  Each public view of two states agrees, tags and the ceiling cell
+   --  included. This is how the test reads Unchanged, which is ghost. The
+   --  Post of Apply also checks Unchanged.
+   function Same_State (X, Y : State) return Boolean is
+     (Same_Rows (X, Y) and then Same_Cell (X, Y) and then Max_Ceil (X) = Max_Ceil (Y));
 
    --  The keys on which the tests compare W and wcap.
    type Key_List is array (Positive range <>) of Byte;
    Probe_Keys : constant Key_List := [1, 2, 9, 21, 50, 54, 61];
 
    --  Held sets as unordered collections, and the same admission views.
-   function Same_Held (X, Y : State) return Boolean is
+   --  (Not Kome.Frontier.Same_Held, which compares the rows in order.)
+   function Same_Set (X, Y : State) return Boolean is
    begin
       if Kome.Frontier.Count (X) /= Kome.Frontier.Count (Y) then
          return False;
@@ -127,7 +180,7 @@ procedure Test_Frontier with SPARK_Mode => Off is
         and then (for all K of Probe_Keys =>
                     In_W (X, Key (K)) = In_W (Y, Key (K))
                     and then W_Cap (X, Key (K)) = W_Cap (Y, Key (K)));
-   end Same_Held;
+   end Same_Set;
 
    --  The data row is strictly increasing in (ent, kind, fh), the
    --  entity-major key of Kome.Frontier (AUDIT.md G25).
@@ -160,6 +213,9 @@ procedure Test_Frontier with SPARK_Mode => Off is
       Next_Tag := Next_Tag + 1;
       Apply (S, R, T, St);
       pragma Assert (Is_Frontier (S));
+      if not Same_Cell (Before, S) then
+         Check ("Apply left the ceiling cell as it was", False);
+      end if;
       if St /= OK or else Was then
          pragma Assert (Unchanged (Before, S));
          Lemma_Unchanged (Before, S);   --  executable: runs under -gnata
@@ -182,6 +238,27 @@ procedure Test_Frontier with SPARK_Mode => Off is
       end if;
    end App;
 
+   --  The capture rule of Kome.Store.Put_Frame, on the state alone
+   --  (DESIGN.md §7; AUDIT.md H12): Apply, and a roster that Apply refuses
+   --  for room (Auth_Full) and whose ceiling is above maxceil goes to the
+   --  ceiling cell. Captured says that the cell took R. Whatever the
+   --  outcome, maxceil is the old maxceil joined with R's ceiling (T19,
+   --  the step).
+   procedure Offer (S : in out State; R : Header; St : out Status; Captured : out Boolean) is
+      M : constant U48 := Max_Ceil (S);
+   begin
+      Captured := False;
+      App (S, R, St);
+      if St = Auth_Full and then Raises_Ceil (S, R) then
+         Raise_Ceil (S, R, Next_Tag);
+         Next_Tag := Next_Tag + 1;
+         Captured := True;
+      end if;
+      if Max_Ceil (S) /= U48'Max (M, Ceil_Of (R)) then
+         Check ("an offer joins maxceil with the record's ceiling", False);
+      end if;
+   end Offer;
+
    --  Each lemma on each index of a state. Each lemma's Is_Frontier
    --  precondition costs O(Count^2) at run time, so on a large state (a
    --  full slice) only the whole-state lemmas run.
@@ -190,8 +267,13 @@ procedure Test_Frontier with SPARK_Mode => Off is
    begin
       Lemma_Unchanged_Refl (S);
       Lemma_Unchanged (S, S);
+      Lemma_Same_Held (S, S);
       Lemma_Frontier_Shape (S);
+      Lemma_Held_Ceil_Def (S);
       Lemma_Max_Ceil_Def (S);
+      if Has_Ceil (S) then
+         Lemma_Frontier_Ceil (S);
+      end if;
       for I in 1 .. (if Small then Kome.Frontier.Count (S) else 0) loop
          Lemma_Held_Cases (S, I);
          Lemma_Frontier_Held (S, I);
@@ -565,9 +647,9 @@ begin
       C  : constant State := Run (O3);
       D  : constant State := Run (O4);
    begin
-      Check ("orders 1 and 2 converge", Same_Held (A, B));
-      Check ("orders 1 and 3 converge (duplicates)", Same_Held (A, C));
-      Check ("orders 1 and 4 converge (duplicates)", Same_Held (A, D));
+      Check ("orders 1 and 2 converge", Same_Set (A, B));
+      Check ("orders 1 and 3 converge (duplicates)", Same_Set (A, C));
+      Check ("orders 1 and 4 converge (duplicates)", Same_Set (A, D));
       Check ("final frontier is {R2, G1, G2, D1, P4, X1, Far}",
              Kome.Frontier.Count (A) = 7 and then Holds (A, R2) and then Holds (A, G1)
              and then Holds (A, G2) and then Holds (A, D1) and then Holds (A, P4)
@@ -729,6 +811,276 @@ begin
       Check ("Expire at t = 150 removes the DEL",
              not Holds (S, D2) and then Tag_Of (S, P1) = 8 and then Tag_Of (S, P3) = 9);
       Lemmas (S);
+   end;
+
+   --  (j) The ceiling cell (AUDIT.md H12; DESIGN.md §7).
+   --  F1 - F4: Raise_Ceil, Set_Ceil_Tag and the cell across every other
+   --  operation, on a small state.
+   declare
+      S      : State := New_State (Cap => 8);
+      Before : State := New_State (Cap => 8);
+      R1  : constant Header := Roster (Fnd, 1, 5000, 1);
+      G1  : constant Header := Grant (Fnd, 1, 31);
+      P1  : constant Header := Put (1, 'a', V (100, 1, 1, 10));
+      D2  : constant Header := Del (2, V (200, 1, 2, 11));
+      Far : constant Header := Put (3, 'a', V (6000, 1, 3, 12));   --  above R1's ceiling
+      RC  : constant Header := Roster (21, 3, 7000, 2);            --  for the cell
+      R17 : constant Header := Roster (46, 1, 8000, 3);            --  a 17th signer
+      Took : Boolean;
+   begin
+      App (S, R1, St);
+      App (S, G1, St);
+      App (S, P1, St);
+      App (S, D2, St);
+      Check ("before a raise: no cell, maxceil is the held ceiling",
+             not Has_Ceil (S) and then Ceil_Value (S) = 0 and then not Ceil_Live (S)
+             and then Max_Ceil (S) = 5000 and then Held_Ceil (S) = 5000
+             and then Raises_Ceil (S, RC) and then not Raises_Ceil (S, R1)
+             and then not Raises_Ceil (S, Grant (21, 1, 32, Cap => 9000))
+             and then not Admitted (S, Far));
+
+      --  F1. Raise_Ceil.
+      Before := S;
+      Raise_Ceil (S, RC, 4242);
+      pragma Assert (Is_Frontier (S));
+      pragma Assert (Kome.Frontier.Same_Held (Before, S));
+      Lemma_Same_Held (Before, S);
+      pragma Assert (not Unchanged (Before, S));
+      Lemma_Held_Ceil_Def (S);
+      Lemma_Max_Ceil_Def (S);
+      Lemma_Frontier_Ceil (S);
+      Check ("Raise_Ceil: the cell holds the roster and its tag",
+             Has_Ceil (S) and then Ceil_Held (S) = RC and then Ceil_Tag (S) = 4242
+             and then Ceil_Value (S) = 7000);
+      Check ("Raise_Ceil: maxceil is the roster's ceiling, the held ceiling stays",
+             Max_Ceil (S) = Ceil_Of (RC) and then Max_Ceil (S) = 7000
+             and then Held_Ceil (S) = 5000 and then Ceil_Live (S));
+      Check ("Raise_Ceil: the rows are the same, and the roster is not held",
+             Same_Rows (Before, S) and then not Holds (S, RC)
+             and then Slot_Of (S, Key (21)) = 0 and then Tag_Of (S, RC) = 0
+             and then Kome.Frontier.Count (S) = 4);
+      Check ("Raise_Ceil: a record below the new maxceil is admitted",
+             Admitted (S, Far) and then Admitted (S, P1));
+      for K of Probe_Keys loop
+         Lemma_Same_Auth_Views (Before, S, Key (K));
+         if In_W (Before, Key (K)) /= In_W (S, Key (K))
+           or else W_Cap (Before, Key (K)) /= W_Cap (S, Key (K))
+         then
+            Check ("Raise_Ceil leaves W and wcap", False);
+         end if;
+      end loop;
+      Lemmas (S);
+
+      --  F4. The cell is a strict max-register.
+      declare
+         T : State := S;
+         procedure Equal_Ceiling is
+         begin
+            Raise_Ceil (T, Roster (22, 1, 7000, 4), 1);
+         end Equal_Ceiling;
+         function R is new Refused (Equal_Ceiling);
+      begin
+         if Contracts_On then
+            Check ("Raise_Ceil with a ceiling equal to maxceil is refused by its Pre", R);
+         else
+            Skip ("Raise_Ceil with a ceiling equal to maxceil is refused by its Pre");
+         end if;
+      end;
+
+      --  F2. No other operation changes the cell. (App checks the cell
+      --  after each Apply, and Unchanged after each refusal and duplicate.)
+      Before := S;
+      App (S, R1, St);
+      Check ("a duplicate leaves the cell", St = OK and then Same_State (Before, S));
+      App (S, Roster (Fnd, 0, 4000, 9), St);
+      Check ("a dominated roster leaves the cell",
+             St = Dominated and then Same_State (Before, S));
+      App (S, Grant (Fnd, 2, 33), St);
+      Check ("a new hold leaves the cell",
+             St = OK and then Same_Cell (Before, S) and then Max_Ceil (S) = 7000);
+      App (S, Far, St);
+      Check ("a data record above every held roster is held under the cell's ceiling",
+             St = OK and then Holds (S, Far) and then Same_Cell (Before, S));
+      Before := S;
+      Expire (S, 300);
+      Check ("Expire leaves the cell",
+             not Holds (S, D2) and then Same_Cell (Before, S) and then Max_Ceil (S) = 7000
+             and then Holds (S, Far));
+      Before := S;
+      Set_Tag (S, 1, 777);
+      Check ("Set_Tag leaves the cell",
+             Tag (S, 1) = 777 and then Same_Cell (Before, S) and then Max_Ceil (S) = 7000);
+
+      --  F3. Set_Ceil_Tag changes only the cell's tag.
+      Before := S;
+      Set_Ceil_Tag (S, 555);
+      pragma Assert (Kome.Frontier.Same_Held (Before, S));
+      Lemma_Same_Held (Before, S);
+      pragma Assert (not Unchanged (Before, S));
+      Check ("Set_Ceil_Tag changes only the cell's tag",
+             Has_Ceil (S) and then Ceil_Tag (S) = 555 and then Ceil_Held (S) = RC
+             and then Same_Rows (Before, S) and then Max_Ceil (S) = 7000
+             and then Is_Frontier (S));
+
+      --  The slot table: 15 more signers take every slot. A roster of a
+      --  17th signer is refused for room, and the capture rule records
+      --  its ceiling when it is above maxceil.
+      for I in 0 .. 14 loop
+         App (S, Grant (Byte (30 + I), Byte (100 + I), 400 + I), St);
+      end loop;
+      Check ("all 16 slots are used", St = OK and then Slots_Used (S) = Signers_Max);
+      Before := S;
+      Offer (S, Roster (45, 1, 6000, 5), St, Took);
+      Check ("Auth_Full for a roster at or below maxceil changes nothing, the cell included",
+             St = Auth_Full and then not Took and then Same_State (Before, S)
+             and then Ceil_Held (S) = RC);
+      Offer (S, Roster (45, 1, 7000, 6), St, Took);
+      Check ("Auth_Full for a roster with the cell's ceiling does not move the cell",
+             St = Auth_Full and then not Took and then Same_State (Before, S));
+      Offer (S, R17, St, Took);
+      Check ("a roster of a 17th signer above maxceil takes the cell and no slot",
+             St = Auth_Full and then Took and then Ceil_Held (S) = R17
+             and then Max_Ceil (S) = 8000 and then Ceil_Live (S)
+             and then Same_Rows (Before, S) and then Slot_Of (S, Key (46)) = 0);
+
+      --  A held roster with the cell's ceiling, then one above it: the
+      --  cell stays and is no longer live.
+      Before := S;
+      App (S, Roster (Fnd, 2, 8000, 7), St);
+      Check ("a held roster with the cell's ceiling: maxceil stays, the cell is not live",
+             St = OK and then Max_Ceil (S) = 8000 and then Held_Ceil (S) = 8000
+             and then not Ceil_Live (S) and then Same_Cell (Before, S));
+      App (S, Roster (Fnd, 3, 9000, 8), St);
+      Check ("a held roster above the cell raises maxceil and leaves the cell",
+             St = OK and then Max_Ceil (S) = 9000 and then Held_Ceil (S) = 9000
+             and then not Ceil_Live (S) and then Same_Cell (Before, S)
+             and then Ceil_Value (S) = 8000);
+      Offer (S, R17, St, Took);
+      Check ("the cell's own roster offered again changes nothing",
+             St = Auth_Full and then not Took and then Ceil_Held (S) = R17);
+      Lemmas (S);
+   end;
+
+   --  (j) The audit scenario (AUDIT.md H12): a stolen root fills its slice
+   --  with 512 REVOKEs at replica A and sends a roster R2 with a high
+   --  ceiling first at replica B. A refuses R2 for room, B holds it. With
+   --  the capture rule the two have the same maxceil, so they admit the
+   --  same data records.
+   declare
+      C0   : constant U48 := 1000;
+      C2   : constant U48 := 90_000;
+      Root : constant Byte := 21;
+      R0   : constant Header := Roster (Fnd, 5, C0, 1);
+      G    : constant Header := Grant (Fnd, 1, 31);
+      R2   : constant Header := Roster (Root, 1, C2, 2);
+      R3   : constant Header := Roster (Root, 20, C2, 3);       --  R2's ceiling, a higher gen
+      R4   : constant Header := Roster (Root, 1, C2 + 1, 4);    --  a higher ceiling, R2's gen
+      RL   : constant Header := Roster (Root, 0, C2 - 1, 5);    --  R2 dominates it
+      RF   : constant Header := Roster (Fnd, 6, C2 + 5, 6);     --  a founding refresh
+      Far  : constant Header := Put (7, 'n', V (5000, 1, 1, 10));   --  C0 < t <= C2
+      function X (I : Positive) return Header is (Revoke_K (Root, Key_N (I), 0, 3000 + I));
+      A      : State := New_State (Cap => 8);
+      B      : State := New_State (Cap => 8);
+      Before : State := New_State (Cap => 8);
+      Took   : Boolean;
+      SA, SB : Status;
+   begin
+      --  Order A: the REVOKEs, then R2.
+      App (A, R0, St);
+      App (A, G, St);
+      --  Apply, not App: App's lemma calls would make the fill cubic.
+      for I in 1 .. Slice_Max loop
+         Apply (A, X (I), U64 (I), St);
+         pragma Assert (St = OK);
+      end loop;
+      Check ("order A: the stolen root's slice is full of REVOKEs",
+             St = OK and then Slot_Count (A, Slot_Of (A, Key (Root))) = Slice_Max
+             and then Max_Ceil (A) = C0 and then not Admitted (A, Far));
+      Before := A;
+      Offer (A, R2, SA, Took);
+      Check ("order A: the full slice refuses R2, and the cell takes its ceiling",
+             SA = Auth_Full and then Took and then not Holds (A, R2)
+             and then Has_Ceil (A) and then Ceil_Held (A) = R2 and then Ceil_Live (A)
+             and then Max_Ceil (A) = C2 and then Held_Ceil (A) = C0
+             and then Same_Rows (Before, A));
+
+      --  Order B: R2, then the REVOKEs.
+      App (B, R0, St);
+      App (B, G, St);
+      Offer (B, R2, SB, Took);
+      Check ("order B: R2 is held", SB = OK and then not Took and then Holds (B, R2));
+      for I in 1 .. Slice_Max - 1 loop
+         Apply (B, X (I), U64 (I), St);
+         pragma Assert (St = OK);
+      end loop;
+      Before := B;
+      Offer (B, X (Slice_Max), SB, Took);
+      Check ("order B: the last REVOKE is refused, nothing changes, no cell",
+             SB = Auth_Full and then not Took and then Same_State (Before, B)
+             and then not Has_Ceil (B) and then Holds (B, R2)
+             and then Held_Ceil (B) = C2);
+      Check ("the two arrival orders give the same maxceil",
+             Max_Ceil (A) = C2 and then Max_Ceil (B) = C2);
+      Check ("the two arrival orders admit the same data record",
+             Admitted (A, Far) and then Admitted (B, Far));
+      App (A, Far, SA);
+      App (B, Far, SB);
+      Check ("a record above the old ceiling is held at both replicas",
+             SA = OK and then SB = OK and then Holds (A, Far) and then Holds (B, Far));
+
+      --  A dominated roster: B holds its dominator, A does not.
+      Before := A;
+      Offer (A, RL, SA, Took);
+      Check ("a lower roster at the replica with the cell: refused, nothing changes",
+             SA = Auth_Full and then not Took and then Same_State (Before, A));
+      Before := B;
+      Offer (B, RL, SB, Took);
+      Check ("the same roster at the replica that holds R2: Dominated, nothing changes",
+             SB = Dominated and then not Took and then Same_State (Before, B));
+      Check ("a dominated roster: the same maxceil", Max_Ceil (A) = Max_Ceil (B));
+
+      --  Equal ceilings: a roster with R2's ceiling never moves the cell.
+      --  B holds it (it dominates R2 and frees its place).
+      Before := A;
+      Offer (A, R3, SA, Took);
+      Check ("a roster with the cell's ceiling does not move the cell",
+             SA = Auth_Full and then not Took and then Same_State (Before, A)
+             and then Ceil_Held (A) = R2);
+      Offer (B, R3, SB, Took);
+      Check ("the same roster replaces R2 in the full slice of the other replica",
+             SB = OK and then not Took and then Holds (B, R3) and then not Holds (B, R2)
+             and then not Has_Ceil (B));
+      Check ("equal ceilings: the same maxceil",
+             Max_Ceil (A) = C2 and then Max_Ceil (B) = C2);
+
+      --  A later roster with a higher ceiling: both slices are full and
+      --  it frees nothing, so both cells take it.
+      Offer (A, R4, SA, Took);
+      Check ("a higher ceiling replaces the cell's roster",
+             SA = Auth_Full and then Took and then Ceil_Held (A) = R4
+             and then Max_Ceil (A) = C2 + 1 and then not Holds (A, R4));
+      Before := B;
+      Offer (B, R4, SB, Took);
+      Check ("a higher ceiling at the replica without a cell: captured, the rows stay",
+             SB = Auth_Full and then Took and then Ceil_Held (B) = R4 and then Ceil_Live (B)
+             and then Held_Ceil (B) = C2 and then Same_Rows (Before, B)
+             and then Holds (B, R3));
+      Check ("a higher ceiling: the same maxceil",
+             Max_Ceil (A) = C2 + 1 and then Max_Ceil (B) = C2 + 1);
+
+      --  A held roster above the cell (a founding refresh): maxceil is
+      --  the held ceiling again, at both.
+      Before := A;
+      App (A, RF, SA);
+      App (B, RF, SB);
+      Check ("a held roster above the cell: the same maxceil, the cells stay and are not live",
+             SA = OK and then SB = OK
+             and then Max_Ceil (A) = C2 + 5 and then Max_Ceil (B) = C2 + 5
+             and then Held_Ceil (A) = C2 + 5 and then not Ceil_Live (A)
+             and then not Ceil_Live (B) and then Same_Cell (Before, A)
+             and then Ceil_Held (B) = R4);
+      Lemmas (A);
+      Lemmas (B);
    end;
 
    if Failed then
