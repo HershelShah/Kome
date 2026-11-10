@@ -1,13 +1,57 @@
-# Kome.Store log encodings (DESIGN.md §7). Python's hashlib (BLAKE2b-256)
-# computed them, independently of the SPARK code.
-# header <root_pk> <salt> <data_cap> <slice> <80-byte HEADER>
-# Each root_pk passes Kome.Records.Sign_Key_OK (the Pre of Store.Open):
-# ebff..ff7f is y = p - 2, the largest canonical y that is not small order.
-header 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 6465666768696a6b6c6d6e6f70717273 32 8 006b6f6d652f6c6f670118554e6ec31be310bef2030355045eba000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6465666768696a6b6c6d6e6f70717273000000200008
-header ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 00000000000000000000000000000000 300 260 006b6f6d652f6c6f6701e2d097df985fb1e04ecbbf72b165cf8bebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f000000000000000000000000000000000000012c0104
-header 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 01060b10151a1f24292e33383d42474c 0 1 006b6f6d652f6c6f670151338661f46173e60570a7bbfd749f6a030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc01060b10151a1f24292e33383d42474c000000000001
-# expire <horizon code (u48 decimal; 281474976710655 = no horizon)> <7-byte EXPIRE>
-expire 0 03000000000000
-expire 2592000000 0300009a7ec800
-expire 281474976710654 03fffffffffffe
-expire 281474976710655 03ffffffffffff
+# Kome.Store log encodings (SIMPLIFY.md S15). Python's hashlib (BLAKE2b-256)
+# computed them, independently of the SPARK code. The generator is embedded
+# below (lines that start with '#|'); this command prints the file again:
+#   sed -n 's/^#| \{0,1\}//p' spark/vectors/store.txt | python3 -I -
+# header <root_pk> <salt> <del_ttl (u48 decimal)> <cid> <59-byte HEADER>
+#   HEADER = "KOME" 01 root_pk[32] salt[16] del_ttl:u48; cid = BLAKE2b-256
+#   (root_pk || salt || u48 (del_ttl)). Each root_pk passes
+#   Kome.Records.Sign_Key_OK (the Pre of Store.Open): ebff..ff7f is y = p - 2.
+header 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f 6465666768696a6b6c6d6e6f70717273 604800000 fc571056ed5de923be29cfd08cd25934e3ef7d37becdc24682e155c066912ae8 4b4f4d4501000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6465666768696a6b6c6d6e6f707172730000240c8400
+header ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f 00000000000000000000000000000000 15552000000 c81eda7333d816876389e954d2c6eb3e2d5316b7b8ac03482fa06579d3b70b1d 4b4f4d4501ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f0000000000000000000000000000000000039ef8b000
+header 030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc 01060b10151a1f24292e33383d42474c 315360000000 58a54e926a1fa5c9abd00afb58cb294b4582aaf20ce519a91806ac97e9b99055 4b4f4d4501030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc01060b10151a1f24292e33383d42474c00496cebb800
+# apply <len (decimal)> <4-byte APPLY prefix: 01 len:u24>
+apply 125 0100007d
+apply 199 010000c7
+apply 205 010000cd
+apply 212 010000d4
+apply 8916 010022d4
+apply 41120 0100a0a0
+# seq <seq_self (u48 decimal)> <7-byte SEQ entry: 02 seq:u48>
+seq 0 02000000000000
+seq 1 02000000000001
+seq 2592000000 0200009a7ec800
+seq 281474976710654 02fffffffffffe
+seq 281474976710655 02ffffffffffff
+# The generator (run as above):
+#| """Independent reference for spark/vectors/store.txt (SIMPLIFY.md S15 log
+#| layout, written from the layout text, not from Kome.Store). Prints the
+#| vector file above its own "#|" lines on stdout."""
+#| import hashlib
+#| def u48(v): return v.to_bytes(6, 'big')
+#| def cid(root, salt, ttl): return hashlib.blake2b(root + salt + u48(ttl), digest_size=32).digest()
+#| out = []
+#| out.append("# Kome.Store log encodings (SIMPLIFY.md S15). Python's hashlib (BLAKE2b-256)")
+#| out.append("# computed them, independently of the SPARK code. The generator is embedded")
+#| out.append("# below (lines that start with '#|'); this command prints the file again:")
+#| out.append("#   sed -n 's/^#| \\{0,1\\}//p' spark/vectors/store.txt | python3 -I -")
+#| out.append("# header <root_pk> <salt> <del_ttl (u48 decimal)> <cid> <59-byte HEADER>")
+#| out.append("#   HEADER = \"KOME\" 01 root_pk[32] salt[16] del_ttl:u48; cid = BLAKE2b-256")
+#| out.append("#   (root_pk || salt || u48 (del_ttl)). Each root_pk passes")
+#| out.append("#   Kome.Records.Sign_Key_OK (the Pre of Store.Open): ebff..ff7f is y = p - 2.")
+#| hdrs = [
+#|   (bytes(range(32)), bytes(range(100, 116)), 604800000),
+#|   (bytes.fromhex('eb' + 'ff' * 30 + '7f'), bytes(16), 15552000000),
+#|   (bytes((3 + 7 * i) % 256 for i in range(32)), bytes((1 + 5 * i) % 256 for i in range(16)), 315360000000),
+#| ]
+#| for root, salt, ttl in hdrs:
+#|     h = b'KOME' + b'\x01' + root + salt + u48(ttl)
+#|     assert len(h) == 59
+#|     out.append("header %s %s %d %s %s" % (root.hex(), salt.hex(), ttl, cid(root, salt, ttl).hex(), h.hex()))
+#| out.append("# apply <len (decimal)> <4-byte APPLY prefix: 01 len:u24>")
+#| for n in (125, 199, 205, 212, 8916, 41120):
+#|     out.append("apply %d %s" % (n, (b'\x01' + n.to_bytes(3, 'big')).hex()))
+#| out.append("# seq <seq_self (u48 decimal)> <7-byte SEQ entry: 02 seq:u48>")
+#| for v in (0, 1, 2592000000, 2**48 - 2, 2**48 - 1):
+#|     out.append("seq %d %s" % (v, (b'\x02' + u48(v)).hex()))
+#| out.append("# The generator (run as above):")
+#| print("\n".join(out))
