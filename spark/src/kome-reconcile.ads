@@ -43,7 +43,8 @@
 --
 --  Messages (all integers big-endian):
 --
---    HELLO     01 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]
+--    HELLO     01 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ ceil_len:u16
+--                 ‖ cred[cred_len] ‖ ceil[ceil_len]
 --    RANGE     02 ‖ k:u8 (1 .. 16) ‖ bounds[k + 1] × key[82] ‖ k × (count:u48 ‖ fp[32])
 --    ELEMENTS  03 ‖ lo[82] ‖ hi[82] ‖ n:u16 (<= 4) ‖ n × (flen:u16 ‖ frame)
 --    HAVE      04 ‖ lo[82] ‖ hi[82] ‖ n:u16 (<= 4) ‖ n × (flen:u16 ‖ frame)
@@ -52,8 +53,9 @@
 --  There is no OPEN (S11). The Noise XK prologue is "kome/1" ‖ ns ‖ proto
 --  (Prologue below): it binds the collection and the protocol version, and
 --  a stranger cannot finish XK without the responder's static key. The
---  HELLO is as before (the credential roster, the two counts and the
---  digest). A RANGE carries k sub-ranges [b(j-1), b(j)) with their counts
+--  HELLO carries the two counts, the digest, the credential roster and
+--  the ceiling frame (below; AUDIT.md H12). A RANGE carries k sub-ranges
+--  [b(j-1), b(j)) with their counts
 --  and fingerprints: a 16-way split is one message (S19). An ELEMENTS or a
 --  HAVE item is its frame only: the receiver derives the key from the
 --  frame (the caller decodes the frame and passes its key, see Keys
@@ -144,6 +146,54 @@
 --  (quarantined) replica (S11): the replica Starts, receives the HELLO,
 --  applies its credential, and only then evaluates the gate for Admit.
 --
+--  The ceiling frame (AUDIT.md H12; DESIGN.md §8). The HELLO carries a
+--  second roster frame, `ceil`. It is the frame of the sender's
+--  ceiling-cell roster when the cell is the only reason for the sender's
+--  maxceil (Kome.Frontier.Ceil_Live), and empty otherwise. The cell's
+--  record is not an element: it is not in the snapshot, the digests or the
+--  fingerprints. Without the frame, two replicas with equal rows and
+--  different cells would end the session at the HELLOs with different
+--  maxceil. It is a signed record, not a register value (D13 stands).
+--  This package checks only the two lengths (Hello_Wire_OK); the content
+--  of `ceil` is checked by the caller, like an item frame. The duties of
+--  the caller (not proved here; the reference caller is the store session
+--  of the test main):
+--    * Sender. At Admit, Ceil is Kome.Store.Read_Frame (S, Tag_Off
+--      (Ceil_Tag (F))) if Ceil_Live (F), else an empty array
+--      (Kome.Store.Lemma_Ceil_Tag: it is the cell's ROSTER frame, at most
+--      Cred_Max bytes).
+--    * Receiver, which operation takes which frame. The credential is
+--      applied as an authorization record (Kome.Write.Receive, that is,
+--      Put_Frame): it can enter a row, and it can return Ceil_Only. The
+--      ceiling frame Peer.Ceil (0 .. Peer.Ceil_Len - 1), if Ceil_Len > 0,
+--      is decoded and verified as a ROSTER (a frame that does not decode
+--      is a protocol violation: end the session) and applied with
+--      Kome.Store.Put_Ceil and with nothing else. It never enters a row,
+--      so a roster that a peer keeps only in its cell cannot become
+--      ROSTER_eff or a quarantine here.
+--    * Receiver, the order. Same_Snapshot requires the snapshot that our
+--      HELLO described, and both applies can change the digests. If our
+--      HELLO was out when the peer's HELLO was accepted: (1) if the
+--      session is now in Auth, pin, fill the frame table, Snapshot_Of,
+--      Seal; (2) apply the credential; (3) apply the ceiling frame. If our
+--      HELLO was not out: (1) apply the credential; (2) evaluate the gate,
+--      and if it is closed apply nothing more (the ceiling frame is
+--      dropped if the session ends without Admit); (3) Admit, with the
+--      digest states and Ceil_Live (F) as they are now; (4) if the session
+--      is now in Auth, the snapshot as above; (5) apply the ceiling frame.
+--      In both orders nothing else is applied between Admit and the seal,
+--      and the ceiling frame is applied before the next Receive or
+--      Next_Phase. Admit requires Gate_Open, so the ceiling frame of a
+--      peer is applied only when our gate admitted that peer.
+--    * Ceil_Only (from the credential or from Put_Ceil) counts as an
+--      applied authorization record for the sync point.
+--    * SUSPECT_RELAY for the ceiling frame: the caller reports the peer's
+--      static key exactly when Put_Ceil returned Ceil_Only (the frame
+--      raised our maxceil) and the frame's signer was root-voided in our
+--      view before the call (Kome.Views.Root_Void). A frame that changes
+--      nothing flags nobody: an honest replica sends its live cell in
+--      every HELLO, also after the cell's signer is root-voided.
+--
 --  Durability: a session counts as Complete only after the log is flushed
 --  to Kome.Store.Log_Length (the sync point, DESIGN.md §8; AUDIT.md H35).
 --  This package trusts nothing that a lying peer puts in a HELLO. The
@@ -232,7 +282,7 @@
 --  Message size (D12). No emitted message is longer than Max_Message_Len
 --  bytes (Kome, §8). This is proved (Plan_OK, Plan_Len, Range_Msg_Len). A
 --  RANGE of 16 parts is 2 004 bytes and a HELLO at most Hello_Max_Len =
---  8 959. If the frames of an ELEMENTS or a HAVE do not fit, the sender
+--  17 877. If the frames of an ELEMENTS or a HAVE do not fit, the sender
 --  sends one message for each element, over a sub-range that holds only
 --  that element (the sub-ranges tile the range). One element always fits:
 --  a frame is at most Kome.Records.Frame_Max = 41 120 bytes, less than
@@ -456,17 +506,19 @@ package Kome.Reconcile with SPARK_Mode is
    Root_O_Fp    : constant := 7;
    Root_Len     : constant := 39;
 
-   --  HELLO (D13): 01 ‖ n_auth ‖ n_data ‖ digest[32] ‖ cred_len ‖ cred.
+   --  HELLO (D13; AUDIT.md H12): 01 ‖ n_auth ‖ n_data ‖ digest[32] ‖
+   --  cred_len ‖ ceil_len ‖ cred ‖ ceil.
    Hello_O_NAuth  : constant := 1;
    Hello_O_NData  : constant := 5;
    Hello_O_Digest : constant := 9;
    Hello_O_CLen   : constant := 41;
-   Hello_Fixed    : constant := 43;
+   Hello_O_KLen   : constant := 43;                                --  ceil_len:u16
+   Hello_Fixed    : constant := 45;
    Cred_Max       : constant := Kome.Records.Roster_Frame_Max;     --  8 916
-   Hello_Max_Len  : constant := Hello_Fixed + Cred_Max;            --  8 959
+   Hello_Max_Len  : constant := Hello_Fixed + 2 * Cred_Max;        --  17 877
    pragma Compile_Time_Error
-     (Cred_Max /= 8_916 or else Hello_Max_Len /= 8_959,
-      "DESIGN.md §8: a HELLO is at most 8 959 bytes");
+     (Cred_Max /= 8_916 or else Hello_Max_Len /= 17_877,
+      "DESIGN.md §8: a HELLO is at most 17 877 bytes");
 
    subtype Frame_Size is Positive range 1 .. Frame_Ship_Max;
    subtype Msg_Length is Natural range 0 .. Max_Message_Len;
@@ -1268,51 +1320,63 @@ package Kome.Reconcile with SPARK_Mode is
                          then Item_Places'Result.OK and then Item_Places'Result.N = 0);
 
    ----------------------------------------------------------------------
-   --  HELLO (post-handshake, D13). Canonical: cred bytes after Cred_Len
-   --  are zero.
+   --  HELLO (post-handshake, D13). Canonical: the cred bytes after Cred_Len
+   --  and the ceil bytes after Ceil_Len are zero.
    ----------------------------------------------------------------------
 
    subtype Cred_Count is Natural range 0 .. Cred_Max;
    subtype Cred_Bytes is Byte_Array (0 .. Cred_Max - 1);
 
+   --  Ceil is the ceiling frame (AUDIT.md H12): the frame of the sender's
+   --  ceiling-cell roster, or empty. The caller applies it with
+   --  Kome.Store.Put_Ceil only (see the package comment).
    type Hello is record
       N_Auth   : Word       := 0;
       N_Data   : Word       := 0;
       Digest   : Hash256    := [others => 0];
       Cred_Len : Cred_Count := 0;
       Cred     : Cred_Bytes := [others => 0];
+      Ceil_Len : Cred_Count := 0;
+      Ceil     : Cred_Bytes := [others => 0];
    end record;
 
    Empty_Hello : constant Hello := (others => <>);
 
-   --  B is a well-formed HELLO: tag, cred_len <= Cred_Max and the length
-   --  that cred_len gives. Quantifier-free.
+   --  B is a well-formed HELLO: tag, cred_len <= Cred_Max, ceil_len <=
+   --  Cred_Max and the length that the two give. Quantifier-free.
    function Hello_Wire_OK (B : Byte_Array) return Boolean is
      (B'Last >= B'First
       and then B'Last - B'First >= Hello_Fixed - 1
       and then B (B'First) = Tag_Hello
       and then Wire_U16 (B, B'First + Hello_O_CLen) <= Cred_Max
-      and then B'Last - B'First = Hello_Fixed - 1 + Wire_U16 (B, B'First + Hello_O_CLen));
+      and then Wire_U16 (B, B'First + Hello_O_KLen) <= Cred_Max
+      and then B'Last - B'First
+               = Hello_Fixed - 1 + Wire_U16 (B, B'First + Hello_O_CLen)
+                 + Wire_U16 (B, B'First + Hello_O_KLen));
 
    procedure Encode_Hello
      (N_Auth, N_Data : Word;
       Digest         : Hash256;
       Cred           : Byte_Array;
+      Ceil           : Byte_Array;
       Buf            : out Msg_Buffer;
       Len            : out Msg_Length)
    with
      Global => null,
-     Pre    => Cred'Length <= Cred_Max,
-     Post   => Len = Hello_Fixed + Cred'Length and then Len <= Hello_Max_Len
+     Pre    => Cred'Length <= Cred_Max and then Ceil'Length <= Cred_Max,
+     Post   => Len = Hello_Fixed + Cred'Length + Ceil'Length and then Len <= Hello_Max_Len
                and then Hello_Wire_OK (Buf (0 .. Len - 1))
                and then Wire_U32 (Buf, Hello_O_NAuth) = N_Auth
                and then Wire_U32 (Buf, Hello_O_NData) = N_Data
                and then Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Digest
                and then Wire_U16 (Buf, Hello_O_CLen) = Cred'Length
-               and then Buf (Hello_Fixed .. Len - 1) = Cred;
+               and then Wire_U16 (Buf, Hello_O_KLen) = Ceil'Length
+               and then Buf (Hello_Fixed .. Hello_Fixed + Cred'Length - 1) = Cred
+               and then Buf (Hello_Fixed + Cred'Length .. Len - 1) = Ceil;
 
-   --  The cred bytes of H after Cred_Len are zero. This function has a
-   --  quantifier, so its completion is in the private part (rule 2).
+   --  The cred bytes of H after Cred_Len and the ceil bytes after Ceil_Len
+   --  are zero. This function has a quantifier, so its completion is in the
+   --  private part (rule 2).
    function Cred_Canonical (H : Hello) return Boolean with
      Global => null;
 
@@ -1321,14 +1385,37 @@ package Kome.Reconcile with SPARK_Mode is
      Pre  => Cred_Canonical (H) and then I >= H.Cred_Len and then I <= Cred_Max - 1,
      Post => H.Cred (I) = 0;
 
+   procedure Lemma_Ceil_Zero (H : Hello; I : Natural) with
+     Ghost, Global => null,
+     Pre  => Cred_Canonical (H) and then I >= H.Ceil_Len and then I <= Cred_Max - 1,
+     Post => H.Ceil (I) = 0;
+
+   --  The cred bytes of the well-formed HELLO B (an empty slice when
+   --  cred_len = 0, written so that no bound overflows: with cred_len > 0
+   --  both bounds are at most B'Last).
+   function Cred_Of (B : Byte_Array) return Byte_Array is
+     (if Wire_U16 (B, B'First + Hello_O_CLen) = 0 then B (B'First .. B'First - 1)
+      else B (B'First + Hello_Fixed
+              .. B'First + (Hello_Fixed - 1) + Wire_U16 (B, B'First + Hello_O_CLen)))
+   with Pre => Hello_Wire_OK (B);
+
+   --  The ceil bytes of the well-formed HELLO B: its last ceil_len bytes (an
+   --  empty slice when ceil_len = 0; the bounds are counted from B'Last, so
+   --  none overflows). (The name avoids Kome.Headers.Ceil_Of.)
+   function Hello_Ceil_Of (B : Byte_Array) return Byte_Array is
+     (if Wire_U16 (B, B'First + Hello_O_KLen) = 0 then B (B'First .. B'First - 1)
+      else B (B'Last - (Wire_U16 (B, B'First + Hello_O_KLen) - 1) .. B'Last))
+   with Pre => Hello_Wire_OK (B);
+
    --  H is the HELLO that the well-formed B carries, canonically.
    function Hello_Decoded (B : Byte_Array; H : Hello) return Boolean is
      (H.N_Auth = Wire_U32 (B, B'First + Hello_O_NAuth)
       and then H.N_Data = Wire_U32 (B, B'First + Hello_O_NData)
       and then H.Digest = B (B'First + Hello_O_Digest .. B'First + Hello_O_Digest + 31)
       and then H.Cred_Len = Wire_U16 (B, B'First + Hello_O_CLen)
-      and then (if H.Cred_Len > 0 then
-                  H.Cred (0 .. H.Cred_Len - 1) = B (B'First + Hello_Fixed .. B'Last))
+      and then (if H.Cred_Len > 0 then H.Cred (0 .. H.Cred_Len - 1) = Cred_Of (B))
+      and then H.Ceil_Len = Wire_U16 (B, B'First + Hello_O_KLen)
+      and then (if H.Ceil_Len > 0 then H.Ceil (0 .. H.Ceil_Len - 1) = Hello_Ceil_Of (B))
       and then Cred_Canonical (H))
    with Pre => Hello_Wire_OK (B);
 
@@ -1341,13 +1428,6 @@ package Kome.Reconcile with SPARK_Mode is
      Global => null,
      Post   => OK = Hello_Wire_OK (Input)
                and then (if OK then Hello_Decoded (Input, H));
-
-   --  The cred bytes of the well-formed HELLO B (an empty slice when
-   --  cred_len = 0, written so that no bound overflows).
-   function Cred_Of (B : Byte_Array) return Byte_Array is
-     (if B'Last - B'First = Hello_Fixed - 1 then B (B'First .. B'First - 1)
-      else B (B'First + Hello_Fixed .. B'Last))
-   with Pre => Hello_Wire_OK (B);
 
    --  The signer of a ROSTER frame (its signer field, as the lattice sees
    --  it: Kome.Records.Signer_Key of the parsed roster).
@@ -1829,7 +1909,9 @@ package Kome.Reconcile with SPARK_Mode is
 
    --  Our HELLO, when the gate admits the peer (the precondition, A13,
    --  S9). The HELLO carries the counts of the two digest states, the
-   --  fingerprint of their union and our credential (S21: no snapshot).
+   --  fingerprint of their union, our credential (S21: no snapshot) and
+   --  Ceil, the frame of our ceiling-cell roster when the cell is live
+   --  (Kome.Frontier.Ceil_Live), else empty (AUDIT.md H12).
    --  Admit writes it to Buf (0 .. Len - 1). Send it before Root. If the
    --  HELLO of the peer is already here, the HELLO exchange is over
    --  (After_Hellos; the initiator's ROOT is in Root).
@@ -1840,6 +1922,7 @@ package Kome.Reconcile with SPARK_Mode is
       Auth     : Kome.Digest.Digest_State;
       Data     : Kome.Digest.Digest_State;
       Cred     : Byte_Array;
+      Ceil     : Byte_Array;
       Buf      : out Msg_Buffer;
       Len      : out Msg_Length;
       Root     : out Root_Out)
@@ -1848,6 +1931,7 @@ package Kome.Reconcile with SPARK_Mode is
      Pre    => Session_OK (Sess)
                and then Sess.P = Gate and then not Sess.Hello_Sent
                and then Cred'Length <= Cred_Max
+               and then Ceil'Length <= Cred_Max
                and then Kome.Digest.Count (Auth) + Kome.Digest.Count (Data) <= Elem_Max
                and then Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH),
      Post   => Session_OK (Sess)
@@ -1866,12 +1950,15 @@ package Kome.Reconcile with SPARK_Mode is
                and then Sess.Our_Digest = Kome.Keys.To_Key256 (Total_Fp (Auth, Data))
                and then Sess.Our_Auth_N = Kome.Digest.Count (Auth)
                and then Sess.Our_Auth_Fp = Kome.Digest.Fingerprint (Auth)
-               and then Len = Hello_Fixed + Cred'Length and then Len <= Hello_Max_Len
+               and then Len = Hello_Fixed + Cred'Length + Ceil'Length
+               and then Len <= Hello_Max_Len
                and then Hello_Wire_OK (Buf (0 .. Len - 1))
                and then Wire_U32 (Buf, Hello_O_NAuth) = Word (Kome.Digest.Count (Auth))
                and then Wire_U32 (Buf, Hello_O_NData) = Word (Kome.Digest.Count (Data))
                and then Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Total_Fp (Auth, Data)
-               and then Buf (Hello_Fixed .. Len - 1) = Cred
+               and then Wire_U16 (Buf, Hello_O_KLen) = Ceil'Length
+               and then Buf (Hello_Fixed .. Hello_Fixed + Cred'Length - 1) = Cred
+               and then Buf (Hello_Fixed + Cred'Length .. Len - 1) = Ceil
                and then (if Sess.Peer_Hello_Seen then After_Hellos (Sess, Root)
                          else Sess.P = Gate and then not Root.Send
                               and then Sess.Budget = Sess'Old.Budget
@@ -1978,9 +2065,9 @@ package Kome.Reconcile with SPARK_Mode is
    --  HELLO exchange gets to these phases. M is the decoded message with
    --  the bounds of a ROOT set by the phase (Bind), and the reply is
    --  Reply_Of (S, M). Peer is the decoded HELLO, from the wire; it is
-   --  Empty_Hello when the HELLO is refused (its credential is not
-   --  returned). Root is the initiator's authorization ROOT when this
-   --  HELLO completes the exchange.
+   --  Empty_Hello when the HELLO is refused (its credential and its ceiling
+   --  frame are not returned). Root is the initiator's authorization ROOT
+   --  when this HELLO completes the exchange.
    procedure Receive
      (Sess       : in out Session;
       S          : Snapshot;
@@ -2229,7 +2316,8 @@ private
       and then (for all T in 2 .. O.N => O.P (T - 1).Hi = O.P (T).Lo));
 
    function Cred_Canonical (H : Hello) return Boolean is
-     (for all I in H.Cred_Len .. Cred_Max - 1 => H.Cred (I) = 0);
+     ((for all I in H.Cred_Len .. Cred_Max - 1 => H.Cred (I) = 0)
+      and then (for all I in H.Ceil_Len .. Cred_Max - 1 => H.Ceil (I) = 0));
 
    function All_Kind (O : Outbox; K : Out_Kind) return Boolean is
      (for all T in 1 .. O.N => O.P (T).Kind = K);

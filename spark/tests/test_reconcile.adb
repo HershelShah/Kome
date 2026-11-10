@@ -34,6 +34,26 @@
 --  (h) Two replicas with different authorization and data records, and
 --      one frame of 41 120 bytes, converge to the union in a two-phase
 --      session. A second session ends at the HELLOs.
+--  (i) The ceiling cell (AUDIT.md H12): sessions between real stores
+--      (Kome.Store), run by the reference caller of the duties that
+--      kome-reconcile.ads lists (procedure Store_Sessions): the sender
+--      duty (the cell's frame in the HELLO while the cell is live), the
+--      two frames of a HELLO and which operation takes which (the
+--      credential by Kome.Write.Receive, the ceiling frame by
+--      Kome.Store.Put_Ceil only), the two orders against the snapshot, and
+--      the SUSPECT_RELAY rule of the ceiling frame. R2 to R9: the audit
+--      scenario by sync in both roles (both sides end with the same
+--      maxceil); the second session (re-offers, no log growth); equal
+--      digests with different ceilings; a replica with room (the roster
+--      reaches its cell, never a row); a credential that returns
+--      Ceil_Only in both orders; an exclusive roster in the carrier's
+--      cell; the same after the root-void of its signer.
+--      As in test_store.adb, the scenario has two forms: the rows are
+--      filled through the slot table (15 certified roots; this is what
+--      the check mode runs, with every contract of the store and of the
+--      session executing), or through the slice (512 REVOKEs of one root,
+--      the audit's own case; under -gnata 512 held records do not end in
+--      reasonable time, so this form runs in the release mode only).
 --  Under -gnata, every Pre, Post and lemma executes on these data.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -50,6 +70,9 @@ with Kome.Frontier;    use Kome.Frontier;
 with Kome.Views;       use Kome.Views;
 with Kome.Records;     use Kome.Records;
 with Kome.Reconcile;   use Kome.Reconcile;
+with Kome.Store;
+with Kome.Write;
+with Contract_Mode;    use Contract_Mode;
 
 procedure Test_Reconcile with SPARK_Mode => Off is
 
@@ -390,6 +413,791 @@ procedure Test_Reconcile with SPARK_Mode => Off is
      (if Raw'Length >= 2 and then Raw (Raw'First) = Tag_Range and then Raw (Raw'First + 1) >= 1
       then Natural (Raw (Raw'First + 1)) else 1);
 
+
+   ----------------------------------------------------------------------
+   --  (i) Sessions between real stores (AUDIT.md H12; DESIGN.md §8): the
+   --  reference caller of the duties in kome-reconcile.ads.
+   ----------------------------------------------------------------------
+
+   package KS renames Kome.Store;
+
+   --  How the authorization rows are filled, so that a roster of the root
+   --  R finds no room: By_Slots, 15 certified roots each sign one REVOKE
+   --  and take the slots 2 .. 16; By_Slice, R signs Slice_Max REVOKEs.
+   type Fill_Kind is (By_Slots, By_Slice);
+
+   --  Near: the replicas "with room" already hold x1 .. x(N-1), so that a
+   --  session delivers one authorization record and not N (the check mode:
+   --  each Put_Frame is slow under -gnata). Otherwise they are the small
+   --  replicas {r0, g, ..}, and B is built in the order r0, g, r2, x1 ..
+   --  x(N-1).
+   procedure Store_Sessions (Kind : Fill_Kind; Near : Boolean) is
+      Name : constant String :=
+        (if Kind = By_Slice then "H12 (full slice) " else "H12 (full slot table) ");
+      N    : constant Positive := (if Kind = By_Slice then Slice_Max else Signers_Max - 1);
+      TTL_S  : constant U48 := Del_TTL_Min;
+      C0     : constant U48 := 1_000;
+      C2     : constant U48 := Del_TTL_Min + 600;   --  the horizon is then 600
+      Cap_RR : constant U48 := Del_TTL_Min + 1_000_000;
+      Salt_S : constant Salt := Salt (Fill (Salt_Len, 91));
+      DHA    : constant Pubkey := Good_DH (11);
+      DHB    : constant Pubkey := Good_DH (21);
+      Nothing : constant Byte_Array (1 .. 0) := [];
+
+      K0_SK, RR_SK, T_SK, Wr_SK, M1_SK, M2_SK : Kome.Crypto.Secret_Key;
+      K0_PK, RR_PK, T_PK, Wr_PK, M1_PK, M2_PK : Pubkey;
+      Cid     : Hash256;
+      Cert_0  : Sig;
+      Cert_RR : Sig;
+
+      procedure Chk (What : String; Cond : Boolean) is
+      begin
+         Check (Name & What, Cond);
+      end Chk;
+
+      function Seed_Of (S : Natural) return Kome.Crypto.Seed is
+        (Kome.Crypto.Seed (Fill (Kome.Crypto.Seed_Len, S)));
+
+      function Member (PK, DH : Pubkey; Seed : Natural) return Byte_Array is
+        (PK & DH & Fill (Nonce_Len, Seed + 1) & Fill (Box_Len, Seed + 2));
+
+      --  The test replicas: member 1 (DHA) and member 2 (DHB).
+      function Both return Byte_Array is (Member (M1_PK, DHA, 11) & Member (M2_PK, DHB, 21));
+
+      function Roster_By
+        (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig; Gen, Ceil : U48;
+         Members : Byte_Array) return Byte_Array
+      is
+         R : Roster_Record := Make_Roster (Cid, PK, Cap, Cert, Good_DH (77), Gen, Ceil, Members);
+      begin
+         Sign (Cid, R, SK);
+         return Encode (R);
+      end Roster_By;
+
+      function Revoke_By
+        (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig; Subject : Pubkey)
+         return Byte_Array
+      is
+         X : Revoke_Record := Make_Revoke (Cid, PK, Cap, Cert, Subject, 0);
+      begin
+         Sign (Cid, X, SK);
+         return Encode (X);
+      end Revoke_By;
+
+      function Hdr (F : Byte_Array) return Header is (KS.Header_Of (Cid, F));
+
+      Log_H : constant := 192 * 1024;
+
+      --  A replica: its store, its lattice state and its Noise static key.
+      type Node is record
+         S  : KS.Store (Log_H);
+         F  : State (8);
+         DH : Pubkey := [others => 0];
+      end record;
+
+      procedure New_Node (X : out Node; Self, DH : Pubkey) is
+      begin
+         X.F := Empty (To_Key256 (K0_PK), 8);
+         KS.Open (K0_PK, Salt_S, TTL_S, Self, X.F, X.S);
+         X.DH := DH;
+      end New_Node;
+
+      --  Put_Frame of a verified frame.
+      procedure Offer (X : in out Node; Fr : Byte_Array; St : out Status) is
+         Off : KS.Log_Size;
+      begin
+         if not KS.Verified (Cid, K0_PK, Fr) then
+            raise Program_Error with "test frame not well-formed";
+         end if;
+         KS.Put_Frame (X.S, X.F, Fr, Hdr (Fr), Off, St);
+      end Offer;
+
+      procedure Hold (X : in out Node; Fr : Byte_Array) is
+         St : Status;
+      begin
+         Offer (X, Fr, St);
+         if St /= OK then
+            raise Program_Error with "setup frame refused: " & St'Image;
+         end if;
+      end Hold;
+
+      --  The frame of the held record H, from the store.
+      function Frame_Of (X : Node; H : Header) return Byte_Array is
+        (KS.Read_Frame (X.S, KS.Tag_Off (Tag_Of (X.F, H))));
+
+      --  The decoded record of ROSTER_eff (the caller's Eff).
+      function Eff_Of (X : Node) return Roster_Record is
+         V  : constant Header_View := Roster_Eff (X.F);
+         R  : Roster_Record :=
+           Make_Roster (Cid, K0_PK, Founding_Cap, Zero_Sig, Good_DH (15), 1, 1, Nothing);
+         St : Status;
+      begin
+         if V.Present then
+            Decode_Verified (Cid, K0_PK, Frame_Of (X, V.Hdr), R, St);
+            if St /= OK then
+               raise Program_Error with "ROSTER_eff does not decode";
+            end if;
+         end if;
+         return R;
+      end Eff_Of;
+
+      --  The credential a replica sends: the frame of its ROSTER_eff.
+      function Cred_Of_Node (X : Node) return Byte_Array is
+        (Frame_Of (X, Roster_Eff (X.F).Hdr));
+
+      --  What one side did in a session.
+      type Item_Rec is record
+         Hdr : Header;
+         St  : Status := OK;
+      end record;
+      type Item_List is array (1 .. 1_200) of Item_Rec;
+      type Report is record
+         Done_OK      : Boolean := False;        --  Complete (Sess) at the end
+         Hello_Res    : Session_Status := S_OK;  --  Receive of the peer's HELLO
+         Admitted     : Boolean := False;
+         Ceil_Sent    : Natural := 0;            --  ceil_len of our HELLO
+         Ceil_Got     : Natural := 0;            --  ceil_len of the peer's HELLO
+         Cred_Applied : Boolean := False;
+         Cred_St      : Status := OK;
+         Ceil_Applied : Boolean := False;        --  Put_Ceil was called
+         Ceil_St      : Status := OK;
+         Ceil_Flags   : Natural := 0;            --  SUSPECT_RELAY from the ceiling frame
+         Item_Flags   : Natural := 0;            --  SUSPECT_RELAY from items
+         N_Items      : Natural := 0;            --  delivered frames, in order
+         Items        : Item_List;
+         Recv         : Natural := 0;            --  one-way messages received
+         Bad          : Natural := 0;            --  results other than S_OK after the HELLOs
+      end record;
+
+      --  The status of the delivered item H, if exactly one item is H.
+      function Item_Is (Rep : Report; H : Header; St : Status) return Boolean is
+         Seen : Natural := 0;
+         Good : Boolean := False;
+      begin
+         for K in 1 .. Rep.N_Items loop
+            if Rep.Items (K).Hdr = H then
+               Seen := Seen + 1;
+               Good := Rep.Items (K).St = St;
+            end if;
+         end loop;
+         return Seen = 1 and then Good;
+      end Item_Is;
+
+      --  One session between two replicas, I the initiator and R the
+      --  responder, by the duties of kome-reconcile.ads. I_First and
+      --  R_First say whether a side calls Admit before it has the peer's
+      --  HELLO (at least one does). Cred_R replaces the responder's
+      --  credential when it is not empty.
+      procedure Run_Store_Session
+        (I, R             : in out Node;
+         I_First, R_First : Boolean;
+         Rep_I, Rep_R     : out Report;
+         Cred_R           : Byte_Array := Nothing)
+      is
+         Elem_Cap : constant := 1_024;
+         type Prefix_Ptr is access Prefix;
+         type Side is record
+            Sess   : Session (Oblig_Cap => 1_024);
+            Snap   : Snapshot (Cap => Elem_Cap);
+            T      : Frame_Table (Cap => Elem_Cap, Pool_Cap => 400_000);
+            P      : Prefix_Ptr;
+            Sealed : Boolean := False;
+         end record;
+
+         Empty_S : Snapshot (Cap => 0);
+         EP      : Prefix (1);
+         SI, SR  : Side;
+         To_I, To_R : Msg_Vectors.Vector;
+         Rounds  : Natural := 0;
+         Opened  : Boolean;
+
+         --  The snapshot, when the session enters Auth: pin, the frame
+         --  table in flat order, Snapshot_Of, Seal.
+         procedure Seal_Snapshot (X : in out Node; SX : in out Side) is
+            SS : Snap_Status;
+         begin
+            KS.Pin (X.S, X.F);
+            Clear_Table (SX.T);
+            for K in 1 .. Kome.Frontier.Count (X.F) loop
+               KS.Lemma_Tag (X.S, X.F, K);
+               Add_Frame (SX.T, KS.Read_Frame (X.S, KS.Tag_Off (Tag (X.F, K))), SS);
+               if SS /= Snap_OK then
+                  raise Program_Error with "add_frame " & SS'Image;
+               end if;
+            end loop;
+            Snapshot_Of (X.F, SX.T, SX.Snap, SS);
+            if SS /= Snap_OK then
+               raise Program_Error with "snapshot_of " & SS'Image;
+            end if;
+            SX.P := new Prefix (Prefix_Slots (Kome.Reconcile.Count (SX.Snap)));
+            Seal (SX.Snap, SX.P.all);
+            SX.Sealed := True;
+         end Seal_Snapshot;
+
+         --  The credential: an authorization record (Put_Frame). It can
+         --  enter a row, and it can return Ceil_Only.
+         procedure Apply_Cred (X : in out Node; Rep : in out Report; Peer : Hello) is
+            Fr  : constant Byte_Array := Peer.Cred (0 .. Peer.Cred_Len - 1);
+            Off : KS.Log_Size;
+            Fl  : Boolean;
+         begin
+            if not KS.Verified (Cid, K0_PK, Fr) then
+               raise Program_Error with "the credential does not verify";
+            end if;
+            Kome.Write.Receive (X.S, X.F, Fr, Hdr (Fr), Off, Rep.Cred_St, Fl);
+            Rep.Cred_Applied := True;
+         end Apply_Cred;
+
+         --  The ceiling frame: Put_Ceil, and nothing else. The peer is
+         --  flagged exactly when the frame raised our maxceil and its
+         --  signer was root-voided in our view before the call.
+         procedure Apply_Ceil (X : in out Node; Rep : in out Report; Peer : Hello) is
+         begin
+            Rep.Ceil_Got := Peer.Ceil_Len;
+            if Peer.Ceil_Len = 0 then
+               return;
+            end if;
+            declare
+               Fr  : constant Byte_Array := Peer.Ceil (0 .. Peer.Ceil_Len - 1);
+               Rec : Roster_Record := Eff_Of (X);
+               St  : Status;
+               Off : KS.Log_Size;
+            begin
+               Decode_Verified (Cid, K0_PK, Fr, Rec, St);
+               if St /= OK then
+                  raise Program_Error with "the ceiling frame is not a verified ROSTER";
+               end if;
+               declare
+                  H : constant Header := Hdr (Fr);
+                  V : constant Boolean := Root_Void (X.F, H.Issuer);
+               begin
+                  KS.Put_Ceil (X.S, X.F, Fr, H, Off, Rep.Ceil_St);
+                  Rep.Ceil_Applied := True;
+                  if Rep.Ceil_St = Ceil_Only and then V then
+                     Rep.Ceil_Flags := Rep.Ceil_Flags + 1;
+                  end if;
+               end;
+            end;
+         end Apply_Ceil;
+
+         --  Admit, when the gate is open: our HELLO from the digest states
+         --  as they are now, with the cell's frame if the cell is live
+         --  (the sender duty).
+         procedure Do_Admit
+           (X : in out Node; SX : in out Side; Rep : in out Report; Cred : Byte_Array;
+            Out_Q : in out Msg_Vectors.Vector; Open : out Boolean)
+         is
+            Eff : constant Roster_Record := Eff_Of (X);
+            Buf : Msg_Buffer;
+            L   : Msg_Length;
+            Rt  : Root_Out;
+         begin
+            Open := Gate_Open (Cid, X.F, Eff, SX.Sess.Peer_DH);
+            if not Open then
+               return;
+            end if;
+            if Ceil_Live (X.F) then
+               KS.Lemma_Ceil_Tag (X.S, X.F);
+               declare
+                  Ceil : constant Byte_Array :=
+                    KS.Read_Frame (X.S, KS.Tag_Off (Ceil_Tag (X.F)));
+               begin
+                  Rep.Ceil_Sent := Ceil'Length;
+                  Admit (SX.Sess, X.F, Eff, KS.Digest_Auth (X.S), KS.Digest_Data (X.S), Cred,
+                         Ceil, Buf, L, Rt);
+               end;
+            else
+               Admit (SX.Sess, X.F, Eff, KS.Digest_Auth (X.S), KS.Digest_Data (X.S), Cred,
+                      Nothing, Buf, L, Rt);
+            end if;
+            Rep.Admitted := True;
+            Out_Q.Append (Slice (Buf, L));
+            if Rt.Send then
+               Out_Q.Append (Root_Bytes (Rt));
+            end if;
+         end Do_Admit;
+
+         --  The peer's HELLO, and the two orders.
+         procedure On_Hello
+           (X : in out Node; SX : in out Side; Rep : in out Report; Raw : Byte_Array;
+            Cred : Byte_Array; Out_Q : in out Msg_Vectors.Vector)
+         is
+            Was_Out : constant Boolean := SX.Sess.Hello_Sent;
+            M    : Message;
+            Peer : Hello;
+            O    : Outbox;
+            Got  : Delivery;
+            Rt   : Root_Out;
+            Res  : Session_Status;
+            Open : Boolean;
+         begin
+            Receive (SX.Sess, Empty_S, EP, X.F, Eff_Of (X), Raw, 1, No_Keys, M, Peer, O, Got,
+                     Rt, Res);
+            Rep.Hello_Res := Res;
+            if Res /= S_OK then
+               --  A refused HELLO: Peer is Empty_Hello, nothing is applied.
+               return;
+            end if;
+            if Was_Out then
+               --  Our HELLO was out: the snapshot it described, then the
+               --  credential, then the ceiling frame.
+               if SX.Sess.P = Auth then
+                  Seal_Snapshot (X, SX);
+               end if;
+               Apply_Cred (X, Rep, Peer);
+               Apply_Ceil (X, Rep, Peer);
+               if Rt.Send then
+                  Out_Q.Append (Root_Bytes (Rt));
+               end if;
+            else
+               --  Our HELLO was not out: the credential, the gate, Admit,
+               --  the snapshot, then the ceiling frame.
+               Apply_Cred (X, Rep, Peer);
+               Do_Admit (X, SX, Rep, Cred, Out_Q, Open);
+               if not Open then
+                  return;
+               end if;
+               if SX.Sess.P = Auth then
+                  Seal_Snapshot (X, SX);
+               end if;
+               Apply_Ceil (X, Rep, Peer);
+            end if;
+         end On_Hello;
+
+         --  The keys of the items of Raw, from the decoded frames. A frame
+         --  that does not verify is a protocol violation.
+         function Item_Keys (Raw : Byte_Array) return Key_List is
+            PL : constant Places := Item_Places (Raw);
+            K  : Key_List := No_Keys;
+         begin
+            if PL.OK then
+               for T in 1 .. PL.N loop
+                  declare
+                     Fr : constant Byte_Array := Raw (PL.Off (T) .. PL.Off (T) + PL.Len (T) - 1);
+                  begin
+                     if not KS.Verified (Cid, K0_PK, Fr) then
+                        raise Program_Error with "an item frame does not verify";
+                     end if;
+                     K (T) := Key_Of (Hdr (Fr));
+                  end;
+               end loop;
+            end if;
+            return K;
+         end Item_Keys;
+
+         --  Any other message: Receive, apply the delivered frames in item
+         --  order, send the reply.
+         procedure On_Message
+           (X : in out Node; SX : in out Side; Rep : in out Report; Raw : Byte_Array;
+            Out_Q : in out Msg_Vectors.Vector)
+         is
+            Keys : constant Key_List := Item_Keys (Raw);
+            M    : Message;
+            Peer : Hello;
+            O    : Outbox;
+            Got  : Delivery;
+            Rt   : Root_Out;
+            Res  : Session_Status;
+         begin
+            for J in 1 .. Parts_Of (Raw) loop
+               if SX.Sealed then
+                  Receive (SX.Sess, SX.Snap, SX.P.all, X.F, Eff_Of (X), Raw, J, Keys, M, Peer,
+                           O, Got, Rt, Res);
+               else
+                  Receive (SX.Sess, Empty_S, EP, X.F, Eff_Of (X), Raw, J, Keys, M, Peer, O,
+                           Got, Rt, Res);
+               end if;
+               if Res /= S_OK then
+                  Rep.Bad := Rep.Bad + 1;
+               end if;
+               if Rt.Send then
+                  Out_Q.Append (Root_Bytes (Rt));
+               end if;
+               for T in Got'Range loop
+                  if Got (T) then
+                     declare
+                        It  : constant In_Item := M.Items (T);
+                        Fr  : constant Byte_Array := Raw (It.Off .. It.Off + It.Len - 1);
+                        H   : constant Header := Hdr (Fr);
+                        Sus : constant Boolean :=
+                          (if Is_Data (H) then Is_Void (X.F, H) else Root_Void (X.F, H.Issuer));
+                        Off : KS.Log_Size;
+                        St  : Status;
+                        Fl  : Boolean;
+                     begin
+                        Kome.Write.Receive (X.S, X.F, Fr, H, Off, St, Fl);
+                        Rep.N_Items := Rep.N_Items + 1;
+                        Rep.Items (Rep.N_Items) := (Hdr => H, St => St);
+                        if Sus then
+                           Rep.Item_Flags := Rep.Item_Flags + 1;
+                        end if;
+                     end;
+                  end if;
+               end loop;
+               if SX.Sealed then
+                  Emit (SX.Snap, SX.P.all, SX.T, O, Out_Q);
+               end if;
+            end loop;
+         end On_Message;
+
+         procedure Deliver
+           (X : in out Node; SX : in out Side; Rep : in out Report; Cred : Byte_Array;
+            In_Q, Out_Q : in out Msg_Vectors.Vector)
+         is
+            Batch : constant Msg_Vectors.Vector := In_Q;
+            Rt    : Root_Out;
+            Res   : Session_Status;
+         begin
+            In_Q.Clear;
+            for Raw of Batch loop
+               Rep.Recv := Rep.Recv + 1;
+               if Raw'Length > 0 and then Raw (Raw'First) = Tag_Hello then
+                  On_Hello (X, SX, Rep, Raw, Cred, Out_Q);
+               else
+                  On_Message (X, SX, Rep, Raw, Out_Q);
+               end if;
+            end loop;
+            --  The initiator, with nothing open in Auth: the data range.
+            if SX.Sealed and then SX.Sess.R = Initiator and then SX.Sess.P = Auth
+              and then Open_Count (SX.Sess) = 0
+            then
+               Next_Phase (SX.Sess, SX.Snap, SX.P.all, X.F, Eff_Of (X), Rt, Res);
+               if Res /= S_OK then
+                  Rep.Bad := Rep.Bad + 1;
+               end if;
+               if Rt.Send then
+                  Out_Q.Append (Root_Bytes (Rt));
+               end if;
+            end if;
+         end Deliver;
+
+         Cred_I_B : constant Byte_Array := Cred_Of_Node (I);
+         Cred_R_B : constant Byte_Array :=
+           (if Cred_R'Length > 0 then Cred_R else Cred_Of_Node (R));
+      begin
+         Rep_I := (others => <>);
+         Rep_R := (others => <>);
+         Clear (Empty_S);
+         Seal (Empty_S, EP);
+         Start (SI.Sess, Initiator, Cid, R.DH);
+         Start (SR.Sess, Responder, Cid, I.DH);
+         if I_First then
+            Do_Admit (I, SI, Rep_I, Cred_I_B, To_R, Opened);
+         end if;
+         if R_First then
+            Do_Admit (R, SR, Rep_R, Cred_R_B, To_I, Opened);
+         end if;
+         while not To_R.Is_Empty or else not To_I.Is_Empty loop
+            if not To_R.Is_Empty then
+               Deliver (R, SR, Rep_R, Cred_R_B, To_R, To_I);
+            end if;
+            if not To_I.Is_Empty then
+               Deliver (I, SI, Rep_I, Cred_I_B, To_I, To_R);
+            end if;
+            Rounds := Rounds + 1;
+            exit when Rounds > 400;
+         end loop;
+         if SI.Sealed then
+            KS.Unpin (I.S, I.F);
+         end if;
+         if SR.Sealed then
+            KS.Unpin (R.S, R.F);
+         end if;
+         Rep_I.Done_OK := Complete (SI.Sess);
+         Rep_R.Done_OK := Complete (SR.Sess);
+      end Run_Store_Session;
+
+   begin
+      Kome.Crypto.Key_Pair (Seed_Of (3), K0_SK, K0_PK);
+      Kome.Crypto.Key_Pair (Seed_Of (7), RR_SK, RR_PK);
+      Kome.Crypto.Key_Pair (Seed_Of (9), T_SK, T_PK);
+      Kome.Crypto.Key_Pair (Seed_Of (13), Wr_SK, Wr_PK);
+      Kome.Crypto.Key_Pair (Seed_Of (17), M1_SK, M1_PK);
+      Kome.Crypto.Key_Pair (Seed_Of (19), M2_SK, M2_PK);
+      Cid := Cid_Of (K0_PK, Salt_S, TTL_S);
+      Cert_0 := Make_Cert (K0_SK, Cid, K0_PK, Founding_Cap);
+      Cert_RR := Make_Cert (K0_SK, Cid, RR_PK, Cap_RR);
+      declare
+         type Rev_Frames is array (1 .. N) of Byte_Array (0 .. Revoke_Frame_Len - 1);
+         X : Rev_Frames;
+
+         function G_Frame return Byte_Array is
+            G : Grant_Record := Make_Grant (Cid, K0_PK, Founding_Cap, Cert_0, Wr_PK);
+         begin
+            Sign (Cid, G, K0_SK);
+            return Encode (G);
+         end G_Frame;
+
+         function D_Frame return Byte_Array is
+            R : Del_Record := Make_Del (Cid, Ent_Id (Fill (Ent_Len, 3)), 500, 1, Wr_PK);
+         begin
+            Sign (Cid, R, Wr_SK);
+            return Encode (R);
+         end D_Frame;
+
+         function P_Frame return Byte_Array is
+            R : Put_Record :=
+              Make_Put (Cid, Ent_Id (Fill (Ent_Len, 4)), [16#61#], 900, 2, Wr_PK, [1, 2, 3]);
+         begin
+            Sign (Cid, R, Wr_SK);
+            return Encode (R);
+         end P_Frame;
+
+         R0 : constant Byte_Array := Roster_By (K0_SK, K0_PK, Founding_Cap, Cert_0, 5, C0, Both);
+         G  : constant Byte_Array := G_Frame;
+         D  : constant Byte_Array := D_Frame;
+         P  : constant Byte_Array := P_Frame;
+         R2 : constant Byte_Array := Roster_By (RR_SK, RR_PK, Cap_RR, Cert_RR, 1, C2, Both);
+         --  A roster of R with a high gen that lists only the thief's
+         --  device: in a row it is ROSTER_eff and closes the gate.
+         R3 : constant Byte_Array :=
+           Roster_By (RR_SK, RR_PK, Cap_RR, Cert_RR, 20, C2, Member (T_PK, Good_DH (31), 31));
+         --  The founding REVOKE of R, and a recovery roster.
+         V  : constant Byte_Array := Revoke_By (K0_SK, K0_PK, Founding_Cap, Cert_0, RR_PK);
+         RV : constant Byte_Array := Roster_By (K0_SK, K0_PK, Founding_Cap, Cert_0, 9, C0, Both);
+
+         P0, PX, A0, B0, A2, B2, AX, BX, C, DN, A8 : Node;
+         RA, RB, RC, RD : Report;
+         St : Status;
+         LA, LB : KS.Log_Size;
+
+         procedure Hold_X (Nd : in out Node; From, To : Natural) is
+         begin
+            for K in From .. To loop
+               Hold (Nd, X (K));
+            end loop;
+         end Hold_X;
+      begin
+         for K in 1 .. N loop
+            declare
+               Sd   : Byte_Array := Fill (Kome.Crypto.Seed_Len, 77);
+               Q_SK : Kome.Crypto.Secret_Key;
+               Q_PK : Pubkey;
+            begin
+               Sd (0) := Byte (K mod 256);
+               Sd (1) := Byte (K / 256);
+               Kome.Crypto.Key_Pair (Kome.Crypto.Seed (Sd), Q_SK, Q_PK);
+               if Kind = By_Slice then
+                  X (K) := Revoke_By (RR_SK, RR_PK, Cap_RR, Cert_RR, Q_PK);
+               else
+                  X (K) := Revoke_By
+                    (Q_SK, Q_PK, 2_000, Make_Cert (K0_SK, Cid, Q_PK, 2_000), T_PK);
+               end if;
+            end;
+         end loop;
+
+         --  P0 = {r0, g}; PX = P0 and x1 .. x(N-1); A0 = PX and xN: the rows
+         --  have no room for a roster of R. B0 holds r2 and x1 .. x(N-1).
+         New_Node (P0, M1_PK, DHA);
+         Hold (P0, R0);
+         Hold (P0, G);
+         PX := P0;
+         Hold_X (PX, 1, N - 1);
+         A0 := PX;
+         Hold (A0, X (N));
+         if Near then
+            B0 := PX;
+            Hold (B0, R2);
+         else
+            B0 := P0;
+            Hold (B0, R2);
+            Hold_X (B0, 1, N - 1);
+         end if;
+         B0.DH := DHB;
+         Chk ("setup: A has no room for a roster of R; B holds r2 and has no room for xN",
+              KS.Auth_Rule (A0.F, Hdr (R2)) and then Max_Ceil (A0.F) = C0
+              and then Holds (B0.F, Hdr (R2)) and then KS.Auth_Rule (B0.F, Hdr (X (N)))
+              and then Max_Ceil (B0.F) = C2);
+
+         ---------------------------------------------------------------
+         --  R2. The audit scenario by sync, in both roles.
+         ---------------------------------------------------------------
+         A2 := A0;
+         B2 := B0;
+         Run_Store_Session (A2, B2, True, True, RA, RB);
+         Chk ("R2 (A initiates): both Complete, every message accepted",
+              RA.Done_OK and then RB.Done_OK and then RA.Bad = 0 and then RB.Bad = 0);
+         Chk ("R2 (A initiates): A's Receive of r2 is Ceil_Only, B's of xN is Auth_Full",
+              Item_Is (RA, Hdr (R2), Ceil_Only) and then Item_Is (RB, Hdr (X (N)), Auth_Full)
+              and then RA.N_Items = 1 and then RB.N_Items = 1);
+         Chk ("R2 (A initiates): the two sides have the same maxceil and horizon (T19)",
+              Max_Ceil (A2.F) = C2 and then Max_Ceil (B2.F) = C2
+              and then KS.Hz (A2.F, TTL_S) = KS.Hz (B2.F, TTL_S)
+              and then Has_Ceil (A2.F) and then Ceil_Held (A2.F) = Hdr (R2)
+              and then not Holds (A2.F, Hdr (R2)) and then not Has_Ceil (B2.F));
+         AX := A0;
+         BX := B0;
+         Run_Store_Session (BX, AX, True, False, RB, RA);
+         Chk ("R2 (B initiates): both Complete; Ceil_Only at A, Auth_Full at B",
+              RA.Done_OK and then RB.Done_OK and then RA.Bad = 0 and then RB.Bad = 0
+              and then Item_Is (RA, Hdr (R2), Ceil_Only)
+              and then Item_Is (RB, Hdr (X (N)), Auth_Full));
+         Chk ("R2 (B initiates): the two sides have the same maxceil (T19)",
+              Max_Ceil (AX.F) = C2 and then Max_Ceil (BX.F) = C2);
+
+         ---------------------------------------------------------------
+         --  R3. The second session of the pair: the re-offers.
+         ---------------------------------------------------------------
+         LA := KS.Log_Length (A2.S);
+         LB := KS.Log_Length (B2.S);
+         Run_Store_Session (A2, B2, True, True, RA, RB);
+         Chk ("R3: the second session is Complete; r2 and xN are offered again, Auth_Full",
+              RA.Done_OK and then RB.Done_OK
+              and then RA.N_Items = 1 and then Item_Is (RA, Hdr (R2), Auth_Full)
+              and then RB.N_Items = 1 and then Item_Is (RB, Hdr (X (N)), Auth_Full));
+         Chk ("R3: neither log grows",
+              KS.Log_Length (A2.S) = LA and then KS.Log_Length (B2.S) = LB);
+         Chk ("R3: A's HELLO carries r2 (its cell is live); B's Put_Ceil returns OK",
+              RA.Ceil_Sent = R2'Length and then RB.Ceil_Got = R2'Length
+              and then RB.Ceil_Applied and then RB.Ceil_St = OK and then RB.Ceil_Flags = 0
+              and then RB.Ceil_Sent = 0 and then not RA.Ceil_Applied);
+
+         ---------------------------------------------------------------
+         --  R4. Equal digests, different ceilings: A (cell r2) and D, whose
+         --  rows are A's and which was never offered r2.
+         ---------------------------------------------------------------
+         for Role in 1 .. 2 loop
+            AX := A2;
+            DN := A0;
+            DN.DH := DHB;
+            if Role = 1 then
+               Run_Store_Session (AX, DN, True, True, RA, RD);
+            else
+               Run_Store_Session (DN, AX, True, False, RD, RA);
+            end if;
+            Chk ("R4 (" & (if Role = 1 then "A" else "D")
+                 & " initiates): equal digests end the session at the HELLOs",
+                 RA.Done_OK and then RD.Done_OK and then RA.Recv = 1 and then RD.Recv = 1
+                 and then RA.N_Items = 0 and then RD.N_Items = 0);
+            Chk ("R4: A's HELLO carries r2, D's none; D's Put_Ceil is Ceil_Only",
+                 RA.Ceil_Sent = R2'Length and then RD.Ceil_Sent = 0
+                 and then RD.Ceil_Applied and then RD.Ceil_St = Ceil_Only
+                 and then RD.Ceil_Flags = 0 and then not RA.Ceil_Applied);
+            Chk ("R4: D has A's maxceil, and holds r2 in its cell only",
+                 Max_Ceil (DN.F) = C2 and then Max_Ceil (AX.F) = C2
+                 and then Has_Ceil (DN.F) and then Ceil_Held (DN.F) = Hdr (R2)
+                 and then not Holds (DN.F, Hdr (R2)));
+         end loop;
+
+         ---------------------------------------------------------------
+         --  R5. A replica with room: r2 reaches its cell, never a row.
+         ---------------------------------------------------------------
+         C := (if Near then PX else P0);
+         C.DH := DHB;
+         Hold (C, D);
+         Hold (C, P);
+         AX := A2;
+         Run_Store_Session (AX, C, True, False, RA, RC);
+         Chk ("R5: Complete; C has the maxceil of A",
+              RA.Done_OK and then RC.Done_OK and then RA.Bad = 0 and then RC.Bad = 0
+              and then Max_Ceil (C.F) = C2 and then Max_Ceil (AX.F) = C2);
+         Chk ("R5: C has r2 in its cell and in no row, though its rows have room",
+              RC.Ceil_St = Ceil_Only and then Has_Ceil (C.F) and then Ceil_Held (C.F) = Hdr (R2)
+              and then not Holds (C.F, Hdr (R2))
+              and then Slot_Of (C.F, To_Key256 (RR_PK))
+                       = (if Kind = By_Slice then Slot_Of (AX.F, To_Key256 (RR_PK)) else 0)
+              and then Roster_Eff (C.F) = (Present => True, Hdr => Hdr (R0)));
+         Chk ("R5: the capture expired d at C; p is held on both sides",
+              not Holds (C.F, Hdr (D)) and then Holds (C.F, Hdr (P))
+              and then Holds (AX.F, Hdr (P)) and then not Holds (AX.F, Hdr (D)));
+
+         ---------------------------------------------------------------
+         --  R7. A credential that returns Ceil_Only, in both orders.
+         ---------------------------------------------------------------
+         for Order in 1 .. 2 loop
+            AX := A0;
+            Hold (AX, D);
+            Hold (AX, P);
+            BX := B0;
+            if Order = 1 then
+               --  A's HELLO is out when B's arrives: seal, then the credential.
+               Run_Store_Session (AX, BX, True, True, RA, RB, Cred_R => R2);
+            else
+               --  B's HELLO arrives first: the credential, the gate, Admit,
+               --  then the seal.
+               Run_Store_Session (AX, BX, False, True, RA, RB, Cred_R => R2);
+            end if;
+            Chk ("R7 (order" & Order'Image & "): the credential r2 returns Ceil_Only at A"
+                 & " and expires d",
+                 RA.Cred_Applied and then RA.Cred_St = Ceil_Only
+                 and then not Holds (AX.F, Hdr (D)) and then Holds (AX.F, Hdr (P)));
+            Chk ("R7 (order" & Order'Image & "): every later Receive and Next_Phase is"
+                 & " accepted (Same_Snapshot); Complete; the same maxceil",
+                 RA.Bad = 0 and then RB.Bad = 0 and then RA.Done_OK and then RB.Done_OK
+                 and then Max_Ceil (AX.F) = C2 and then Max_Ceil (BX.F) = C2
+                 and then Holds (BX.F, Hdr (P)));
+         end loop;
+
+         ---------------------------------------------------------------
+         --  R8. An exclusive roster in the carrier's cell.
+         ---------------------------------------------------------------
+         A8 := A0;
+         Offer (A8, R3, St);
+         Chk ("R8: setup: r3 is captured at A; ROSTER_eff of A is still r0",
+              St = Ceil_Only and then Ceil_Held (A8.F) = Hdr (R3)
+              and then Roster_Eff (A8.F) = (Present => True, Hdr => Hdr (R0)));
+         for Role in 1 .. 2 loop
+            AX := A8;
+            C := (if Near then PX else P0);
+            C.DH := DHB;
+            if Role = 1 then
+               Run_Store_Session (AX, C, True, False, RA, RC);
+            else
+               Run_Store_Session (C, AX, True, True, RC, RA);
+            end if;
+            Chk ("R8 (" & (if Role = 1 then "A" else "C") & " initiates): Complete; C has the"
+                 & " maxceil; r3 is in C's cell and in no row",
+                 RA.Done_OK and then RC.Done_OK and then RA.Bad = 0 and then RC.Bad = 0
+                 and then Max_Ceil (C.F) = C2 and then RC.Ceil_St = Ceil_Only
+                 and then Ceil_Held (C.F) = Hdr (R3) and then not Holds (C.F, Hdr (R3)));
+            Chk ("R8: ROSTER_eff of C is still r0, and its gate still admits A",
+                 Roster_Eff (C.F) = (Present => True, Hdr => Hdr (R0))
+                 and then not Quarantined (C.F)
+                 and then Gate_Open (Cid, C.F, Eff_Of (C), DHA)
+                 and then RC.Ceil_Flags = 0);
+            Run_Store_Session (AX, C, True, True, RA, RC);
+            Chk ("R8: a second session is Complete too",
+                 RA.Done_OK and then RC.Done_OK and then RC.Ceil_St = OK
+                 and then Max_Ceil (C.F) = C2);
+         end loop;
+
+         ---------------------------------------------------------------
+         --  R9. After the root-void: D holds the founding REVOKE of R and a
+         --  recovery roster.
+         ---------------------------------------------------------------
+         for Role in 1 .. 2 loop
+            AX := A8;
+            DN := (if Near then PX else P0);
+            DN.DH := DHB;
+            Hold (DN, V);
+            Hold (DN, RV);
+            if Role = 1 then
+               Run_Store_Session (AX, DN, True, False, RA, RD);
+            else
+               Run_Store_Session (DN, AX, True, True, RD, RA);
+            end if;
+            Chk ("R9 (" & (if Role = 1 then "A" else "D") & " initiates): Complete; D has the"
+                 & " maxceil and does not hold r3",
+                 RA.Done_OK and then RD.Done_OK and then RA.Bad = 0 and then RD.Bad = 0
+                 and then Max_Ceil (DN.F) = C2 and then not Holds (DN.F, Hdr (R3))
+                 and then Ceil_Held (DN.F) = Hdr (R3));
+            Chk ("R9: Roster_Max of D is the recovery roster; D is not quarantined",
+                 Roster_Max (DN.F) = (Present => True, Hdr => Hdr (RV))
+                 and then not Quarantined (DN.F));
+            Chk ("R9: D flags A once for the ceiling frame (SUSPECT_RELAY); A now holds"
+                 & " the REVOKE and the recovery roster",
+                 RD.Ceil_St = Ceil_Only and then RD.Ceil_Flags = 1
+                 and then Holds (AX.F, Hdr (V)) and then Holds (AX.F, Hdr (RV)));
+            Run_Store_Session (AX, DN, True, True, RA, RD);
+            Chk ("R9: a second session: Complete; A's HELLO still carries r3; D's Put_Ceil"
+                 & " returns OK and flags nobody",
+                 RA.Done_OK and then RD.Done_OK and then RA.Ceil_Sent = R3'Length
+                 and then RD.Ceil_Applied and then RD.Ceil_St = OK
+                 and then RD.Ceil_Flags = 0);
+         end loop;
+      end;
+   end Store_Sessions;
+
    procedure Run_All;
 
    --  A State holds Signers_Max * Slice_Max authorization rows, and the
@@ -418,6 +1226,10 @@ procedure Test_Reconcile with SPARK_Mode => Off is
         Make_Roster (Cid_A, Root_PK, Founding_Cap, Zero_Sig, Box_A, 1, 5000, Mem);
       RH    : constant Header := To_Header (Cid_A, R_Eff);
       Cred_T : constant Byte_Array := Encode (R_Eff);
+      --  A ceiling frame for the wire tests (Kome.Reconcile checks only its
+      --  length), and the empty one.
+      Ceil_T : constant Byte_Array := Fill (212, 44);
+      No_Ceil : constant Byte_Array (1 .. 0) := [];
       S1_Key : constant Key256 := Member_Key (R_Eff.C, 1);
       F0    : State := Empty (Fnd, 64);
       St    : Status;
@@ -782,7 +1594,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       declare
          Path  : constant String := Find ("vectors/reconcile.txt");
          File  : File_Type;
-         Line  : String (1 .. 40_000);
+         Line  : String (1 .. 80_000);
          Last  : Natural;
          type Bounds is record
             First, Last : Natural;
@@ -864,15 +1676,26 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                      elsif Kind = "hello" then
                         declare
                            Cr : constant Byte_Array := From_Hex (Field (5));
+                           Ce : constant Byte_Array := From_Hex (Field (6));
                            H  : Hello;
                            OK : Boolean;
                         begin
                            Encode_Hello (Word'Value (Field (2)), Word'Value (Field (3)),
-                                         From_Hex (Field (4)), Cr, Buf, L);
+                                         From_Hex (Field (4)), Cr, Ce, Buf, L);
                            Decode_Hello (Wire, H, OK);
                            Mark ("hello", Slice (Buf, L) = Wire and then OK
+                                 and then Hello_Wire_OK (Wire)
+                                 and then Wire'Length = Hello_Fixed + Cr'Length + Ce'Length
+                                 and then H.N_Auth = Word'Value (Field (2))
                                  and then H.N_Data = Word'Value (Field (3))
-                                 and then H.Cred_Len = Cr'Length);
+                                 and then H.Digest = From_Hex (Field (4))
+                                 and then H.Cred_Len = Cr'Length
+                                 and then H.Cred (0 .. H.Cred_Len - 1) = Cr
+                                 and then H.Ceil_Len = Ce'Length
+                                 and then H.Ceil (0 .. H.Ceil_Len - 1) = Ce
+                                 and then Cred_Of (Wire) = Cr
+                                 and then Hello_Ceil_Of (Wire) = Ce
+                                 and then Cred_Canonical (H));
                         end;
                      elsif Kind = "root" then
                         declare
@@ -948,7 +1771,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
             end loop;
             Close (File);
             Check ("wire vectors: keys, prologue, HELLO, ROOT, RANGE parts, ELEMENTS items ("
-                   & N_Vec'Image & " vectors)", All_OK and then N_Vec = 23);
+                   & N_Vec'Image & " vectors)", All_OK and then N_Vec = 26);
          end if;
       end;
 
@@ -965,6 +1788,81 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                 and then not Decode_Of (Rt (1 .. 0), 1, No_Keys).OK);
          Check ("Decode refuses a RANGE with a length that k does not give",
                 not Decode_Of (Rg, 1, No_Keys).OK);
+      end;
+
+      --  R1 (AUDIT.md H12): the HELLO with a ceiling frame. The round
+      --  trip with the four combinations of an empty and a non-empty cred
+      --  and ceil; Cred_Of and Hello_Ceil_Of; the refusals of
+      --  Hello_Wire_OK; the largest HELLO.
+      declare
+         Buf : Msg_Buffer;
+         L   : Msg_Length;
+         Dg  : constant Hash256 := Hash256 (Fill (32, 9));
+         C1  : constant Byte_Array := Fill (300, 1);
+         K1  : constant Byte_Array := Fill (212, 2);
+         No  : constant Byte_Array (1 .. 0) := [];
+         OK_All : Boolean := True;
+
+         procedure Round_Trip (Cr, Ce : Byte_Array) is
+            H  : Hello;
+            OK : Boolean;
+         begin
+            Encode_Hello (3, 4, Dg, Cr, Ce, Buf, L);
+            declare
+               W : constant Byte_Array := Slice (Buf, L);
+            begin
+               Decode_Hello (W, H, OK);
+               OK_All := OK_All and then OK and then L = Hello_Fixed + Cr'Length + Ce'Length
+                 and then Hello_Wire_OK (W) and then Hello_Decoded (W, H)
+                 and then H.N_Auth = 3 and then H.N_Data = 4 and then H.Digest = Dg
+                 and then H.Cred_Len = Cr'Length and then H.Ceil_Len = Ce'Length
+                 and then H.Cred (0 .. H.Cred_Len - 1) = Cr
+                 and then H.Ceil (0 .. H.Ceil_Len - 1) = Ce
+                 and then Cred_Of (W) = Cr and then Hello_Ceil_Of (W) = Ce
+                 and then Wire_U16 (W, Hello_O_CLen) = Cr'Length
+                 and then Wire_U16 (W, Hello_O_KLen) = Ce'Length
+                 and then (for all I in H.Cred_Len .. Cred_Max - 1 => H.Cred (I) = 0)
+                 and then (for all I in H.Ceil_Len .. Cred_Max - 1 => H.Ceil (I) = 0);
+               if H.Cred_Len < Cred_Max then
+                  Lemma_Cred_Zero (H, H.Cred_Len);
+               end if;
+               if H.Ceil_Len < Cred_Max then
+                  Lemma_Ceil_Zero (H, H.Ceil_Len);
+               end if;
+            end;
+         end Round_Trip;
+      begin
+         Round_Trip (No, No);
+         Round_Trip (C1, No);
+         Round_Trip (No, K1);
+         Round_Trip (C1, K1);
+         Check ("R1: the HELLO round trip with an empty and a non-empty cred and ceil", OK_All);
+         Encode_Hello (3, 4, Dg, Fill (Cred_Max, 5), Fill (Cred_Max, 6), Buf, L);
+         Check ("R1: the largest HELLO is 17 877 bytes",
+                L = 17_877 and then L = Hello_Max_Len
+                and then Hello_Wire_OK (Slice (Buf, L))
+                and then Hello_Ceil_Of (Slice (Buf, L)) = Fill (Cred_Max, 6)
+                and then Cred_Of (Slice (Buf, L)) = Fill (Cred_Max, 5));
+         Encode_Hello (3, 4, Dg, C1, K1, Buf, L);
+         declare
+            W    : constant Byte_Array := Slice (Buf, L);
+            Big  : Byte_Array := W & Fill (Cred_Max, 0);
+            Long : constant Byte_Array := W & Byte_Array'[0];
+            H    : Hello;
+            OK   : Boolean;
+         begin
+            --  ceil_len = Cred_Max + 1, with the bytes to match it.
+            Big (Hello_O_KLen)     := Byte ((Cred_Max + 1) / 256);
+            Big (Hello_O_KLen + 1) := Byte ((Cred_Max + 1) mod 256);
+            Decode_Hello (Big (0 .. Hello_Fixed + C1'Length + Cred_Max), H, OK);
+            Check ("R1: Hello_Wire_OK refuses ceil_len > Cred_Max",
+                   not OK and then not Hello_Wire_OK (Big (0 .. Hello_Fixed + C1'Length + Cred_Max))
+                   and then H = Empty_Hello);
+            Decode_Hello (Long, H, OK);
+            Check ("R1: Hello_Wire_OK refuses a length that the two lengths do not give",
+                   not OK and then not Hello_Wire_OK (Long)
+                   and then not Hello_Wire_OK (W (0 .. W'Last - 1)));
+         end;
       end;
 
       ------------------------------------------------------------------
@@ -1011,7 +1909,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          Recv (Ses_I, Empty_S, EP, F0, R_Eff, Root_Bytes ((True, 1, [others => 0])), 1, O, Rt, M,
                Got, Res);
          Check ("a ROOT before the HELLO exchange is unexpected", Res = S_Unexpected);
-         Admit (Ses_I, F0, R_Eff, AA, AD, Cred_T, Buf, L, Rt);
+         Admit (Ses_I, F0, R_Eff, AA, AD, Cred_T, Ceil_T, Buf, L, Rt);
          declare
             HA : constant Byte_Array := Slice (Buf, L);
          begin
@@ -1020,6 +1918,10 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                    and then Wire_U32 (Buf, Hello_O_NAuth) = 1
                    and then Wire_U32 (Buf, Hello_O_NData) = 6
                    and then Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Range_Fp (SA, 1, 7));
+            Check ("R1: Admit puts Ceil after Cred",
+                   L = Hello_Fixed + Cred_T'Length + Ceil_T'Length
+                   and then Cred_Of (HA) = Cred_T and then Hello_Ceil_Of (HA) = Ceil_T
+                   and then Wire_U16 (HA, Hello_O_KLen) = Ceil_T'Length);
             --  The credential checks at B.
             declare
                X : Session (Oblig_Cap => 8);
@@ -1028,12 +1930,21 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                  Make_Roster (Cid_A, Root_PK, Founding_Cap, Zero_Sig, Box_A, 1, 5000, Mem_X);
                HX : Byte_Array := HA;
             begin
-               Encode_Hello (1, 6, Range_Fp (SA, 1, 7), Encode (R_X), Buf, L);
+               Encode_Hello (1, 6, Range_Fp (SA, 1, 7), Encode (R_X), Ceil_T, Buf, L);
                Start (X, Responder, Cid_A, DH1);
-               Recv (X, Empty_S, EP, F0, R_Eff, Slice (Buf, L), 1, O, Rt, M, Got, Res);
-               Check ("A13: a HELLO credential that does not list the peer aborts",
-                      Res = S_Aborted and then X.Aborted);
-               Encode_Hello (1, 6, Range_Fp (SA, 1, 7), Fill (300, 1), Buf, L);
+               declare
+                  Pr : Hello;
+               begin
+                  Receive (X, Empty_S, EP, F0, R_Eff, Slice (Buf, L), 1, No_Keys, M, Pr, O, Got,
+                           Rt, Res);
+                  Check ("A13: a HELLO credential that does not list the peer aborts",
+                         Res = S_Aborted and then X.Aborted);
+                  --  R6: nothing of a refused HELLO is returned, so the
+                  --  caller applies nothing, the ceiling frame included.
+                  Check ("R6: a refused HELLO returns Empty_Hello: no credential, no ceiling"
+                         & " frame", Pr = Empty_Hello and then Pr.Ceil_Len = 0);
+               end;
+               Encode_Hello (1, 6, Range_Fp (SA, 1, 7), Fill (300, 1), No_Ceil, Buf, L);
                Start (X, Responder, Cid_A, DH1);
                Recv (X, Empty_S, EP, F0, R_Eff, Slice (Buf, L), 1, O, Rt, M, Got, Res);
                Check ("a credential that is not a ROSTER frame aborts", Res = S_Aborted);
@@ -1043,11 +1954,19 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                Check ("a stranger's static key is not in the credential: aborts",
                       Res = S_Aborted);
             end;
-            Recv (Ses_R, Empty_S, EP, F0, R_Eff, HA, 1, O, Rt, M, Got, Res);
-            Check ("B accepts A's HELLO before its own Admit, stays in Gate",
-                   Res = S_OK and then Ses_R.P = Gate and then Ses_R.Peer_Hello_Seen);
+            declare
+               Pr : Hello;
+            begin
+               Receive (Ses_R, Empty_S, EP, F0, R_Eff, HA, 1, No_Keys, M, Pr, O, Got, Rt, Res);
+               Check ("B accepts A's HELLO before its own Admit, stays in Gate",
+                      Res = S_OK and then Ses_R.P = Gate and then Ses_R.Peer_Hello_Seen);
+               Check ("R1: the accepted HELLO returns the credential and the ceiling frame",
+                      Pr.Cred_Len = Cred_T'Length and then Pr.Cred (0 .. Pr.Cred_Len - 1) = Cred_T
+                      and then Pr.Ceil_Len = Ceil_T'Length
+                      and then Pr.Ceil (0 .. Pr.Ceil_Len - 1) = Ceil_T);
+            end;
          end;
-         Admit (Ses_R, F0, R_Eff, BA, BD, Cred_T, Buf, L, Rt);
+         Admit (Ses_R, F0, R_Eff, BA, BD, Cred_T, No_Ceil, Buf, L, Rt);
          Check ("B's Admit completes the exchange: the responder is in Auth, sends no ROOT",
                 Ses_R.P = Auth and then not Rt.Send and then Open_Count (Ses_R) = 0);
          declare
@@ -1213,11 +2132,11 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          begin
             Start (X1, Initiator, Cid_A, DH2);
             Start (X2, Responder, Cid_A, DH1);
-            Admit (X1, F0, R_Eff, AA, AD, Cred_T, Buf, L, Rt);
+            Admit (X1, F0, R_Eff, AA, AD, Cred_T, No_Ceil, Buf, L, Rt);
             declare
                H1 : constant Byte_Array := Slice (Buf, L);
             begin
-               Admit (X2, F0, R_Eff, AA, AD, Cred_T, Buf, L, Rt);
+               Admit (X2, F0, R_Eff, AA, AD, Cred_T, No_Ceil, Buf, L, Rt);
                Recv (X1, Empty_S, EP, F0, R_Eff, Slice (Buf, L), 1, O, Rt, M, Got, Res2);
                Check ("equal digests: the initiator is Complete after the HELLOs, no ROOT",
                       Res2 = S_OK and then Complete (X1) and then not Rt.Send);
@@ -1308,9 +2227,9 @@ procedure Test_Reconcile with SPARK_Mode => Off is
             begin
                Start (Sess_A, Initiator, Cid_A, DH2);
                Start (Sess_B, Responder, Cid_A, DH1);
-               Admit (Sess_A, F0, R_Eff, AA, AD, Cred_T, Buf, L, Rt);
+               Admit (Sess_A, F0, R_Eff, AA, AD, Cred_T, No_Ceil, Buf, L, Rt);
                To_B.Append (Slice (Buf, L));
-               Admit (Sess_B, F0, R_Eff, BA, BD, Cred_T, Buf, L, Rt);
+               Admit (Sess_B, F0, R_Eff, BA, BD, Cred_T, No_Ceil, Buf, L, Rt);
                To_A.Append (Slice (Buf, L));
                while not To_B.Is_Empty or else not To_A.Is_Empty loop
                   if not To_B.Is_Empty then
@@ -1381,6 +2300,20 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                 OK and then Done_Both and then Rounds = 2);
       end;
    end;
+
+      ------------------------------------------------------------------
+      --  (i) Sessions between real stores (AUDIT.md H12)
+      ------------------------------------------------------------------
+      if Contracts_On then
+         Store_Sessions (By_Slots, Near => True);
+         Put_Line ("SKIP H12 (full slice): the 512-record form of the store sessions (check"
+                   & " mode: under -gnata the digest contracts of 512 held records do not"
+                   & " end in reasonable time; it runs with MODE=release)");
+      else
+         Store_Sessions (By_Slots, Near => True);
+         Store_Sessions (By_Slots, Near => False);
+         Store_Sessions (By_Slice, Near => False);
+      end if;
       if Failed then
          Set_Exit_Status (Failure);
       end if;

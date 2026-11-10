@@ -993,6 +993,8 @@ package body Kome.Reconcile with SPARK_Mode is
 
    procedure Lemma_Cred_Zero (H : Hello; I : Natural) is null;
 
+   procedure Lemma_Ceil_Zero (H : Hello; I : Natural) is null;
+
    procedure Lemma_Exact_Plan (S : Snapshot; O : Outbox; T : Positive) is null;
 
    --  Each RANGE / ELEMENTS plan that is well formed and non-empty is
@@ -1955,10 +1957,12 @@ package body Kome.Reconcile with SPARK_Mode is
      (N_Auth, N_Data : Word;
       Digest         : Hash256;
       Cred           : Byte_Array;
+      Ceil           : Byte_Array;
       Buf            : out Msg_Buffer;
       Len            : out Msg_Length)
    is
       L : constant Cred_Count := Cred'Length;
+      K : constant Cred_Count := Ceil'Length;
    begin
       Buf := [others => 0];
       Buf (0) := Tag_Hello;
@@ -1969,17 +1973,32 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Natural (Buf (Hello_O_CLen)) = L / 256);
       pragma Assert (Natural (Buf (Hello_O_CLen + 1)) = L mod 256);
       pragma Assert (Wire_U16 (Buf, Hello_O_CLen) = L);
+      pragma Assert (K = (K / 256) * 256 + K mod 256);
+      pragma Assert (K / 256 < 256);
+      Buf (Hello_O_KLen)     := Byte (K / 256);
+      Buf (Hello_O_KLen + 1) := Byte (K mod 256);
+      pragma Assert (Natural (Buf (Hello_O_KLen)) = K / 256);
+      pragma Assert (Natural (Buf (Hello_O_KLen + 1)) = K mod 256);
+      pragma Assert (Wire_U16 (Buf, Hello_O_KLen) = K);
+      pragma Assert (Wire_U16 (Buf, Hello_O_CLen) = L);
       Buf (Hello_O_Digest .. Hello_O_Digest + 31) := Digest;
       Buf (Hello_Fixed .. Hello_Fixed + L - 1) := Cred;
+      pragma Assert (Buf (Hello_Fixed .. Hello_Fixed + L - 1) = Cred);
+      Buf (Hello_Fixed + L .. Hello_Fixed + L + K - 1) := Ceil;
+      pragma Assert (Buf (Hello_Fixed + L .. Hello_Fixed + L + K - 1) = Ceil);
+      pragma Assert (Buf (Hello_Fixed .. Hello_Fixed + L - 1) = Cred);
       pragma Assert (Wire_U16 (Buf, Hello_O_CLen) = L);
+      pragma Assert (Wire_U16 (Buf, Hello_O_KLen) = K);
       pragma Assert (Buf (0) = Tag_Hello);
       Put_Word (Buf, Hello_O_NAuth, N_Auth);
       Put_Word (Buf, Hello_O_NData, N_Data);
       pragma Assert (Wire_U32 (Buf, Hello_O_NAuth) = N_Auth);
       pragma Assert (Wire_U16 (Buf, Hello_O_CLen) = L);
+      pragma Assert (Wire_U16 (Buf, Hello_O_KLen) = K);
       pragma Assert (Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Digest);
       pragma Assert (Buf (Hello_Fixed .. Hello_Fixed + L - 1) = Cred);
-      Len := Hello_Fixed + L;
+      pragma Assert (Buf (Hello_Fixed + L .. Hello_Fixed + L + K - 1) = Ceil);
+      Len := Hello_Fixed + L + K;
       pragma Assert (Hello_Wire_OK (Buf (0 .. Len - 1)));
    end Encode_Hello;
 
@@ -1997,10 +2016,12 @@ package body Kome.Reconcile with SPARK_Mode is
       declare
          F  : constant Natural := Input'First;
          CL : constant Natural := Wire_U16 (Input, F + Hello_O_CLen);
+         KL : constant Natural := Wire_U16 (Input, F + Hello_O_KLen);
       begin
          if Input (F) /= Tag_Hello
            or else CL > Cred_Max
-           or else Input'Last - F /= Hello_Fixed - 1 + CL
+           or else KL > Cred_Max
+           or else Input'Last - F /= Hello_Fixed - 1 + CL + KL
          then
             return;
          end if;
@@ -2010,8 +2031,15 @@ package body Kome.Reconcile with SPARK_Mode is
          H.Digest := Input (F + Hello_O_Digest .. F + Hello_O_Digest + 31);
          H.Cred_Len := CL;
          if CL > 0 then
-            H.Cred (0 .. CL - 1) := Input (F + Hello_Fixed .. Input'Last);
+            H.Cred (0 .. CL - 1) := Input (F + Hello_Fixed .. F + (Hello_Fixed - 1) + CL);
+            pragma Assert (H.Cred (0 .. CL - 1) = Cred_Of (Input));
          end if;
+         H.Ceil_Len := KL;
+         if KL > 0 then
+            H.Ceil (0 .. KL - 1) := Input (Input'Last - (KL - 1) .. Input'Last);
+            pragma Assert (H.Ceil (0 .. KL - 1) = Hello_Ceil_Of (Input));
+         end if;
+         pragma Assert (if CL > 0 then H.Cred (0 .. CL - 1) = Cred_Of (Input));
          OK := True;
       end;
    end Decode_Hello;
@@ -2668,6 +2696,7 @@ package body Kome.Reconcile with SPARK_Mode is
       Auth     : Kome.Digest.Digest_State;
       Data     : Kome.Digest.Digest_State;
       Cred     : Byte_Array;
+      Ceil     : Byte_Array;
       Buf      : out Msg_Buffer;
       Len      : out Msg_Length;
       Root     : out Root_Out)
@@ -2676,7 +2705,7 @@ package body Kome.Reconcile with SPARK_Mode is
    begin
       Root := No_Root;
       Encode_Hello (Word (Kome.Digest.Count (Auth)), Word (Kome.Digest.Count (Data)),
-                    TF, Cred, Buf, Len);
+                    TF, Cred, Ceil, Buf, Len);
       Sess.Hello_Sent := True;
       Sess.Our_N := Kome.Digest.Count (Auth) + Kome.Digest.Count (Data);
       Sess.Our_Digest := Kome.Keys.To_Key256 (TF);
