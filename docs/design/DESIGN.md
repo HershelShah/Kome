@@ -2003,8 +2003,9 @@ its ID, and a new one takes the next free number.
 **There is no clock assumption for convergence.** Two replicas that
 applied the same records hold the same `F` before any expiry, and two
 that also expired at the same horizon hold the same `F` after it. The
-horizon is per replica (§7), so expiry, and only expiry, depends on a
-clock, and A3 and A4 are the assumptions that bound it.
+horizon `hz(F)` reads no clock: it is a function of each replica's `F`
+(§7), so expiry, and only expiry, depends on the roots' ceilings, which
+follow their clocks, and A3 and A4 are the assumptions that bound it.
 
 ## 10. What is open
 
