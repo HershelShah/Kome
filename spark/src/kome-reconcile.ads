@@ -1,331 +1,290 @@
 --  Kome.Reconcile: the reconciliation session for the frontier of one
---  collection (DESIGN.md §8, D12, D13, D14 and D15). The session has the
---  pre-gate OPEN, the post-gate HELLO and two range reconciliations: first
---  the authorization range, then the data range.
+--  collection (DESIGN.md §8, D12, D13, D14 and D15, with SIMPLIFY.md S9,
+--  S11, S18, S19, S20 and S21). The session has the HELLO exchange and
+--  two range reconciliations: first the authorization range, then the
+--  data range.
 --
---  The elements are the records of F for one ns. The key of an element is
+--  Element keys (S18). The elements are the records of F. The key of an
+--  element is 82 bytes, compared bytewise:
 --
---    kind:u8 ‖ ent[16] ‖ fh[32] ‖ h[32]          (81 bytes, §8)
+--    data           03 ‖ ent[16] ‖ sub:u8 ‖ fh[32] ‖ h[32]   (sub = 0 DEL, 1 PUT)
+--    authorization  tag ‖ 0^17 ‖ signer[32] ‖ h[32]          (tag = 0, 1, 2)
 --
---  with ROSTER = 0, REVOKE = 1, GRANT = 2, DEL = 3, PUT = 4. The order of
---  keys is bytewise. In the package, a key is Elem_Key, a record of scalars
---  and word records (CONVENTIONS.md rule 1). The bytewise order is Key_Lt,
---  a quantifier-free chain of word comparisons. Two lemmas prove that
---  Key_Lt is exactly the byte-lexicographic order on the 81-byte wire key
---  (Lemma_Key_Eq_Is_Bytewise, Lemma_Key_Lt_First_Difference, from the
---  Kome.Keys Id128 and Key256 laws). Authorization records sort first.
---  Data_Lo = 03 ‖ 0^80 divides the key space into the authorization range
---  [Min_Key, Data_Lo) and the data range [Data_Lo, Max_Key).
+--  with ROSTER = 0, REVOKE = 1, GRANT = 2. SIMPLIFY.md §2 writes the
+--  authorization key as tag ‖ signer[32] ‖ 0^17 ‖ h[32], "as the
+--  Reconcile agent lays out": this package puts the 17 zero bytes before
+--  the signer, so that both layouts have the same fields at the same
+--  places (Elem_Key below). The order of the authorization keys is the
+--  same in the two layouts (the zero bytes are constant), so this is a
+--  placement, not a different order. In the package, a key is Elem_Key, a
+--  record of scalars and word records (CONVENTIONS.md rule 1): K (byte
+--  0), Ent (bytes 1 .. 16), Sub (byte 17), FH (bytes 18 .. 49), H (bytes
+--  50 .. 81). The bytewise order is Key_Lt, a quantifier-free chain of
+--  word comparisons; Lemma_Key_Eq_Is_Bytewise and
+--  Lemma_Key_Lt_First_Difference prove that it is exactly the
+--  byte-lexicographic order on the wire key. Authorization records sort
+--  first (tag 0, 1, 2 < 3). Data_Lo = 03 ‖ 0^81 divides the key space
+--  into the authorization range [Min_Key, Data_Lo) and the data range
+--  [Data_Lo, Max_Key). "Apply in element-key order" is the one ordering
+--  rule of a batch: ROSTERs before REVOKEs before GRANTs before data
+--  (S10, S18).
+--
+--  The key order and the frontier's row order. The data row of
+--  Kome.Frontier is sorted entity-major by (ent, kind, fh), DEL before
+--  PUT (AUDIT.md G25), which is exactly the order of the data keys. The
+--  authorization rows are kept by slot (the order in which each signer
+--  first reached this replica) and, in a slot, in arrival order, so
+--  their order is local to a replica and is not the key order. Snapshot_Of
+--  therefore inserts the authorization records (at most Signers_Max ×
+--  Slice_Max = 8 192) into key order and then appends the data row; each
+--  data insertion lands at the end in one comparison, because the data
+--  row is already in key order (that is how it runs; the proof does not
+--  rely on it, since Insert is correct at any position).
 --
 --  Messages (all integers big-endian):
 --
---    OPEN      5 ‖ proto:u8 ‖ ns[16] ‖ n_rv:u8 (<= 15) ‖ n_rv × frame[269]
---    HELLO     1 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]
---    RANGE     2 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ count:u32 ‖ fp[32]
---    ELEMENTS  3 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u32 ‖ frame)
---    HAVE      4 ‖ g:u8 ‖ lo[81] ‖ hi[81] ‖ n:u8 ‖ n × (key[81] ‖ flen:u32 ‖ frame)
+--    HELLO     01 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]
+--    RANGE     02 ‖ k:u8 (1 .. 16) ‖ bounds[k + 1] × key[82] ‖ k × (count:u48 ‖ fp[32])
+--    ELEMENTS  03 ‖ lo[82] ‖ hi[82] ‖ n:u16 (<= 4) ‖ n × (flen:u16 ‖ frame)
+--    HAVE      04 ‖ lo[82] ‖ hi[82] ‖ n:u16 (<= 4) ‖ n × (flen:u16 ‖ frame)
+--    ROOT      05 ‖ count:u48 ‖ fp[32]
 --
---  OPEN and HELLO have a fixed layout. Open_Wire_OK and Hello_Wire_OK are
---  quantifier-free, and Decode_Open / Decode_Hello accept exactly them.
---  The n_rv frames of an OPEN are founding REVOKEs for at most 15
---  subjects (Select_Voids, AUDIT.md H5). A range is half-open, [lo, hi),
---  with lo < hi. The messages say:
---    * RANGE: "over my elements in [lo, hi), the count and fingerprint are
---      these".
+--  There is no OPEN (S11). The Noise XK prologue is "kome/1" ‖ ns ‖ proto
+--  (Prologue below): it binds the collection and the protocol version, and
+--  a stranger cannot finish XK without the responder's static key. The
+--  HELLO is as before (the credential roster, the two counts and the
+--  digest). A RANGE carries k sub-ranges [b(j-1), b(j)) with their counts
+--  and fingerprints: a 16-way split is one message (S19). An ELEMENTS or a
+--  HAVE item is its frame only: the receiver derives the key from the
+--  frame (the caller decodes the frame and passes its key, see Keys
+--  below). ELEMENTS and HAVE keep their lo and hi (SIMPLIFY.md §2 lists
+--  only their items; the bounds are what makes the reply groups tile).
+--  A ROOT carries the count and fingerprint of a whole range; its bounds
+--  are fixed by the phase: [Min_Key, Data_Lo) for the first ROOT,
+--  [Data_Lo, Max_Key) for the second.
+--
+--  Each field has one width and the order of the parts is fixed, so a
+--  message has one encoding. A range is half-open, [lo, hi), with lo < hi.
+--  The messages say:
+--    * RANGE part j / ROOT: "over my elements in [lo, hi), the count and
+--      fingerprint are these";
 --    * ELEMENTS: "these (n <= Ship_Threshold) are ALL my elements in
---      [lo, hi)".
+--      [lo, hi)";
 --    * HAVE: "these are elements in [lo, hi) that you did not have". An
---      empty HAVE is the explicit confirm.
---  Keys in ELEMENTS and HAVE are strictly ascending, are in [lo, hi), and
---  have kind <= 4. If not, the message is Malformed. Each field has one
---  width and the order of keys is fixed, so a message has one encoding.
+--      empty HAVE over the whole range is the explicit confirm.
 --
---  The snapshot (A12). Snapshot_Of (F, Data_T, Auth_T, S) builds the
---  snapshot of a session from the frontier F: its keys are
---  {Key_Of (H) | H held in F} in key order, and its frames come from two
---  frame tables that the caller fills from Kome.Store.Read_Frame (Data_T
---  holds the frame of Data_Held (F, I) at I, Auth_T the frame of the
---  I-th authorization record, Held (F, Data_Count (F) + I)). This package
---  does not depend on Kome.Store, so the tables are its view of the log.
---  The caller duty is that table entry I is the frame of that record.
---  Snapshot_Of proves that each element of S is a held record of F
---  (Source), that the elements are distinct records, that |S| = |F|, and
---  that the digest of S is Kome.Digest.Frontier_Digest (F) (T6: the
---  fingerprint is a function of the set, Lemma_Sum_Perm). The sort order
---  itself is checked by a final scan (an unsorted result, which no run
---  produces, is Snap_Unsorted); the heap sort is tested, not proved.
+--  Parts. Receive takes one logical message: a ROOT, an ELEMENTS, a HAVE,
+--  or one part j of a RANGE (the caller calls Receive for j = 1 .. k on
+--  the same input, in order). A RANGE part is exactly a single-range
+--  message of the protocol before S19, so the responder, the budgets and
+--  the obligations are stated per part, and a 16-way split counts as 16
+--  messages in the budget (as 16 RANGE messages did).
+--
+--  Item keys. Decode reads the frame places of an ELEMENTS / HAVE
+--  (Item_Places). The caller decodes and verifies each frame with
+--  Kome.Records and passes the element key of its header,
+--  Key_Of (To_Header (Cid, R)), in Keys (T); a frame that does not decode
+--  is a protocol violation, and the caller ends the session. Receive
+--  checks that the keys are strictly ascending and in [lo, hi) (else
+--  Malformed), and delivers exactly the items whose key we do not hold.
+--  The caller applies the delivered frames in item order, which is key
+--  order. If the frame's author is already void in the caller's view
+--  (Kome.Views.Is_Void before the apply), the caller reports
+--  SUSPECT_RELAY for the peer's static key (DESIGN.md §8; AUDIT.md A1).
+--
+--  The snapshot (A12, S21). The HELLO is built from the two incremental
+--  digest states of the store (Kome.Store.Digest_Auth / Digest_Data; Admit
+--  takes them), not from a snapshot. The snapshot is built only when the
+--  HELLO digests differ: the caller calls Snapshot_Of when the session
+--  enters Auth (After_Hellos), Seals it, holds it for the session (it pins
+--  the store while it does, S21), and passes it to every later Receive
+--  and Next_Phase (Same_Snapshot, a precondition: its count and digest are
+--  those of our HELLO). Snapshot_Of (F, T, S) reads the keys from the
+--  headers of F and the frame lengths from the frame table T, which the
+--  caller fills from Kome.Store.Read_Frame in the flat order of F (entry I
+--  is the frame of Held (F, I)). The snapshot does not copy frames: each
+--  element records its source index in F, and Encode copies the item
+--  frames from T (Linked). This package does not depend on Kome.Store.
+--  Snapshot_Of proves that each element is a held record of F (Source),
+--  that the elements are in strictly ascending key order and are distinct
+--  records, that |S| = |F|, and that the digest of S is
+--  Kome.Digest.Frontier_Digest (F) (T6, Lemma_Sum_Perm). Its only refusals
+--  are Snap_No_Space (|F| above the capacity) and Snap_Unsorted (two held
+--  records with one key: equal h, excluded by A2).
 --
 --  Fingerprints with prefix sums (D15, AUDIT.md H19). Seal (S, P) builds
---  the prefix-sum table P of the snapshot once (Kome.Digest.Build_Prefix,
---  O(n)); P is a separate object of Prefix_Slots (|S|) accumulators, so
---  that its bounds are exact (Kome.Digest.Prefix_Valid needs them, and a
---  table written through a slice of a larger array does not prove). With
---  the table, Fingerprint_Of gives the fingerprint of any range with at
---  most 64 accumulator additions and one hash (Kome.Digest.Range_Sum),
---  and its result is Range_Fp, the fingerprint that the contracts name.
---  Every session operation on a snapshot takes its table and requires
---  Sealed (S, P).
+--  the prefix-sum table P once (Kome.Digest.Build_Prefix, O(n)); P is a
+--  separate object of Prefix_Slots (|S|) accumulators. With the table,
+--  Fingerprint_Of gives the fingerprint of any range with at most 64
+--  accumulator additions and one hash (Kome.Digest.Range_Sum), and its
+--  result is Range_Fp, the fingerprint that the contracts name. When this
+--  side splits a window of at least 1 024 elements, the interior cuts are
+--  on multiples of 64 (S20), so only the two ends of a range walk
+--  elements.
 --
---  The caller (the transport, phase 9) does the content checks with
---  Kome.Records. This package sees frames as opaque bytes, except for the
---  shape checks named here:
---    * OPEN (pre-gate, D13): each frame must satisfy
---      Kome.Records.Is_Founding_Revoke for this collection. The caller
---      verifies and applies only the frames whose subject is a signer that
---      it holds and that is not yet root-voided. It skips the other frames
---      without verification (this limits the pre-gate work). Then it
---      calls Kome.Guard.Note_Open with the states before and after (the
---      quarantine flag, AUDIT.md H2).
---    * HELLO (post-gate, D13): Receive itself refuses the HELLO and aborts
---      the session (S_Aborted) unless the credential is a ROSTER frame
---      (Kome.Records.Is_Roster_Frame) that lists the Noise static key of
---      the peer (Kome.Records.Roster_Lists_DH, AUDIT.md A13) and whose
---      signer is not root-voided in F (Kome.Views.Root_Void, AUDIT.md
---      G12). The credential of an aborted HELLO is not returned, so it is
---      never applied: a credential from a root-voided signer never
---      changes F. If Receive accepts the HELLO, the caller decodes,
---      verifies and applies the credential and calls
---      Kome.Guard.Note_Credential.
---    * The gate is Kome.Guard.Admits (the quarantine flag, and the
---      REVOKE-aware gate: the peer's static key is the dh_pk of a member
---      of ROSTER_eff whose sign_pk is not Kome.Views.Revoked; AUDIT.md
---      A3). Admit requires it as a precondition, so a binding cannot admit
---      a stranger (A13). Eff is the record of ROSTER_eff of F (the caller
---      decodes its frame). While the flag is set, the caller takes no
---      sealed bundle and seals none.
---    * The gate again (AUDIT.md H11). Auth_Gen is a monotone counter that
---      the store raises on every applied ROSTER, REVOKE or GRANT
---      (Kome.Store.Auth_Gen). Admit records it as Gate_Gen. Receive and
---      Next_Phase take the current Auth_Gen, F, the guard state and Eff.
---      When Auth_Gen /= Gate_Gen, they evaluate the gate again, abort the
---      session (S_Aborted) if it fails, and record Auth_Gen as Gate_Gen if
---      it holds. So every message that a session accepts in Auth or Data
---      is accepted while the gate holds under the recorded generation.
---      When Auth_Gen = Gate_Gen, Eff is not read (no authorization record
---      was applied, so ROSTER_eff did not change).
---    * ELEMENTS / HAVE items: the caller decodes and verifies each frame.
---      It checks that the key of the frame is the key that the item gives
---      (Key_Of (To_Header (R))), and it applies the frame. If the frame's
---      author is already void in the caller's view (Kome.Views.Is_Void
---      before the apply), the caller records the peer's static key and
---      reports SUSPECT_RELAY for it (DESIGN.md §8; AUDIT.md A1).
---      Admission does not change.
---    * Order (D14, AUDIT.md A8): within a batch, the caller applies every
---      record with kind < 3 before any record with kind >= 3. The phase
---      gate already does this in sessions: the authorization range closes
---      before the data root goes out.
---    * Durability: a session counts as Complete only after the log is
---      flushed to Kome.Store.Log_Length (the sync point, DESIGN.md §8;
---      AUDIT.md H35).
---    Kome.Store.Put_Frame applies every accepted frame.
---  This package trusts nothing that a lying peer puts in an OPEN or a
---  HELLO. The counts go into the budgets only as min (claimed, Elem_Max).
---  The digest only decides if the session ends early. The frames are
---  signed records. The transport limits the rate of pre-gate work.
+--  The gate (S9, Kome.Guard). The caller decodes the record of ROSTER_eff
+--  of F (Eff). Gate_Open (Cid, F, Eff, DH) holds when Eff is ROSTER_eff of
+--  F and Kome.Guard.Admits (the REVOKE-aware gate and not quarantined).
+--  Admit requires it, so a binding cannot admit a stranger (A13). Receive
+--  (in Auth and Data) and Next_Phase evaluate it on every call, with F the
+--  state after the caller applied the previous batch; when it fails, the
+--  session ends with S_Aborted. There is no generation counter. Within a
+--  batch the caller applies in key order, so ROSTERs before REVOKEs
+--  (S10). While Kome.Views.Quarantined holds, the caller takes no sealed
+--  bundle and seals none.
 --
---  Session (D14, D13). The phases are Await_Open, Gate, Auth, Data, Done.
---    * Start takes the role, our ns, the Noise static key of the peer
---      (Peer_DH), F and the table of our authorization frames. It records
---      Peer_DH and prepares our OPEN: ns and our root revocations, the
---      Select_Voids set of F (AUDIT.md H5). The OPEN carries root-void
---      frames only to a peer whose static key is a member dh_pk in some
---      roster of the table (Peer_Known); for a stranger, n_rv = 0
---      (AUDIT.md A14). The initiator emits its OPEN at Start. The
---      responder emits nothing at Start: it waits for the OPEN of the
---      initiator and answers with its own OPEN only when the ns matches
---      (Receive, Open_Buf). P = Await_Open.
---    * Receive of the OPEN of the peer: a foreign ns aborts the session
---      (S_Aborted, P = Done, Aborted). If not, P = Gate, and the decoded
---      OPEN goes back to the caller. The caller applies its frames (above).
---    * Admit: the caller calls Admit when its gate admits the peer (the
---      precondition). Admit emits our HELLO (the counts of the two ranges,
---      the digest of the full snapshot, our credential) and records
---      Gate_Gen := Auth_Gen. Caller duty: the caller must take the
---      snapshot for Admit after it applies the OPEN of the peer (and the
---      credential of the peer, if the HELLO of the peer came first). The
---      caller must give the same snapshot to every later Receive and
---      Next_Phase of the session.
+--  The HELLO (post-handshake, D13): Receive refuses the HELLO and aborts
+--  the session (S_Aborted) unless the credential is a ROSTER frame
+--  (Kome.Records.Is_Roster_Frame) that lists the Noise static key of the
+--  peer (Kome.Records.Roster_Lists_DH, AUDIT.md A13) and whose signer is
+--  not root-voided in F (Kome.Views.Root_Void, AUDIT.md G12). The
+--  credential of an aborted HELLO is not returned, so it is never applied.
+--  If Receive accepts the HELLO, the caller decodes, verifies and applies
+--  the credential. This is how the recovery roster reaches a captured
+--  (quarantined) replica (S11): the replica Starts, receives the HELLO,
+--  applies its credential, and only then evaluates the gate for Admit.
+--
+--  Durability: a session counts as Complete only after the log is flushed
+--  to Kome.Store.Log_Length (the sync point, DESIGN.md §8; AUDIT.md H35).
+--  This package trusts nothing that a lying peer puts in a HELLO. The
+--  counts go into the budgets only as min (claimed, Elem_Max). The digest
+--  only decides if the session ends early.
+--
+--  Session (D14, D13). The phases are Gate, Auth, Data, Done.
+--    * Start takes the role, the cid (the gate needs it) and the Noise
+--      static key of the peer (Peer_DH). P = Gate. Nothing goes out.
+--    * Admit: the caller calls Admit when the gate admits the peer (the
+--      precondition). Admit emits our HELLO from the two digest states
+--      (the counts of the two ranges, the digest of their union, our
+--      credential) and records the counts and the authorization-range
+--      fingerprint for the ROOT.
 --    * Receive of the HELLO of the peer (in Gate, before or after Admit):
 --      the credential check above. If it passes, Receive keeps its counts
---      and digest, and the decoded HELLO goes back to the caller (for the
---      credential).
+--      and digest, and the decoded HELLO goes back to the caller.
 --    * When the two HELLOs have passed (in Admit or in Receive): if the
 --      digests are equal, the session ends (Done, no more messages; under
---      A2, equal digests mean equal frontiers). If not, P = Auth. If this
---      transition occurs in Admit, the initiator emits the root RANGE
---      (g = 0, [Min_Key, Data_Lo)) together with its HELLO, after it.
+--      A2, equal digests mean equal frontiers). If not, P = Auth, and the
+--      initiator emits the authorization ROOT (from its digest state).
 --    * In Auth, when no obligation of the initiator is open, the initiator
---      calls Next_Phase. Next_Phase emits the data root RANGE
---      (g = 0, [Data_Lo, Max_Key)) and moves to Data. In Data, the
---      initiator is Done when nothing is open. It never accepts g = 0.
---    * The responder accepts g = 0 only in two cases:
---        (a) RANGE [Min_Key, Data_Lo) in Auth before the authorization
---            root;
---        (b) RANGE [Data_Lo, Max_Key) in Auth after the authorization root,
---            with nothing that it asked open. This moves it to Data.
---      In Data, the responder is Done when nothing is open after a Receive.
---    * These messages are S_Unexpected and change nothing (Root_OK, the
---      Post of Receive): every other g = 0 message (an ELEMENTS or HAVE
---      with g = 0, other bounds, a repeated root, the data root first or
---      while something is open), any RANGE, ELEMENTS or HAVE before Auth,
---      any reply that does not continue the head obligation (below), and
---      any message in Done.
---  The status of Receive is exactly Status_Of (session, snapshot, F, guard
---  state, Eff, Auth_Gen, input). So each refusal has a characterisation
---  in the two directions:
---    * S_Malformed iff the decoder for the tag refuses;
---    * S_Aborted iff a well-formed OPEN in Await_Open names a different
---      ns, or a well-formed HELLO in Gate carries an inadmissible
---      credential, or the gate fails in Auth or Data under a new Auth_Gen;
+--      calls Next_Phase. Next_Phase emits the data ROOT and moves to Data.
+--      In Data, the initiator is Done when nothing is open.
+--    * The responder accepts a ROOT only in Auth: the first is the
+--      authorization ROOT; the second, accepted only with nothing that it
+--      asked open, is the data ROOT and moves it to Data. In Data, the
+--      responder is Done when nothing is open after a Receive.
+--    * Every other message is S_Unexpected and changes nothing: a ROOT at
+--      the initiator or at the wrong time, any RANGE, ELEMENTS, HAVE or
+--      ROOT before Auth, any reply that does not continue the head
+--      obligation (below), and any message in Done.
+--  The status of Receive is exactly Status_Of (session, snapshot, F, Eff,
+--  input, part, keys). So each refusal has a characterisation in the two
+--  directions:
+--    * S_Malformed iff the decoder refuses;
+--    * S_Aborted iff a well-formed HELLO in Gate carries an inadmissible
+--      credential, or the gate is closed in Auth or Data;
 --    * S_Limit iff the message would go above a budget;
 --    * a well-formed, expected message within the budgets is accepted.
---  What Receive returns comes from the wire. M is Decode_Of (Input) (its
---  head, kind, count, fingerprint and n read from the input, Decode_Facts).
---  The reply is Reply_Of (S, M), and Open / Peer satisfy Open_Decoded /
---  Hello_Decoded. After Admit, the caller must give the snapshot of Admit
---  to every Receive and Next_Phase (Same_Snapshot, a precondition).
 --  Complete (Sess) holds when the session ended without abort.
 --
 --  Transport. The phase gate assumes an in-order transport (Noise over a
 --  stream, DESIGN.md §8). Two conditions stop the session before Complete:
---  loss, and a reordered root message (Receive refuses a data root that
---  arrives before the last reply of the authorization phase). Then the
---  caller times out and starts again from OPEN. DESIGN.md §8 states this,
---  so it is not a deviation. Round 0 (C8, the invertible Bloom lookup
---  table) runs once in each phase, at the start of Auth and at
---  Next_Phase, when it is built. This package does not build it.
+--  loss, and a reordered ROOT (Receive refuses a data ROOT that arrives
+--  before the last reply of the authorization phase). Then the caller
+--  times out and starts again. DESIGN.md §8 states this.
 --
---  Obligations and replies (AUDIT.md G4, H19). A RANGE or an ELEMENTS
---  obliges its receiver to answer. A HAVE obliges nothing. Each answer is
---  a reply group of g >= 1 messages (the Out_Box of Respond), and each
---  message of the group carries g. The only messages with g = 0 are the
---  two root RANGEs of the initiator. Each side keeps a FIFO of its open
---  obligations (Open (Sess, K), K = 1 .. Open_Count (Sess)), each a range
---  [lo, hi) that it asked about, in the order that it sent them: the
---  plans of each reply in plan order, and the two roots. The transport is
---  in order in each direction, so the reply groups arrive in request
---  order. Receive accepts a message with g >= 1 only when it continues
---  the head obligation (Matches_Head): the first message of a group
---  starts at lo and fixes the group's kind and size g; a RANGE or
---  ELEMENTS group tiles [lo, hi) (each message starts where the last one
---  ended, and the g-th ends at hi); a HAVE group repeats [lo, hi) g
---  times. The head leaves the FIFO exactly when its group is full
---  (Group_Done), and the obligations of our reply are appended. Any other
---  reply, also a duplicate delivery of a message, is S_Unexpected and
---  changes nothing. So Complete (nothing open, no abort) implies that each
---  obligation got exactly one full reply group. The FIFO has Oblig_Cap
---  entries (a discriminant of Session): a reply whose obligations would
---  not fit is S_Limit. An honest session holds at most the obligations of
---  one phase open at once, at most 2 N_ours + 1 RANGEs and 4 (2 N_peer + 1)
---  ELEMENTS plus a root (see Msg_Budget), so Oblig_Cap =
---  Range_Budget (S) + 8 × Peer_Claim + 6 is always sufficient (tested).
+--  Obligations and tiling replies (AUDIT.md G4, H19, S19). A RANGE part,
+--  a ROOT or an ELEMENTS obliges its receiver to answer. A HAVE obliges
+--  nothing. Each side keeps a FIFO of its open obligations (Open (Sess,
+--  K), K = 1 .. Open_Count (Sess)), each a range [lo, hi) that it asked
+--  about, in the order that it sent them. The transport is in order in
+--  each direction, so the answers arrive in request order. The answer to
+--  an obligation is a run of messages that tiles [lo, hi): the first
+--  starts at lo, each next one starts where the last one ended (Next),
+--  and the answer is complete when a message's hi reaches the head's hi
+--  (Group_Done). Any kind may tile (each tile is itself a valid answer
+--  for its sub-range); there is no group-size byte and no repeat rule.
+--  Receive accepts a non-ROOT message only when it continues the head
+--  obligation (Matches_Head); any other reply, also a duplicate delivery,
+--  is S_Unexpected and changes nothing. So Complete (nothing open, no
+--  abort) implies that each obligation got exactly one tiling answer. The
+--  FIFO has Oblig_Cap entries (a discriminant of Session): a reply whose
+--  obligations would not fit is S_Limit. An honest session needs at most
+--  Range_Budget (S) + 8 × Peer_Claim + 6 (tested).
 --
---  The responder (Respond) does these steps:
---    * On RANGE (lo, hi, fp, count): it finds our elements in [lo, hi)
---      (Window). If their count and fingerprint (Kome.Digest, fp over the
---      h of each element) are equal to those of the message, it confirms
---      the range with an empty HAVE. If not, and there are at most
---      Ship_Threshold of them, it ships them as ELEMENTS. If not, it splits
---      [lo, hi) 16 ways (Split_Fanout) over our elements and sends each
---      child as a RANGE with our count and fingerprint.
+--  The responder (Respond) does these steps, for one range [lo, hi):
+--    * On a RANGE part or a ROOT (lo, hi, fp, count): it finds our
+--      elements in [lo, hi) (Window). If their count and fingerprint are
+--      equal to those of the message, it confirms the range with an empty
+--      HAVE. If not, and there are at most Ship_Threshold of them, it
+--      ships them as ELEMENTS. If not, it splits [lo, hi) 16 ways
+--      (Split_Fanout) over our elements; the children go out as one RANGE
+--      message (Encode_Ranges).
 --    * On ELEMENTS: it gives the caller every element that we do not have
 --      (exactly those). Then, if we hold at most Ship_Threshold in the
 --      range, it sends back as HAVE exactly the elements that the peer did
---      not have (an empty HAVE if none). If not, it splits the range as
---      above.
+--      not have (an empty HAVE if none), tiling the range. If not, it
+--      splits the range as above.
 --    * On HAVE: it gives the caller every element that we do not have.
---  The Post of Respond pins these properties:
---    * the kind of every reply (All_Kind);
---    * a reply that is not a confirm tiles the range and never contains a
---      HAVE;
---    * every plan is exact (Exact_Plans: a RANGE carries our true count
---      and fingerprint, and an ELEMENTS carries all of our elements of its
---      range).
---  Work per session (H19): each accepted message costs one Window (a scan,
---  O(n)), one fingerprint over the prefix sums (at most 64 additions and
---  one hash) and at most 16 fingerprints for a split, so a session of m
---  accepted messages costs O(m n) scans and O(16 m) fingerprints; with
---  balanced splits m is O(log n) for each difference, so the fingerprint
---  work is O(n log n) and no message costs a hash over the whole range.
+--  The Post of Respond pins: the kind of every reply (All_Kind); a reply
+--  tiles the range (Tiles, also the HAVE reply, Have_Exact); every plan
+--  is exact (Exact_Plans).
 --
 --  Message size (D12). No emitted message is longer than Max_Message_Len
---  bytes (Kome, §8). This is proved (Plan_OK, Plan_Len). A RANGE is 200
---  bytes, an OPEN is at most Open_Max_Len = 4 054 and a HELLO is at most
---  Hello_Max_Len = 10 142. If the frames of an ELEMENTS do not fit, the
---  sender splits it more: one ELEMENTS for each element, over a sub-range
---  that holds only that element. If a HAVE does not fit, it goes as one
---  HAVE for each element. One element always fits: a frame is at most
---  Kome.Records.Frame_Max = 41 136 bytes, which is less than
---  Frame_Ship_Max = Max_Message_Len - 165 - 85 = 48 902 (a compile-time
---  check). So a snapshot never refuses a well-formed frame as
---  Snap_Too_Large (Lemma_Frame_Ships). The check stays as a defence.
+--  bytes (Kome, §8). This is proved (Plan_OK, Plan_Len, Range_Msg_Len). A
+--  RANGE of 16 parts is 2 004 bytes and a HELLO at most Hello_Max_Len =
+--  8 959. If the frames of an ELEMENTS or a HAVE do not fit, the sender
+--  sends one message for each element, over a sub-range that holds only
+--  that element (the sub-ranges tile the range). One element always fits:
+--  a frame is at most Kome.Records.Frame_Max = 41 120 bytes, less than
+--  Frame_Ship_Max = Max_Message_Len - 167 - 2 = 48 983 (a compile-time
+--  check, Lemma_Frame_Ships).
 --
---  Well-founded split (the measure of T7). Each RANGE that a responder
---  emits is a sub-range of the range that it answers, with strictly fewer
---  of the responder's elements (the Post of Respond, Shrinks, measured
---  by My_Count). An ELEMENTS reply covers the same range with the same
---  counts. The only answers to it are a HAVE (which gets no answer) or a
---  split whose children have strictly fewer of the answerer's elements.
---  So the measure of T7 is lexicographic: (μ (r), k) with
+--  Well-founded split (the measure of T7). Each RANGE part that a
+--  responder emits is a sub-range of the range that it answers, with
+--  strictly fewer of the responder's elements (Shrinks, measured by
+--  My_Count). So the measure of T7 is lexicographic: (μ (r), k) with
 --  μ ([lo, hi)) = |F_A ∩ [lo, hi)| + |F_B ∩ [lo, hi)|, and k = 1 for a
---  RANGE, 0 for an ELEMENTS. Every reply decreases it. The implementation
---  makes balanced splits (child counts ⌊n/16⌋ or ⌈n/16⌉; tested, not
---  proved, see the limitations below). With balanced splits, a chain of
---  replies in one phase holds at most s = ⌈log₁₆ N_A⌉ + ⌈log₁₆ N_B⌉
---  splits. A split can cost two one-way messages (ELEMENTS, then the
---  split), so the chain holds at most 2s + 3 one-way messages for each
---  phase. That bound is part of T7, and it is not proved.
+--  RANGE, 0 for an ELEMENTS. The implementation makes balanced splits
+--  (child counts ⌊n/16⌋ or ⌈n/16⌉, or blocks of 64 for n >= 1 024;
+--  tested, not proved). With balanced splits, a chain of replies in one
+--  phase holds at most s = ⌈log₁₆ N_A⌉ + ⌈log₁₆ N_B⌉ splits, so at most
+--  2s + 3 one-way messages for each phase (part of T7, not proved).
 --
 --  Duplicate deliveries. The snapshot is frozen for the session. So, when
 --  we split a range after we receive ELEMENTS, the peer ships the same
 --  elements again on the children, and they are delivered again. Record
 --  application is idempotent, so this costs bandwidth, not correctness.
---  "delivered" means "not in our snapshot". The ship budget limits it.
 --
 --  Budgets (a hostile peer cannot cause unlimited traffic). Each budget
 --  counts over the two phases:
---    * The accepted messages are at most Msg_Budget (our |S|, the claimed
---      count of the peer). This is an upper bound on what an honest peer
---      sends (the derivation is at Msg_Budget).
---    * The RANGEs that we emit in replies are at most Range_Budget (S) =
---      2 × (2 |S| + 2). (In each phase, the ranges of an honest session
---      make a laminar family, in which our ranges have distinct, non-empty
---      sets of our elements.)
+--    * The accepted logical messages are at most Msg_Budget (our |S|, the
+--      claimed count of the peer).
+--    * The RANGE parts that we emit in replies are at most Range_Budget
+--      (S) = 2 × (2 |S| + 2).
 --    * The item bytes that we emit are at most Ship_Budget (S) = 2 × 8 ×
---      (frame bytes + 85 |S|). (An honest phase ships each of our elements
---      at most ⌈log₁₆ N_peer⌉ + 1 <= 6 times.)
---    * The open obligations are at most Oblig_Cap (above).
---  The two root RANGEs are not replies, and Ranges does not count them.
---  Receive refuses a message that would go above a budget, with S_Limit.
---  The counts have exact definitions, not only bounds: Num_Ranges,
---  Obligations and Item_Bytes are equal to the sums Ranges_Upto,
---  Obligations_Upto and Items_Upto over the plans of the reply. So the
---  Post of Receive states the FIFO, Ranges, Shipped, the Done transitions
---  and every budget check over the true counts of the reply.
+--      (frame bytes + 2 |S|).
+--    * The open obligations are at most Oblig_Cap.
+--  The two ROOTs are not replies, and Ranges does not count them. Receive
+--  refuses a message that would go above a budget, with S_Limit. The
+--  counts have exact definitions (Ranges_Upto, Obligations_Upto,
+--  Items_Upto), so the Post of Receive states every budget check over the
+--  true counts of the reply.
 --
 --  Tested, not proved (stated limitations):
 --    * T7 (termination and convergence). The two-phase session test
 --      converges two replicas.
---    * That Decode accepts every ELEMENTS / HAVE that carries items. (A
---      proof shows that it accepts every RANGE and every confirm.)
---    * The item and frame bytes in an encoded ELEMENTS / HAVE. The Post of
---      Encode states the head and the item count, and a test checks the
---      round trip. Decode_Facts states that the head, the kind, the count
---      and fingerprint of a RANGE, and the n of an ELEMENTS / HAVE come
---      from the wire. It does not state the item keys and frame places;
---      tests check these.
---    * That splits are balanced (child counts ⌊n/16⌋ or ⌈n/16⌉). Answers
---      and Shrinks state only that each child is strictly smaller, so the
---      log₁₆ round bound above is part of T7.
+--    * That Decode accepts every RANGE and every ELEMENTS / HAVE with
+--      items (a proof shows that it accepts every ROOT and every confirm),
+--      and the bytes of an encoded RANGE after its k and of the items of an
+--      encoded ELEMENTS / HAVE (the Posts state the head; a test checks
+--      the round trip).
+--    * That splits are balanced and that the cuts of a large window are
+--      on multiples of 64.
 --    * The honest-session derivations for Msg_Budget, Range_Budget,
---      Ship_Budget and the sufficient Oblig_Cap. They are arithmetic over
---      the executions of the protocol, an argument at the level of T7.
---    * That the heap sort of Snapshot_Of sorts (its result is checked by
---      a scan, so the Post holds in every case).
+--      Ship_Budget and the sufficient Oblig_Cap.
 --    * The session-level statements "every accepted message was accepted
---      while the gate held under Gate_Gen" and "Complete implies one full
---      reply group for each obligation" are inductions over the
---      per-call Posts of Admit, Receive and Next_Phase.
+--      while the gate held" and "Complete implies one tiling answer for
+--      each obligation" are inductions over the per-call Posts.
 pragma Ada_2022;
 with Kome.Accumulator;
 with Kome.Headers;   use Kome.Headers;
@@ -340,48 +299,59 @@ package Kome.Reconcile with SPARK_Mode is
    use type Kome.Views.Header_View;
 
    ----------------------------------------------------------------------
-   --  Element keys and their order (DESIGN.md §8).
+   --  Element keys and their order (DESIGN.md §8, SIMPLIFY.md S18).
    ----------------------------------------------------------------------
 
-   --  The kind byte. Elements use 0 .. 4 (the codes of Kome.Headers.Kind:
-   --  ROSTER 0, REVOKE 1, GRANT 2, DEL 3, PUT 4). Range bounds can use any
-   --  byte, so Max_Key (kind 255) is above every element.
+   --  A byte of the key (the tag at byte 0, sub at byte 17). Elements use
+   --  tags 0 .. 3. Range bounds can use any byte, so Max_Key (tag 255) is
+   --  above every element.
    type Kind_Code is range 0 .. 255 with Size => 8;
 
    type Elem_Key is record
       K   : Kind_Code := 0;
       Ent : Id128;
+      Sub : Kind_Code := 0;
       FH  : Key256;
       H   : Key256;
    end record;
 
-   Key_Wire_Len : constant := 1 + 16 + 32 + 32;   --  81
+   Key_Wire_Len : constant := 1 + 16 + 1 + 32 + 32;   --  82
 
-
-   --  kind ‖ ent ‖ fh ‖ h compared bytewise.
+   --  tag ‖ ent ‖ sub ‖ fh ‖ h compared bytewise.
    function Key_Lt (A, B : Elem_Key) return Boolean is
      (A.K < B.K or else (A.K = B.K and then
       (Kome.Keys.Id_Lt (A.Ent, B.Ent) or else (A.Ent = B.Ent and then
+      (A.Sub < B.Sub or else (A.Sub = B.Sub and then
       (Lt (A.FH, B.FH) or else (A.FH = B.FH and then
-       Lt (A.H, B.H)))))));
+       Lt (A.H, B.H)))))))));
 
    function Key_Le (A, B : Elem_Key) return Boolean is (not Key_Lt (B, A));
 
-   --  The full key space: every element key k has Min_Key <= k < Max_Key.
-   --  Data_Lo divides it. Authorization records (kinds 0 .. 2) are in
-   --  [Min_Key, Data_Lo). Data records (kinds 3, 4) are in
-   --  [Data_Lo, Max_Key).
-   Min_Key : constant Elem_Key :=
-     (K => 0, Ent => (others => 0), FH => (others => 0), H => (others => 0));
-   Data_Lo : constant Elem_Key :=
-     (K => 3, Ent => (others => 0), FH => (others => 0), H => (others => 0));
-   Max_Key : constant Elem_Key :=
-     (K => 255, Ent => (others => 0), FH => (others => 0), H => (others => 0));
+   --  The data tag (S18): every data key starts with 03.
+   Data_Key_Tag : constant Kind_Code := 3;
 
-   --  The element key of the header of a record (§8: kind ‖ ent ‖ field
-   --  hash ‖ h). Kind'Pos is the code of the kind (Kome.Headers).
+   --  The full key space: every element key k has Min_Key <= k < Max_Key.
+   --  Data_Lo divides it. Authorization records (tags 0 .. 2) are in
+   --  [Min_Key, Data_Lo). Data records (tag 3) are in [Data_Lo, Max_Key).
+   Min_Key : constant Elem_Key :=
+     (K => 0, Ent => (others => 0), Sub => 0, FH => (others => 0), H => (others => 0));
+   Data_Lo : constant Elem_Key :=
+     (K => Data_Key_Tag, Ent => (others => 0), Sub => 0, FH => (others => 0),
+      H => (others => 0));
+   Max_Key : constant Elem_Key :=
+     (K => 255, Ent => (others => 0), Sub => 0, FH => (others => 0), H => (others => 0));
+
+   --  The element key of the header of a record (S18). Data:
+   --  03 ‖ ent ‖ sub ‖ fh ‖ h, sub = 0 for a DEL and 1 for a PUT.
+   --  Authorization: tag ‖ 0^17 ‖ signer ‖ h, the tag is the code of the
+   --  kind (Kome.Headers) and the signer is the issuer.
    function Key_Of (R : Header) return Elem_Key is
-     (K => Kind_Code (Kind'Pos (R.K)), Ent => R.Ent, FH => R.FH, H => R.V.H);
+     (if Is_Data (R) then
+        (K => Data_Key_Tag, Ent => R.Ent, Sub => (if R.K = K_Del then 0 else 1),
+         FH => R.FH, H => R.V.H)
+      else
+        (K => Kind_Code (Kind'Pos (R.K)), Ent => (others => 0), Sub => 0,
+         FH => R.Issuer, H => R.V.H));
 
    --  The order is a strict total order (as T1 for versions).
    procedure Lemma_Key_Lt_Irrefl (A : Elem_Key) with
@@ -408,6 +378,24 @@ package Kome.Reconcile with SPARK_Mode is
      Pre  => Key_Le (A, B) and then Key_Lt (B, C),
      Post => Key_Lt (A, C);
 
+   --  The key order of the data row (S18): entity-major, DEL before PUT,
+   --  then the field hash, is the order of the data keys.
+   procedure Lemma_Data_Key_Order (A, B : Header) with
+     Ghost, Global => null,
+     Pre  => Is_Data (A) and then Is_Data (B)
+             and then (Kome.Keys.Id_Lt (A.Ent, B.Ent)
+                       or else (A.Ent = B.Ent
+                                and then (A.K < B.K
+                                          or else (A.K = B.K and then Lt (A.FH, B.FH))))),
+     Post => Key_Lt (Key_Of (A), Key_Of (B));
+
+   --  Authorization keys are below Data_Lo, data keys in [Data_Lo, Max_Key).
+   procedure Lemma_Key_Ranges (R : Header) with
+     Ghost, Global => null,
+     Post => (if Is_Data (R) then Key_Le (Data_Lo, Key_Of (R))
+                                  and then Key_Lt (Key_Of (R), Max_Key)
+              else Key_Lt (Key_Of (R), Data_Lo) and then Key_Le (Min_Key, Key_Of (R)));
+
    ----------------------------------------------------------------------
    --  Sizes and wire layout (DESIGN.md §8; Kome.Max_Message_Len,
    --  Split_Fanout, Ship_Threshold).
@@ -417,55 +405,68 @@ package Kome.Reconcile with SPARK_Mode is
    Tag_Range    : constant Byte := 2;
    Tag_Elements : constant Byte := 3;
    Tag_Have     : constant Byte := 4;
-   Tag_Open     : constant Byte := 5;
+   Tag_Root     : constant Byte := 5;
 
-   --  RANGE / ELEMENTS / HAVE.
-   O_G           : constant := 1;                                   --  group size
-   O_Lo          : constant := 2;
-   O_Hi          : constant := O_Lo + Key_Wire_Len;                 --  83
-   Range_O_Count : constant := O_Hi + Key_Wire_Len;                 --  164
-   Range_O_Fp    : constant := Range_O_Count + 4;                   --  168
-   Range_Len     : constant := Range_O_Fp + 32;                     --  200
-   Elems_O_N     : constant := O_Hi + Key_Wire_Len;                 --  164
-   Elems_Fixed   : constant := Elems_O_N + 1;                       --  165
-   Item_Overhead : constant := Key_Wire_Len + 4;                    --  85
+   --  The protocol version, in the Noise prologue (S11).
+   Proto_Version : constant Byte := 1;
+
+   --  RANGE: 02 ‖ k ‖ bounds[k + 1] ‖ k × (count:u48 ‖ fp[32]).
+   Range_O_K      : constant := 1;
+   Range_O_Bounds : constant := 2;
+   Part_Len       : constant := 6 + 32;                              --  38
+   Count_Len      : constant := 6;
+
+   subtype Part_Count is Natural range 0 .. Split_Fanout;
+   subtype Part_Index is Positive range 1 .. Split_Fanout;
+
+   --  The place of bound I (0 .. k) and of part J (1 .. k) of a RANGE with
+   --  k parts, relative to the message.
+   function Bound_At (I : Natural) return Natural is
+     (Range_O_Bounds + Key_Wire_Len * I)
+   with Pre => I <= Split_Fanout;
+
+   function Part_At (K : Part_Index; J : Part_Index) return Natural is
+     (Range_O_Bounds + Key_Wire_Len * (K + 1) + Part_Len * (J - 1))
+   with Pre => J <= K;
+
+   function Range_Msg_Len (K : Part_Count) return Natural is
+     (Range_O_Bounds + Key_Wire_Len * (K + 1) + Part_Len * K);
+
+   pragma Compile_Time_Error
+     (Range_O_Bounds + Key_Wire_Len * (Split_Fanout + 1) + Part_Len * Split_Fanout /= 2_004,
+      "S19: a 16-part RANGE is 2 004 bytes");
+
+   --  ELEMENTS / HAVE: tag ‖ lo ‖ hi ‖ n:u16 ‖ n × (flen:u16 ‖ frame).
+   O_Lo           : constant := 1;
+   O_Hi           : constant := O_Lo + Key_Wire_Len;                 --  83
+   Elems_O_N      : constant := O_Hi + Key_Wire_Len;                 --  165
+   Elems_Fixed    : constant := Elems_O_N + 2;                       --  167
+   Item_Overhead  : constant := 2;
    Frame_Ship_Max : constant := Max_Message_Len - Elems_Fixed - Item_Overhead;
 
    pragma Compile_Time_Error
-     (Frame_Ship_Max /= 48_902, "DESIGN.md §8: one ELEMENTS item carries 48 902 frame bytes");
-   --  D12: every well-formed frame (at most 41 136 bytes) fits one item.
+     (Frame_Ship_Max /= 48_983, "DESIGN.md §8: one ELEMENTS item carries 48 983 frame bytes");
+   --  D12: every well-formed frame (at most 41 120 bytes) fits one item.
    pragma Compile_Time_Error
      (Kome.Records.Frame_Max > Frame_Ship_Max,
       "DESIGN.md §8 (D12): Kome.Records.Frame_Max must not exceed Frame_Ship_Max");
 
-   --  OPEN (pre-gate, D13): 5 ‖ proto ‖ ns[16] ‖ n_rv ‖ n_rv × frame[269].
-   --  The frames are founding REVOKEs for at most 15 subjects (Rv_Max =
-   --  Signers_Max - 1; AUDIT.md H5).
-   Proto_Version : constant Byte := 1;
-   Rv_Frame_Len  : constant := Kome.Records.Revoke_Frame_Len;        --  269
-   Rv_Max        : constant := Signers_Max - 1;                     --  15
-   Open_O_Proto  : constant := 1;
-   Open_O_NS     : constant := 2;
-   Open_O_NRV    : constant := 18;
-   Open_Fixed    : constant := 19;
-   Open_Max_Len  : constant := Open_Fixed + Rv_Max * Rv_Frame_Len;   --  4 054
-   pragma Compile_Time_Error
-     (Rv_Frame_Len /= 269 or else Open_Max_Len /= 4_054,
-      "DESIGN.md §8: an OPEN is at most 4 054 bytes");
+   --  ROOT: 05 ‖ count:u48 ‖ fp[32].
+   Root_O_Count : constant := 1;
+   Root_O_Fp    : constant := 7;
+   Root_Len     : constant := 39;
 
-   --  HELLO (post-gate, D13): 1 ‖ n_auth ‖ n_data ‖ digest[32] ‖ cred_len ‖
-   --  cred. No register value goes on the wire. HELLO has no proto (OPEN
-   --  has it).
+   --  HELLO (D13): 01 ‖ n_auth ‖ n_data ‖ digest[32] ‖ cred_len ‖ cred.
    Hello_O_NAuth  : constant := 1;
    Hello_O_NData  : constant := 5;
    Hello_O_Digest : constant := 9;
    Hello_O_CLen   : constant := 41;
    Hello_Fixed    : constant := 43;
-   Cred_Max       : constant := Kome.Records.Roster_Frame_Max;     --  10 099
-   Hello_Max_Len  : constant := Hello_Fixed + Cred_Max;            --  10 142
+   Cred_Max       : constant := Kome.Records.Roster_Frame_Max;     --  8 916
+   Hello_Max_Len  : constant := Hello_Fixed + Cred_Max;            --  8 959
    pragma Compile_Time_Error
-     (Cred_Max /= 10_099 or else Hello_Max_Len /= 10_142,
-      "DESIGN.md §8: a HELLO is at most 10 142 bytes");
+     (Cred_Max /= 8_916 or else Hello_Max_Len /= 8_959,
+      "DESIGN.md §8: a HELLO is at most 8 959 bytes");
 
    subtype Frame_Size is Positive range 1 .. Frame_Ship_Max;
    subtype Msg_Length is Natural range 0 .. Max_Message_Len;
@@ -474,12 +475,8 @@ package Kome.Reconcile with SPARK_Mode is
    subtype Item_Count is Natural range 0 .. Ship_Threshold;
    subtype Item_Index is Positive range 1 .. Ship_Threshold;
 
-   --  The size of a reply group. 0 marks a root RANGE (not a reply).
-   subtype Group_Size is Natural range 0 .. Split_Fanout;
-
    --  Element counts and indices: the records that one replica holds for
-   --  one collection. Kome.Digest.Elem_Max is Kome.Frontier.Held_Max. The
-   --  frontier and reconciliation use this one constant (§8 HELLO).
+   --  one collection. Kome.Digest.Elem_Max is Kome.Frontier.Held_Max.
    Elem_Max : constant := Kome.Digest.Elem_Max;
    pragma Compile_Time_Error
      (Elem_Max /= Kome.Frontier.Held_Max,
@@ -488,9 +485,30 @@ package Kome.Reconcile with SPARK_Mode is
    subtype Elem_Index is Kome.Digest.Elem_Index;
    subtype Lo_Bound   is Kome.Digest.Lo_Bound;
 
+   --  Byte counts of frames and of shipped items.
+   type Byte_Total is range 0 .. 2 ** 40;
+   subtype Snap_Bytes is Byte_Total range 0 .. Elem_Max * Frame_Ship_Max;
+
+   ----------------------------------------------------------------------
+   --  The Noise XK prologue (S11): "kome/1" ‖ ns ‖ proto.
+   ----------------------------------------------------------------------
+
+   Prologue_Tag_Len : constant := 6;
+   Prologue_Tag : constant Byte_Array (0 .. Prologue_Tag_Len - 1) :=
+     [16#6B#, 16#6F#, 16#6D#, 16#65#, 16#2F#, 16#31#];   --  "kome/1"
+   Prologue_Len : constant := Prologue_Tag_Len + NS_Len + 1;   --  23
+   subtype Prologue_Bytes is Byte_Array (0 .. Prologue_Len - 1);
+
+   function Prologue (Cid : Hash256) return Prologue_Bytes with
+     Global => null,
+     Post   => Prologue'Result (0 .. Prologue_Tag_Len - 1) = Prologue_Tag
+               and then Prologue'Result (Prologue_Tag_Len .. Prologue_Tag_Len + NS_Len - 1)
+                          = Kome.Records.NS_Of (Cid)
+               and then Prologue'Result (Prologue_Len - 1) = Proto_Version;
+
    ----------------------------------------------------------------------
    --  Functions that read the wire. They are quantifier-free, so they are
-   --  public (rule 2). The Posts of Decode and Encode use them.
+   --  public (rule 2).
    ----------------------------------------------------------------------
 
    function Wire_U16 (B : Byte_Array; P : Natural) return Natural is
@@ -500,6 +518,10 @@ package Kome.Reconcile with SPARK_Mode is
    function Wire_U32 (B : Byte_Array; P : Natural) return Word is
      (Kome.Keys.Word_Of (B (P), B (P + 1), B (P + 2), B (P + 3)))
    with Pre => P >= B'First and then P <= B'Last and then B'Last - P >= 3;
+
+   function Wire_U48 (B : Byte_Array; P : Natural) return U48 is
+     (U48 (Wire_U16 (B, P)) * 2 ** 32 + U48 (Wire_U32 (B, P + 2)))
+   with Pre => P >= B'First and then P <= B'Last and then B'Last - P >= 5;
 
    function Wire_Id128 (B : Byte_Array; P : Natural) return Id128 is
      ((W0 => Wire_U32 (B, P),     W1 => Wire_U32 (B, P + 4),
@@ -516,17 +538,15 @@ package Kome.Reconcile with SPARK_Mode is
    function Wire_Key (B : Byte_Array; P : Natural) return Elem_Key is
      ((K   => Kind_Code (B (P)),
        Ent => Wire_Id128 (B, P + 1),
-       FH  => Wire_Key256 (B, P + 17),
-       H   => Wire_Key256 (B, P + 49)))
+       Sub => Kind_Code (B (P + 17)),
+       FH  => Wire_Key256 (B, P + 18),
+       H   => Wire_Key256 (B, P + 50)))
    with Pre => P >= B'First and then P <= B'Last
                and then B'Last - P >= Key_Wire_Len - 1;
 
    ----------------------------------------------------------------------
-   --  Key_Lt is bytewise order on the 81-byte wire key (§8 "compared
-   --  bytewise"): equal keys iff equal bytes, and the first byte that is
-   --  different decides. Together, these lemmas show that Key_Lt is
-   --  exactly the byte-lexicographic order of the encodings (Put_Key
-   --  writes Wire_Key).
+   --  Key_Lt is bytewise order on the 82-byte wire key: equal keys iff
+   --  equal bytes, and the first byte that is different decides.
    ----------------------------------------------------------------------
 
    subtype Key_Wire is Byte_Array (0 .. Key_Wire_Len - 1);
@@ -543,12 +563,9 @@ package Kome.Reconcile with SPARK_Mode is
      Post => Key_Lt (Wire_Key (A, 0), Wire_Key (B, 0)) = (A (I) < B (I));
 
    ----------------------------------------------------------------------
-   --  Frame tables: the frames of the records of F, in the order of one
-   --  row of F (A12). The caller fills one table for the data row
-   --  (entry I: the frame of Data_Held (F, I)) and one for the
-   --  authorization records (entry I: the frame of Held (F,
-   --  Data_Count (F) + I)) from Kome.Store.Read_Frame. Cap entries,
-   --  Pool_Cap bytes of frames.
+   --  The frame table: the frames of the records of F in the flat order of
+   --  F (entry I: the frame of Held (F, I)). The caller fills it from
+   --  Kome.Store.Read_Frame. Cap entries, Pool_Cap bytes of frames.
    ----------------------------------------------------------------------
 
    Pool_Max : constant := 2 ** 30;
@@ -581,12 +598,11 @@ package Kome.Reconcile with SPARK_Mode is
 
    type Snap_Status is
      (Snap_OK,
-      Snap_Unsorted,    --  key not above the last one appended (Snapshot_Of:
-                        --  two held records with one key, never in a run)
-      Snap_Bad_Kind,    --  kind > 4
-      Snap_Too_Large,   --  frame empty or longer than Frame_Ship_Max (defensive:
-                        --  never for a well-formed frame, Lemma_Frame_Ships)
-      Snap_No_Space);   --  Cap elements or Pool_Cap bytes reached
+      Snap_Unsorted,    --  Append: the key is not above the last one;
+                        --  Snapshot_Of: two held records with one key (A2)
+      Snap_Too_Large,   --  Add_Frame: frame empty or longer than Frame_Ship_Max
+                        --  (never for a well-formed frame, Lemma_Frame_Ships)
+      Snap_No_Space);   --  Cap elements (or Pool_Cap bytes of a table) reached
 
    --  Append the next frame. On refusal, nothing changes (T13).
    procedure Add_Frame
@@ -597,6 +613,7 @@ package Kome.Reconcile with SPARK_Mode is
      Global => null,
      Pre    => Table_Valid (T),
      Post   => Table_Valid (T)
+       and then Result in Snap_OK | Snap_Too_Large | Snap_No_Space
        and then (if Result = Snap_OK then
                    Table_Count (T) = Table_Count (T'Old) + 1
                    and then Table_Bytes (T) = Table_Bytes (T'Old) + F'Length
@@ -612,35 +629,20 @@ package Kome.Reconcile with SPARK_Mode is
                  and then Table_Count (T'Old) < T.Cap
                  and then F'Length <= T.Pool_Cap - Table_Bytes (T'Old));
 
-   --  Some entry of T is a ROSTER frame that lists DH as a member dh_pk
-   --  (AUDIT.md A14: the peer is a member of some held roster). This
-   --  function has a quantifier, so its completion is in the body.
-   --  Lemma_Lists_Peer_Def gives its meaning.
-   function Lists_Peer (T : Frame_Table; DH : Pubkey) return Boolean with
-     Global => null,
-     Pre    => Table_Valid (T);
-
-   procedure Lemma_Lists_Peer_Def (T : Frame_Table; DH : Pubkey) with
-     Ghost, Global => null,
-     Pre  => Table_Valid (T),
-     Post => Lists_Peer (T, DH) =
-               (for some I in 1 .. Table_Count (T) =>
-                  Kome.Records.Is_Roster_Frame (Table_Frame (T, I))
-                  and then Kome.Records.Roster_Lists_DH (Table_Frame (T, I), DH));
-
    ----------------------------------------------------------------------
    --  Snapshot: our elements for one session, in strictly ascending
-   --  order, each with its frame. Cap elements, Pool_Cap bytes of frames.
+   --  order, each with its frame length and its source index in F (and so
+   --  in the frame table). Cap elements.
    ----------------------------------------------------------------------
 
-   type Snapshot (Cap : Elem_Count; Pool_Cap : Pool_Size) is private;
+   type Snapshot (Cap : Elem_Count) is private;
 
    function Count (S : Snapshot) return Elem_Count with
      Global => null,
      Post   => Count'Result <= S.Cap;
 
-   --  Bytes of frames held.
-   function Frame_Bytes (S : Snapshot) return Pool_Size with Global => null;
+   --  Bytes of the frames of the elements.
+   function Frame_Bytes (S : Snapshot) return Snap_Bytes with Global => null;
 
    function Key (S : Snapshot; I : Elem_Index) return Elem_Key with
      Global => null,
@@ -650,25 +652,28 @@ package Kome.Reconcile with SPARK_Mode is
      Global => null,
      Pre    => I <= Count (S);
 
-   --  The index in F of element I (Snapshot_Of records it; Append sets
-   --  it to I).
+   --  The index in F (and in the frame table) of element I.
    function Source (S : Snapshot; I : Elem_Index) return Elem_Index with
      Global => null,
      Pre    => I <= Count (S);
 
-   --  Strictly ascending order (pairwise), kinds <= 4, frames in the pool.
-   --  This function has a quantifier, so its completion is in the private
-   --  part (rule 2).
+   --  Strictly ascending order (pairwise) and the byte total. This
+   --  function has a quantifier, so its completion is in the private part
+   --  (rule 2).
    function Valid (S : Snapshot) return Boolean with Global => null;
 
-   function Frame (S : Snapshot; I : Elem_Index) return Byte_Array with
-     Global => null,
-     Pre    => Valid (S) and then I <= Count (S),
-     Post   => Frame'Result'Length = Frame_Len (S, I);
-
-   --  L more frame bytes fit in the pool.
-   function Has_Room (S : Snapshot; L : Natural) return Boolean with
+   --  The frame table T holds the frame of every element of S: the source
+   --  of element I is an entry of T of its length. This function has a
+   --  quantifier, so its completion is in the private part.
+   function Linked (S : Snapshot; T : Frame_Table) return Boolean with
      Global => null;
+
+   --  The frame of element I, from the table.
+   function Elem_Frame (S : Snapshot; T : Frame_Table; I : Elem_Index) return Byte_Array
+   with
+     Global => null,
+     Pre    => Table_Valid (T) and then Linked (S, T) and then I <= Count (S),
+     Post   => Elem_Frame'Result'Length = Frame_Len (S, I);
 
    --  The prefix-sum table of a snapshot (D15): Slots = Prefix_Slots (|S|)
    --  accumulators, one for each full block of 64 elements and the total.
@@ -678,9 +683,7 @@ package Kome.Reconcile with SPARK_Mode is
    type Prefix (Slots : Kome.Digest.Block_Index) is private;
 
    --  P is the prefix-sum table of the current elements of S
-   --  (Kome.Digest.Prefix_Valid). Seal makes it so, and an Append to S
-   --  invalidates it. Ghost: contracts state it, and it is not computed
-   --  outside them.
+   --  (Kome.Digest.Prefix_Valid). Seal makes it so. Ghost.
    function Sealed (S : Snapshot; P : Prefix) return Boolean with
      Ghost, Global => null;
 
@@ -688,36 +691,35 @@ package Kome.Reconcile with SPARK_Mode is
      Global => null,
      Post   => Count (S) = 0 and then Frame_Bytes (S) = 0 and then Valid (S);
 
-   --  Append the next element. Keys must come in strictly ascending order.
-   --  On refusal, nothing changes (T13).
+   --  Append the next element: key K, frame length L, source Src (for a
+   --  snapshot that a caller builds element by element; Snapshot_Of builds
+   --  the snapshot of a frontier). Keys must come in strictly ascending
+   --  order. On refusal, nothing changes (T13).
    procedure Append
      (S      : in out Snapshot;
       K      : Elem_Key;
-      F      : Byte_Array;
+      L      : Frame_Size;
+      Src    : Elem_Index;
       Result : out Snap_Status)
    with
      Global => null,
      Pre    => Valid (S),
      Post   => Valid (S)
+       and then Result in Snap_OK | Snap_Unsorted | Snap_No_Space
        and then (if Result = Snap_OK then
                    Count (S) = Count (S'Old) + 1
-                   and then Frame_Bytes (S) = Frame_Bytes (S'Old) + F'Length
+                   and then Frame_Bytes (S) = Frame_Bytes (S'Old) + Byte_Total (L)
                    and then Key (S, Count (S)) = K
-                   and then Frame_Len (S, Count (S)) = F'Length
-                   and then Frame (S, Count (S)) = F
+                   and then Frame_Len (S, Count (S)) = L
+                   and then Source (S, Count (S)) = Src
                    and then (for all I in 1 .. Count (S'Old) =>
                                Key (S, I) = Key (S'Old, I)
-                               and then Frame_Len (S, I) = Frame_Len (S'Old, I))
+                               and then Frame_Len (S, I) = Frame_Len (S'Old, I)
+                               and then Source (S, I) = Source (S'Old, I))
                  else S = S'Old)
-       and then (Result = Snap_Too_Large) =
-                (K.K <= 4 and then F'Length not in Frame_Size)
        and then (Result = Snap_OK) =
-                (K.K <= 4
-                 and then F'Length in Frame_Size
-                 and then (Count (S'Old) = 0
-                           or else Key_Lt (Key (S'Old, Count (S'Old)), K))
-                 and then Count (S'Old) < S.Cap
-                 and then Has_Room (S'Old, F'Length));
+                ((Count (S'Old) = 0 or else Key_Lt (Key (S'Old, Count (S'Old)), K))
+                 and then Count (S'Old) < S.Cap);
 
    --  Build the prefix-sum table (D15) of the elements of S: O(n)
    --  additions, once per snapshot. P must have Prefix_Slots (|S|) slots.
@@ -727,7 +729,7 @@ package Kome.Reconcile with SPARK_Mode is
      Post   => Sealed (S, P);
 
    --  D12: a frame of a well-formed record (1 .. Kome.Records.Frame_Max
-   --  bytes) is never Snap_Too_Large (with the Post of Append).
+   --  bytes) is never Snap_Too_Large.
    procedure Lemma_Frame_Ships (L : Natural) with
      Ghost, Global => null,
      Pre  => L >= 1 and then L <= Kome.Records.Frame_Max,
@@ -786,10 +788,9 @@ package Kome.Reconcile with SPARK_Mode is
              and then Covers (S, Lo, Hi, F, L),
      Post => My_Count (S, Lo, Hi) = L + 1 - F;
 
-   --  Take a sub-run S .. E of a covered window, with the ends of the
+   --  Take a sub-run B .. E of a covered window, with the ends of the
    --  parent or the adjacent elements as its bounds. Exactly those bounds
    --  cover the sub-run, and it is a non-empty sub-range of the parent.
-   --  This makes every split child a well-formed, strictly smaller range.
    function Child_Lo (S : Snapshot; Lo : Elem_Key; I, B : Elem_Index)
      return Elem_Key
    is (if B = I then Lo else Key (S, B))
@@ -813,11 +814,24 @@ package Kome.Reconcile with SPARK_Mode is
              and then Key_Le (Child_Hi (S, Hi, J, E), Hi)
              and then Covers (S, Child_Lo (S, Lo, I, B), Child_Hi (S, Hi, J, E), B, E);
 
+   --  The interior cut T (1 .. 15) of a split of the window First ..
+   --  First + N - 1 when N >= Big_Window (S20): the last element of child
+   --  T is at the multiple of 64 at or below First - 1 + T (N / 16). The
+   --  ends of the children are then block boundaries of the prefix sums,
+   --  so only the two ends of the parent range walk elements. For N >=
+   --  1 024 the cuts are strictly increasing and inside the window
+   --  (N / 16 >= 64); the responder checks that before it uses one.
+   Big_Window : constant := 1_024;
+
+   function Cut_At (First : Elem_Index; N : Elem_Count; T : Positive) return Natural is
+     (Kome.Digest.Block_Elems
+        * ((First - 1 + T * (N / Split_Fanout)) / Kome.Digest.Block_Elems))
+   with Pre => T <= Split_Fanout;
+
    ----------------------------------------------------------------------
    --  Fingerprints (DESIGN.md §8 "fingerprint = digest", T6): fp over the
    --  h of our elements First .. Last, with Kome.Digest. Range_Fp is the
-   --  definition (the digest of the list, recomputed); Fingerprint_Of
-   --  computes it from the prefix sums (D15) on a sealed snapshot.
+   --  definition; Fingerprint_Of computes it from the prefix sums (D15).
    ----------------------------------------------------------------------
 
    function Range_Fp (S : Snapshot; First : Lo_Bound; Last : Elem_Count)
@@ -839,59 +853,39 @@ package Kome.Reconcile with SPARK_Mode is
      Post   => FP = Range_Fp (S, First, Last);
 
    ----------------------------------------------------------------------
-   --  The snapshot of a frontier (A12).
+   --  The snapshot of a frontier (A12, S18, S21).
    ----------------------------------------------------------------------
 
-   --  The frame of the held record I of F in the two tables: the data
-   --  row first, then the authorization records.
-   function Record_Frame
-     (F : Kome.Frontier.State; Data_T, Auth_T : Frame_Table; I : Elem_Index)
-      return Byte_Array
-   is (if I <= Kome.Frontier.Data_Count (F) then Table_Frame (Data_T, I)
-       else Table_Frame (Auth_T, I - Kome.Frontier.Data_Count (F)))
-   with Pre => Table_Valid (Data_T) and then Table_Valid (Auth_T)
-               and then Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
-               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F)
-               and then I <= Kome.Frontier.Count (F);
-
-   --  The snapshot of F (A12): the keys of the held records of F in key
-   --  order, each with its frame from the tables. On Snap_OK:
-   --    * |S| = |F|, element I of S is the held record Source (S, I) of
-   --      F, with its key and its frame, and the sources are distinct (so
-   --      S holds exactly the records of F);
+   --  The snapshot of F: the keys of the held records of F in key order,
+   --  each with the length of its frame in T. On Snap_OK:
+   --    * |S| = |F|, element I of S is the held record Source (S, I) of F
+   --      with its key, the sources are distinct (so S holds exactly the
+   --      records of F), and T holds every frame (Linked);
    --    * the digest of S is the digest of F (T6, Lemma_Sum_Perm).
    --  The caller then builds the prefix-sum table with Seal.
-   --  Snap_No_Space when |F| > S.Cap or the frames do not fit S.Pool_Cap.
-   --  Snap_Unsorted when two held records have one key (a hash
-   --  collision; A2 excludes it, and the final scan defends against it).
+   --  Snap_No_Space when |F| > S.Cap. Snap_Unsorted when two held records
+   --  have one key (equal h: A2 excludes it; never for two data records).
    --  On a refusal, S is empty.
    procedure Snapshot_Of
      (F      : Kome.Frontier.State;
-      Data_T : Frame_Table;
-      Auth_T : Frame_Table;
+      T      : Frame_Table;
       S      : out Snapshot;
       Result : out Snap_Status)
    with
      Global => null,
-     Pre    => Kome.Frontier.Is_Frontier (F)
-               and then Table_Valid (Data_T) and then Table_Valid (Auth_T)
-               and then Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
-               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F),
+     Pre    => Table_Valid (T)
+               and then Table_Count (T) = Kome.Frontier.Count (F),
      Post   => Valid (S)
        and then Result in Snap_OK | Snap_Unsorted | Snap_No_Space
-       and then (Result = Snap_No_Space) =
-                (Kome.Frontier.Count (F) > S.Cap
-                 or else Table_Bytes (Data_T) > S.Pool_Cap
-                 or else Table_Bytes (Auth_T) > S.Pool_Cap - Table_Bytes (Data_T))
+       and then (Result = Snap_No_Space) = (Kome.Frontier.Count (F) > S.Cap)
        and then (if Result = Snap_OK then
                    Count (S) = Kome.Frontier.Count (F)
-                   and then Frame_Bytes (S) = Table_Bytes (Data_T) + Table_Bytes (Auth_T)
+                   and then Linked (S, T)
                    and then (for all I in 1 .. Count (S) =>
                                Source (S, I) <= Kome.Frontier.Count (F)
                                and then Key (S, I)
                                           = Key_Of (Kome.Frontier.Held (F, Source (S, I)))
-                               and then Frame (S, I)
-                                          = Record_Frame (F, Data_T, Auth_T, Source (S, I)))
+                               and then Frame_Len (S, I) = Table_Len (T, Source (S, I)))
                    and then (for all I in 1 .. Count (S) =>
                                (for all J in 1 .. Count (S) =>
                                   (if I /= J then Source (S, I) /= Source (S, J))))
@@ -900,20 +894,16 @@ package Kome.Reconcile with SPARK_Mode is
 
    ----------------------------------------------------------------------
    --  Plans: messages to send, as references into the snapshot. Encode
-   --  changes a plan into bytes. (OPEN and HELLO are not plans: Start and
-   --  Admit write them into a buffer.)
+   --  and Encode_Ranges change plans into bytes.
    ----------------------------------------------------------------------
 
    type Out_Kind is (P_Range, P_Elements, P_Have);
 
-   function Tag_Of (K : Out_Kind) return Byte is
-     (case K is
-        when P_Range    => Tag_Range,
-        when P_Elements => Tag_Elements,
-        when P_Have     => Tag_Have);
-
    type Index_List is array (Item_Index) of Elem_Index;
 
+   --  A RANGE plan is one part of a RANGE message (an outbox of RANGE
+   --  plans that tile a range is one message, Encode_Ranges). An ELEMENTS
+   --  or HAVE plan is one message (Encode).
    type Plan is record
       Kind  : Out_Kind   := P_Range;
       Lo    : Elem_Key   := Min_Key;
@@ -968,10 +958,11 @@ package Kome.Reconcile with SPARK_Mode is
                                 and then (P.N < 3 or else P.Items (3) <= Count (S))
                                 and then (P.N < 4 or else P.Items (4) <= Count (S))));
 
-   --  The number of bytes that Encode makes for P.
+   --  The number of bytes that P takes: an ELEMENTS or a HAVE message, or
+   --  (for a RANGE) a one-part RANGE message, an upper bound on its share.
    function Plan_Len (S : Snapshot; P : Plan) return Positive is
      (case P.Kind is
-        when P_Range    => Range_Len,
+        when P_Range    => Range_Msg_Len (1),
         when P_Elements => Elems_Fixed + Run_Size (S, P.First, P.Last),
         when P_Have     => Elems_Fixed + List_Size (S, P.Items, P.N))
    with Pre => Plan_Shape (S, P);
@@ -985,16 +976,11 @@ package Kome.Reconcile with SPARK_Mode is
    subtype Out_Count is Natural range 0 .. Split_Fanout;
    type Plan_Array is array (1 .. Split_Fanout) of Plan;
 
-   --  What to send: the plans P (1 .. N). If Reply, the plans are one
-   --  reply group (each carries g = N). If not, g = 0 (a root RANGE).
+   --  What to send for one range: the plans P (1 .. N).
    type Outbox is record
-      Reply : Boolean   := False;
-      N     : Out_Count := 0;
-      P     : Plan_Array;
+      N : Out_Count := 0;
+      P : Plan_Array;
    end record;
-
-   function Group (O : Outbox) return Group_Size is
-     (if O.Reply then O.N else 0);
 
    --  Every plan is Plan_OK. This function has a quantifier, so its
    --  completion is in the private part.
@@ -1007,14 +993,12 @@ package Kome.Reconcile with SPARK_Mode is
      Post => Plan_OK (S, O.P (T));
 
    --  The plans of O tile [Lo, Hi): the first starts at Lo, the last ends
-   --  at Hi, and each ends where the next starts. With each plan's cover,
-   --  each of our elements in [Lo, Hi) is in exactly one reply.
+   --  at Hi, and each ends where the next starts (S19).
    function Tiles (O : Outbox; Lo, Hi : Elem_Key) return Boolean with
      Global => null;
 
-   --  Every plan of O is of kind K (so a reply of one kind never includes
-   --  a HAVE). This function has a quantifier, so its completion is in the
-   --  private part.
+   --  Every plan of O is of kind K. This function has a quantifier, so its
+   --  completion is in the private part.
    function All_Kind (O : Outbox; K : Out_Kind) return Boolean with
      Global => null;
 
@@ -1024,10 +1008,9 @@ package Kome.Reconcile with SPARK_Mode is
      Post => O.P (T).Kind = K;
 
    --  Every RANGE and ELEMENTS plan of O is exact: its run First .. Last is
-   --  our window of its range. So a RANGE carries our true count and
-   --  fingerprint, and an ELEMENTS carries all of our elements in its
-   --  range. This function has a quantifier, so its completion is in the
-   --  private part. Lemma_Exact_Plan gives its meaning.
+   --  our window of its range. This function has a quantifier, so its
+   --  completion is in the private part. Lemma_Exact_Plan gives its
+   --  meaning.
    function Exact_Plans (S : Snapshot; O : Outbox) return Boolean with
      Global => null,
      Pre    => Valid (S);
@@ -1047,20 +1030,6 @@ package Kome.Reconcile with SPARK_Mode is
      (O.N = 1 and then O.P (1).Kind = P_Have and then O.P (1).N = 0
       and then O.P (1).Lo = Lo and then O.P (1).Hi = Hi);
 
-   --  A root RANGE over [Lo, Hi): one RANGE, not a reply (g = 0), that
-   --  carries our full window of the range.
-   function Is_Root (S : Snapshot; O : Outbox; Lo, Hi : Elem_Key) return Boolean is
-     (O.N = 1 and then not O.Reply and then O.P (1).Kind = P_Range
-      and then O.P (1).Lo = Lo and then O.P (1).Hi = Hi
-      and then O.P (1).First = Window (S, Lo, Hi).First
-      and then O.P (1).Last = Window (S, Lo, Hi).Last)
-   with Pre => Valid (S) and then Key_Lt (Lo, Hi);
-
-   --  The number of RANGE plans, the number of obligations (RANGE or
-   --  ELEMENTS), and the number of item bytes in the ELEMENTS and HAVE
-   --  plans.
-   type Byte_Total is range 0 .. 2 ** 40;
-
    --  The item bytes of one plan: the encoded items of an ELEMENTS or
    --  HAVE (Plan_Len minus the fixed part). A RANGE has none.
    function Plan_Items (S : Snapshot; P : Plan) return Natural is
@@ -1072,9 +1041,7 @@ package Kome.Reconcile with SPARK_Mode is
 
    --  The defining sums over the plans P (1 .. T), with bounded recursion
    --  (T <= Split_Fanout). They are ghost, and their completion is in the
-   --  private part. The accounting functions below are equal to them at
-   --  T = O.N. So the Post of Receive states the FIFO, Ranges, Shipped and
-   --  every budget check over the true counts of the reply.
+   --  private part.
    function Ranges_Upto (O : Outbox; T : Out_Count) return Out_Count with
      Ghost, Global => null,
      Subprogram_Variant => (Decreases => T),
@@ -1121,12 +1088,12 @@ package Kome.Reconcile with SPARK_Mode is
                and then (if All_Kind (O, P_Range) then Item_Bytes'Result = 0);
 
    ----------------------------------------------------------------------
-   --  Received RANGE / ELEMENTS / HAVE, decoded. Frames stay in the input
-   --  buffer. An item records the position (Off, absolute index) and the
-   --  length of its frame.
+   --  Received RANGE part / ROOT / ELEMENTS / HAVE, decoded. Frames stay
+   --  in the input buffer. An item records the key that the caller derived
+   --  from its frame, the position (Off, absolute index) and the length.
    ----------------------------------------------------------------------
 
-   type Msg_Kind is (M_Open, M_Hello, M_Range, M_Elements, M_Have);
+   type Msg_Kind is (M_Hello, M_Range, M_Elements, M_Have);
 
    type In_Item is record
       Key : Elem_Key;
@@ -1136,86 +1103,124 @@ package Kome.Reconcile with SPARK_Mode is
 
    type In_Items is array (Item_Index) of In_Item;
 
+   --  The keys of the items of an ELEMENTS / HAVE, as the caller derived
+   --  them from the frames: Keys (T) = Key_Of (To_Header (Cid, R)) for the
+   --  record R of frame T (Item_Places).
+   type Key_List is array (Item_Index) of Elem_Key;
+
+   --  A ROOT is a range message (Kind = M_Range, Root): its bounds are set
+   --  by the phase (Bind).
    type Message is record
       Kind   : Msg_Kind   := M_Range;
-      G      : Group_Size := 0;                 --  RANGE, ELEMENTS, HAVE
+      Root   : Boolean    := False;
       Lo     : Elem_Key   := Min_Key;
       Hi     : Elem_Key   := Max_Key;
-      Count  : Elem_Count := 0;                 --  RANGE
-      Fp     : Hash256    := [others => 0];     --  RANGE
+      Count  : Elem_Count := 0;                 --  RANGE part, ROOT
+      Fp     : Hash256    := [others => 0];     --  RANGE part, ROOT
       N      : Item_Count := 0;                 --  ELEMENTS, HAVE
       Items  : In_Items;
    end record;
 
-   --  The properties of a decoded RANGE / ELEMENTS / HAVE. This function
-   --  has a quantifier (the items), so its completion is in the private
-   --  part.
+   --  The properties of a decoded message: a proper range, items strictly
+   --  ascending in it. This function has a quantifier (the items), so its
+   --  completion is in the private part.
    function Msg_OK (M : Message) return Boolean with
      Global => null,
      Post   => (if Msg_OK'Result then
                   M.Kind in M_Range | M_Elements | M_Have
                   and then Key_Lt (M.Lo, M.Hi)
-                  and then (if M.Kind = M_Range then M.N = 0));
+                  and then (if M.Kind = M_Range then M.N = 0)
+                  and then (if M.Root then M.Kind = M_Range));
 
    --  Every frame of M is in Input. This function has a quantifier, so its
    --  completion is in the private part.
    function Msg_In (M : Message; Input : Byte_Array) return Boolean with
      Global => null;
 
-   --  The two shapes that Decode is proved to accept: a RANGE, and an
-   --  ELEMENTS or HAVE with no items (the confirm). Msg_OK states the other
-   --  shapes that it accepts, and tests check them. Quantifier-free.
-   function Range_Wire_OK (B : Byte_Array) return Boolean is
-     (B'Length = Range_Len
+   --  The item keys of M are the caller's Keys. Quantified, private part.
+   function Keys_Given (M : Message; Keys : Key_List) return Boolean with
+     Global => null;
+
+   --  The head of a RANGE with a part J: its k, its length, J <= k.
+   function Range_Head_OK (B : Byte_Array; J : Positive) return Boolean is
+     (B'Last >= B'First and then B'Last - B'First >= 1
       and then B (B'First) = Tag_Range
-      and then B (B'First + O_G) <= Split_Fanout
-      and then Key_Lt (Wire_Key (B, B'First + O_Lo), Wire_Key (B, B'First + O_Hi))
-      and then Wire_U32 (B, B'First + Range_O_Count) <= Elem_Max);
+      and then B (B'First + Range_O_K) in 1 .. Split_Fanout
+      and then B'Last - B'First = Range_Msg_Len (Natural (B (B'First + Range_O_K))) - 1
+      and then J <= Natural (B (B'First + Range_O_K)));
 
+   --  The lo, hi, count and fingerprint of M are those of part J of B.
+   function Range_Fields (B : Byte_Array; J : Positive; M : Message) return Boolean is
+     (declare
+        K : constant Part_Index := Natural (B (B'First + Range_O_K));
+      begin
+        M.Lo = Wire_Key (B, B'First + Bound_At (J - 1))
+        and then M.Hi = Wire_Key (B, B'First + Bound_At (J))
+        and then U48 (M.Count) = Wire_U48 (B, B'First + Part_At (K, J))
+        and then M.Fp = B (B'First + Part_At (K, J) + Count_Len
+                           .. B'First + Part_At (K, J) + Count_Len + 31))
+   with Pre => Range_Head_OK (B, J);
+
+   --  A well-formed ROOT (quantifier-free).
+   function Root_Wire_OK (B : Byte_Array) return Boolean is
+     (B'Last >= B'First and then B'Last - B'First = Root_Len - 1
+      and then B (B'First) = Tag_Root
+      and then Wire_U48 (B, B'First + Root_O_Count) <= Elem_Max);
+
+   function Root_Fields (B : Byte_Array; M : Message) return Boolean is
+     (U48 (M.Count) = Wire_U48 (B, B'First + Root_O_Count)
+      and then M.Fp = B (B'First + Root_O_Fp .. B'First + Root_O_Fp + 31))
+   with Pre => Root_Wire_OK (B);
+
+   --  A well-formed empty ELEMENTS or HAVE (the confirm; quantifier-free).
    function Empty_Wire_OK (B : Byte_Array) return Boolean is
-     (B'Length = Elems_Fixed
+     (B'Last >= B'First and then B'Last - B'First = Elems_Fixed - 1
       and then (B (B'First) = Tag_Elements or else B (B'First) = Tag_Have)
-      and then B (B'First + O_G) <= Split_Fanout
       and then Key_Lt (Wire_Key (B, B'First + O_Lo), Wire_Key (B, B'First + O_Hi))
-      and then B (B'First + Elems_O_N) = 0);
+      and then Wire_U16 (B, B'First + Elems_O_N) = 0);
 
-   --  The count and fingerprint of M are those that the well-formed
-   --  RANGE B carries.
-   function Range_Fields (B : Byte_Array; M : Message) return Boolean is
-     (M.Count = Natural (Wire_U32 (B, B'First + Range_O_Count))
-      and then M.Fp = B (B'First + Range_O_Fp .. B'First + Range_O_Fp + 31))
-   with Pre => Range_Wire_OK (B);
-
-   --  What Decode states about its result (M, OK) for Input. When Decode
-   --  accepts:
-   --    * M is well-formed, and its head is the (g, lo, hi) of the wire;
-   --    * its kind is the kind of the tag;
-   --    * a RANGE is a well-formed RANGE, and its count and fingerprint
-   --      come from the wire;
-   --    * an ELEMENTS / HAVE has the n of the wire.
-   --  Completeness: Decode accepts every well-formed RANGE and confirm.
-   function Decode_Facts (Input : Byte_Array; M : Message; OK : Boolean)
-     return Boolean
+   --  What Decode states about its result (M, OK) for part Part of Input,
+   --  with the item keys Keys. When Decode accepts:
+   --    * M is well-formed and its frames are in Input;
+   --    * a RANGE part: the head is well-formed and the fields of M are
+   --      those of the part;
+   --    * a ROOT: its count and fingerprint, bounds Min_Key .. Max_Key
+   --      until Bind sets them by phase;
+   --    * an ELEMENTS / HAVE: its kind, lo, hi and n from the wire, its
+   --      item keys from Keys.
+   --  Completeness: Decode accepts every well-formed ROOT and confirm.
+   function Decode_Facts
+     (Input : Byte_Array; Part : Positive; Keys : Key_List; M : Message; OK : Boolean)
+      return Boolean
    is
      ((if OK then
          Msg_OK (M) and then Msg_In (M, Input)
-         and then Input'Length >= Elems_Fixed
-         and then M.G = Natural (Input (Input'First + O_G))
-         and then M.Lo = Wire_Key (Input, Input'First + O_Lo)
-         and then M.Hi = Wire_Key (Input, Input'First + O_Hi)
-         and then M.Kind = (if Input (Input'First) = Tag_Range then M_Range
-                            elsif Input (Input'First) = Tag_Elements then M_Elements
-                            else M_Have)
-         and then (if M.Kind = M_Range then
-                     Range_Wire_OK (Input) and then Range_Fields (Input, M)
+         and then Input'Last >= Input'First
+         and then (if Input (Input'First) = Tag_Range then
+                     Range_Head_OK (Input, Part)
+                     and then M.Kind = M_Range and then not M.Root
+                     and then Range_Fields (Input, Part, M)
+                   elsif Input (Input'First) = Tag_Root then
+                     Root_Wire_OK (Input) and then Part = 1
+                     and then M.Kind = M_Range and then M.Root
+                     and then M.Lo = Min_Key and then M.Hi = Max_Key
+                     and then Root_Fields (Input, M)
                    else
-                     (Input (Input'First) = Tag_Have
-                      or else Input (Input'First) = Tag_Elements)
-                     and then M.N = Natural (Input (Input'First + Elems_O_N))))
-      and then (if Range_Wire_OK (Input) then
-                  OK and then M.Kind = M_Range and then Range_Fields (Input, M))
-      and then (if Empty_Wire_OK (Input) then
-                  OK and then M.N = 0
+                     (Input (Input'First) = Tag_Elements
+                      or else Input (Input'First) = Tag_Have)
+                     and then Part = 1
+                     and then Input'Last - Input'First >= Elems_Fixed - 1
+                     and then not M.Root
+                     and then M.Kind = (if Input (Input'First) = Tag_Elements
+                                        then M_Elements else M_Have)
+                     and then M.Lo = Wire_Key (Input, Input'First + O_Lo)
+                     and then M.Hi = Wire_Key (Input, Input'First + O_Hi)
+                     and then M.N = Wire_U16 (Input, Input'First + Elems_O_N)
+                     and then Keys_Given (M, Keys)))
+      and then (if Root_Wire_OK (Input) and then Part = 1 then
+                  OK and then M.Root and then Root_Fields (Input, M))
+      and then (if Empty_Wire_OK (Input) and then Part = 1 then
+                  OK and then M.N = 0 and then not M.Root
                   and then M.Kind = (if Input (Input'First) = Tag_Elements
                                      then M_Elements else M_Have)));
 
@@ -1226,242 +1231,45 @@ package Kome.Reconcile with SPARK_Mode is
       OK : Boolean := False;
    end record;
 
-   function Decode_Of (Input : Byte_Array) return Decoding with
-     Global => null,
-     Post   => Decode_Facts (Input, Decode_Of'Result.M, Decode_Of'Result.OK);
-
-   procedure Decode
-     (Input  : Byte_Array;
-      M      : out Message;
-      OK     : out Boolean)
+   function Decode_Of (Input : Byte_Array; Part : Positive; Keys : Key_List)
+     return Decoding
    with
      Global => null,
-     Post   => M = Decode_Of (Input).M and then OK = Decode_Of (Input).OK
-               and then Decode_Facts (Input, M, OK);
+     Post   => Decode_Facts (Input, Part, Keys, Decode_Of'Result.M, Decode_Of'Result.OK);
 
-   ----------------------------------------------------------------------
-   --  OPEN (pre-gate, D13). Canonical: frames after N_RV are zero.
-   ----------------------------------------------------------------------
-
-   subtype Rv_Count is Natural range 0 .. Rv_Max;
-   subtype Rv_Index is Positive range 1 .. Rv_Max;
-   subtype Rv_Frame is Byte_Array (0 .. Rv_Frame_Len - 1);
-   type Rv_Array is array (Rv_Index) of Rv_Frame;
-
-   Zero_Rv : constant Rv_Frame := [others => 0];
-
-   type Open_Msg is record
-      Proto : Byte     := Proto_Version;
-      NS    : Id128;
-      N_RV  : Rv_Count := 0;
-      RV    : Rv_Array := [others => [others => 0]];
+   --  The frame places of an ELEMENTS / HAVE (for the caller, which
+   --  decodes each frame to its key before Receive): N items, item T at
+   --  Input (Off (T) .. Off (T) + Len (T) - 1). OK when the item lengths
+   --  add up to the message length and n <= Ship_Threshold.
+   type Off_List is array (Item_Index) of Natural;
+   type Len_List is array (Item_Index) of Frame_Size;
+   type Places is record
+      OK  : Boolean    := False;
+      N   : Item_Count := 0;
+      Off : Off_List   := [others => 0];
+      Len : Len_List   := [others => 1];
    end record;
 
-   function Open_Len (N : Rv_Count) return Positive is
-     (Open_Fixed + Rv_Frame_Len * N);
-
-   --  The start of frame I, relative to the message.
-   function Rv_At (I : Rv_Index) return Natural is
-     (Open_Fixed + Rv_Frame_Len * (I - 1));
-
-   --  B is a well-formed OPEN: tag, proto, n_rv <= Rv_Max and the length
-   --  that n_rv gives. Quantifier-free.
-   function Open_Wire_OK (B : Byte_Array) return Boolean is
-     (B'Last >= B'First
-      and then B'Last - B'First >= Open_Fixed - 1
-      and then B (B'First) = Tag_Open
-      and then B (B'First + Open_O_Proto) = Proto_Version
-      and then B (B'First + Open_O_NRV) <= Rv_Max
-      and then B'Last - B'First
-                 = Open_Fixed - 1 + Rv_Frame_Len * Natural (B (B'First + Open_O_NRV)));
-
-   procedure Encode_Open
-     (O   : Open_Msg;
-      Buf : out Msg_Buffer;
-      Len : out Msg_Length)
-   with
+   function Item_Places (Input : Byte_Array) return Places with
      Global => null,
-     Pre    => O.Proto = Proto_Version,
-     Post   => Len = Open_Len (O.N_RV) and then Len <= Open_Max_Len
-               and then Open_Wire_OK (Buf (0 .. Len - 1))
-               and then Wire_Id128 (Buf, Open_O_NS) = O.NS
-               and then Natural (Buf (Open_O_NRV)) = O.N_RV
-               and then (for all I in 1 .. O.N_RV =>
-                           Buf (Rv_At (I) .. Rv_At (I) + Rv_Frame_Len - 1) = O.RV (I));
-
-   --  Frame I of the well-formed OPEN B.
-   function Open_Frame (B : Byte_Array; I : Rv_Index) return Rv_Frame is
-     (B (B'First + Rv_At (I) .. B'First + (Rv_At (I) + (Rv_Frame_Len - 1))))
-   with Pre => Open_Wire_OK (B) and then I <= Natural (B (B'First + Open_O_NRV));
-
-   --  The frames of O are the frames of B, and the unused frames are zero.
-   --  This function has a quantifier, so its completion is in the private
-   --  part (rule 2). Lemma_Open_Frames gives its meaning.
-   function Open_Frames (B : Byte_Array; O : Open_Msg) return Boolean with
-     Global => null,
-     Pre    => Open_Wire_OK (B) and then O.N_RV = Natural (B (B'First + Open_O_NRV));
-
-   procedure Lemma_Open_Frames (B : Byte_Array; O : Open_Msg; I : Rv_Index) with
-     Ghost, Global => null,
-     Pre  => Open_Wire_OK (B) and then O.N_RV = Natural (B (B'First + Open_O_NRV))
-             and then Open_Frames (B, O),
-     Post => (if I <= O.N_RV then O.RV (I) = Open_Frame (B, I)
-              else O.RV (I) = Zero_Rv);
-
-   --  O is the OPEN that the well-formed B carries, canonically.
-   --  Quantifier-free (the frames are behind Open_Frames).
-   function Open_Decoded (B : Byte_Array; O : Open_Msg) return Boolean is
-     (O.Proto = Proto_Version
-      and then O.NS = Wire_Id128 (B, B'First + Open_O_NS)
-      and then O.N_RV = Natural (B (B'First + Open_O_NRV))
-      and then Open_Frames (B, O))
-   with Pre => Open_Wire_OK (B);
-
-   --  Decode_Open accepts exactly the well-formed OPENs (a wrong proto,
-   --  n_rv > Rv_Max or a length mismatch is Malformed). The fields that it
-   --  returns come from the wire, in canonical form.
-   procedure Decode_Open
-     (Input : Byte_Array;
-      O     : out Open_Msg;
-      OK    : out Boolean)
-   with
-     Global => null,
-     Post   => OK = Open_Wire_OK (Input)
-               and then (if OK then Open_Decoded (Input, O));
+     Post   => (if Item_Places'Result.OK then
+                  Input'Last >= Input'First
+                  and then Input'Last - Input'First >= Elems_Fixed - 1
+                  and then Item_Places'Result.N = Wire_U16 (Input, Input'First + Elems_O_N)
+                  and then
+                  (for all T in 1 .. Item_Places'Result.N =>
+                     Item_Places'Result.Off (T) >= Input'First
+                     and then Item_Places'Result.Off (T) <= Input'Last
+                     and then Input'Last - Item_Places'Result.Off (T)
+                                >= Item_Places'Result.Len (T) - 1))
+               and then (if Input'Last >= Input'First
+                           and then Input'Last - Input'First = Elems_Fixed - 1
+                           and then Wire_U16 (Input, Input'First + Elems_O_N) = 0
+                         then Item_Places'Result.OK and then Item_Places'Result.N = 0);
 
    ----------------------------------------------------------------------
-   --  The root-void set of an OPEN (AUDIT.md H5): for every root-voided
-   --  subject in F, one founding REVOKE of it, up to 15 subjects. The
-   --  founding REVOKEs are the REVOKEs of slot 1 of F (the founding key's
-   --  row; Kome.Views.Lemma_Root_Void_Slot), and their frames are the
-   --  entries of the authorization table at the same index (slot 1 is
-   --  first in the authorization rows: Off (F, 1) = 0). A candidate is a
-   --  slot-1 REVOKE whose table entry is a REVOKE frame (a caller duty;
-   --  Void_Candidate checks the shape, as a defence).
-   --
-   --  Select_Voids picks, for each subject of a candidate, the least
-   --  candidate of that subject in the order (from_t, h) (Lower_Eq): the
-   --  from_t = 0 one with the least h if the subject has one. It picks
-   --  the subjects in slot order, up to Rv_Max = 15 (N_Subj). Then, if
-   --  room is left, it adds every other candidate with from_t = 0 that is
-   --  not picked yet, in slot order, up to 15 frames (N). The frames of
-   --  the set do not depend on what else the sender holds.
-   ----------------------------------------------------------------------
-
-   subtype Slice_Pos is Positive range 1 .. Slice_Max;
-   type Pick_Array is array (Rv_Index) of Slice_Pos;
-
-   type Void_Set is record
-      N      : Rv_Count   := 0;                  --  frames
-      N_Subj : Rv_Count   := 0;                  --  the first N_Subj: one per subject
-      RV     : Rv_Array   := [others => [others => 0]];
-      Picked : Pick_Array := [others => 1];      --  the slot-1 index of each frame
-   end record;
-
-   --  (from_t, h) of A is at most that of B.
-   function Lower_Eq (A, B : Header) return Boolean is
-     (A.V.T < B.V.T
-      or else (A.V.T = B.V.T and then (Lt (A.V.H, B.V.H) or else A.V.H = B.V.H)));
-
-   function Void_Candidate
-     (F : Kome.Frontier.State; T : Frame_Table; J : Slice_Pos) return Boolean
-   is (J <= Kome.Frontier.Slot_Count (F, 1)
-       and then J <= Table_Count (T)
-       and then Kome.Frontier.Auth_Held (F, 1, J).K = K_Revoke
-       and then Kome.Records.Is_Revoke_Frame (Table_Frame (T, J)))
-   with Pre => Kome.Frontier.Slots_Used (F) >= 1 and then Table_Valid (T);
-
-   --  The subject of frame I of V (Zero_Key if the index is out of the
-   --  slot, so that the function is total).
-   function Void_Subject
-     (F : Kome.Frontier.State; V : Void_Set; I : Rv_Index) return Key256
-   is (if V.Picked (I) <= Kome.Frontier.Slot_Count (F, 1)
-       then Kome.Frontier.Auth_Held (F, 1, V.Picked (I)).V.Author
-       else Zero_Key)
-   with Pre => Kome.Frontier.Slots_Used (F) >= 1;
-
-   --  V is the set described above. This function has quantifiers, so
-   --  its completion is in the body. Lemma_Voids_OK_Def gives its meaning.
-   function Voids_OK
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set) return Boolean
-   with Global => null,
-        Pre => Kome.Frontier.Slots_Used (F) >= 1 and then Table_Valid (T);
-
-   procedure Lemma_Voids_OK_Def
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set)
-   with
-     Ghost, Global => null,
-     Pre  => Kome.Frontier.Slots_Used (F) >= 1 and then Table_Valid (T),
-     Post => Voids_OK (F, T, V) =
-       (V.N_Subj <= V.N
-        --  Each frame is the frame of a candidate.
-        and then (for all I in 1 .. V.N =>
-                    Void_Candidate (F, T, V.Picked (I))
-                    and then V.RV (I) = Table_Frame (T, V.Picked (I)))
-        --  The frames are distinct candidates.
-        and then (for all I in 1 .. V.N =>
-                    (for all I2 in 1 .. V.N =>
-                       (if I /= I2 then V.Picked (I) /= V.Picked (I2))))
-        --  The first N_Subj have distinct subjects, ...
-        and then (for all I in 1 .. V.N_Subj =>
-                    (for all I2 in 1 .. V.N_Subj =>
-                       (if I /= I2 then Void_Subject (F, V, I) /= Void_Subject (F, V, I2))))
-        --  ... each the least candidate of its subject, ...
-        and then (for all I in 1 .. V.N_Subj =>
-                    (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                       (if Void_Candidate (F, T, J)
-                          and then Kome.Frontier.Auth_Held (F, 1, J).V.Author
-                                     = Void_Subject (F, V, I)
-                        then V.Picked (I) <= Kome.Frontier.Slot_Count (F, 1)
-                             and then Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (I)),
-                                                Kome.Frontier.Auth_Held (F, 1, J)))))
-        --  ... and every subject of a candidate is among them, unless
-        --  they are 15.
-        and then (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                    (if Void_Candidate (F, T, J) then
-                       V.N_Subj = Rv_Max
-                       or else (for some I in 1 .. V.N_Subj =>
-                                  Void_Subject (F, V, I)
-                                    = Kome.Frontier.Auth_Held (F, 1, J).V.Author)))
-        --  The rest are from_t = 0 candidates, and if room is left, every
-        --  from_t = 0 candidate is in the set.
-        and then (for all I in V.N_Subj + 1 .. V.N =>
-                    V.Picked (I) <= Kome.Frontier.Slot_Count (F, 1)
-                    and then Kome.Frontier.Auth_Held (F, 1, V.Picked (I)).V.T = 0)
-        and then (if V.N < Rv_Max then
-                    (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                       (if Void_Candidate (F, T, J)
-                          and then Kome.Frontier.Auth_Held (F, 1, J).V.T = 0
-                        then (for some I in 1 .. V.N => V.Picked (I) = J)))));
-
-   function Select_Voids
-     (F : Kome.Frontier.State; T : Frame_Table) return Void_Set
-   with
-     Global => null,
-     Pre    => Kome.Frontier.Slots_Used (F) >= 1 and then Table_Valid (T),
-     Post   => Voids_OK (F, T, Select_Voids'Result);
-
-   --  The obligation of H5: for every root-voided subject K of F, the set
-   --  carries a founding REVOKE of K, unless it carries 15 subjects. The
-   --  hypothesis is the caller duty that every slot-1 REVOKE has a REVOKE
-   --  frame in T.
-   procedure Lemma_Voids_Cover
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set; K : Key256)
-   with
-     Ghost, Global => null,
-     Pre  => Kome.Frontier.Is_Frontier (F) and then Table_Valid (T)
-             and then Table_Count (T) >= Kome.Frontier.Slot_Count (F, 1)
-             and then Kome.Frontier.Slots_Used (F) >= 1
-             and then (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                         (if Kome.Frontier.Auth_Held (F, 1, J).K = K_Revoke
-                          then Kome.Records.Is_Revoke_Frame (Table_Frame (T, J))))
-             and then Voids_OK (F, T, V)
-             and then Kome.Views.Root_Void (F, K),
-     Post => V.N_Subj = Rv_Max
-             or else (for some I in 1 .. V.N_Subj => Void_Subject (F, V, I) = K);
-
-   ----------------------------------------------------------------------
-   --  HELLO (post-gate, D13). Canonical: cred bytes after Cred_Len are zero.
+   --  HELLO (post-handshake, D13). Canonical: cred bytes after Cred_Len
+   --  are zero.
    ----------------------------------------------------------------------
 
    subtype Cred_Count is Natural range 0 .. Cred_Max;
@@ -1505,7 +1313,6 @@ package Kome.Reconcile with SPARK_Mode is
 
    --  The cred bytes of H after Cred_Len are zero. This function has a
    --  quantifier, so its completion is in the private part (rule 2).
-   --  Lemma_Cred_Zero gives its meaning.
    function Cred_Canonical (H : Hello) return Boolean with
      Global => null;
 
@@ -1515,7 +1322,6 @@ package Kome.Reconcile with SPARK_Mode is
      Post => H.Cred (I) = 0;
 
    --  H is the HELLO that the well-formed B carries, canonically.
-   --  Quantifier-free (the zero tail is behind Cred_Canonical).
    function Hello_Decoded (B : Byte_Array; H : Hello) return Boolean is
      (H.N_Auth = Wire_U32 (B, B'First + Hello_O_NAuth)
       and then H.N_Data = Wire_U32 (B, B'First + Hello_O_NData)
@@ -1526,9 +1332,7 @@ package Kome.Reconcile with SPARK_Mode is
       and then Cred_Canonical (H))
    with Pre => Hello_Wire_OK (B);
 
-   --  Decode_Hello accepts exactly the well-formed HELLOs (cred_len >
-   --  Cred_Max or a length mismatch is Malformed). The fields that it
-   --  returns come from the wire, in canonical form.
+   --  Decode_Hello accepts exactly the well-formed HELLOs.
    procedure Decode_Hello
      (Input : Byte_Array;
       H     : out Hello;
@@ -1568,61 +1372,86 @@ package Kome.Reconcile with SPARK_Mode is
      (if W > Elem_Max then Elem_Max else Natural (W));
 
    ----------------------------------------------------------------------
-   --  Encode RANGE / ELEMENTS / HAVE. No message is longer than
-   --  Max_Message_Len bytes (T13, the bounds obligation, for messages):
-   --  Plan_OK bounds Plan_Len, and the length from Encode is Plan_Len.
+   --  ROOT (S19).
    ----------------------------------------------------------------------
 
-   --  G is the group size that goes with the plan (Group (Out_Box)). PS
-   --  is the prefix-sum table of S (a RANGE carries a fingerprint).
-   procedure Encode
-     (S   : Snapshot;
-      PS  : Prefix;
-      P   : Plan;
-      G   : Group_Size;
+   --  A ROOT to send: the count and fingerprint of the range of the phase.
+   type Root_Out is record
+      Send  : Boolean    := False;
+      Count : Elem_Count := 0;
+      Fp    : Hash256    := [others => 0];
+   end record;
+
+   No_Root : constant Root_Out := (others => <>);
+
+   procedure Encode_Root
+     (R   : Root_Out;
       Buf : out Msg_Buffer;
       Len : out Msg_Length)
    with
      Global => null,
-     Pre    => Valid (S) and then Sealed (S, PS) and then Plan_OK (S, P),
+     Post   => Len = Root_Len
+               and then Root_Wire_OK (Buf (0 .. Len - 1))
+               and then Wire_U48 (Buf, Root_O_Count) = U48 (R.Count)
+               and then Buf (Root_O_Fp .. Root_O_Fp + 31) = R.Fp;
+
+   --  The fingerprint of the union of two digest states (the HELLO
+   --  digest: the authorization and data states of the store, S21).
+   function Total_Fp (A, D : Kome.Digest.Digest_State) return Hash256 is
+     (Kome.Digest.Fp (Kome.Digest.Count (A) + Kome.Digest.Count (D),
+                      Kome.Accumulator.Add (Kome.Digest.Sum (A), Kome.Digest.Sum (D))))
+   with Pre => Kome.Digest.Count (A) + Kome.Digest.Count (D) <= Elem_Max;
+
+   ----------------------------------------------------------------------
+   --  Encode ELEMENTS / HAVE and RANGE. No message is longer than
+   --  Max_Message_Len bytes (T13, the bounds obligation, for messages).
+   ----------------------------------------------------------------------
+
+   --  One ELEMENTS or HAVE plan. T holds the frames (Linked).
+   procedure Encode
+     (S   : Snapshot;
+      T   : Frame_Table;
+      P   : Plan;
+      Buf : out Msg_Buffer;
+      Len : out Msg_Length)
+   with
+     Global => null,
+     Pre    => Valid (S) and then Table_Valid (T) and then Linked (S, T)
+               and then Plan_OK (S, P) and then P.Kind /= P_Range,
      Post   => Len = Plan_Len (S, P)
-               and then Buf (0) = Tag_Of (P.Kind)
-               and then Natural (Buf (O_G)) = G
+               and then Buf (0) = (if P.Kind = P_Elements then Tag_Elements else Tag_Have)
                and then Wire_Key (Buf, O_Lo) = P.Lo
                and then Wire_Key (Buf, O_Hi) = P.Hi
-               and then (case P.Kind is
-                           when P_Range =>
-                             Wire_U32 (Buf, Range_O_Count) = Word (P.Last + 1 - P.First)
-                             and then Buf (Range_O_Fp .. Range_O_Fp + 31)
-                                        = Range_Fp (S, P.First, P.Last),
-                           when P_Elements =>
-                             Natural (Buf (Elems_O_N)) = P.Last + 1 - P.First,
-                           when P_Have =>
-                             Natural (Buf (Elems_O_N)) = P.N);
+               and then Wire_U16 (Buf, Elems_O_N)
+                          = (if P.Kind = P_Elements then P.Last + 1 - P.First else P.N);
 
-   --  The round trip, for the shapes that Decode is proved to accept:
-   --  Decode accepts what Encode emits for a RANGE and for a confirm.
-   procedure Lemma_Range_Accepted
-     (S : Snapshot; P : Plan; G : Group_Size; Buf : Msg_Buffer)
+   --  The RANGE plans of O, which tile a range, as one RANGE message with
+   --  O.N parts. PS is the prefix-sum table of S (the parts carry
+   --  fingerprints).
+   procedure Encode_Ranges
+     (S   : Snapshot;
+      PS  : Prefix;
+      O   : Outbox;
+      Buf : out Msg_Buffer;
+      Len : out Msg_Length)
    with
-     Ghost, Global => null,
-     Pre  => Valid (S) and then Plan_OK (S, P) and then P.Kind = P_Range
-             and then Buf (0) = Tag_Range and then Natural (Buf (O_G)) = G
-             and then Wire_Key (Buf, O_Lo) = P.Lo
-             and then Wire_Key (Buf, O_Hi) = P.Hi
-             and then Wire_U32 (Buf, Range_O_Count) = Word (P.Last + 1 - P.First),
-     Post => Range_Wire_OK (Buf (0 .. Range_Len - 1));
+     Global => null,
+     Pre    => Valid (S) and then Sealed (S, PS) and then Outbox_OK (S, O)
+               and then O.N >= 1 and then All_Kind (O, P_Range)
+               and then Tiles (O, O.P (1).Lo, O.P (O.N).Hi),
+     Post   => Len = Range_Msg_Len (O.N)
+               and then Buf (0) = Tag_Range
+               and then Natural (Buf (Range_O_K)) = O.N;
 
-   procedure Lemma_Confirm_Accepted
-     (S : Snapshot; P : Plan; G : Group_Size; Buf : Msg_Buffer)
-   with
+   --  The round trip for the confirm: Decode accepts what Encode emits.
+   procedure Lemma_Confirm_Accepted (S : Snapshot; P : Plan; Buf : Msg_Buffer) with
      Ghost, Global => null,
      Pre  => Valid (S) and then Plan_OK (S, P) and then P.Kind = P_Have
              and then P.N = 0
-             and then Buf (0) = Tag_Have and then Natural (Buf (O_G)) = G
+             and then Buf (0) = Tag_Have
              and then Wire_Key (Buf, O_Lo) = P.Lo
              and then Wire_Key (Buf, O_Hi) = P.Hi
-             and then Natural (Buf (Elems_O_N)) = 0,
+             and then Wire_U16 (Buf, Elems_O_N) = 0,
      Post => Empty_Wire_OK (Buf (0 .. Elems_Fixed - 1));
 
    ----------------------------------------------------------------------
@@ -1650,32 +1479,29 @@ package Kome.Reconcile with SPARK_Mode is
                             Window (S, M.Lo, M.Hi).Last) = M.Fp)
    with Pre => Valid (S) and then Key_Lt (M.Lo, M.Hi);
 
-   --  O is the exact HAVE answer to M: HAVEs over [M.Lo, M.Hi) that offer
-   --  only our elements that M does not list, and that offer each such
-   --  element of ours in the range. This function has a quantifier, so its
-   --  completion is in the private part.
+   --  O is the exact HAVE answer to M: HAVEs that tile [M.Lo, M.Hi), that
+   --  offer only our elements that M does not list, and that offer each
+   --  such element of ours in the range. This function has a quantifier,
+   --  so its completion is in the private part.
    function Have_Exact (S : Snapshot; M : Message; O : Outbox) return Boolean with
      Global => null;
 
    --  Every RANGE in O is a sub-range of M's range, with strictly
-   --  fewer of our elements (the measure of T7). This function is ghost
-   --  and has a quantifier, so its completion is in the private part.
+   --  fewer of our elements (the measure of T7). Ghost, private part.
    function Shrinks (S : Snapshot; M : Message; O : Outbox) return Boolean with
      Ghost, Global => null,
      Pre => Valid (S) and then Key_Lt (M.Lo, M.Hi);
 
-   --  The reply contract (DESIGN.md §8 "Replies"). It is quantifier-free,
-   --  and it uses the quantified functions above:
-   --    RANGE, equal count and fingerprint: the confirm.
-   --    RANGE, in other cases: a reply group that tiles the range, with
-   --      every plan exact. If we hold at most Ship_Threshold in the range,
-   --      all plans are ELEMENTS. If not, all plans are RANGE children
-   --      (each strictly smaller, Shrinks).
+   --  The reply contract (DESIGN.md §8 "Replies"):
+   --    RANGE part or ROOT, equal count and fingerprint: the confirm.
+   --    RANGE part or ROOT, in other cases: plans that tile the range,
+   --      every plan exact; all ELEMENTS if we hold at most Ship_Threshold
+   --      in the range, else all RANGE children (each strictly smaller).
    --    ELEMENTS: the exact HAVE if we hold at most Ship_Threshold. If
    --      not, the exact split above.
    --    HAVE: no reply.
    function Answers (S : Snapshot; M : Message; O : Outbox) return Boolean is
-     ((if M.Kind = M_Have then O.N = 0 else O.N >= 1 and then O.Reply)
+     ((if M.Kind = M_Have then O.N = 0 else O.N >= 1)
       and then (if M.Kind = M_Range then
                   (if Confirms (S, M) then Is_Confirm (O, M.Lo, M.Hi)
                    else Tiles (O, M.Lo, M.Hi) and then Exact_Plans (S, O)
@@ -1689,8 +1515,7 @@ package Kome.Reconcile with SPARK_Mode is
                         and then All_Kind (O, P_Range))))
    with Ghost, Pre => Valid (S) and then Msg_OK (M);
 
-   --  Respond, as a function of the snapshot and the message (so a
-   --  contract can name the one reply that a message gets).
+   --  Respond, as a function of the snapshot and the message.
    type Reply is record
       Box : Outbox;
       Got : Delivery := No_Delivery;
@@ -1708,7 +1533,6 @@ package Kome.Reconcile with SPARK_Mode is
      Post   => Outbox_OK (S, Reply_Core'Result.Box)
        and then Delivers (S, M, Reply_Core'Result.Got)
        and then Answers (S, M, Reply_Core'Result.Box)
-       --  Well-founded split (the measure of T7).
        and then Shrinks (S, M, Reply_Core'Result.Box);
 
    function Reply_Of (S : Snapshot; M : Message) return Reply with
@@ -1738,7 +1562,6 @@ package Kome.Reconcile with SPARK_Mode is
        and then Outbox_OK (S, Out_Box)
        and then Delivers (S, M, Got)
        and then Answers (S, M, Out_Box)
-       --  Well-founded split (the measure of T7).
        and then Shrinks (S, M, Out_Box);
 
    ----------------------------------------------------------------------
@@ -1746,33 +1569,31 @@ package Kome.Reconcile with SPARK_Mode is
    ----------------------------------------------------------------------
 
    type Role  is (Initiator, Responder);
-   type Phase is (Await_Open, Gate, Auth, Data, Done);
+   type Phase is (Gate, Auth, Data, Done);
 
    Session_Msgs_Max : constant := 2 ** 29;
    subtype Msg_Counter is Natural range 0 .. Session_Msgs_Max;
 
-   --  In a session, an honest peer sends at most these messages:
-   --    * its OPEN and HELLO;
-   --    * in each phase, its root RANGE and one reply group (<= 16
-   --      messages) for each obligation that we send in that phase. (Each
-   --      phase holds at most N_ours of our elements and N_peer of its
-   --      elements.)
-   --  Our obligations in a phase are our RANGEs and our ELEMENTS. Our
-   --  RANGEs are <= 2 N_ours + 1: a laminar family of ranges with
+   --  In a session, an honest peer sends at most these logical messages
+   --  (a RANGE part counts as one):
+   --    * its HELLO;
+   --    * in each phase, its ROOT and one answer (<= 16 messages or parts)
+   --      for each obligation that we send in that phase.
+   --  Our obligations in a phase are our RANGE parts and our ELEMENTS.
+   --  Our RANGE parts are <= 2 N_ours + 1: a laminar family of ranges with
    --  distinct non-empty sets of our elements, plus the root. Our ELEMENTS
-   --  are <= 4 for each RANGE of the peer, so <= 4 (2 N_peer + 1). So one
-   --  phase costs at most
+   --  are <= 4 for each RANGE part of the peer, so <= 4 (2 N_peer + 1). So
+   --  one phase costs at most
    --  1 + 16 (2 N_ours + 1 + 4 (2 N_peer + 1)) = 128 N_peer + 32 N_ours + 81.
-   --  The session, over the two phases and OPEN and HELLO, costs at most
-   --  2 × (128 N_peer + 32 N_ours + 81) + 2.
+   --  The session costs at most 2 × (128 N_peer + 32 N_ours + 81) + 1.
    function Msg_Budget (Ours, Theirs : Elem_Count) return Msg_Counter is
-     (256 * Theirs + 64 * Ours + 164);
+     (256 * Theirs + 64 * Ours + 163);
 
-   --  Before the HELLO exchange: the OPEN and HELLO of the peer.
-   Pre_Gate_Budget : constant := 2;
+   --  Before the HELLO exchange: the HELLO of the peer.
+   Pre_Gate_Budget : constant := 1;
 
-   --  The RANGEs that we emit in replies, over the two phases (the count
-   --  does not include the roots). Each phase has at most 2 |S| + 2.
+   --  The RANGE parts that we emit in replies, over the two phases (the
+   --  count does not include the ROOTs). Each phase has at most 2 |S| + 2.
    Range_Max : constant := 2 * (2 * Elem_Max + 2);
    subtype Range_Counter is Natural range 0 .. Range_Max;
 
@@ -1780,41 +1601,27 @@ package Kome.Reconcile with SPARK_Mode is
      (2 * (2 * Count (S) + 2));
 
    --  The item bytes that we emit, over the two phases. Each phase has at
-   --  most 8 × (frame bytes + 85 |S|).
+   --  most 8 × (frame bytes + 2 |S|).
    Ship_Factor : constant := 2 * 8;
 
    function Ship_Budget (S : Snapshot) return Byte_Total is
-     (Ship_Factor * (Byte_Total (Frame_Bytes (S))
-                     + Item_Overhead * Byte_Total (Count (S))));
+     (Ship_Factor * (Frame_Bytes (S) + Item_Overhead * Byte_Total (Count (S))));
 
-   --  An open obligation: a range [Lo, Hi) that we asked about (a RANGE or
-   --  an ELEMENTS that we sent, or a root). Once the first message of its
-   --  reply group arrived (Started), the group's kind and size are fixed,
-   --  Got counts its messages, and Next is where the next message of a
-   --  tiling group (RANGE or ELEMENTS) starts.
+   --  An open obligation: a range [Lo, Hi) that we asked about (a RANGE
+   --  part or an ELEMENTS that we sent, or a ROOT). Next is where the next
+   --  message of its tiling answer starts (S19).
    type Oblig is record
-      Lo      : Elem_Key   := Min_Key;
-      Hi      : Elem_Key   := Max_Key;
-      Started : Boolean    := False;
-      Kind    : Msg_Kind   := M_Range;
-      G       : Group_Size := 0;
-      Got     : Out_Count  := 0;
-      Next    : Elem_Key   := Min_Key;
+      Lo   : Elem_Key := Min_Key;
+      Hi   : Elem_Key := Max_Key;
+      Next : Elem_Key := Min_Key;
    end record;
 
    function Fresh (Lo, Hi : Elem_Key) return Oblig is
-     ((Lo => Lo, Hi => Hi, Started => False, Kind => M_Range, G => 0, Got => 0,
-       Next => Lo));
+     ((Lo => Lo, Hi => Hi, Next => Lo));
 
-   --  The messages of the group after one more arrives.
-   function Got_After (H : Oblig) return Positive is
-     (if H.Started then H.Got + 1 else 1);
-
-   --  The head after the message M of its group (not the last one).
+   --  The head after the message M of its answer (not the last one).
    function Advanced (H : Oblig; M : Message) return Oblig is
-     ((Lo => H.Lo, Hi => H.Hi, Started => True, Kind => M.Kind, G => M.G,
-       Got => Got_After (H), Next => M.Hi))
-   with Pre => Got_After (H) <= Split_Fanout;
+     ((Lo => H.Lo, Hi => H.Hi, Next => M.Hi));
 
    Oblig_Max : constant := Range_Max;
    subtype Oblig_Count is Natural range 0 .. Oblig_Max;
@@ -1825,27 +1632,26 @@ package Kome.Reconcile with SPARK_Mode is
    --  head, and Q_Len the number of open obligations.
    type Session (Oblig_Cap : Oblig_Cap_Range) is record
       R               : Role          := Responder;
-      P               : Phase         := Await_Open;
-      NS              : Id128;                  --  our collection
+      P               : Phase         := Gate;
+      Cid             : Hash256       := [others => 0];  --  our collection
       Peer_DH         : Pubkey        := [others => 0];  --  the peer's Noise static key
-      Peer_Known      : Boolean       := False; --  Peer_DH is a member of a held roster
-      Our_Open        : Open_Msg;               --  our OPEN (ns, root revocations)
-      Aborted         : Boolean       := False; --  ended by a foreign ns, a bad
-                                                --  credential or a closed gate
+      Aborted         : Boolean       := False; --  ended by a bad credential
+                                                --  or a closed gate
       Hello_Sent      : Boolean       := False; --  Admit emitted our HELLO
       Peer_Hello_Seen : Boolean       := False; --  peer HELLO arrived
-      Auth_Root_Seen  : Boolean       := False; --  the authorization root went
+      Auth_Root_Seen  : Boolean       := False; --  the authorization ROOT went
                                                 --  out (initiator) / came in
                                                 --  (responder)
-      Gate_Gen        : U64           := 0;     --  Auth_Gen under which the gate held
-      Our_N           : Elem_Count    := 0;     --  |S| at Admit
-      Our_Digest      : Key256;                 --  digest of S at Admit
+      Our_N           : Elem_Count    := 0;     --  n_auth + n_data of our HELLO
+      Our_Digest      : Key256;                 --  digest of our HELLO
+      Our_Auth_N      : Elem_Count    := 0;     --  n_auth of our HELLO
+      Our_Auth_Fp     : Hash256       := [others => 0];  --  fp of our auth range
       Peer_Auth       : Elem_Count    := 0;     --  min (n_auth, Elem_Max)
       Peer_Data       : Elem_Count    := 0;     --  min (n_data, Elem_Max)
       Peer_Digest     : Key256;                 --  digest of the peer HELLO
       Msgs            : Msg_Counter   := 0;     --  messages accepted
       Budget          : Msg_Counter   := Pre_Gate_Budget;
-      Ranges          : Range_Counter := 0;     --  RANGEs we emitted in replies
+      Ranges          : Range_Counter := 0;     --  RANGE parts we emitted in replies
       Shipped         : Byte_Total    := 0;     --  item bytes we emitted
       Q               : Oblig_Array (1 .. Oblig_Cap);
       Q_Head          : Positive      := 1;
@@ -1870,15 +1676,9 @@ package Kome.Reconcile with SPARK_Mode is
      (Sess.Msgs <= Sess.Budget
       and then Sess.Q_Head <= Sess.Oblig_Cap
       and then Sess.Q_Len <= Sess.Oblig_Cap
-      and then Sess.Our_Open.Proto = Proto_Version
-      and then Sess.Our_Open.NS = Sess.NS
       and then (if Sess.Aborted then Sess.P = Done)
-      and then (if Sess.P in Await_Open | Gate then Sess.Budget = Pre_Gate_Budget)
+      and then (if Sess.P = Gate then Sess.Budget = Pre_Gate_Budget)
       and then (case Sess.P is
-                  when Await_Open =>
-                    Sess.Msgs = 0 and then not Sess.Hello_Sent
-                    and then not Sess.Peer_Hello_Seen
-                    and then not Sess.Auth_Root_Seen and then Sess.Q_Len = 0,
                   when Gate =>
                     not (Sess.Hello_Sent and then Sess.Peer_Hello_Seen)
                     and then not Sess.Auth_Root_Seen and then Sess.Q_Len = 0,
@@ -1890,9 +1690,7 @@ package Kome.Reconcile with SPARK_Mode is
                     and then Sess.Auth_Root_Seen,
                   when Done => True));
 
-   --  The session ended without abort (on an in-order transport, this is
-   --  exactly when it is over). Nothing is open then: a session is Done
-   --  only with an empty FIFO (equal digests, or the last reply).
+   --  The session ended without abort. Nothing is open then.
    function Complete (Sess : Session) return Boolean is
      (Sess.P = Done and then not Sess.Aborted);
 
@@ -1902,70 +1700,77 @@ package Kome.Reconcile with SPARK_Mode is
      (if Sess.Peer_Auth + Sess.Peer_Data > Elem_Max then Elem_Max
       else Sess.Peer_Auth + Sess.Peer_Data);
 
-   --  S is the snapshot that our HELLO described (its size and digest are
-   --  the values that Admit recorded). The caller gives the snapshot of
-   --  Admit to every later Receive and Next_Phase of the session.
+   --  S is the snapshot that our HELLO described: its size and digest are
+   --  the values that Admit sent (from the store's digest states). The
+   --  caller builds S when the session enters Auth and gives it to every
+   --  later Receive and Next_Phase.
    function Same_Snapshot (Sess : Session; S : Snapshot) return Boolean is
      (Count (S) = Sess.Our_N
       and then Sess.Our_Digest = Kome.Keys.To_Key256 (Range_Fp (S, 1, Count (S))))
    with Pre => Valid (S);
 
-   --  The g = 0 messages that the responder accepts (D14): (a) the
-   --  authorization root before it has one, or (b) the data root after the
-   --  authorization root, with nothing that it asked open. Exact bounds,
-   --  and RANGE only.
-   function Root_OK (Sess : Session; M : Message) return Boolean is
-     (Sess.R = Responder and then Sess.P = Auth and then M.Kind = M_Range
-      and then ((not Sess.Auth_Root_Seen
-                 and then M.Lo = Min_Key and then M.Hi = Data_Lo)
-                or else (Sess.Auth_Root_Seen and then Sess.Q_Len = 0
-                         and then M.Lo = Data_Lo and then M.Hi = Max_Key)));
+   --  The gate (S9): Eff is ROSTER_eff of F in the collection Cid, and
+   --  Kome.Guard admits the peer DH (the REVOKE-aware gate, not
+   --  quarantined).
+   function Gate_Open
+     (Cid : Hash256; F : Kome.Frontier.State; Eff : Kome.Records.Roster_Record;
+      DH : Pubkey) return Boolean
+   is (Kome.Views.Roster_Eff (F) = (Present => True, Hdr => Kome.Records.To_Header (Cid, Eff))
+       and then Kome.Guard.Admits (Cid, F, Eff, DH));
 
-   --  M (g >= 1) continues the reply group of the head obligation: the
-   --  first message starts at its lo; a later message has the group's g
-   --  and kind; a tiling group (RANGE, ELEMENTS) continues where the last
-   --  message ended and ends at hi exactly with its g-th message; a HAVE
-   --  group repeats [lo, hi).
+   --  The bounds of a ROOT, by phase: the authorization range for the
+   --  first, the data range for the second.
+   function Root_Lo (Sess : Session) return Elem_Key is
+     (if Sess.Auth_Root_Seen then Data_Lo else Min_Key);
+
+   function Root_Hi (Sess : Session) return Elem_Key is
+     (if Sess.Auth_Root_Seen then Max_Key else Data_Lo);
+
+   --  A decoded message with the bounds of a ROOT set by the phase.
+   function Bind (Sess : Session; M : Message) return Message is
+     (if M.Root then (M with delta Lo => Root_Lo (Sess), Hi => Root_Hi (Sess)) else M);
+
+   --  The ROOTs that the responder accepts (D14): the authorization ROOT
+   --  before it has one, or the data ROOT after it, with nothing that it
+   --  asked open.
+   function Root_OK (Sess : Session; M : Message) return Boolean is
+     (M.Root and then Sess.R = Responder and then Sess.P = Auth
+      and then (not Sess.Auth_Root_Seen or else Sess.Q_Len = 0));
+
+   --  M continues the tiling answer of the head obligation (S19): it
+   --  starts where the answer stands (Next) and ends at or before the
+   --  head's hi.
    function Matches_Head (Sess : Session; M : Message) return Boolean is
-     (Sess.Q_Len >= 1 and then M.G >= 1
-      and then Got_After (Open (Sess, 1)) <= M.G
-      and then (if Open (Sess, 1).Started then
-                  M.G = Open (Sess, 1).G and then M.Kind = Open (Sess, 1).Kind)
-      and then (if M.Kind = M_Have then
-                  M.Lo = Open (Sess, 1).Lo and then M.Hi = Open (Sess, 1).Hi
-                else
-                  M.Lo = (if Open (Sess, 1).Started then Open (Sess, 1).Next
-                          else Open (Sess, 1).Lo)
-                  and then (if Got_After (Open (Sess, 1)) = M.G
-                            then M.Hi = Open (Sess, 1).Hi
-                            else Key_Lt (M.Hi, Open (Sess, 1).Hi))))
+     (Sess.Q_Len >= 1
+      and then M.Lo = Open (Sess, 1).Next
+      and then Key_Le (M.Hi, Open (Sess, 1).Hi))
    with Pre => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap;
 
-   --  M is the last message of the head's group: the head leaves the FIFO.
+   --  M is the last message of the head's answer: the head leaves the
+   --  FIFO.
    function Group_Done (Sess : Session; M : Message) return Boolean is
-     (M.G /= 0 and then Matches_Head (Sess, M)
-      and then Got_After (Open (Sess, 1)) = M.G)
+     (not M.Root and then Matches_Head (Sess, M) and then M.Hi = Open (Sess, 1).Hi)
    with Pre => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap;
 
    --  The FIFO after the accepted message M with the reply O: the head
-   --  leaves if its group is done, or advances by M if the group goes on
-   --  (not for a root, g = 0); the rest keep their order; the obligations
-   --  of O (its RANGE and ELEMENTS plans, in plan order) are appended.
-   --  This function has quantifiers, so its completion is in the body.
+   --  leaves if its answer is done, or advances by M if it goes on (not
+   --  for a ROOT); the rest keep their order; the obligations of O (its
+   --  RANGE and ELEMENTS plans, in plan order) are appended. This function
+   --  has quantifiers, so its completion is in the body.
    --  Lemma_Queue_Step_Def gives its meaning.
    function Queue_Step (Old, Upd : Session; M : Message; O : Outbox) return Boolean with
      Ghost, Global => null,
      Pre => Old.Q_Head <= Old.Oblig_Cap and then Old.Q_Len <= Old.Oblig_Cap
             and then Upd.Q_Head <= Upd.Oblig_Cap and then Upd.Q_Len <= Upd.Oblig_Cap
             and then Upd.Oblig_Cap = Old.Oblig_Cap
-            and then (if M.G /= 0 then Matches_Head (Old, M));
+            and then (if not M.Root then Matches_Head (Old, M));
 
    procedure Lemma_Queue_Step_Def (Old, Upd : Session; M : Message; O : Outbox) with
      Ghost, Global => null,
      Pre  => Old.Q_Head <= Old.Oblig_Cap and then Old.Q_Len <= Old.Oblig_Cap
              and then Upd.Q_Head <= Upd.Oblig_Cap and then Upd.Q_Len <= Upd.Oblig_Cap
              and then Upd.Oblig_Cap = Old.Oblig_Cap
-             and then (if M.G /= 0 then Matches_Head (Old, M)),
+             and then (if not M.Root then Matches_Head (Old, M)),
      Post => Queue_Step (Old, Upd, M, O) =
        (declare
           Pop  : constant Natural := (if Group_Done (Old, M) then 1 else 0);
@@ -1974,7 +1779,7 @@ package Kome.Reconcile with SPARK_Mode is
           Upd.Q_Len = Base + Obligations (O)
           and then (for all K in 1 .. Base =>
                       Open (Upd, K) = (if Pop = 1 then Open (Old, K + 1)
-                                       elsif K = 1 and then M.G /= 0
+                                       elsif K = 1 and then not M.Root
                                        then Advanced (Open (Old, 1), M)
                                        else Open (Old, K)))
           and then (for all T in 1 .. O.N =>
@@ -1984,134 +1789,91 @@ package Kome.Reconcile with SPARK_Mode is
                               = Fresh (O.P (T).Lo, O.P (T).Hi))));
 
    --  The state when the two HELLOs have passed. If the digests are equal,
-   --  the session ends. If not, the phase is Auth, and the root RANGE of
-   --  the initiator over the authorization range is open.
-   function After_Hellos (S : Snapshot; Sess : Session; O : Outbox) return Boolean is
+   --  the session ends. If not, the phase is Auth, and the initiator's
+   --  authorization ROOT goes out (R) and is open.
+   function After_Hellos (Sess : Session; R : Root_Out) return Boolean is
      (Sess.Hello_Sent and then Sess.Peer_Hello_Seen
       and then Sess.Budget = Msg_Budget (Sess.Our_N, Peer_Claim (Sess))
       and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap
       and then (if Sess.Our_Digest = Sess.Peer_Digest then
-                  Sess.P = Done and then not Sess.Aborted and then O.N = 0
+                  Sess.P = Done and then not Sess.Aborted and then not R.Send
                   and then Sess.Q_Len = 0
                 elsif Sess.R = Initiator then
                   Sess.P = Auth and then Sess.Auth_Root_Seen
                   and then Sess.Q_Len = 1
                   and then Open (Sess, 1) = Fresh (Min_Key, Data_Lo)
-                  and then Is_Root (S, O, Min_Key, Data_Lo)
+                  and then R.Send and then R.Count = Sess.Our_Auth_N
+                  and then R.Fp = Sess.Our_Auth_Fp
                 else
                   Sess.P = Auth and then not Sess.Auth_Root_Seen
-                  and then Sess.Q_Len = 0 and then O.N = 0))
-   with Pre => Valid (S);
+                  and then Sess.Q_Len = 0 and then not R.Send));
 
-   --  Our OPEN as Buf (0 .. Len - 1): the ns and the frames of O (what
-   --  Encode_Open writes). This function has a quantifier (the frames),
-   --  so its completion is in the body. Lemma_Open_Written gives its
-   --  meaning.
-   function Open_Written (O : Open_Msg; Buf : Msg_Buffer; Len : Msg_Length)
-     return Boolean
-   with Global => null;
-
-   procedure Lemma_Open_Written (O : Open_Msg; Buf : Msg_Buffer; Len : Msg_Length) with
-     Ghost, Global => null,
-     Post => Open_Written (O, Buf, Len) =
-               (Len = Open_Len (O.N_RV)
-                and then Open_Wire_OK (Buf (0 .. Len - 1))
-                and then Wire_Id128 (Buf, Open_O_NS) = O.NS
-                and then Natural (Buf (Open_O_NRV)) = O.N_RV
-                and then (for all I in 1 .. O.N_RV =>
-                            Buf (Rv_At (I) .. Rv_At (I) + Rv_Frame_Len - 1) = O.RV (I)));
-
-   --  Start a session with the peer whose Noise static key is Peer_DH.
-   --  Auth_T is the table of our authorization frames (the frame of
-   --  Held (F, Data_Count (F) + I) at I). Our OPEN carries ns and, if
-   --  Peer_DH is a member dh_pk of some roster in Auth_T (Peer_Known,
-   --  A14), the root-void set Select_Voids (F, Auth_T) (H5); if not,
-   --  n_rv = 0. The initiator writes its OPEN to Buf (0 .. Len - 1). The
-   --  responder writes nothing (Len = 0): it answers the OPEN of the
-   --  initiator in Receive.
+   --  Start a session with the peer whose Noise static key is Peer_DH, in
+   --  the collection Cid (after the Noise XK handshake with Prologue
+   --  (Cid)). Nothing goes out: Admit sends our HELLO once the gate admits
+   --  the peer (the peer's HELLO credential may have to come first, S11).
    procedure Start
      (Sess    : out Session;
       As      : Role;
-      NS      : Id128;
-      Peer_DH : Pubkey;
-      F       : Kome.Frontier.State;
-      Auth_T  : Frame_Table;
-      Buf     : out Msg_Buffer;
-      Len     : out Msg_Length)
+      Cid     : Hash256;
+      Peer_DH : Pubkey)
    with
      Global => null,
-     Pre    => Kome.Frontier.Is_Frontier (F)
-               and then Kome.Frontier.Slots_Used (F) >= 1
-               and then Table_Valid (Auth_T),
-     Post   => Session_OK (Sess) and then Sess.R = As and then Sess.NS = NS
+     Post   => Session_OK (Sess) and then Sess.R = As and then Sess.Cid = Cid
                and then Sess.Peer_DH = Peer_DH
-               and then Sess.P = Await_Open and then not Sess.Aborted
+               and then Sess.P = Gate and then not Sess.Aborted
+               and then not Sess.Hello_Sent and then not Sess.Peer_Hello_Seen
                and then Sess.Msgs = 0 and then Sess.Q_Len = 0
                and then Sess.Budget = Pre_Gate_Budget
-               and then Sess.Ranges = 0 and then Sess.Shipped = 0
-               and then Sess.Gate_Gen = 0
-               and then Sess.Peer_Known = Lists_Peer (Auth_T, Peer_DH)
-               and then Sess.Our_Open.Proto = Proto_Version
-               and then Sess.Our_Open.NS = NS
-               and then (if Sess.Peer_Known then
-                           Sess.Our_Open.N_RV = Select_Voids (F, Auth_T).N
-                           and then Sess.Our_Open.RV = Select_Voids (F, Auth_T).RV
-                         else Sess.Our_Open.N_RV = 0)
-               and then (if As = Initiator then Open_Written (Sess.Our_Open, Buf, Len)
-                         else Len = 0);
+               and then Sess.Ranges = 0 and then Sess.Shipped = 0;
 
-   --  Our HELLO, when the gate admits the peer (the precondition, A13:
-   --  Kome.Guard.Admits with the guard state G, F, Eff = the record of
-   --  ROSTER_eff of F, and Peer_DH; H11: Gate_Gen := Auth_Gen). The HELLO
-   --  carries the counts of the two ranges, the digest of the full
-   --  snapshot and our credential. Admit writes it to Buf (0 .. Len - 1).
-   --  Send it before Out_Box. If the HELLO of the peer is already here,
-   --  the HELLO exchange is over (After_Hellos; the root RANGE of the
-   --  initiator is in Out_Box). Caller duty: the caller must take S after
-   --  it applies the OPEN of the peer (and its credential, if it came
-   --  first). S is the snapshot of the session.
+   --  Our HELLO, when the gate admits the peer (the precondition, A13,
+   --  S9). The HELLO carries the counts of the two digest states, the
+   --  fingerprint of their union and our credential (S21: no snapshot).
+   --  Admit writes it to Buf (0 .. Len - 1). Send it before Root. If the
+   --  HELLO of the peer is already here, the HELLO exchange is over
+   --  (After_Hellos; the initiator's ROOT is in Root).
    procedure Admit
      (Sess     : in out Session;
-      S        : Snapshot;
-      P        : Prefix;
       F        : Kome.Frontier.State;
-      G        : Kome.Guard.Guard_State;
       Eff      : Kome.Records.Roster_Record;
-      Auth_Gen : U64;
+      Auth     : Kome.Digest.Digest_State;
+      Data     : Kome.Digest.Digest_State;
       Cred     : Byte_Array;
       Buf      : out Msg_Buffer;
       Len      : out Msg_Length;
-      Out_Box  : out Outbox)
+      Root     : out Root_Out)
    with
      Global => null,
-     Pre    => Valid (S) and then Sealed (S, P) and then Session_OK (Sess)
+     Pre    => Session_OK (Sess)
                and then Sess.P = Gate and then not Sess.Hello_Sent
                and then Cred'Length <= Cred_Max
-               and then Kome.Views.Roster_Eff (F)
-                          = (Present => True, Hdr => Kome.Records.To_Header (Eff))
-               and then Kome.Guard.Admits (G, F, Eff, Sess.Peer_DH),
-     Post   => Session_OK (Sess) and then Outbox_OK (S, Out_Box)
+               and then Kome.Digest.Count (Auth) + Kome.Digest.Count (Data) <= Elem_Max
+               and then Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH),
+     Post   => Session_OK (Sess)
                and then Sess = (Sess'Old with delta
                                   Hello_Sent     => True,
-                                  Gate_Gen       => Auth_Gen,
                                   Our_N          => Sess.Our_N,
                                   Our_Digest     => Sess.Our_Digest,
+                                  Our_Auth_N     => Sess.Our_Auth_N,
+                                  Our_Auth_Fp    => Sess.Our_Auth_Fp,
                                   P              => Sess.P,
                                   Budget         => Sess.Budget,
                                   Q              => Sess.Q,
                                   Q_Len          => Sess.Q_Len,
                                   Auth_Root_Seen => Sess.Auth_Root_Seen)
-               and then Same_Snapshot (Sess, S)
-               and then Sess.Our_N = Count (S)
-               and then Sess.Our_Digest = Kome.Keys.To_Key256 (Range_Fp (S, 1, Count (S)))
+               and then Sess.Our_N = Kome.Digest.Count (Auth) + Kome.Digest.Count (Data)
+               and then Sess.Our_Digest = Kome.Keys.To_Key256 (Total_Fp (Auth, Data))
+               and then Sess.Our_Auth_N = Kome.Digest.Count (Auth)
+               and then Sess.Our_Auth_Fp = Kome.Digest.Fingerprint (Auth)
                and then Len = Hello_Fixed + Cred'Length and then Len <= Hello_Max_Len
                and then Hello_Wire_OK (Buf (0 .. Len - 1))
-               and then Wire_U32 (Buf, Hello_O_NAuth) = Word (My_Count (S, Min_Key, Data_Lo))
-               and then Wire_U32 (Buf, Hello_O_NData) = Word (My_Count (S, Data_Lo, Max_Key))
-               and then Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Range_Fp (S, 1, Count (S))
+               and then Wire_U32 (Buf, Hello_O_NAuth) = Word (Kome.Digest.Count (Auth))
+               and then Wire_U32 (Buf, Hello_O_NData) = Word (Kome.Digest.Count (Data))
+               and then Buf (Hello_O_Digest .. Hello_O_Digest + 31) = Total_Fp (Auth, Data)
                and then Buf (Hello_Fixed .. Len - 1) = Cred
-               and then (if Sess.Peer_Hello_Seen then After_Hellos (S, Sess, Out_Box)
-                         else Sess.P = Gate and then Out_Box.N = 0
+               and then (if Sess.Peer_Hello_Seen then After_Hellos (Sess, Root)
+                         else Sess.P = Gate and then not Root.Send
                               and then Sess.Budget = Sess'Old.Budget
                               and then Sess.Q_Len = 0);
 
@@ -2120,60 +1882,45 @@ package Kome.Reconcile with SPARK_Mode is
       S_Malformed,     --  the bytes are not a message
       S_Unexpected,    --  a message this phase or our open obligations do not accept
       S_Limit,         --  a session budget would be exceeded
-      S_Aborted);      --  the session is over (Done, Aborted): an OPEN for
-                       --  another collection, a HELLO with an inadmissible
-                       --  credential, or the gate failed under a new Auth_Gen
+      S_Aborted);      --  the session is over (Done, Aborted): a HELLO with an
+                       --  inadmissible credential, or the gate is closed
 
-   --  The gate holds for this call: Auth_Gen is the recorded generation,
-   --  or the gate admits the peer again (H11).
-   function Gate_Holds
-     (Sess : Session; F : Kome.Frontier.State; G : Kome.Guard.Guard_State;
-      Eff : Kome.Records.Roster_Record; Auth_Gen : U64) return Boolean
-   is (Auth_Gen = Sess.Gate_Gen
-       or else Kome.Guard.Admits (G, F, Eff, Sess.Peer_DH))
-   with Pre => (if Auth_Gen /= Sess.Gate_Gen then
-                  Kome.Views.Roster_Eff (F)
-                    = (Present => True, Hdr => Kome.Records.To_Header (Eff)));
-
-   --  The initiator, with nothing open in Auth: the data root RANGE, after
-   --  the gate check (H11). If the gate fails, the session aborts
+   --  The initiator, with nothing open in Auth: the data ROOT, after the
+   --  gate check (S9). If the gate is closed, the session aborts
    --  (S_Aborted) and nothing goes out.
    procedure Next_Phase
      (Sess     : in out Session;
       S        : Snapshot;
       P        : Prefix;
       F        : Kome.Frontier.State;
-      G        : Kome.Guard.Guard_State;
       Eff      : Kome.Records.Roster_Record;
-      Auth_Gen : U64;
-      Out_Box  : out Outbox;
+      Root     : out Root_Out;
       Result   : out Session_Status)
    with
      Global => null,
      Pre    => Valid (S) and then Sealed (S, P) and then Session_OK (Sess)
                and then Sess.R = Initiator and then Sess.P = Auth
-               and then Sess.Q_Len = 0 and then Same_Snapshot (Sess, S)
-               and then (if Auth_Gen /= Sess.Gate_Gen then
-                           Kome.Views.Roster_Eff (F)
-                             = (Present => True, Hdr => Kome.Records.To_Header (Eff))),
-     Post   => Session_OK (Sess) and then Outbox_OK (S, Out_Box)
+               and then Sess.Q_Len = 0 and then Same_Snapshot (Sess, S),
+     Post   => Session_OK (Sess)
                and then Result in S_OK | S_Aborted
-               and then (Result = S_OK) = Gate_Holds (Sess'Old, F, G, Eff, Auth_Gen)
+               and then (Result = S_OK) = Gate_Open (Sess'Old.Cid, F, Eff, Sess'Old.Peer_DH)
                and then (if Result = S_OK then
-                           Is_Root (S, Out_Box, Data_Lo, Max_Key)
+                           Root.Send
+                           and then Root.Count = My_Count (S, Data_Lo, Max_Key)
+                           and then Root.Fp = Range_Fp (S, Window (S, Data_Lo, Max_Key).First,
+                                                           Window (S, Data_Lo, Max_Key).Last)
                            and then Sess = (Sess'Old with delta
-                                              P => Data, Q => Sess.Q, Q_Len => 1,
-                                              Gate_Gen => Auth_Gen)
+                                              P => Data, Q => Sess.Q, Q_Len => 1)
                            and then Open (Sess, 1) = Fresh (Data_Lo, Max_Key)
                          else
-                           Out_Box.N = 0
+                           not Root.Send
                            and then Sess = (Sess'Old with delta P => Done, Aborted => True));
 
-   --  Receive can accept M: g = 0 only as the expected root (Root_OK). Any
-   --  other g only as the next message of the reply group of our head
+   --  Receive can accept M: a ROOT only as the expected one (Root_OK),
+   --  any other message only as the next tile of the answer to our head
    --  obligation (Matches_Head).
    function Root_Or_Owed (Sess : Session; M : Message) return Boolean is
-     (if M.G = 0 then Root_OK (Sess, M) else Matches_Head (Sess, M))
+     (if M.Root then Root_OK (Sess, M) else Matches_Head (Sess, M))
    with Pre => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap;
 
    --  The answer O to M stays within the budgets of the session, and its
@@ -2190,26 +1937,19 @@ package Kome.Reconcile with SPARK_Mode is
                and then Root_Or_Owed (Sess, M);
 
    --  The exact status that Receive returns, as a function of the session,
-   --  the snapshot, the frontier, the guard state, Eff, Auth_Gen and the
-   --  input. Every refusal has a characterisation, so a well-formed,
-   --  expected message within the budgets is accepted.
+   --  the snapshot, the frontier, Eff and the input (with its part and
+   --  item keys).
    function Status_Of
      (Sess     : Session;
       S        : Snapshot;
       F        : Kome.Frontier.State;
-      G        : Kome.Guard.Guard_State;
       Eff      : Kome.Records.Roster_Record;
-      Auth_Gen : U64;
-      Input    : Byte_Array) return Session_Status
+      Input    : Byte_Array;
+      Part     : Positive;
+      Keys     : Key_List) return Session_Status
    is
      (if Sess.P = Done then S_Unexpected
       elsif Input'Last < Input'First then S_Malformed
-      elsif Input (Input'First) = Tag_Open then
-        (if Sess.P /= Await_Open then S_Unexpected
-         elsif Sess.Msgs = Sess.Budget then S_Limit
-         elsif not Open_Wire_OK (Input) then S_Malformed
-         elsif Wire_Id128 (Input, Input'First + Open_O_NS) /= Sess.NS then S_Aborted
-         else S_OK)
       elsif Input (Input'First) = Tag_Hello then
         (if Sess.P /= Gate or else Sess.Peer_Hello_Seen then S_Unexpected
          elsif Sess.Msgs = Sess.Budget then S_Limit
@@ -2217,101 +1957,66 @@ package Kome.Reconcile with SPARK_Mode is
          elsif not Cred_Admissible (F, Sess.Peer_DH, Cred_Of (Input)) then S_Aborted
          else S_OK)
       elsif Sess.P not in Auth | Data then S_Unexpected
-      elsif not Gate_Holds (Sess, F, G, Eff, Auth_Gen) then S_Aborted
+      elsif not Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH) then S_Aborted
       elsif Sess.Msgs = Sess.Budget then S_Limit
-      elsif not Decode_Of (Input).OK then S_Malformed
-      elsif not Root_Or_Owed (Sess, Decode_Of (Input).M) then S_Unexpected
-      elsif not Within_Budgets (Sess, S, Decode_Of (Input).M,
-                                Reply_Of (S, Decode_Of (Input).M).Box)
+      elsif not Decode_Of (Input, Part, Keys).OK then S_Malformed
+      elsif not Root_Or_Owed (Sess, Bind (Sess, Decode_Of (Input, Part, Keys).M))
+      then S_Unexpected
+      elsif not Within_Budgets
+                  (Sess, S, Bind (Sess, Decode_Of (Input, Part, Keys).M),
+                   Reply_Of (S, Bind (Sess, Decode_Of (Input, Part, Keys).M)).Box)
       then S_Limit
       else S_OK)
    with Pre => Valid (S)
-               and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap
-               and then (if Auth_Gen /= Sess.Gate_Gen then
-                           Kome.Views.Roster_Eff (F)
-                             = (Present => True, Hdr => Kome.Records.To_Header (Eff)));
+               and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap;
 
-   --  Receive one message. The status is exactly Status_Of (the two halves
-   --  of every "iff": a foreign ns, an inadmissible credential or a closed
-   --  gate aborts, and a well-formed expected message within the budgets
-   --  is accepted). On S_Malformed, S_Unexpected and S_Limit, nothing
-   --  changes. Receive delivers and offers elements only in Auth and Data,
-   --  and only the HELLO exchange gets to these phases. Receive accepts
-   --  g = 0 only as the expected root with exact bounds (Root_OK), and
-   --  g >= 1 only as the next message of the head obligation's group
-   --  (Matches_Head). M is the decoded message (Decode_Of (Input)), and
-   --  the reply is Reply_Of (S, M). Open is the decoded OPEN and Peer is
-   --  the decoded HELLO, each from the wire (for the content checks of the
-   --  caller, see the header); Peer is Empty_Hello when the HELLO is
-   --  refused (its credential is not returned). The responder answers an
-   --  accepted OPEN with its own OPEN in Open_Buf (0 .. Open_Bytes - 1),
-   --  to send before anything else (A14); in every other case
-   --  Open_Bytes = 0.
+   --  Receive one logical message: Input with its part (for a RANGE, the
+   --  part 1 .. k; else 1) and the item keys that the caller derived from
+   --  the frames (Item_Places). The status is exactly Status_Of. On
+   --  S_Malformed, S_Unexpected and S_Limit, nothing changes. Receive
+   --  delivers and offers elements only in Auth and Data, and only the
+   --  HELLO exchange gets to these phases. M is the decoded message with
+   --  the bounds of a ROOT set by the phase (Bind), and the reply is
+   --  Reply_Of (S, M). Peer is the decoded HELLO, from the wire; it is
+   --  Empty_Hello when the HELLO is refused (its credential is not
+   --  returned). Root is the initiator's authorization ROOT when this
+   --  HELLO completes the exchange.
    procedure Receive
      (Sess       : in out Session;
       S          : Snapshot;
       P          : Prefix;
       F          : Kome.Frontier.State;
-      G          : Kome.Guard.Guard_State;
       Eff        : Kome.Records.Roster_Record;
-      Auth_Gen   : U64;
       Input      : Byte_Array;
+      Part       : Positive;
+      Keys       : Key_List;
       M          : out Message;
-      Open       : out Open_Msg;
       Peer       : out Hello;
       Out_Box    : out Outbox;
       Got        : out Delivery;
-      Open_Buf   : out Msg_Buffer;
-      Open_Bytes : out Msg_Length;
+      Root       : out Root_Out;
       Result     : out Session_Status)
    with
      Global => null,
      Pre    => Valid (S) and then Session_OK (Sess)
-               and then (if Sess.Hello_Sent then Same_Snapshot (Sess, S) and then Sealed (S, P))
-               and then (if Auth_Gen /= Sess.Gate_Gen then
-                           Kome.Views.Roster_Eff (F)
-                             = (Present => True, Hdr => Kome.Records.To_Header (Eff))),
+               and then (if Sess.P in Auth | Data then Same_Snapshot (Sess, S)
+                                                       and then Sealed (S, P)),
      Post   => Session_OK (Sess)
-       and then Result = Status_Of (Sess'Old, S, F, G, Eff, Auth_Gen, Input)
-       and then Sess.R = Sess'Old.R and then Sess.NS = Sess'Old.NS
+       and then Result = Status_Of (Sess'Old, S, F, Eff, Input, Part, Keys)
+       and then Sess.R = Sess'Old.R and then Sess.Cid = Sess'Old.Cid
        and then Sess.Peer_DH = Sess'Old.Peer_DH
-       and then Sess.Peer_Known = Sess'Old.Peer_Known
-       and then Sess.Our_Open = Sess'Old.Our_Open
        and then Sess.Our_N = Sess'Old.Our_N
        and then Sess.Our_Digest = Sess'Old.Our_Digest
        and then Outbox_OK (S, Out_Box)
        and then (if Result in S_Malformed | S_Unexpected | S_Limit then
-                   Sess = Sess'Old and then Out_Box.N = 0 and then Got = No_Delivery)
+                   Sess = Sess'Old and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send)
        and then (if Sess'Old.P = Done then Result = S_Unexpected)
        and then (if Result = S_OK then
                    Sess.Msgs = Sess'Old.Msgs + 1 and then not Sess.Aborted)
-       --  Our OPEN goes out only as the responder's answer to the OPEN.
-       and then (if Result = S_OK and then Sess'Old.P = Await_Open
-                   and then Sess.R = Responder
-                 then Open_Written (Sess.Our_Open, Open_Buf, Open_Bytes)
-                 else Open_Bytes = 0)
-       --  g = 0 iff the expected root. Receive never refuses a decoded
-       --  g = 0 RANGE that Root_OK admits as unexpected (only a budget can
-       --  refuse it). An accepted g = 0 is Root_OK (below).
-       and then (if Result = S_Unexpected and then Sess'Old.P in Auth | Data
-                   and then M.Kind = M_Range and then M.G = 0
-                 then not Root_OK (Sess'Old, M))
        --  Elements only in Auth and Data.
        and then (if Result = S_OK and then M.Kind in M_Range | M_Elements | M_Have
                  then Sess'Old.P in Auth | Data)
-       --  The OPEN: a foreign ns aborts. If not, the phase is Gate.
-       and then (if Result = S_Aborted and then Sess'Old.P = Await_Open then
-                   M.Kind = M_Open
-                   and then Open_Wire_OK (Input) and then Open_Decoded (Input, Open)
-                   and then Open.NS /= Sess'Old.NS
-                   and then Sess = (Sess'Old with delta P => Done, Aborted => True)
-                   and then Out_Box.N = 0 and then Got = No_Delivery)
-       and then (if Result = S_OK and then Sess'Old.P = Await_Open then
-                   M.Kind = M_Open and then Open.NS = Sess.NS
-                   and then Open_Wire_OK (Input) and then Open_Decoded (Input, Open)
-                   and then Sess = (Sess'Old with delta P => Gate,
-                                                        Msgs => Sess'Old.Msgs + 1)
-                   and then Out_Box.N = 0 and then Got = No_Delivery)
        --  The HELLO, once, in the gate: an inadmissible credential aborts
        --  (A13, G12), and the credential is not returned.
        and then (if Result = S_Aborted and then Sess'Old.P = Gate then
@@ -2320,7 +2025,8 @@ package Kome.Reconcile with SPARK_Mode is
                    and then not Cred_Admissible (F, Sess'Old.Peer_DH, Cred_Of (Input))
                    and then Peer = Empty_Hello
                    and then Sess = (Sess'Old with delta P => Done, Aborted => True)
-                   and then Out_Box.N = 0 and then Got = No_Delivery)
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send)
        and then (if Result = S_OK and then Sess'Old.P = Gate then
                    M.Kind = M_Hello and then not Sess'Old.Peer_Hello_Seen
                    and then Hello_Wire_OK (Input) and then Hello_Decoded (Input, Peer)
@@ -2339,30 +2045,29 @@ package Kome.Reconcile with SPARK_Mode is
                    and then Sess.Peer_Digest = Kome.Keys.To_Key256 (Peer.Digest)
                    and then Sess.Peer_Auth = Claim (Peer.N_Auth)
                    and then Sess.Peer_Data = Claim (Peer.N_Data)
-                   and then Got = No_Delivery
-                   and then (if Sess.Hello_Sent then After_Hellos (S, Sess, Out_Box)
-                             else Sess.P = Gate and then Out_Box.N = 0
+                   and then Got = No_Delivery and then Out_Box.N = 0
+                   and then (if Sess.Hello_Sent then After_Hellos (Sess, Root)
+                             else Sess.P = Gate and then not Root.Send
                                   and then Sess.Budget = Sess'Old.Budget
                                   and then Sess.Q_Len = 0))
-       --  The gate again (H11): a closed gate under a new Auth_Gen aborts.
+       --  The gate (S9): a closed gate in Auth or Data aborts.
        and then (if Result = S_Aborted and then Sess'Old.P in Auth | Data then
-                   Auth_Gen /= Sess'Old.Gate_Gen
-                   and then not Kome.Guard.Admits (G, F, Eff, Sess'Old.Peer_DH)
+                   not Gate_Open (Sess'Old.Cid, F, Eff, Sess'Old.Peer_DH)
                    and then Sess = (Sess'Old with delta P => Done, Aborted => True)
-                   and then Out_Box.N = 0 and then Got = No_Delivery)
-       --  RANGE / ELEMENTS / HAVE in Auth or Data: the answer is the
-       --  answer of Respond, within the budgets. g = 0 only as the
-       --  expected root, g >= 1 only as the head's group; the gate held
-       --  under Auth_Gen, now the recorded generation.
+                   and then Out_Box.N = 0 and then Got = No_Delivery
+                   and then not Root.Send)
+       --  RANGE part / ROOT / ELEMENTS / HAVE in Auth or Data: the answer
+       --  is the answer of Respond, within the budgets. A ROOT only as the
+       --  expected one, any other message only as the head's next tile;
+       --  the gate was open.
        and then (if Result = S_OK and then Sess'Old.P in Auth | Data then
                    M.Kind in M_Range | M_Elements | M_Have
-                   and then M = Decode_Of (Input).M
-                   and then Decode_Facts (Input, M, True)
-                   and then Msg_OK (M) and then Msg_In (M, Input)
+                   and then not Root.Send
+                   and then M = Bind (Sess'Old, Decode_Of (Input, Part, Keys).M)
+                   and then Decode_Facts (Input, Part, Keys, Decode_Of (Input, Part, Keys).M, True)
+                   and then Msg_OK (M)
                    and then Root_Or_Owed (Sess'Old, M)
-                   and then (if M.G = 0 then Root_OK (Sess'Old, M))
-                   and then Gate_Holds (Sess'Old, F, G, Eff, Auth_Gen)
-                   and then Sess.Gate_Gen = Auth_Gen
+                   and then Gate_Open (Sess'Old.Cid, F, Eff, Sess'Old.Peer_DH)
                    and then Out_Box = Reply_Of (S, M).Box
                    and then Got = Reply_Of (S, M).Got
                    and then Delivers (S, M, Got)
@@ -2377,16 +2082,15 @@ package Kome.Reconcile with SPARK_Mode is
                               - (if Group_Done (Sess'Old, M) then 1 else 0)
                               + Obligations (Out_Box)
                    and then Queue_Step (Sess'Old, Sess, M, Out_Box)
-                   and then Sess.Auth_Root_Seen = (Sess'Old.Auth_Root_Seen or else M.G = 0)
+                   and then Sess.Auth_Root_Seen = (Sess'Old.Auth_Root_Seen or else M.Root)
                    and then Sess.P =
                               (if Sess'Old.P = Data
-                                 or else (M.G = 0 and then Sess'Old.Auth_Root_Seen)
+                                 or else (M.Root and then Sess'Old.Auth_Root_Seen)
                                then (if Sess.Q_Len = 0 then Done else Data)
                                else Auth)
                    and then Sess = (Sess'Old with delta
                                       Msgs           => Sess'Old.Msgs + 1,
                                       P              => Sess.P,
-                                      Gate_Gen       => Auth_Gen,
                                       Q              => Sess.Q,
                                       Q_Head         => Sess.Q_Head,
                                       Q_Len          => Sess.Q_Len,
@@ -2396,11 +2100,20 @@ package Kome.Reconcile with SPARK_Mode is
 
 private
 
-   type Kind_Array is array (Elem_Index range <>) of Kind_Code;
-   type Id_Array   is array (Elem_Index range <>) of Id128;
+   --  The key fields other than h, the frame length and the source of one
+   --  element (a record of scalars and word records: logical equality).
+   type Meta is record
+      K   : Kind_Code  := 0;
+      Ent : Id128;
+      Sub : Kind_Code  := 0;
+      FH  : Key256;
+      Len : Frame_Size := 1;
+      Src : Elem_Index := 1;
+   end record;
+
+   type Meta_Array is array (Elem_Index range <>) of Meta;
    type Pos_Array  is array (Elem_Index range <>) of Positive;
    type Len_Array  is array (Elem_Index range <>) of Frame_Size;
-   type Src_Array  is array (Elem_Index range <>) of Elem_Index;
 
    type Frame_Table (Cap : Elem_Count; Pool_Cap : Pool_Size) is record
       N    : Elem_Count := 0;
@@ -2429,20 +2142,13 @@ private
    function Table_Frame (T : Frame_Table; I : Elem_Index) return Byte_Array is
      (T.Pool (T.Offs (I) .. T.Offs (I) + T.Lens (I) - 1));
 
-   type Snapshot (Cap : Elem_Count; Pool_Cap : Pool_Size) is record
-      N     : Elem_Count := 0;
-      Used  : Pool_Size  := 0;
-      Kinds : Kind_Array (1 .. Cap) := [others => 0];
-      Ents  : Id_Array (1 .. Cap)   := [others => (others => 0)];
-      FHs   : Kome.Digest.Hash_Array (1 .. Cap) := [others => (others => 0)];
-      Hs    : Kome.Digest.Hash_Array (1 .. Cap) := [others => (others => 0)];
-      Offs  : Pos_Array (1 .. Cap)  := [others => 1];
-      Lens  : Len_Array (1 .. Cap)  := [others => 1];
-      Src   : Src_Array (1 .. Cap)  := [others => 1];
-      Pool  : Byte_Array (1 .. Pool_Cap) := [others => 0];
+   type Snapshot (Cap : Elem_Count) is record
+      N    : Elem_Count := 0;
+      Used : Snap_Bytes := 0;
+      E    : Meta_Array (1 .. Cap) := [others => (others => <>)];
+      Hs   : Kome.Digest.Hash_Array (1 .. Cap) := [others => (others => 0)];
    end record
-   with Dynamic_Predicate => Snapshot.N <= Snapshot.Cap
-                             and then Snapshot.Used <= Snapshot.Pool_Cap;
+   with Dynamic_Predicate => Snapshot.N <= Snapshot.Cap;
 
    type Prefix (Slots : Kome.Digest.Block_Index) is record
       A : Kome.Digest.Acc_Array (1 .. Slots) := [others => Kome.Accumulator.Zero];
@@ -2450,35 +2156,33 @@ private
 
    function Count (S : Snapshot) return Elem_Count is (S.N);
 
-   function Frame_Bytes (S : Snapshot) return Pool_Size is (S.Used);
+   function Frame_Bytes (S : Snapshot) return Snap_Bytes is (S.Used);
 
    function Key (S : Snapshot; I : Elem_Index) return Elem_Key is
-     ((K => S.Kinds (I), Ent => S.Ents (I), FH => S.FHs (I), H => S.Hs (I)));
+     ((K => S.E (I).K, Ent => S.E (I).Ent, Sub => S.E (I).Sub, FH => S.E (I).FH,
+       H => S.Hs (I)));
 
    function Frame_Len (S : Snapshot; I : Elem_Index) return Frame_Size is
-     (S.Lens (I));
+     (S.E (I).Len);
 
    function Source (S : Snapshot; I : Elem_Index) return Elem_Index is
-     (S.Src (I));
-
-   function Frame (S : Snapshot; I : Elem_Index) return Byte_Array is
-     (S.Pool (S.Offs (I) .. S.Offs (I) + S.Lens (I) - 1));
-
-   function Frame_In_Pool (S : Snapshot; I : Elem_Index) return Boolean is
-     (S.Offs (I) <= S.Used and then S.Lens (I) - 1 <= S.Used - S.Offs (I))
-   with Pre => I <= S.Cap;
+     (S.E (I).Src);
 
    function Valid (S : Snapshot) return Boolean is
-     ((for all I in 1 .. S.N => S.Kinds (I) <= 4 and then Frame_In_Pool (S, I))
+     (S.Used <= Byte_Total (S.N) * Frame_Ship_Max
       and then (for all I in 1 .. S.N =>
                   (for all J in I + 1 .. S.N => Key_Lt (Key (S, I), Key (S, J)))));
+
+   function Linked (S : Snapshot; T : Frame_Table) return Boolean is
+     (for all I in 1 .. S.N =>
+        S.E (I).Src <= T.N and then T.Lens (S.E (I).Src) = S.E (I).Len);
+
+   function Elem_Frame (S : Snapshot; T : Frame_Table; I : Elem_Index) return Byte_Array is
+     (Table_Frame (T, S.E (I).Src));
 
    function Sealed (S : Snapshot; P : Prefix) return Boolean is
      (P.Slots = Prefix_Slots (S.N)
       and then Kome.Digest.Prefix_Valid (S.Hs (1 .. S.N), P.A));
-
-   function Has_Room (S : Snapshot; L : Natural) return Boolean is
-     (L <= S.Pool_Cap - S.Used);
 
    function Covers
      (S : Snapshot; Lo, Hi : Elem_Key; First : Lo_Bound; Last : Elem_Count)
@@ -2524,10 +2228,6 @@ private
       and then O.P (O.N).Hi = Hi
       and then (for all T in 2 .. O.N => O.P (T - 1).Hi = O.P (T).Lo));
 
-   function Open_Frames (B : Byte_Array; O : Open_Msg) return Boolean is
-     ((for all I in 1 .. O.N_RV => O.RV (I) = Open_Frame (B, I))
-      and then (for all I in O.N_RV + 1 .. Rv_Max => O.RV (I) = Zero_Rv));
-
    function Cred_Canonical (H : Hello) return Boolean is
      (for all I in H.Cred_Len .. Cred_Max - 1 => H.Cred (I) = 0);
 
@@ -2558,9 +2258,8 @@ private
      (M.Kind in M_Range | M_Elements | M_Have
       and then Key_Lt (M.Lo, M.Hi)
       and then (if M.Kind = M_Range then M.N = 0)
-      and then (for all T in 1 .. M.N =>
-                  M.Items (T).Key.K <= 4
-                  and then In_Window (M.Items (T).Key, M.Lo, M.Hi))
+      and then (if M.Root then M.Kind = M_Range)
+      and then (for all T in 1 .. M.N => In_Window (M.Items (T).Key, M.Lo, M.Hi))
       and then (for all T in 2 .. M.N =>
                   Key_Lt (M.Items (T - 1).Key, M.Items (T).Key)));
 
@@ -2569,6 +2268,9 @@ private
         M.Items (T).Off >= Input'First
         and then M.Items (T).Off <= Input'Last
         and then Input'Last - M.Items (T).Off >= M.Items (T).Len - 1);
+
+   function Keys_Given (M : Message; Keys : Key_List) return Boolean is
+     (for all T in 1 .. M.N => M.Items (T).Key = Keys (T));
 
    function Held (S : Snapshot; K : Elem_Key) return Boolean is
      (for some I in 1 .. S.N => Key (S, I) = K);
@@ -2587,12 +2289,12 @@ private
         (for some U in 1 .. O.P (T).N => O.P (T).Items (U) = K));
 
    function Have_Exact (S : Snapshot; M : Message; O : Outbox) return Boolean is
-     ((for all T in 1 .. O.N =>
-         O.P (T).Kind = P_Have
-         and then O.P (T).Lo = M.Lo and then O.P (T).Hi = M.Hi
-         and then (for all U in 1 .. O.P (T).N =>
-                     O.P (T).Items (U) <= S.N
-                     and then not In_Msg (M, Key (S, O.P (T).Items (U)))))
+     (Tiles (O, M.Lo, M.Hi)
+      and then (for all T in 1 .. O.N =>
+                  O.P (T).Kind = P_Have
+                  and then (for all U in 1 .. O.P (T).N =>
+                              O.P (T).Items (U) <= S.N
+                              and then not In_Msg (M, Key (S, O.P (T).Items (U)))))
       and then (for all K in 1 .. S.N =>
                   (if In_Window (Key (S, K), M.Lo, M.Hi)
                      and then not In_Msg (M, Key (S, K))

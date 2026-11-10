@@ -2,7 +2,6 @@ pragma Ada_2022;
 with Kome.Accumulator; use Kome.Accumulator;
 package body Kome.Reconcile with SPARK_Mode is
 
-
    --  Proof style (CONVENTIONS.md): assertions use the public view (Count,
    --  Key, Frame_Len). The body asserts each quantified fact at the point
    --  where the provers need it. Where an ordering lemma is necessary, it
@@ -29,6 +28,10 @@ package body Kome.Reconcile with SPARK_Mode is
       end if;
    end Lemma_Key_Le_Lt_Trans;
 
+   procedure Lemma_Data_Key_Order (A, B : Header) is null;
+
+   procedure Lemma_Key_Ranges (R : Header) is null;
+
    --  Transitivity of "=" on Acc (as in the body of Kome.Digest): Ada "="
    --  on Acc is element-wise, so the prover does not always chain two
    --  equalities by itself.
@@ -44,35 +47,35 @@ package body Kome.Reconcile with SPARK_Mode is
    end Lemma_Acc_Eq_Trans;
 
    ----------------------------------------------------------------------
-   --  Key_Lt is bytewise order on the wire key. The 81 bytes are kind ‖
-   --  ent[16] ‖ fh[32] ‖ h[32]. Kome.Keys decodes each field (Wire_Id128 /
-   --  Wire_Key256 are To_Id128 / To_Key256 of the slice). The Id128 and
-   --  Key256 laws of Kome.Keys give the field orders. Key_Lt is their
-   --  lexicographic composition.
+   --  Key_Lt is bytewise order on the wire key. The 82 bytes are tag ‖
+   --  ent[16] ‖ sub ‖ fh[32] ‖ h[32]. Kome.Keys decodes each word field
+   --  (Wire_Id128 / Wire_Key256 are To_Id128 / To_Key256 of the slice).
+   --  The Id128 and Key256 laws of Kome.Keys give the field orders.
+   --  Key_Lt is their lexicographic composition with the two bytes.
    ----------------------------------------------------------------------
 
-   --  The three fields of a wire key, as the Kome.Keys byte views.
+   --  The three word fields of a wire key, as the Kome.Keys byte views.
    procedure Lemma_Fields (A : Key_Wire) with
      Ghost, Global => null,
      Post => Wire_Id128 (A, 1) = Kome.Keys.To_Id128 (Kome.Keys.Id_Bytes (A (1 .. 16)))
-             and then Wire_Key256 (A, 17)
-                        = Kome.Keys.To_Key256 (Kome.Keys.Key_Bytes (A (17 .. 48)))
-             and then Wire_Key256 (A, 49)
-                        = Kome.Keys.To_Key256 (Kome.Keys.Key_Bytes (A (49 .. 80)))
+             and then Wire_Key256 (A, 18)
+                        = Kome.Keys.To_Key256 (Kome.Keys.Key_Bytes (A (18 .. 49)))
+             and then Wire_Key256 (A, 50)
+                        = Kome.Keys.To_Key256 (Kome.Keys.Key_Bytes (A (50 .. 81)))
              and then (for all J in Kome.Keys.Id_Index =>
                          Kome.Keys.Id_Bytes (A (1 .. 16)) (J) = A (1 + J))
              and then (for all J in Kome.Keys.Key_Index =>
-                         Kome.Keys.Key_Bytes (A (17 .. 48)) (J) = A (17 + J))
+                         Kome.Keys.Key_Bytes (A (18 .. 49)) (J) = A (18 + J))
              and then (for all J in Kome.Keys.Key_Index =>
-                         Kome.Keys.Key_Bytes (A (49 .. 80)) (J) = A (49 + J))
+                         Kome.Keys.Key_Bytes (A (50 .. 81)) (J) = A (50 + J))
    is
    begin
       Kome.Keys.Lemma_Id_Slide (A (1 .. 16));
-      Kome.Keys.Lemma_Key_Slide (A (17 .. 48));
-      Kome.Keys.Lemma_Key_Slide (A (49 .. 80));
+      Kome.Keys.Lemma_Key_Slide (A (18 .. 49));
+      Kome.Keys.Lemma_Key_Slide (A (50 .. 81));
       pragma Assert (Wire_Id128 (A, 1) = Kome.Keys.To_Id128 (A (1 .. 16)));
-      pragma Assert (Wire_Key256 (A, 17) = Kome.Keys.To_Key256 (A (17 .. 48)));
-      pragma Assert (Wire_Key256 (A, 49) = Kome.Keys.To_Key256 (A (49 .. 80)));
+      pragma Assert (Wire_Key256 (A, 18) = Kome.Keys.To_Key256 (A (18 .. 49)));
+      pragma Assert (Wire_Key256 (A, 50) = Kome.Keys.To_Key256 (A (50 .. 81)));
    end Lemma_Fields;
 
    procedure Lemma_Key_Eq_Is_Bytewise (A, B : Key_Wire) is
@@ -82,17 +85,18 @@ package body Kome.Reconcile with SPARK_Mode is
       Kome.Keys.Lemma_Id_Eq_Is_Bytewise
         (Kome.Keys.Id_Bytes (A (1 .. 16)), Kome.Keys.Id_Bytes (B (1 .. 16)));
       Kome.Keys.Lemma_Key_Eq_Is_Bytewise
-        (Kome.Keys.Key_Bytes (A (17 .. 48)), Kome.Keys.Key_Bytes (B (17 .. 48)));
+        (Kome.Keys.Key_Bytes (A (18 .. 49)), Kome.Keys.Key_Bytes (B (18 .. 49)));
       Kome.Keys.Lemma_Key_Eq_Is_Bytewise
-        (Kome.Keys.Key_Bytes (A (49 .. 80)), Kome.Keys.Key_Bytes (B (49 .. 80)));
+        (Kome.Keys.Key_Bytes (A (50 .. 81)), Kome.Keys.Key_Bytes (B (50 .. 81)));
       if Wire_Key (A, 0) = Wire_Key (B, 0) then
          pragma Assert (A (0) = B (0));
+         pragma Assert (A (17) = B (17));
          pragma Assert (Kome.Keys.Id_Bytes (A (1 .. 16)) = Kome.Keys.Id_Bytes (B (1 .. 16)));
-         pragma Assert (Kome.Keys.Key_Bytes (A (17 .. 48)) = Kome.Keys.Key_Bytes (B (17 .. 48)));
-         pragma Assert (Kome.Keys.Key_Bytes (A (49 .. 80)) = Kome.Keys.Key_Bytes (B (49 .. 80)));
+         pragma Assert (Kome.Keys.Key_Bytes (A (18 .. 49)) = Kome.Keys.Key_Bytes (B (18 .. 49)));
+         pragma Assert (Kome.Keys.Key_Bytes (A (50 .. 81)) = Kome.Keys.Key_Bytes (B (50 .. 81)));
          pragma Assert (for all J in 1 .. 16 => A (J) = B (J));
-         pragma Assert (for all J in 17 .. 48 => A (J) = B (J));
-         pragma Assert (for all J in 49 .. 80 => A (J) = B (J));
+         pragma Assert (for all J in 18 .. 49 => A (J) = B (J));
+         pragma Assert (for all J in 50 .. 81 => A (J) = B (J));
          pragma Assert (for all J in A'Range => A (J) = B (J));
          pragma Assert (A = B);
       end if;
@@ -111,25 +115,45 @@ package body Kome.Reconcile with SPARK_Mode is
          Kome.Keys.Lemma_Id_Lt_First_Difference
            (Kome.Keys.Id_Bytes (B (1 .. 16)), Kome.Keys.Id_Bytes (A (1 .. 16)), I - 1);
          pragma Assert (Wire_Id128 (A, 1) /= Wire_Id128 (B, 1));
-      elsif I <= 48 then
+      elsif I = 17 then
          pragma Assert (Wire_Key (A, 0).K = Wire_Key (B, 0).K);
          pragma Assert (for all J in 1 .. 16 => A (J) = B (J));
          pragma Assert (Wire_Id128 (A, 1) = Wire_Id128 (B, 1));
+         pragma Assert (Wire_Key (A, 0).Sub /= Wire_Key (B, 0).Sub);
+      elsif I <= 49 then
+         pragma Assert (Wire_Key (A, 0).K = Wire_Key (B, 0).K);
+         pragma Assert (for all J in 1 .. 16 => A (J) = B (J));
+         pragma Assert (Wire_Id128 (A, 1) = Wire_Id128 (B, 1));
+         pragma Assert (Wire_Key (A, 0).Sub = Wire_Key (B, 0).Sub);
          Kome.Keys.Lemma_Lt_First_Difference
-           (Kome.Keys.Key_Bytes (A (17 .. 48)), Kome.Keys.Key_Bytes (B (17 .. 48)), I - 17);
+           (Kome.Keys.Key_Bytes (A (18 .. 49)), Kome.Keys.Key_Bytes (B (18 .. 49)), I - 18);
          Kome.Keys.Lemma_Lt_First_Difference
-           (Kome.Keys.Key_Bytes (B (17 .. 48)), Kome.Keys.Key_Bytes (A (17 .. 48)), I - 17);
-         pragma Assert (Wire_Key256 (A, 17) /= Wire_Key256 (B, 17));
+           (Kome.Keys.Key_Bytes (B (18 .. 49)), Kome.Keys.Key_Bytes (A (18 .. 49)), I - 18);
+         pragma Assert (Wire_Key256 (A, 18) /= Wire_Key256 (B, 18));
       else
          pragma Assert (Wire_Key (A, 0).K = Wire_Key (B, 0).K);
          pragma Assert (for all J in 1 .. 16 => A (J) = B (J));
          pragma Assert (Wire_Id128 (A, 1) = Wire_Id128 (B, 1));
-         pragma Assert (for all J in 17 .. 48 => A (J) = B (J));
-         pragma Assert (Wire_Key256 (A, 17) = Wire_Key256 (B, 17));
+         pragma Assert (Wire_Key (A, 0).Sub = Wire_Key (B, 0).Sub);
+         pragma Assert (for all J in 18 .. 49 => A (J) = B (J));
+         pragma Assert (Wire_Key256 (A, 18) = Wire_Key256 (B, 18));
          Kome.Keys.Lemma_Lt_First_Difference
-           (Kome.Keys.Key_Bytes (A (49 .. 80)), Kome.Keys.Key_Bytes (B (49 .. 80)), I - 49);
+           (Kome.Keys.Key_Bytes (A (50 .. 81)), Kome.Keys.Key_Bytes (B (50 .. 81)), I - 50);
       end if;
    end Lemma_Key_Lt_First_Difference;
+
+   ----------------------------------------------------------------------
+   --  The Noise prologue (S11)
+   ----------------------------------------------------------------------
+
+   function Prologue (Cid : Hash256) return Prologue_Bytes is
+      R : Prologue_Bytes := [others => 0];
+   begin
+      R (0 .. Prologue_Tag_Len - 1) := Prologue_Tag;
+      R (Prologue_Tag_Len .. Prologue_Tag_Len + NS_Len - 1) := Kome.Records.NS_Of (Cid);
+      R (Prologue_Len - 1) := Proto_Version;
+      return R;
+   end Prologue;
 
    ----------------------------------------------------------------------
    --  Frame tables
@@ -184,51 +208,31 @@ package body Kome.Reconcile with SPARK_Mode is
       Result := Snap_OK;
    end Add_Frame;
 
-   function Lists_Peer (T : Frame_Table; DH : Pubkey) return Boolean is
-     (for some I in 1 .. T.N =>
-        Kome.Records.Is_Roster_Frame (Table_Frame (T, I))
-        and then Kome.Records.Roster_Lists_DH (Table_Frame (T, I), DH));
-
-   procedure Lemma_Lists_Peer_Def (T : Frame_Table; DH : Pubkey) is null;
-
    ----------------------------------------------------------------------
    --  Snapshot
    ----------------------------------------------------------------------
 
    procedure Clear (S : out Snapshot) is
    begin
-      S.N     := 0;
-      S.Used  := 0;
-      S.Kinds := [others => 0];
-      S.Ents  := [others => (others => 0)];
-      S.FHs   := [others => (others => 0)];
-      S.Hs    := [others => (others => 0)];
-      S.Offs  := [others => 1];
-      S.Lens  := [others => 1];
-      S.Src   := [others => 1];
-      S.Pool  := [others => 0];
+      S.N    := 0;
+      S.Used := 0;
+      S.E    := [others => (others => <>)];
+      S.Hs   := [others => (others => 0)];
    end Clear;
 
    procedure Append
      (S      : in out Snapshot;
       K      : Elem_Key;
-      F      : Byte_Array;
+      L      : Frame_Size;
+      Src    : Elem_Index;
       Result : out Snap_Status)
    is
    begin
-      if K.K > 4 then
-         Result := Snap_Bad_Kind;
-         return;
-      end if;
-      if F'Length not in Frame_Size then
-         Result := Snap_Too_Large;
-         return;
-      end if;
       if S.N > 0 and then not Key_Lt (Key (S, S.N), K) then
          Result := Snap_Unsorted;
          return;
       end if;
-      if S.N = S.Cap or else not Has_Room (S, F'Length) then
+      if S.N = S.Cap then
          Result := Snap_No_Space;
          return;
       end if;
@@ -236,8 +240,6 @@ package body Kome.Reconcile with SPARK_Mode is
       declare
          Old : constant Snapshot := S with Ghost;
          N   : constant Elem_Index := S.N + 1;
-         Off : constant Positive := S.Used + 1;
-         L   : constant Frame_Size := F'Length;
       begin
          --  Every held key is below K: the last key is below K, and the
          --  other keys are below the last key (pairwise order).
@@ -250,25 +252,15 @@ package body Kome.Reconcile with SPARK_Mode is
          end loop;
          pragma Assert (for all J in 1 .. S.N => Key_Lt (Key (Old, J), K));
 
-         S.Kinds (N) := K.K;
-         S.Ents (N)  := K.Ent;
-         S.FHs (N)   := K.FH;
-         S.Hs (N)    := K.H;
-         S.Offs (N)  := Off;
-         S.Lens (N)  := L;
-         S.Src (N)   := N;
-         S.Pool (Off .. Off + L - 1) := F;
-         S.Used := S.Used + L;
+         S.E (N)  := (K => K.K, Ent => K.Ent, Sub => K.Sub, FH => K.FH,
+                      Len => L, Src => Src);
+         S.Hs (N) := K.H;
+         S.Used := S.Used + Byte_Total (L);
          S.N := N;
 
          --  Bridge.
          pragma Assert (for all J in 1 .. N - 1 => Key (S, J) = Key (Old, J));
-         pragma Assert (for all J in 1 .. N - 1 => Frame_Len (S, J) = Frame_Len (Old, J));
-         pragma Assert (for all J in 1 .. N - 1 =>
-                          S.Offs (J) = Old.Offs (J) and then S.Lens (J) = Old.Lens (J));
-         pragma Assert (for all J in 1 .. N - 1 => Frame_In_Pool (S, J));
-         pragma Assert (Frame_In_Pool (S, N));
-         pragma Assert (for all J in 1 .. N => S.Kinds (J) <= 4);
+         pragma Assert (for all J in 1 .. N - 1 => S.E (J) = Old.E (J));
          pragma Assert (Key (S, N) = K);
          pragma Assert (for all J in 1 .. N - 1 => Key_Lt (Key (S, J), Key (S, N)));
          pragma Assert
@@ -321,148 +313,28 @@ package body Kome.Reconcile with SPARK_Mode is
    end Fingerprint_Of;
 
    ----------------------------------------------------------------------
-   --  The snapshot of a frontier (A12): a heap sort of the held indices
-   --  by key, with the inverse permutation as the witness of T6.
+   --  The snapshot of a frontier (A12, S18): the authorization records are
+   --  inserted into key order (their slot order is local to the replica),
+   --  then the data row (already in key order) is appended. Each element
+   --  records its source index in F.
    ----------------------------------------------------------------------
 
-   type Perm_Array is array (Elem_Index range <>) of Elem_Index;
-
-   --  Perm (1 .. N) and Inv (1 .. N) are inverse permutations of 1 .. N.
-   function Perm_Pair (Perm, Inv : Perm_Array; N : Elem_Count) return Boolean is
-     (Perm'First = 1 and then Inv'First = 1
-      and then N <= Perm'Last and then N <= Inv'Last
-      and then (for all J in 1 .. N => Perm (J) <= N and then Inv (Perm (J)) = J)
-      and then (for all I in 1 .. N => Inv (I) <= N and then Perm (Inv (I)) = I))
-   with Ghost;
-
-   --  The key of the record at position J.
-   function Key_At (F : Kome.Frontier.State; Perm : Perm_Array; J : Elem_Index)
-     return Elem_Key
-   is (Key_Of (Kome.Frontier.Held (F, Perm (J))))
-   with Pre => J in Perm'Range and then Perm (J) <= Kome.Frontier.Count (F);
-
-   --  Exchange positions A and B, and keep the inverse.
-   procedure Swap
-     (Perm : in out Perm_Array; Inv : in out Perm_Array; N : Elem_Count;
-      A, B : Elem_Index)
-   with
-     Global => null,
-     Pre  => Perm_Pair (Perm, Inv, N) and then A <= N and then B <= N,
-     Post => Perm_Pair (Perm, Inv, N)
-             and then Perm'First = Perm'Old'First and then Perm'Last = Perm'Old'Last
-             and then Perm (A) = Perm'Old (B) and then Perm (B) = Perm'Old (A)
-             and then (for all J in 1 .. N =>
-                         (if J /= A and then J /= B then Perm (J) = Perm'Old (J)))
-   is
-      PA : constant Elem_Index := Perm (A);
-      PB : constant Elem_Index := Perm (B);
-   begin
-      Perm (A) := PB;
-      Perm (B) := PA;
-      Inv (PB) := A;
-      Inv (PA) := B;
-   end Swap;
-
-   --  Sift the element at Root down the heap over positions 1 .. Last
-   --  (child 2 R and 2 R + 1), so that no parent is below a child.
-   procedure Sift_Down
-     (F    : Kome.Frontier.State;
-      Perm : in out Perm_Array; Inv : in out Perm_Array;
-      N    : Elem_Count; Root : Elem_Index; Last : Elem_Count)
-   with
-     Global => null,
-     Pre  => Perm_Pair (Perm, Inv, N) and then N = Kome.Frontier.Count (F)
-             and then Root <= Last and then Last <= N,
-     Post => Perm_Pair (Perm, Inv, N)
-             and then Perm'First = Perm'Old'First and then Perm'Last = Perm'Old'Last
-   is
-      R : Elem_Index := Root;
-      C : Positive;
-   begin
-      loop
-         pragma Loop_Invariant (Perm_Pair (Perm, Inv, N) and then R <= Last);
-         pragma Loop_Invariant (Perm'First = Perm'Loop_Entry'First
-                                and then Perm'Last = Perm'Loop_Entry'Last);
-         pragma Loop_Variant (Increases => R);
-         exit when R > Last / 2;
-         C := 2 * R;
-         if C < Last
-           and then Key_Lt (Key_At (F, Perm, C), Key_At (F, Perm, C + 1))
-         then
-            C := C + 1;
-         end if;
-         exit when not Key_Lt (Key_At (F, Perm, R), Key_At (F, Perm, C));
-         Swap (Perm, Inv, N, R, C);
-         R := C;
-      end loop;
-   end Sift_Down;
-
-   --  Heap sort of positions 1 .. N by key (tested, not proved: the
-   --  result is checked by a scan in Snapshot_Of). Proved: Perm and Inv
-   --  stay inverse permutations.
-   procedure Heap_Sort
-     (F    : Kome.Frontier.State;
-      Perm : in out Perm_Array; Inv : in out Perm_Array;
-      N    : Elem_Count)
-   with
-     Global => null,
-     Pre  => Perm_Pair (Perm, Inv, N) and then N = Kome.Frontier.Count (F)
-             and then N >= 1,
-     Post => Perm_Pair (Perm, Inv, N)
-             and then Perm'First = Perm'Old'First and then Perm'Last = Perm'Old'Last
-   is
-   begin
-      for Start in reverse 1 .. N / 2 loop
-         pragma Loop_Invariant (Perm_Pair (Perm, Inv, N));
-         pragma Loop_Invariant (Perm'First = Perm'Loop_Entry'First
-                                and then Perm'Last = Perm'Loop_Entry'Last);
-         Sift_Down (F, Perm, Inv, N, Start, N);
-      end loop;
-      for Last in reverse 2 .. N loop
-         pragma Loop_Invariant (Perm_Pair (Perm, Inv, N));
-         pragma Loop_Invariant (Perm'First = Perm'Loop_Entry'First
-                                and then Perm'Last = Perm'Loop_Entry'Last);
-         Swap (Perm, Inv, N, 1, Last);
-         Sift_Down (F, Perm, Inv, N, 1, Last - 1);
-      end loop;
-   end Heap_Sort;
-
-   --  Adjacent ascending keys give the pairwise order.
-   procedure Lemma_Adjacent (S : Snapshot) with
-     Ghost, Global => null,
-     Pre  => (for all J in 2 .. S.N => Key_Lt (Key (S, J - 1), Key (S, J))),
-     Post => (for all I in 1 .. S.N =>
-                (for all J in I + 1 .. S.N => Key_Lt (Key (S, I), Key (S, J))))
-   is
-   begin
-      for I in 1 .. S.N loop
-         pragma Loop_Invariant
-           (for all I2 in 1 .. I - 1 =>
-              (for all J in I2 + 1 .. S.N => Key_Lt (Key (S, I2), Key (S, J))));
-         for J in I + 1 .. S.N loop
-            pragma Loop_Invariant
-              (for all J2 in I + 1 .. J - 1 => Key_Lt (Key (S, I), Key (S, J2)));
-            if J > I + 1 then
-               Lemma_Key_Lt_Trans (Key (S, I), Key (S, J - 1), Key (S, J));
-            end if;
-         end loop;
-      end loop;
-   end Lemma_Adjacent;
-
    --  T6 for the snapshot: the hashes of S are a permutation of the
-   --  hashes of F, so the digests are equal.
-   procedure Lemma_Digest_Of_Perm
-     (F : Kome.Frontier.State; S : Snapshot; Perm, Inv : Perm_Array; N : Elem_Count)
+   --  hashes of F (Src is the witness), so the digests are equal.
+   procedure Lemma_Snapshot_Digest (F : Kome.Frontier.State; S : Snapshot; N : Elem_Count)
    with
      Ghost, Global => null,
      Pre  => N = Kome.Frontier.Count (F) and then N = S.N and then N >= 1
-             and then Perm_Pair (Perm, Inv, N)
              and then (for all J in 1 .. N =>
-                         S.Hs (J) = Kome.Frontier.Held (F, Perm (J)).V.H),
+                         S.E (J).Src <= N
+                         and then S.Hs (J) = Kome.Frontier.Held (F, S.E (J).Src).V.H)
+             and then (for all I in 1 .. N =>
+                         (for all J in 1 .. N =>
+                            (if I /= J then S.E (I).Src /= S.E (J).Src))),
      Post => Range_Fp (S, 1, N) = Kome.Digest.Frontier_Digest (F)
    is
       L1 : Kome.Digest.Hash_Array (1 .. N) := [others => (others => 0)];
-      M  : Kome.Digest.Index_Map (1 .. N) := [others => 1];
+      M  : constant Kome.Digest.Index_Map (1 .. N) := [for J in 1 .. N => S.E (J).Src];
       L2 : constant Kome.Digest.Hash_Array (1 .. N) := S.Hs (1 .. N);
    begin
       for I in 1 .. N loop
@@ -470,33 +342,12 @@ package body Kome.Reconcile with SPARK_Mode is
            (for all I2 in 1 .. I - 1 => L1 (I2) = Kome.Frontier.Held (F, I2).V.H);
          L1 (I) := Kome.Frontier.Held (F, I).V.H;
       end loop;
-      for I in 1 .. N loop
-         pragma Loop_Invariant
-           (for all I2 in 1 .. I - 1 => M (I2) = Inv (I2) and then L2 (M (I2)) = L1 (I2));
-         M (I) := Inv (I);
-         pragma Assert (Perm (Inv (I)) = I);
-         pragma Assert (S.Hs (Inv (I)) = Kome.Frontier.Held (F, Perm (Inv (I))).V.H);
-         pragma Assert (L2 (M (I)) = L1 (I));
-      end loop;
-      pragma Assert (for all I in 1 .. N => M (I) <= N and then L2 (M (I)) = L1 (I));
-      --  M is injective: M (I) = M (K) gives Perm (M (I)) = Perm (M (K)),
-      --  that is I = K.
-      for I in 1 .. N loop
-         pragma Loop_Invariant
-           (for all I2 in 1 .. I - 1 =>
-              (for all K in 1 .. N => (if I2 /= K then M (I2) /= M (K))));
-         for K in 1 .. N loop
-            pragma Loop_Invariant
-              (for all K2 in 1 .. K - 1 => (if I /= K2 then M (I) /= M (K2)));
-            if I /= K then
-               pragma Assert (Perm (Inv (I)) = I);
-               pragma Assert (Perm (Inv (K)) = K);
-               pragma Assert (M (I) /= M (K));
-            end if;
-         end loop;
-      end loop;
-      Kome.Digest.Lemma_Is_Perm_Intro (L1, L2, M, N);
-      Kome.Digest.Lemma_Sum_Perm (L1, L2, M, N);
+      pragma Assert (for all J in 1 .. N => M (J) <= N and then L1 (M (J)) = L2 (J));
+      pragma Assert
+        (for all I in 1 .. N =>
+           (for all K in 1 .. N => (if I /= K then M (I) /= M (K))));
+      Kome.Digest.Lemma_Is_Perm_Intro (L2, L1, M, N);
+      Kome.Digest.Lemma_Sum_Perm (L2, L1, M, N);
       Kome.Digest.Lemma_Frontier_Sum_List (F, L1, N);
       Kome.Digest.Lemma_Sum_Ext (L2, S.Hs (1 .. N), 1, N);
       pragma Assert (Kome.Digest.Sum_Of (L2, 1, N) = Kome.Digest.Sum_Of (S.Hs (1 .. N), 1, N));
@@ -512,7 +363,7 @@ package body Kome.Reconcile with SPARK_Mode is
       Kome.Digest.Lemma_Fp_Congruent
         (N, Kome.Digest.Sum (Kome.Digest.Digest_Of (S.Hs (1 .. N))),
          Kome.Digest.Frontier_Sum (F, N));
-   end Lemma_Digest_Of_Perm;
+   end Lemma_Snapshot_Digest;
 
    --  T6 for the empty snapshot.
    procedure Lemma_Digest_Of_Empty (F : Kome.Frontier.State; S : Snapshot) with
@@ -528,170 +379,317 @@ package body Kome.Reconcile with SPARK_Mode is
       Kome.Digest.Lemma_Fp_Congruent (0, Zero, Kome.Digest.Frontier_Sum (F, 0));
    end Lemma_Digest_Of_Empty;
 
-   --  The key and the frame of slot I of S, read from the representation
-   --  (so that a loop can fill S before it sets its count).
-   function Raw_Key (S : Snapshot; I : Elem_Index) return Elem_Key is
-     ((K => S.Kinds (I), Ent => S.Ents (I), FH => S.FHs (I), H => S.Hs (I)))
-   with Pre => I <= S.Cap;
+   --  Element J of S is the held record Src of F, with its frame length
+   --  in T.
+   function Good
+     (F : Kome.Frontier.State; T : Frame_Table; S : Snapshot; J : Elem_Index)
+      return Boolean
+   is (S.E (J).Src <= Kome.Frontier.Count (F)
+       and then S.E (J).Src <= T.N
+       and then Key (S, J) = Key_Of (Kome.Frontier.Held (F, S.E (J).Src))
+       and then T.Lens (S.E (J).Src) = S.E (J).Len)
+   with Ghost, Pre => J <= S.N and then J <= S.Cap;
 
-   function Raw_Frame (S : Snapshot; I : Elem_Index) return Byte_Array is
-     (S.Pool (S.Offs (I) .. S.Offs (I) + S.Lens (I) - 1))
-   with Pre => I <= S.Cap and then Frame_In_Pool (S, I);
-
-   --  Where the frame of held record I of F is in the pool of the
-   --  snapshot: the data frames first, then the authorization frames.
-   function Slot_Off
-     (F : Kome.Frontier.State; Data_T, Auth_T : Frame_Table; I : Elem_Index)
-      return Positive
-   is (if I <= Kome.Frontier.Data_Count (F) then Data_T.Offs (I)
-       else Data_T.Used + Auth_T.Offs (I - Kome.Frontier.Data_Count (F)))
-   with Pre => Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
-               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F)
-               and then I <= Kome.Frontier.Count (F)
-               and then Table_Valid (Auth_T)
-               and then Auth_T.Used <= Pool_Max - Data_T.Used;
-
-   function Slot_Len
-     (F : Kome.Frontier.State; Data_T, Auth_T : Frame_Table; I : Elem_Index)
-      return Frame_Size
-   is (if I <= Kome.Frontier.Data_Count (F) then Data_T.Lens (I)
-       else Auth_T.Lens (I - Kome.Frontier.Data_Count (F)))
-   with Pre => Table_Count (Data_T) = Kome.Frontier.Data_Count (F)
-               and then Table_Count (Auth_T) = Kome.Frontier.Auth_Count (F)
-               and then I <= Kome.Frontier.Count (F);
+   --  The sources of a sorted snapshot of held records are distinct:
+   --  two elements with one source would have one key.
+   procedure Lemma_Sources_Distinct
+     (F : Kome.Frontier.State; T : Frame_Table; S : Snapshot)
+   with
+     Ghost, Global => null,
+     Pre  => Valid (S) and then (for all J in 1 .. S.N => Good (F, T, S, J)),
+     Post => (for all I in 1 .. S.N =>
+                (for all J in 1 .. S.N => (if I /= J then S.E (I).Src /= S.E (J).Src)))
+   is
+   begin
+      for I in 1 .. S.N loop
+         for J in 1 .. S.N loop
+            if I < J then
+               pragma Assert (Key_Lt (Key (S, I), Key (S, J)));
+               Lemma_Key_Lt_Irrefl (Key (S, I));
+               pragma Assert (S.E (I).Src /= S.E (J).Src);
+            elsif J < I then
+               pragma Assert (Key_Lt (Key (S, J), Key (S, I)));
+               Lemma_Key_Lt_Irrefl (Key (S, J));
+               pragma Assert (S.E (I).Src /= S.E (J).Src);
+            end if;
+            pragma Loop_Invariant
+              (for all J2 in 1 .. J => (if I /= J2 then S.E (I).Src /= S.E (J2).Src));
+         end loop;
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              (for all J2 in 1 .. S.N => (if I2 /= J2 then S.E (I2).Src /= S.E (J2).Src)));
+      end loop;
+   end Lemma_Sources_Distinct;
 
    procedure Snapshot_Of
      (F      : Kome.Frontier.State;
-      Data_T : Frame_Table;
-      Auth_T : Frame_Table;
+      T      : Frame_Table;
       S      : out Snapshot;
       Result : out Snap_Status)
    is
-      N      : constant Elem_Count := Kome.Frontier.Count (F);
-      DC     : constant Elem_Count := Kome.Frontier.Data_Count (F);
-      Used_D : constant Pool_Size := Data_T.Used;
-      Used_A : constant Pool_Size := Auth_T.Used;
+      --  The insertions and their per-step proofs are proved; their
+      --  run-time checks would be cubic in |F| (Valid is pairwise), so
+      --  they do not execute (CONVENTIONS.md; listed in the report for
+      --  IMPLEMENTATION_PLAN.md). The Post of Snapshot_Of executes.
+      pragma Assertion_Policy
+        (Loop_Invariant => Ignore, Assert => Ignore, Ghost => Ignore,
+         Pre => Ignore, Post => Ignore);
+
+      N   : constant Elem_Count := Kome.Frontier.Count (F);
+      DC  : constant Elem_Count := Kome.Frontier.Data_Count (F);
+      Pos : Elem_Index;
+      St  : Snap_Status;
+
+      --  Insert the element (K, L, Src) at its place in key order. Pos is
+      --  its index: the elements before it stay, those after it move up
+      --  by one. Snap_Unsorted (nothing is inserted) when K is already
+      --  held. Declared here so that the Ignore policy above applies to
+      --  its contract and to its ghost steps.
+      procedure Insert
+        (S      : in out Snapshot;
+         K      : Elem_Key;
+         L      : Frame_Size;
+         Src    : Elem_Index;
+         Pos    : out Elem_Index;
+         Result : out Snap_Status)
+      with
+        Global => null,
+        Pre    => Valid (S) and then S.N < S.Cap,
+        Post   => Valid (S) and then Result in Snap_OK | Snap_Unsorted
+          and then (if Result = Snap_OK then
+                      S.N = S.N'Old + 1 and then Pos <= S.N
+                      and then Key (S, Pos) = K
+                      and then S.E (Pos).Len = L and then S.E (Pos).Src = Src
+                      and then (for all J in 1 .. Pos - 1 =>
+                                  S.E (J) = S'Old.E (J) and then S.Hs (J) = S'Old.Hs (J))
+                      and then (for all J in Pos + 1 .. S.N =>
+                                  S.E (J) = S'Old.E (J - 1)
+                                  and then S.Hs (J) = S'Old.Hs (J - 1))
+                    else S.N = S.N'Old)
+      is
+         N   : constant Elem_Count := S.N;
+         P   : Lo_Bound := N + 1;
+         Old : constant Snapshot := S with Ghost;
+
+         procedure Tri (A, B : Elem_Key) with
+           Ghost, Global => null,
+           Post => Key_Lt (A, B) or else A = B or else Key_Lt (B, A)
+         is
+         begin
+            Lemma_Key_Trichotomy (A, B);
+         end Tri;
+
+         --  Every key before the place is below K.
+         procedure Below with
+           Ghost, Global => (Input => (S, K, P)),
+           Pre  => Valid (S) and then P >= 2 and then P <= S.N + 1
+                   and then Key_Lt (Key (S, P - 1), K),
+           Post => (for all J in 1 .. P - 1 => Key_Lt (Key (S, J), K))
+         is
+         begin
+            for J in 1 .. P - 1 loop
+               if J < P - 1 then
+                  pragma Assert (Key_Lt (Key (S, J), Key (S, P - 1)));
+                  Lemma_Key_Lt_Trans (Key (S, J), Key (S, P - 1), K);
+               end if;
+               pragma Loop_Invariant (for all J2 in 1 .. J => Key_Lt (Key (S, J2), K));
+            end loop;
+         end Below;
+
+         --  The pairwise order after the insertion, one row at a time.
+         procedure Order with
+           Ghost, Global => (Input => (S, Old, K, P)),
+           Pre  => Valid (Old) and then S.N = Old.N + 1 and then P <= S.N
+                   and then Key (S, P) = K
+                   and then (for all X in 1 .. P - 1 =>
+                               Key (S, X) = Key (Old, X) and then Key_Lt (Key (S, X), K))
+                   and then (for all X in P + 1 .. S.N =>
+                               Key (S, X) = Key (Old, X - 1)
+                               and then Key_Lt (K, Key (S, X))),
+           Post => (for all I in 1 .. S.N =>
+                      (for all J in I + 1 .. S.N => Key_Lt (Key (S, I), Key (S, J))))
+         is
+         begin
+            for I in 1 .. S.N loop
+               for J in I + 1 .. S.N loop
+                  if I < P and then J > P then
+                     Lemma_Key_Lt_Trans (Key (S, I), K, Key (S, J));
+                  elsif I > P then
+                     pragma Assert (Key_Lt (Key (Old, I - 1), Key (Old, J - 1)));
+                  elsif J < P then
+                     pragma Assert (Key_Lt (Key (Old, I), Key (Old, J)));
+                  end if;
+                  pragma Loop_Invariant
+                    (for all J2 in I + 1 .. J => Key_Lt (Key (S, I), Key (S, J2)));
+               end loop;
+               pragma Loop_Invariant
+                 (for all I2 in 1 .. I =>
+                    (for all J2 in I2 + 1 .. S.N => Key_Lt (Key (S, I2), Key (S, J2))));
+            end loop;
+         end Order;
+
+      begin
+         Pos := 1;
+         --  The place: the first index whose key is above K.
+         loop
+            pragma Loop_Invariant (P in 1 .. N + 1);
+            pragma Loop_Invariant (for all J in P .. N => Key_Lt (K, Key (S, J)));
+            pragma Loop_Variant (Decreases => P);
+            exit when P = 1 or else not Key_Lt (K, Key (S, P - 1));
+            P := P - 1;
+         end loop;
+         if P > 1 then
+            Tri (K, Key (S, P - 1));
+            if Key (S, P - 1) = K then
+               Result := Snap_Unsorted;
+               return;
+            end if;
+            pragma Assert (Key_Lt (Key (S, P - 1), K));
+            Below;
+         end if;
+         pragma Assert (for all J in 1 .. P - 1 => Key_Lt (Key (Old, J), K));
+         pragma Assert (for all J in P .. N => Key_Lt (K, Key (Old, J)));
+
+         --  Move the elements P .. N up by one.
+         for J in reverse P .. N loop
+            S.E (J + 1) := S.E (J);
+            S.Hs (J + 1) := S.Hs (J);
+            pragma Loop_Invariant (S.N = Old.N and then S.Used = Old.Used);
+            pragma Loop_Invariant
+              (for all X in 1 .. J => S.E (X) = Old.E (X) and then S.Hs (X) = Old.Hs (X));
+            pragma Loop_Invariant
+              (for all X in J + 1 .. N + 1 =>
+                 S.E (X) = Old.E (X - 1) and then S.Hs (X) = Old.Hs (X - 1));
+         end loop;
+         pragma Assert
+           (for all X in 1 .. P - 1 => S.E (X) = Old.E (X) and then S.Hs (X) = Old.Hs (X));
+         pragma Assert
+           (for all X in P + 1 .. N + 1 =>
+              S.E (X) = Old.E (X - 1) and then S.Hs (X) = Old.Hs (X - 1));
+
+         S.E (P)  := (K => K.K, Ent => K.Ent, Sub => K.Sub, FH => K.FH,
+                      Len => L, Src => Src);
+         S.Hs (P) := K.H;
+         S.Used := S.Used + Byte_Total (L);
+         S.N := N + 1;
+         Pos := P;
+
+         pragma Assert (Key (S, P) = K);
+         pragma Assert (for all X in 1 .. P - 1 => Key (S, X) = Key (Old, X));
+         pragma Assert (for all X in P + 1 .. N + 1 => Key (S, X) = Key (Old, X - 1));
+         Order;
+         pragma Assert (Valid (S));
+         Result := Snap_OK;
+      end Insert;
+
+      procedure Empty_Digest with
+        Ghost, Global => (Input => (F, S)),
+        Pre  => Kome.Frontier.Count (F) = 0 and then S.N = 0,
+        Post => Range_Fp (S, 1, 0) = Kome.Digest.Frontier_Digest (F)
+      is
+      begin
+         Lemma_Digest_Of_Empty (F, S);
+      end Empty_Digest;
+
+      procedure Distinct with
+        Ghost, Global => (Input => (F, T, S)),
+        Pre  => Valid (S) and then (for all J in 1 .. S.N => Good (F, T, S, J)),
+        Post => (for all I in 1 .. S.N =>
+                   (for all J in 1 .. S.N => (if I /= J then S.E (I).Src /= S.E (J).Src)))
+      is
+      begin
+         Lemma_Sources_Distinct (F, T, S);
+      end Distinct;
+
+      procedure Digest with
+        Ghost, Global => (Input => (F, S, N)),
+        Pre  => N = Kome.Frontier.Count (F) and then N = S.N and then N >= 1
+                and then (for all J in 1 .. N =>
+                            S.E (J).Src <= N
+                            and then S.Hs (J) = Kome.Frontier.Held (F, S.E (J).Src).V.H)
+                and then (for all I in 1 .. N =>
+                            (for all J in 1 .. N =>
+                               (if I /= J then S.E (I).Src /= S.E (J).Src))),
+        Post => Range_Fp (S, 1, N) = Kome.Digest.Frontier_Digest (F)
+      is
+      begin
+         Lemma_Snapshot_Digest (F, S, N);
+      end Digest;
+
    begin
       Clear (S);
-      if N > S.Cap or else Used_D > S.Pool_Cap or else Used_A > S.Pool_Cap - Used_D then
+      if N > S.Cap then
          Result := Snap_No_Space;
          return;
       end if;
-      --  The pool: the data frames, then the authorization frames.
-      S.Pool (1 .. Used_D) := Data_T.Pool (1 .. Used_D);
-      S.Pool (Used_D + 1 .. Used_D + Used_A) := Auth_T.Pool (1 .. Used_A);
-      S.Used := Used_D + Used_A;
-      pragma Assert (for all X in 1 .. Used_D => S.Pool (X) = Data_T.Pool (X));
-      pragma Assert (for all X in 1 .. Used_A => S.Pool (Used_D + X) = Auth_T.Pool (X));
       if N = 0 then
-         pragma Assert (Valid (S));
-         Lemma_Digest_Of_Empty (F, S);
+         Empty_Digest;
+         pragma Assert (Linked (S, T));
          Result := Snap_OK;
          return;
       end if;
 
-      declare
-         Perm : Perm_Array (1 .. N) := [for J in 1 .. N => J];
-         Inv  : Perm_Array (1 .. N) := [for J in 1 .. N => J];
-         R    : Header;
-      begin
-         pragma Assert (Perm_Pair (Perm, Inv, N));
-         Heap_Sort (F, Perm, Inv, N);
-
-         --  The elements, in sorted order.
-         for J in 1 .. N loop
-            pragma Loop_Invariant (S.N = 0 and then S.Used = Used_D + Used_A);
-            pragma Loop_Invariant (for all X in 1 .. Used_D => S.Pool (X) = Data_T.Pool (X));
-            pragma Loop_Invariant
-              (for all X in 1 .. Used_A => S.Pool (Used_D + X) = Auth_T.Pool (X));
-            pragma Loop_Invariant
-              (for all J2 in 1 .. J - 1 =>
-                 S.Kinds (J2) <= 4
-                 and then S.Src (J2) = Perm (J2)
-                 and then Raw_Key (S, J2) = Key_Of (Kome.Frontier.Held (F, Perm (J2)))
-                 and then S.Hs (J2) = Kome.Frontier.Held (F, Perm (J2)).V.H
-                 and then S.Offs (J2) = Slot_Off (F, Data_T, Auth_T, Perm (J2))
-                 and then S.Lens (J2) = Slot_Len (F, Data_T, Auth_T, Perm (J2))
-                 and then Frame_In_Pool (S, J2));
-            R := Kome.Frontier.Held (F, Perm (J));
-            S.Kinds (J) := Kind_Code (Kind'Pos (R.K));
-            S.Ents (J)  := R.Ent;
-            S.FHs (J)   := R.FH;
-            S.Hs (J)    := R.V.H;
-            S.Src (J)   := Perm (J);
-            if Perm (J) <= DC then
-               S.Offs (J) := Data_T.Offs (Perm (J));
-               S.Lens (J) := Data_T.Lens (Perm (J));
-               pragma Assert (Entry_In_Pool (Data_T, Perm (J)));
-               pragma Assert (Frame_In_Pool (S, J));
-            else
-               S.Offs (J) := Used_D + Auth_T.Offs (Perm (J) - DC);
-               S.Lens (J) := Auth_T.Lens (Perm (J) - DC);
-               pragma Assert (Entry_In_Pool (Auth_T, Perm (J) - DC));
-               pragma Assert (Frame_In_Pool (S, J));
-            end if;
-            pragma Assert (Raw_Key (S, J) = Key_Of (Kome.Frontier.Held (F, Perm (J))));
-            pragma Assert (S.Offs (J) = Slot_Off (F, Data_T, Auth_T, Perm (J))
-                           and then S.Lens (J) = Slot_Len (F, Data_T, Auth_T, Perm (J)));
-         end loop;
-         pragma Assert
-           (for all J in 1 .. N =>
-              Frame_In_Pool (S, J)
-              and then S.Offs (J) = Slot_Off (F, Data_T, Auth_T, Perm (J))
-              and then S.Lens (J) = Slot_Len (F, Data_T, Auth_T, Perm (J)));
-
-         --  The frames: S does not change in this loop, so each step
-         --  proves alone.
-         for J in 1 .. N loop
-            pragma Loop_Invariant
-              (for all J2 in 1 .. J - 1 =>
-                 Raw_Frame (S, J2) = Record_Frame (F, Data_T, Auth_T, Perm (J2)));
-            if Perm (J) <= DC then
-               pragma Assert (Entry_In_Pool (Data_T, Perm (J)));
-               pragma Assert (Raw_Frame (S, J) = Table_Frame (Data_T, Perm (J)));
-            else
-               pragma Assert (Entry_In_Pool (Auth_T, Perm (J) - DC));
-               pragma Assert (Raw_Frame (S, J) = Table_Frame (Auth_T, Perm (J) - DC));
-            end if;
-         end loop;
-         S.N := N;
-         pragma Assert
-           (for all J in 1 .. N =>
-              S.Kinds (J) <= 4 and then Frame_In_Pool (S, J)
-              and then S.Src (J) = Perm (J)
-              and then Raw_Key (S, J) = Key_Of (Kome.Frontier.Held (F, Perm (J)))
-              and then S.Hs (J) = Kome.Frontier.Held (F, Perm (J)).V.H
-              and then Raw_Frame (S, J) = Record_Frame (F, Data_T, Auth_T, Perm (J)));
-         pragma Assert (for all J in 1 .. N => Key (S, J) = Raw_Key (S, J));
-
-         --  The scan: the sort is checked, not proved.
-         for J in 2 .. N loop
-            pragma Loop_Invariant
-              (for all J2 in 2 .. J - 1 => Key_Lt (Key (S, J2 - 1), Key (S, J2)));
-            if not Key_Lt (Key (S, J - 1), Key (S, J)) then
+      --  The authorization records (flat indices DC + 1 .. N), into key
+      --  order.
+      for I in DC + 1 .. N loop
+         pragma Loop_Invariant (Valid (S) and then S.N = I - 1 - DC);
+         pragma Loop_Invariant (for all J in 1 .. S.N => Good (F, T, S, J));
+         declare
+            Old : constant Snapshot := S with Ghost;
+            R   : constant Header := Kome.Frontier.Held (F, I);
+         begin
+            Insert (S, Key_Of (R), T.Lens (I), I, Pos, St);
+            if St /= Snap_OK then
                Clear (S);
                Result := Snap_Unsorted;
                return;
             end if;
-         end loop;
-         Lemma_Adjacent (S);
-         pragma Assert (Valid (S));
-         pragma Assert (for all J in 1 .. N => Frame (S, J) = Raw_Frame (S, J));
-         pragma Assert
-           (for all J in 1 .. N =>
-              Key (S, J) = Key_Of (Kome.Frontier.Held (F, Perm (J)))
-              and then Frame (S, J) = Record_Frame (F, Data_T, Auth_T, Perm (J)));
+            pragma Assert (for all J in 1 .. Pos - 1 => Key (S, J) = Key (Old, J));
+            pragma Assert (for all J in Pos + 1 .. S.N => Key (S, J) = Key (Old, J - 1));
+            pragma Assert (Good (F, T, S, Pos));
+            pragma Assert (for all J in 1 .. Pos - 1 => Good (F, T, S, J));
+            pragma Assert (for all J in Pos + 1 .. S.N => Good (F, T, S, J));
+         end;
+      end loop;
 
-         --  The sources are distinct (Perm is a permutation).
-         pragma Assert
-           (for all I in 1 .. N =>
-              (for all J in 1 .. N => (if I /= J then Perm (I) /= Perm (J))));
+      --  The data row (flat indices 1 .. DC). It is in key order, so
+      --  each insertion lands at the end.
+      for I in 1 .. DC loop
+         pragma Loop_Invariant (Valid (S) and then S.N = N - DC + I - 1);
+         pragma Loop_Invariant (for all J in 1 .. S.N => Good (F, T, S, J));
+         declare
+            Old : constant Snapshot := S with Ghost;
+            R   : constant Header := Kome.Frontier.Held (F, I);
+         begin
+            Insert (S, Key_Of (R), T.Lens (I), I, Pos, St);
+            if St /= Snap_OK then
+               Clear (S);
+               Result := Snap_Unsorted;
+               return;
+            end if;
+            pragma Assert (for all J in 1 .. Pos - 1 => Key (S, J) = Key (Old, J));
+            pragma Assert (for all J in Pos + 1 .. S.N => Key (S, J) = Key (Old, J - 1));
+            pragma Assert (Good (F, T, S, Pos));
+            pragma Assert (for all J in 1 .. Pos - 1 => Good (F, T, S, J));
+            pragma Assert (for all J in Pos + 1 .. S.N => Good (F, T, S, J));
+         end;
+      end loop;
 
-         pragma Assert (for all J in 1 .. N => Source (S, J) = Perm (J));
-         Lemma_Digest_Of_Perm (F, S, Perm, Inv, N);
-      end;
+      pragma Assert (S.N = N);
+      pragma Assert (for all J in 1 .. N => Good (F, T, S, J));
+      pragma Assert (Linked (S, T));
+      Distinct;
+      pragma Assert
+        (for all J in 1 .. N =>
+           S.E (J).Src <= N
+           and then S.Hs (J) = Kome.Frontier.Held (F, S.E (J).Src).V.H);
+      Digest;
       Result := Snap_OK;
    end Snapshot_Of;
+
+   ----------------------------------------------------------------------
+   --  Windows
+   ----------------------------------------------------------------------
 
    ----------------------------------------------------------------------
    --  Windows
@@ -914,8 +912,6 @@ package body Kome.Reconcile with SPARK_Mode is
 
    procedure Lemma_All_Kind (O : Outbox; K : Out_Kind; T : Positive) is null;
 
-   procedure Lemma_Open_Frames (B : Byte_Array; O : Open_Msg; I : Rv_Index) is null;
-
    procedure Lemma_Cred_Zero (H : Hello; I : Natural) is null;
 
    procedure Lemma_Exact_Plan (S : Snapshot; O : Outbox; T : Positive) is null;
@@ -946,10 +942,7 @@ package body Kome.Reconcile with SPARK_Mode is
    end Prove_Exact;
 
    Empty_Plan : constant Plan := (others => <>);
-   Empty_Box  : constant Outbox :=
-     (Reply => False, N => 0, P => [others => Empty_Plan]);
-   Reply_Box  : constant Outbox :=
-     (Reply => True, N => 0, P => [others => Empty_Plan]);
+   Empty_Box  : constant Outbox := (N => 0, P => [others => Empty_Plan]);
 
    function Num_Ranges (O : Outbox) return Out_Count is
       C : Out_Count := 0;
@@ -1018,14 +1011,13 @@ package body Kome.Reconcile with SPARK_Mode is
    end Item_Bytes;
 
    --  Split [Lo, Hi) into min (Split_Fanout, n) children of n / 16 or
-   --  n / 16 + 1 elements. [Lo, Hi) holds our elements I .. J (more than
+   --  n / 16 + 1 elements (for n >= Big_Window, the cuts are Cut_At). [Lo, Hi) holds our elements I .. J (more than
    --  Ship_Threshold of them). Each child is [Child_Lo, Child_Hi) over a
    --  run B .. E. The runs partition I .. J, so the children tile
    --  [Lo, Hi). The first run stops before J, and each later run starts
    --  after I. So each child holds strictly fewer of our elements than
    --  the parent. (The last child takes the remaining elements. With these
    --  sizes, this is exactly its share. The balance is tested, not proved:
-   --  the Post states only that each child is strictly smaller.)
    procedure Split
      (S : Snapshot; Lo, Hi : Elem_Key; I, J : Elem_Index; O : out Outbox)
    with
@@ -1035,7 +1027,6 @@ package body Kome.Reconcile with SPARK_Mode is
              and then Covers (S, Lo, Hi, I, J)
              and then J + 1 - I > Ship_Threshold,
      Post => Outbox_OK (S, O)
-       and then O.Reply
        and then Tiles (O, Lo, Hi)
        and then All_Kind (O, P_Range)
        and then (for all T in 1 .. O.N =>
@@ -1055,9 +1046,9 @@ package body Kome.Reconcile with SPARK_Mode is
       Sz   : Positive;
    begin
       pragma Assert (Base + 1 < N);
-      O := Reply_Box;
+      O := Empty_Box;
       for T in 1 .. Split_Fanout loop
-         pragma Loop_Invariant (O.N = T - 1 and then O.Reply);
+         pragma Loop_Invariant (O.N = T - 1);
          pragma Loop_Invariant (I <= B and then B <= J);
          pragma Loop_Invariant (if T > 1 then B > I else B = I);
          pragma Loop_Invariant
@@ -1080,6 +1071,12 @@ package body Kome.Reconcile with SPARK_Mode is
             E := J;
          else
             E := B + Sz - 1;
+         end if;
+         --  S20: the interior cuts of a large window on multiples of 64.
+         if N >= Big_Window and then T < Split_Fanout
+           and then Cut_At (I, N, T) >= B and then Cut_At (I, N, T) < J
+         then
+            E := Cut_At (I, N, T);
          end if;
          pragma Assert (B <= E and then E <= J);
          pragma Assert (E + 1 - B < N);
@@ -1115,13 +1112,13 @@ package body Kome.Reconcile with SPARK_Mode is
              and then J = Window (S, Lo, Hi).Last
              and then J + 1 - I <= Ship_Threshold,
      Post => Outbox_OK (S, O)
-       and then O.N >= 1 and then O.Reply
+       and then O.N >= 1
        and then Tiles (O, Lo, Hi)
        and then All_Kind (O, P_Elements)
        and then Exact_Plans (S, O)
    is
    begin
-      O := Reply_Box;
+      O := Empty_Box;
       if Elems_Fixed + Run_Size (S, I, J) <= Max_Message_Len then
          O.N := 1;
          O.P (1) := (Kind  => P_Elements,
@@ -1136,7 +1133,7 @@ package body Kome.Reconcile with SPARK_Mode is
       else
          pragma Assert (I <= J);
          for K in I .. J loop
-            pragma Loop_Invariant (O.N = K - I and then O.Reply);
+            pragma Loop_Invariant (O.N = K - I);
             pragma Loop_Invariant
               (for all T2 in 1 .. O.N =>
                  Plan_OK (S, O.P (T2)) and then O.P (T2).Kind = P_Elements
@@ -1165,7 +1162,13 @@ package body Kome.Reconcile with SPARK_Mode is
    --  Send back as HAVE our elements I .. J (at most Ship_Threshold) that
    --  M does not list. If they fit, use one message (an empty HAVE if
    --  there are none). If not, use one message for each element. Send
-   --  exactly those elements (Have_Exact).
+   --  Send back as HAVE our elements I .. J (at most Ship_Threshold) that
+   --  M does not list. If they fit, use one message over [M.Lo, M.Hi) (an
+   --  empty HAVE if there are none). If not, use one message for each
+   --  element, over sub-ranges that tile [M.Lo, M.Hi) (S19): message T
+   --  runs from the key of its element (M.Lo for the first) to the key of
+   --  the next one (M.Hi for the last). Send exactly those elements
+   --  (Have_Exact).
    procedure Have_Back
      (S : Snapshot; M : Message; I : Lo_Bound; J : Elem_Count; O : out Outbox)
    with
@@ -1175,7 +1178,7 @@ package body Kome.Reconcile with SPARK_Mode is
              and then Covers (S, M.Lo, M.Hi, I, J)
              and then J + 1 - I <= Ship_Threshold,
      Post => Outbox_OK (S, O)
-       and then O.N >= 1 and then O.Reply
+       and then O.N >= 1
        and then Have_Exact (S, M, O)
    is
       L   : Index_List := [others => 1];
@@ -1184,7 +1187,7 @@ package body Kome.Reconcile with SPARK_Mode is
       --  it.
       Pos : Index_List := [others => 1] with Ghost;
    begin
-      O := Reply_Box;
+      O := Empty_Box;
       for K in I .. J loop
          pragma Loop_Invariant (C <= K - I);
          pragma Loop_Invariant (for all T in 1 .. C => L (T) >= I and then L (T) < K);
@@ -1234,28 +1237,52 @@ package body Kome.Reconcile with SPARK_Mode is
                     and then not In_Msg (M, Key (S, K2))
                   then Offered (O, K2)));
          end loop;
+         pragma Assert (Tiles (O, M.Lo, M.Hi));
          pragma Assert (Have_Exact (S, M, O));
       else
          pragma Assert (C >= 1);
          for T in 1 .. C loop
-            pragma Loop_Invariant (O.N = T - 1 and then O.Reply);
+            pragma Loop_Invariant (O.N = T - 1);
             pragma Loop_Invariant
               (for all T2 in 1 .. O.N =>
                  Plan_OK (S, O.P (T2)) and then O.P (T2).Kind = P_Have
-                 and then O.P (T2).Lo = M.Lo and then O.P (T2).Hi = M.Hi
                  and then O.P (T2).N = 1 and then O.P (T2).Items (1) = L (T2));
-            O.P (T) := (Kind  => P_Have,
-                        Lo    => M.Lo,
-                        Hi    => M.Hi,
-                        First => 1,
-                        Last  => 0,
-                        N     => 1,
-                        Items => [others => L (T)]);
-            O.N := T;
-            pragma Assert (List_Size (S, O.P (T).Items, 1) = Item_Size (S, L (T)));
-            pragma Assert (Plan_OK (S, O.P (T)));
+            pragma Loop_Invariant (if T > 1 then O.P (1).Lo = M.Lo);
+            pragma Loop_Invariant (if T > 1 then O.P (T - 1).Hi = Key (S, L (T)));
+            pragma Loop_Invariant
+              (for all T2 in 2 .. O.N => O.P (T2 - 1).Hi = O.P (T2).Lo);
+            declare
+               X    : constant Elem_Index := L (T);
+               Lo_T : constant Elem_Key := (if T = 1 then M.Lo else Key (S, X));
+               Hi_T : constant Elem_Key := (if T = C then M.Hi else Key (S, L (T + 1)));
+            begin
+               pragma Assert (In_Window (Key (S, X), M.Lo, M.Hi));
+               if T > 1 then
+                  Lemma_Key_Lt_Irrefl (Key (S, X));
+               end if;
+               pragma Assert (Key_Le (Lo_T, Key (S, X)));
+               if T < C then
+                  pragma Assert (X < L (T + 1));
+                  pragma Assert (Key_Lt (Key (S, X), Key (S, L (T + 1))));
+               end if;
+               pragma Assert (Key_Lt (Key (S, X), Hi_T));
+               Lemma_Key_Le_Lt_Trans (Lo_T, Key (S, X), Hi_T);
+               O.P (T) := (Kind  => P_Have,
+                           Lo    => Lo_T,
+                           Hi    => Hi_T,
+                           First => 1,
+                           Last  => 0,
+                           N     => 1,
+                           Items => [others => X]);
+               O.N := T;
+               pragma Assert (List_Size (S, O.P (T).Items, 1) = Item_Size (S, X));
+               pragma Assert (In_Window (Key (S, O.P (T).Items (1)), Lo_T, Hi_T));
+               pragma Assert (Plan_OK (S, O.P (T)));
+            end;
          end loop;
          pragma Assert (O.N = C);
+         pragma Assert (O.P (O.N).Hi = M.Hi);
+         pragma Assert (Tiles (O, M.Lo, M.Hi));
          for K in 1 .. Count (S) loop
             if In_Window (Key (S, K), M.Lo, M.Hi) and then not In_Msg (M, Key (S, K)) then
                pragma Assert (K >= I and then K <= J);
@@ -1273,9 +1300,6 @@ package body Kome.Reconcile with SPARK_Mode is
       end if;
    end Have_Back;
 
-   --  Exactly the items of M that we do not hold. Our elements in
-   --  [M.Lo, M.Hi) are I .. J, and every item is in that range. So a scan
-   --  of I .. J decides it.
    procedure Deliver
      (S : Snapshot; M : Message; I : Lo_Bound; J : Elem_Count; D : out Delivery)
    with
@@ -1395,7 +1419,7 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (N = My_Count (S, M.Lo, M.Hi));
 
       case M.Kind is
-         when M_Open | M_Hello =>
+         when M_Hello =>
             pragma Assert (False);
 
          when M_Range =>
@@ -1404,7 +1428,7 @@ package body Kome.Reconcile with SPARK_Mode is
             if N = M.Count and then Kome.Keys.To_Key256 (M.Fp) = FPK then
                pragma Assert (Range_Fp (S, I, J) = M.Fp);
                pragma Assert (Confirms (S, M));
-               Out_Box := Reply_Box;
+               Out_Box := Empty_Box;
                Out_Box.N := 1;
                Out_Box.P (1) := (Kind  => P_Have,
                                  Lo    => M.Lo,
@@ -1505,7 +1529,6 @@ package body Kome.Reconcile with SPARK_Mode is
    begin
       Fast_Reply (S, P, M, Out_Box, Got);
    end Respond;
-
    ----------------------------------------------------------------------
    --  Wire congruence: equal bytes read back as equal values.
    ----------------------------------------------------------------------
@@ -1541,8 +1564,9 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Wire_U32 (A, P + 9) = Wire_U32 (B, P + 9));
       pragma Assert (Wire_U32 (A, P + 13) = Wire_U32 (B, P + 13));
       pragma Assert (Wire_Id128 (A, P + 1) = Wire_Id128 (B, P + 1));
-      Lemma_Same_Key256 (A, B, P + 17);
-      Lemma_Same_Key256 (A, B, P + 49);
+      pragma Assert (A (P + 17) = B (P + 17));
+      Lemma_Same_Key256 (A, B, P + 18);
+      Lemma_Same_Key256 (A, B, P + 50);
    end Lemma_Same_Key;
 
    ----------------------------------------------------------------------
@@ -1610,6 +1634,7 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Wire_U32 (Buf, P + 28) = X.W7);
    end Put_Key256;
 
+
    procedure Put_Key (Buf : in out Msg_Buffer; P : Natural; K : Elem_Key) with
      Global => null,
      Pre  => P <= Max_Message_Len - Key_Wire_Len,
@@ -1621,23 +1646,59 @@ package body Kome.Reconcile with SPARK_Mode is
       Buf (P) := Byte (K.K);
       Put_Id (Buf, P + 1, K.Ent);
       pragma Assert (Buf (P) = Byte (K.K));
-      Put_Key256 (Buf, P + 17, K.FH);
-      pragma Assert (Buf (P) = Byte (K.K));
+      Buf (P + 17) := Byte (K.Sub);
       pragma Assert (Wire_Id128 (Buf, P + 1) = K.Ent);
-      Put_Key256 (Buf, P + 49, K.H);
+      Put_Key256 (Buf, P + 18, K.FH);
       pragma Assert (Buf (P) = Byte (K.K));
+      pragma Assert (Buf (P + 17) = Byte (K.Sub));
       pragma Assert (Wire_Id128 (Buf, P + 1) = K.Ent);
-      pragma Assert (Wire_Key256 (Buf, P + 17) = K.FH);
-      pragma Assert (Wire_Key256 (Buf, P + 49) = K.H);
+      Put_Key256 (Buf, P + 50, K.H);
+      pragma Assert (Buf (P) = Byte (K.K));
+      pragma Assert (Buf (P + 17) = Byte (K.Sub));
+      pragma Assert (Wire_Id128 (Buf, P + 1) = K.Ent);
+      pragma Assert (Wire_Key256 (Buf, P + 18) = K.FH);
+      pragma Assert (Wire_Key256 (Buf, P + 50) = K.H);
    end Put_Key;
 
-   --  Tag, group size and range of a RANGE / ELEMENTS / HAVE. The body
-   --  (from Elems_O_N to the end) does not change.
+   procedure Put_U16 (Buf : in out Msg_Buffer; P : Natural; V : Natural) with
+     Global => null,
+     Pre  => P <= Max_Message_Len - 2 and then V <= 65_535,
+     Post => Wire_U16 (Buf, P) = V
+             and then (for all Y in Buf'Range =>
+                         (if Y < P or else Y >= P + 2 then Buf (Y) = Buf'Old (Y)))
+   is
+   begin
+      pragma Assert (V = (V / 256) * 256 + V mod 256);
+      Buf (P)     := Byte (V / 256);
+      Buf (P + 1) := Byte (V mod 256);
+      pragma Assert (Natural (Buf (P)) = V / 256);
+      pragma Assert (Natural (Buf (P + 1)) = V mod 256);
+   end Put_U16;
+
+   procedure Put_U48 (Buf : in out Msg_Buffer; P : Natural; V : U48) with
+     Global => null,
+     Pre  => P <= Max_Message_Len - 6,
+     Post => Wire_U48 (Buf, P) = V
+             and then (for all Y in Buf'Range =>
+                         (if Y < P or else Y >= P + 6 then Buf (Y) = Buf'Old (Y)))
+   is
+      Hi : constant Natural := Natural (V / 2 ** 32);
+      Lo : constant Word := Word (V mod 2 ** 32);
+   begin
+      pragma Assert (V = U48 (Hi) * 2 ** 32 + U48 (Lo));
+      Put_U16 (Buf, P, Hi);
+      Put_Word (Buf, P + 2, Lo);
+      pragma Assert (Wire_U16 (Buf, P) = Hi);
+      pragma Assert (Wire_U32 (Buf, P + 2) = Lo);
+   end Put_U48;
+
+   --  Tag and range of an ELEMENTS / HAVE. The body (from Elems_O_N to the
+   --  end) does not change.
    procedure Write_Head
-     (Buf : in out Msg_Buffer; Tag : Byte; G : Group_Size; Lo, Hi : Elem_Key)
+     (Buf : in out Msg_Buffer; Tag : Byte; Lo, Hi : Elem_Key)
    with
      Global => null,
-     Post => Buf (0) = Tag and then Natural (Buf (O_G)) = G
+     Post => Buf (0) = Tag
              and then Wire_Key (Buf, O_Lo) = Lo
              and then Wire_Key (Buf, O_Hi) = Hi
              and then (for all Y in Buf'Range =>
@@ -1654,538 +1715,149 @@ package body Kome.Reconcile with SPARK_Mode is
       end;
       pragma Assert (Wire_Key (Buf, O_Lo) = Lo);
       Buf (0) := Tag;
-      Buf (O_G) := Byte (G);
       pragma Assert (Wire_Key (Buf, O_Lo) = Lo);
       pragma Assert (Wire_Key (Buf, O_Hi) = Hi);
    end Write_Head;
 
-   --  One item (key ‖ flen ‖ frame) of element X at Buf (P ..).
+   --  One item (flen ‖ frame) of element X at Buf (P ..), its frame from T.
    procedure Put_Item
-     (S : Snapshot; X : Elem_Index; Buf : in out Msg_Buffer; P : in out Natural)
+     (S   : Snapshot;
+      T   : Frame_Table;
+      X   : Elem_Index;
+      Buf : in out Msg_Buffer;
+      P   : in out Natural)
    with
      Global => null,
-     Pre  => Valid (S) and then X <= Count (S)
+     Pre  => Valid (S) and then Table_Valid (T) and then Linked (S, T)
+             and then X <= Count (S)
+             and then P >= Elems_Fixed
              and then P <= Max_Message_Len - Item_Size (S, X),
      Post => P = P'Old + Item_Size (S, X)
+             and then (for all Y in Buf'Range =>
+                         (if Y < P'Old then Buf (Y) = Buf'Old (Y)))
    is
-      L   : constant Frame_Size := S.Lens (X);
-      Off : constant Positive := S.Offs (X);
+      L : constant Frame_Size := Frame_Len (S, X);
    begin
-      pragma Assert (Frame_In_Pool (S, X));
-      Put_Key (Buf, P, Key (S, X));
-      Put_Word (Buf, P + Key_Wire_Len, Word (L));
-      Buf (P + Item_Overhead .. P + Item_Overhead + L - 1) :=
-        S.Pool (Off .. Off + L - 1);
+      Put_U16 (Buf, P, L);
+      Buf (P + Item_Overhead .. P + Item_Overhead + L - 1) := Elem_Frame (S, T, X);
       P := P + Item_Overhead + L;
    end Put_Item;
 
    procedure Encode
      (S   : Snapshot;
-      PS  : Prefix;
+      T   : Frame_Table;
       P   : Plan;
-      G   : Group_Size;
       Buf : out Msg_Buffer;
       Len : out Msg_Length)
    is
+      Pos : Natural := Elems_Fixed;
+      N   : constant Item_Count :=
+        (if P.Kind = P_Elements then P.Last + 1 - P.First else P.N);
    begin
       Buf := [others => 0];
       --  First the body, then the head. The head does not change the
       --  body.
-      case P.Kind is
-         when P_Range =>
-            declare
-               FP : Hash256;
-            begin
-               Put_Word (Buf, Range_O_Count, Word (P.Last + 1 - P.First));
-               Fingerprint_Of (S, PS, P.First, P.Last, FP);
-               Buf (Range_O_Fp .. Range_O_Fp + 31) := FP;
-               pragma Assert (Wire_U32 (Buf, Range_O_Count) = Word (P.Last + 1 - P.First));
-               pragma Assert (Buf (Range_O_Fp .. Range_O_Fp + 31) = Range_Fp (S, P.First, P.Last));
-            end;
-            Len := Range_Len;
-
-         when P_Elements =>
-            declare
-               Pos : Natural := Elems_Fixed;
-            begin
-               if P.Last >= P.First then
-                  Put_Item (S, P.First, Buf, Pos);
-               end if;
-               if P.Last >= P.First + 1 then
-                  Put_Item (S, P.First + 1, Buf, Pos);
-               end if;
-               if P.Last >= P.First + 2 then
-                  Put_Item (S, P.First + 2, Buf, Pos);
-               end if;
-               if P.Last >= P.First + 3 then
-                  Put_Item (S, P.First + 3, Buf, Pos);
-               end if;
-               pragma Assert (Pos = Plan_Len (S, P));
-               Len := Pos;
-            end;
-            Buf (Elems_O_N) := Byte (P.Last + 1 - P.First);
-
-         when P_Have =>
-            declare
-               Pos : Natural := Elems_Fixed;
-            begin
-               if P.N >= 1 then
-                  Put_Item (S, P.Items (1), Buf, Pos);
-               end if;
-               if P.N >= 2 then
-                  Put_Item (S, P.Items (2), Buf, Pos);
-               end if;
-               if P.N >= 3 then
-                  Put_Item (S, P.Items (3), Buf, Pos);
-               end if;
-               if P.N = 4 then
-                  Put_Item (S, P.Items (4), Buf, Pos);
-               end if;
-               pragma Assert (Pos = Plan_Len (S, P));
-               Len := Pos;
-            end;
-            Buf (Elems_O_N) := Byte (P.N);
-      end case;
+      if P.Kind = P_Elements then
+         if P.Last >= P.First then
+            Put_Item (S, T, P.First, Buf, Pos);
+         end if;
+         if P.Last >= P.First + 1 then
+            Put_Item (S, T, P.First + 1, Buf, Pos);
+         end if;
+         if P.Last >= P.First + 2 then
+            Put_Item (S, T, P.First + 2, Buf, Pos);
+         end if;
+         if P.Last >= P.First + 3 then
+            Put_Item (S, T, P.First + 3, Buf, Pos);
+         end if;
+      else
+         if P.N >= 1 then
+            Put_Item (S, T, P.Items (1), Buf, Pos);
+         end if;
+         if P.N >= 2 then
+            Put_Item (S, T, P.Items (2), Buf, Pos);
+         end if;
+         if P.N >= 3 then
+            Put_Item (S, T, P.Items (3), Buf, Pos);
+         end if;
+         if P.N = 4 then
+            Put_Item (S, T, P.Items (4), Buf, Pos);
+         end if;
+      end if;
+      pragma Assert (Pos = Plan_Len (S, P));
+      Len := Pos;
+      Put_U16 (Buf, Elems_O_N, N);
 
       declare
          Body_Buf : constant Msg_Buffer := Buf with Ghost;
       begin
-         Write_Head (Buf, Tag_Of (P.Kind), G, P.Lo, P.Hi);
+         Write_Head (Buf, (if P.Kind = P_Elements then Tag_Elements else Tag_Have),
+                     P.Lo, P.Hi);
          pragma Assert (Buf (Elems_O_N) = Body_Buf (Elems_O_N));
-         if P.Kind = P_Range then
-            pragma Assert (Buf (Range_O_Count) = Body_Buf (Range_O_Count));
-            pragma Assert (Buf (Range_O_Count + 1) = Body_Buf (Range_O_Count + 1));
-            pragma Assert (Buf (Range_O_Count + 2) = Body_Buf (Range_O_Count + 2));
-            pragma Assert (Buf (Range_O_Count + 3) = Body_Buf (Range_O_Count + 3));
-            pragma Assert (Wire_U32 (Buf, Range_O_Count) = Wire_U32 (Body_Buf, Range_O_Count));
-            pragma Assert (for all Y in Range_O_Fp .. Range_O_Fp + 31 => Buf (Y) = Body_Buf (Y));
-            pragma Assert (Buf (Range_O_Fp .. Range_O_Fp + 31)
-                           = Body_Buf (Range_O_Fp .. Range_O_Fp + 31));
-         end if;
+         pragma Assert (Buf (Elems_O_N + 1) = Body_Buf (Elems_O_N + 1));
+         pragma Assert (Wire_U16 (Buf, Elems_O_N) = Wire_U16 (Body_Buf, Elems_O_N));
       end;
    end Encode;
 
-   procedure Lemma_Range_Accepted
-     (S : Snapshot; P : Plan; G : Group_Size; Buf : Msg_Buffer)
+   procedure Encode_Ranges
+     (S   : Snapshot;
+      PS  : Prefix;
+      O   : Outbox;
+      Buf : out Msg_Buffer;
+      Len : out Msg_Length)
    is
-      B : constant Byte_Array := Buf (0 .. Range_Len - 1);
+      K  : constant Part_Index := O.N;
+      FP : Hash256;
    begin
-      pragma Assert (Natural (B (O_G)) = G);
-      pragma Assert (B'First = 0 and then B'Last = Range_Len - 1);
-      pragma Assert (for all Y in B'Range => B (Y) = Buf (Y));
-      pragma Assert (Wire_Key (B, O_Lo) = Wire_Key (Buf, O_Lo));
-      pragma Assert (Wire_Key (B, O_Hi) = Wire_Key (Buf, O_Hi));
-      pragma Assert (Wire_U32 (B, Range_O_Count) = Wire_U32 (Buf, Range_O_Count));
-      pragma Assert (Key_Lt (P.Lo, P.Hi));
-      pragma Assert (P.Last + 1 - P.First <= Kome.Digest.Elem_Max);
-      pragma Assert (Range_Wire_OK (B));
-   end Lemma_Range_Accepted;
+      Buf := [others => 0];
+      Buf (0) := Tag_Range;
+      Buf (Range_O_K) := Byte (K);
+      Put_Key (Buf, Bound_At (0), O.P (1).Lo);
+      for T in 1 .. K loop
+         pragma Loop_Invariant (Buf (0) = Tag_Range and then Natural (Buf (Range_O_K)) = K);
+         Lemma_Outbox_OK (S, O, T);
+         Put_Key (Buf, Bound_At (T), O.P (T).Hi);
+         Put_U48 (Buf, Part_At (K, T), U48 (O.P (T).Last + 1 - O.P (T).First));
+         Fingerprint_Of (S, PS, O.P (T).First, O.P (T).Last, FP);
+         Buf (Part_At (K, T) + Count_Len .. Part_At (K, T) + Count_Len + 31) := FP;
+      end loop;
+      Len := Range_Msg_Len (K);
+   end Encode_Ranges;
 
-   procedure Lemma_Confirm_Accepted
-     (S : Snapshot; P : Plan; G : Group_Size; Buf : Msg_Buffer)
-   is
+   procedure Lemma_Confirm_Accepted (S : Snapshot; P : Plan; Buf : Msg_Buffer) is
       B : constant Byte_Array := Buf (0 .. Elems_Fixed - 1);
    begin
-      pragma Assert (Natural (B (O_G)) = G);
       pragma Assert (B'First = 0 and then B'Last = Elems_Fixed - 1);
       pragma Assert (for all Y in B'Range => B (Y) = Buf (Y));
       pragma Assert (Wire_Key (B, O_Lo) = Wire_Key (Buf, O_Lo));
       pragma Assert (Wire_Key (B, O_Hi) = Wire_Key (Buf, O_Hi));
+      pragma Assert (Wire_U16 (B, Elems_O_N) = Wire_U16 (Buf, Elems_O_N));
       pragma Assert (Key_Lt (P.Lo, P.Hi));
       pragma Assert (Empty_Wire_OK (B));
    end Lemma_Confirm_Accepted;
 
-   ----------------------------------------------------------------------
-   --  OPEN and HELLO. Fixed layout: first the header, then the frames or
-   --  the credential. Each part is written once.
-   ----------------------------------------------------------------------
-
-   procedure Encode_Open
-     (O   : Open_Msg;
+   procedure Encode_Root
+     (R   : Root_Out;
       Buf : out Msg_Buffer;
       Len : out Msg_Length)
    is
-      N : constant Rv_Count := O.N_RV;
    begin
       Buf := [others => 0];
-      Buf (0) := Tag_Open;
-      Buf (Open_O_Proto) := O.Proto;
-      Buf (Open_O_NRV) := Byte (N);
-      Put_Id (Buf, Open_O_NS, O.NS);
-      pragma Assert (Buf (0) = Tag_Open and then Buf (Open_O_Proto) = Proto_Version
-                     and then Buf (Open_O_NRV) = Byte (N));
+      Put_U48 (Buf, Root_O_Count, U48 (R.Count));
+      Buf (Root_O_Fp .. Root_O_Fp + 31) := R.Fp;
+      pragma Assert (Wire_U48 (Buf, Root_O_Count) = U48 (R.Count));
+      Buf (0) := Tag_Root;
+      pragma Assert (Wire_U48 (Buf, Root_O_Count) = U48 (R.Count));
+      pragma Assert (Buf (Root_O_Fp .. Root_O_Fp + 31) = R.Fp);
+      Len := Root_Len;
       declare
-         Head : constant Msg_Buffer := Buf with Ghost;
+         B : constant Byte_Array := Buf (0 .. Root_Len - 1);
       begin
-         for I in 1 .. N loop
-            pragma Loop_Invariant
-              (for all Y in 0 .. Open_Fixed - 1 => Buf (Y) = Head (Y));
-            pragma Loop_Invariant
-              (for all J in 1 .. I - 1 =>
-                 Buf (Rv_At (J) .. Rv_At (J) + Rv_Frame_Len - 1) = O.RV (J));
-            Buf (Rv_At (I) .. Rv_At (I) + Rv_Frame_Len - 1) := O.RV (I);
-            pragma Assert
-              (for all J in 1 .. I - 1 => Rv_At (J) + Rv_Frame_Len - 1 < Rv_At (I));
-         end loop;
-         pragma Assert (for all Y in 0 .. Open_Fixed - 1 => Buf (Y) = Head (Y));
-         pragma Assert (for all Y in Open_O_NS .. Open_O_NS + 15 => Buf (Y) = Head (Y));
-         pragma Assert (Wire_U32 (Buf, Open_O_NS) = Wire_U32 (Head, Open_O_NS));
-         pragma Assert (Wire_U32 (Buf, Open_O_NS + 4) = Wire_U32 (Head, Open_O_NS + 4));
-         pragma Assert (Wire_U32 (Buf, Open_O_NS + 8) = Wire_U32 (Head, Open_O_NS + 8));
-         pragma Assert (Wire_U32 (Buf, Open_O_NS + 12) = Wire_U32 (Head, Open_O_NS + 12));
-         pragma Assert (Wire_Id128 (Buf, Open_O_NS) = O.NS);
+         pragma Assert (for all Y in B'Range => B (Y) = Buf (Y));
+         pragma Assert (Wire_U48 (B, Root_O_Count) = Wire_U48 (Buf, Root_O_Count));
+         pragma Assert (Root_Wire_OK (B));
       end;
-      Len := Open_Len (N);
-      pragma Assert (Open_Wire_OK (Buf (0 .. Len - 1)));
-   end Encode_Open;
-
-   function Open_Written (O : Open_Msg; Buf : Msg_Buffer; Len : Msg_Length)
-     return Boolean
-   is (Len = Open_Len (O.N_RV)
-       and then Open_Wire_OK (Buf (0 .. Len - 1))
-       and then Wire_Id128 (Buf, Open_O_NS) = O.NS
-       and then Natural (Buf (Open_O_NRV)) = O.N_RV
-       and then (for all I in 1 .. O.N_RV =>
-                   Buf (Rv_At (I) .. Rv_At (I) + Rv_Frame_Len - 1) = O.RV (I)));
-
-   procedure Lemma_Open_Written (O : Open_Msg; Buf : Msg_Buffer; Len : Msg_Length) is null;
-
-   procedure Decode_Open
-     (Input : Byte_Array;
-      O     : out Open_Msg;
-      OK    : out Boolean)
-   is
-   begin
-      O := (Proto => Proto_Version,
-            NS    => (others => 0),
-            N_RV  => 0,
-            RV    => [others => Zero_Rv]);
-      OK := False;
-      if Input'Last < Input'First or else Input'Last - Input'First < Open_Fixed - 1 then
-         return;
-      end if;
-      declare
-         F  : constant Natural := Input'First;
-         NB : constant Byte := Input (F + Open_O_NRV);
-      begin
-         if Input (F) /= Tag_Open
-           or else Input (F + Open_O_Proto) /= Proto_Version
-           or else NB > Rv_Max
-           or else Input'Last - F /= Open_Fixed - 1 + Rv_Frame_Len * Natural (NB)
-         then
-            return;
-         end if;
-         pragma Assert (Open_Wire_OK (Input));
-         O.NS := Wire_Id128 (Input, F + Open_O_NS);
-         O.N_RV := Natural (NB);
-         for I in 1 .. Natural (NB) loop
-            pragma Loop_Invariant
-              (for all J in 1 .. I - 1 =>
-                 O.RV (J) = Open_Frame (Input, J));
-            pragma Loop_Invariant
-              (for all J in I .. Rv_Max => O.RV (J) = Zero_Rv);
-            pragma Loop_Invariant
-              (O.Proto = Proto_Version
-               and then O.NS = Wire_Id128 (Input, F + Open_O_NS)
-               and then O.N_RV = Natural (NB));
-            O.RV (I) := Open_Frame (Input, I);
-         end loop;
-         pragma Assert (Open_Frames (Input, O));
-         OK := True;
-      end;
-   end Decode_Open;
-
-   ----------------------------------------------------------------------
-   --  The root-void set (H5).
-   ----------------------------------------------------------------------
-
-   function Voids_OK
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set) return Boolean
-   is
-     (V.N_Subj <= V.N
-      and then (for all I in 1 .. V.N =>
-                  Void_Candidate (F, T, V.Picked (I))
-                  and then V.RV (I) = Table_Frame (T, V.Picked (I)))
-      and then (for all I in 1 .. V.N =>
-                  (for all I2 in 1 .. V.N =>
-                     (if I /= I2 then V.Picked (I) /= V.Picked (I2))))
-      and then (for all I in 1 .. V.N_Subj =>
-                  (for all I2 in 1 .. V.N_Subj =>
-                     (if I /= I2 then Void_Subject (F, V, I) /= Void_Subject (F, V, I2))))
-      and then (for all I in 1 .. V.N_Subj =>
-                  (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                     (if Void_Candidate (F, T, J)
-                        and then Kome.Frontier.Auth_Held (F, 1, J).V.Author
-                                   = Void_Subject (F, V, I)
-                      then V.Picked (I) <= Kome.Frontier.Slot_Count (F, 1)
-                           and then Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (I)),
-                                              Kome.Frontier.Auth_Held (F, 1, J)))))
-      and then (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                  (if Void_Candidate (F, T, J) then
-                     V.N_Subj = Rv_Max
-                     or else (for some I in 1 .. V.N_Subj =>
-                                Void_Subject (F, V, I)
-                                  = Kome.Frontier.Auth_Held (F, 1, J).V.Author)))
-      and then (for all I in V.N_Subj + 1 .. V.N =>
-                  V.Picked (I) <= Kome.Frontier.Slot_Count (F, 1)
-                  and then Kome.Frontier.Auth_Held (F, 1, V.Picked (I)).V.T = 0)
-      and then (if V.N < Rv_Max then
-                  (for all J in 1 .. Kome.Frontier.Slot_Count (F, 1) =>
-                     (if Void_Candidate (F, T, J)
-                        and then Kome.Frontier.Auth_Held (F, 1, J).V.T = 0
-                      then (for some I in 1 .. V.N => V.Picked (I) = J)))));
-
-   procedure Lemma_Voids_OK_Def
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set) is null;
-
-   --  Lower_Eq is a total preorder on (from_t, h) (Lt on Key256 is a
-   --  chain of word comparisons, so each law unfolds).
-   procedure Lemma_Lower_Eq_Total (A, B : Header) with
-     Ghost, Global => null,
-     Post => Lower_Eq (A, B) or else Lower_Eq (B, A);
-
-   procedure Lemma_Lower_Eq_Total (A, B : Header) is null;
-
-   procedure Lemma_Lower_Eq_Trans (A, B, C : Header) with
-     Ghost, Global => null,
-     Pre  => Lower_Eq (A, B) and then Lower_Eq (B, C),
-     Post => Lower_Eq (A, C);
-
-   procedure Lemma_Lower_Eq_Trans (A, B, C : Header) is null;
-
-   type Who_Array is array (Slice_Pos) of Natural;
-
-   function Select_Voids
-     (F : Kome.Frontier.State; T : Frame_Table) return Void_Set
-   is
-      N1    : constant Kome.Frontier.Slice_Count := Kome.Frontier.Slot_Count (F, 1);
-      V     : Void_Set;
-      Found : Natural;
-      --  Who (J): the index of the frame that covers the subject of
-      --  candidate J (0 if the subjects were full).
-      Who   : Who_Array := [others => 0] with Ghost;
-      --  Pos (J): the index of the frame of candidate J (0 if none).
-      Pos   : Who_Array := [others => 0] with Ghost;
-   begin
-      --  Pass 1: one frame for each subject, the least of its candidates.
-      for J in 1 .. N1 loop
-         pragma Loop_Invariant (V.N = V.N_Subj);
-         pragma Loop_Invariant
-           (for all I in 1 .. V.N =>
-              V.Picked (I) < J
-              and then Void_Candidate (F, T, V.Picked (I))
-              and then V.RV (I) = Table_Frame (T, V.Picked (I)));
-         pragma Loop_Invariant
-           (for all I in 1 .. V.N =>
-              (for all I2 in 1 .. V.N =>
-                 (if I /= I2 then Void_Subject (F, V, I) /= Void_Subject (F, V, I2))));
-         pragma Loop_Invariant
-           (for all I in 1 .. V.N =>
-              (for all J2 in 1 .. J - 1 =>
-                 (if Void_Candidate (F, T, J2)
-                    and then Kome.Frontier.Auth_Held (F, 1, J2).V.Author
-                               = Void_Subject (F, V, I)
-                  then Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (I)),
-                                 Kome.Frontier.Auth_Held (F, 1, J2)))));
-         pragma Loop_Invariant
-           (for all J2 in 1 .. J - 1 =>
-              (if Void_Candidate (F, T, J2) then
-                 V.N = Rv_Max
-                 or else (Who (J2) in 1 .. V.N
-                          and then Void_Subject (F, V, Who (J2))
-                                     = Kome.Frontier.Auth_Held (F, 1, J2).V.Author)));
-         if Void_Candidate (F, T, J) then
-            declare
-               Subj : constant Key256 := Kome.Frontier.Auth_Held (F, 1, J).V.Author;
-               R    : constant Header := Kome.Frontier.Auth_Held (F, 1, J);
-            begin
-               Found := 0;
-               for I in 1 .. V.N loop
-                  pragma Loop_Invariant
-                    (for all I2 in 1 .. I - 1 => Void_Subject (F, V, I2) /= Subj);
-                  if Void_Subject (F, V, I) = Subj then
-                     Found := I;
-                     exit;
-                  end if;
-               end loop;
-               if Found /= 0 then
-                  pragma Assert (Found <= V.N);
-                  pragma Assert (Void_Subject (F, V, Found) = Subj);
-                  Lemma_Lower_Eq_Total (Kome.Frontier.Auth_Held (F, 1, V.Picked (Found)), R);
-                  if not Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (Found)), R) then
-                     --  J is strictly lower: it replaces the pick. The
-                     --  earlier candidates of the subject stay above J
-                     --  (transitivity).
-                     declare
-                        Old_Pick : constant Slice_Pos := V.Picked (Found);
-                        Old_V    : constant Void_Set := V with Ghost;
-                     begin
-                        for J2 in 1 .. J - 1 loop
-                           if Void_Candidate (F, T, J2)
-                             and then Kome.Frontier.Auth_Held (F, 1, J2).V.Author = Subj
-                           then
-                              Lemma_Lower_Eq_Trans
-                                (R, Kome.Frontier.Auth_Held (F, 1, Old_Pick),
-                                 Kome.Frontier.Auth_Held (F, 1, J2));
-                           end if;
-                           pragma Loop_Invariant
-                             (for all J3 in 1 .. J2 =>
-                                (if Void_Candidate (F, T, J3)
-                                   and then Kome.Frontier.Auth_Held (F, 1, J3).V.Author = Subj
-                                 then Lower_Eq (R, Kome.Frontier.Auth_Held (F, 1, J3))));
-                        end loop;
-                        V.Picked (Found) := J;
-                        V.RV (Found) := Rv_Frame (Table_Frame (T, J));
-                        pragma Assert (Void_Subject (F, V, Found) = Subj);
-                        pragma Assert
-                          (for all I in 1 .. V.N =>
-                             (if I /= Found then V.Picked (I) = Old_V.Picked (I)));
-                        pragma Assert
-                          (for all I in 1 .. V.N =>
-                             Void_Subject (F, V, I) = Void_Subject (F, Old_V, I));
-                        pragma Assert
-                          (for all J2 in 1 .. J - 1 =>
-                             (if Void_Candidate (F, T, J2)
-                                and then Kome.Frontier.Auth_Held (F, 1, J2).V.Author = Subj
-                              then Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (Found)),
-                                             Kome.Frontier.Auth_Held (F, 1, J2))));
-                     end;
-                  end if;
-                  Who (J) := Found;
-                  pragma Assert (Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (Found)), R));
-               elsif V.N < Rv_Max then
-                  pragma Assert (for all I2 in 1 .. V.N => Void_Subject (F, V, I2) /= Subj);
-                  --  No earlier candidate has this subject: it would have
-                  --  been picked (the subjects are not full).
-                  pragma Assert
-                    (for all J2 in 1 .. J - 1 =>
-                       not (Void_Candidate (F, T, J2)
-                            and then Kome.Frontier.Auth_Held (F, 1, J2).V.Author = Subj));
-                  V.N := V.N + 1;
-                  V.N_Subj := V.N;
-                  V.Picked (V.N) := J;
-                  V.RV (V.N) := Rv_Frame (Table_Frame (T, J));
-                  Who (J) := V.N;
-                  pragma Assert (Void_Subject (F, V, V.N) = Subj);
-                  pragma Assert
-                    (for all I in 1 .. V.N - 1 => Void_Subject (F, V, I) /= Subj);
-               else
-                  Who (J) := 0;
-               end if;
-            end;
-         end if;
-      end loop;
-      pragma Assert (V.N = V.N_Subj);
-      pragma Assert
-        (for all J in 1 .. N1 =>
-           (if Void_Candidate (F, T, J) then
-              V.N_Subj = Rv_Max
-              or else (for some I in 1 .. V.N_Subj =>
-                         Void_Subject (F, V, I) = Kome.Frontier.Auth_Held (F, 1, J).V.Author)));
-
-      --  Pass 2: the other from_t = 0 candidates, while room is left. The
-      --  first N_Subj frames do not change.
-      declare
-         V1 : constant Void_Set := V with Ghost;
-      begin
-         for J in 1 .. N1 loop
-            pragma Loop_Invariant (V.N_Subj = V1.N_Subj and then V.N_Subj <= V.N);
-            pragma Loop_Invariant
-              (for all I in 1 .. V.N_Subj => V.Picked (I) = V1.Picked (I));
-            pragma Loop_Invariant
-              (for all I in 1 .. V.N =>
-                 Void_Candidate (F, T, V.Picked (I))
-                 and then V.RV (I) = Table_Frame (T, V.Picked (I)));
-            pragma Loop_Invariant
-              (for all I in 1 .. V.N =>
-                 (for all I2 in 1 .. V.N =>
-                    (if I /= I2 then V.Picked (I) /= V.Picked (I2))));
-            pragma Loop_Invariant
-              (for all I in V.N_Subj + 1 .. V.N =>
-                 Kome.Frontier.Auth_Held (F, 1, V.Picked (I)).V.T = 0);
-            pragma Loop_Invariant
-              (for all J2 in 1 .. J - 1 =>
-                 (if Void_Candidate (F, T, J2)
-                    and then Kome.Frontier.Auth_Held (F, 1, J2).V.T = 0
-                  then V.N = Rv_Max
-                       or else (Pos (J2) in 1 .. V.N and then V.Picked (Pos (J2)) = J2)));
-            if V.N < Rv_Max
-              and then Void_Candidate (F, T, J)
-              and then Kome.Frontier.Auth_Held (F, 1, J).V.T = 0
-            then
-               Found := 0;
-               for I in 1 .. V.N loop
-                  pragma Loop_Invariant (for all I2 in 1 .. I - 1 => V.Picked (I2) /= J);
-                  if V.Picked (I) = J then
-                     Found := I;
-                     exit;
-                  end if;
-               end loop;
-               if Found = 0 then
-                  pragma Assert (for all I in 1 .. V.N => V.Picked (I) /= J);
-                  V.N := V.N + 1;
-                  V.Picked (V.N) := J;
-                  V.RV (V.N) := Rv_Frame (Table_Frame (T, J));
-                  Pos (J) := V.N;
-               else
-                  Pos (J) := Found;
-               end if;
-            end if;
-         end loop;
-         pragma Assert (for all I in 1 .. V.N_Subj => Void_Subject (F, V, I) = Void_Subject (F, V1, I));
-         pragma Assert
-           (for all I in 1 .. V.N_Subj =>
-              (for all I2 in 1 .. V.N_Subj =>
-                 (if I /= I2 then Void_Subject (F, V, I) /= Void_Subject (F, V, I2))));
-         pragma Assert
-           (for all I in 1 .. V.N_Subj =>
-              (for all J in 1 .. N1 =>
-                 (if Void_Candidate (F, T, J)
-                    and then Kome.Frontier.Auth_Held (F, 1, J).V.Author = Void_Subject (F, V, I)
-                  then V.Picked (I) <= N1
-                       and then Lower_Eq (Kome.Frontier.Auth_Held (F, 1, V.Picked (I)),
-                                          Kome.Frontier.Auth_Held (F, 1, J)))));
-         pragma Assert
-           (for all J in 1 .. N1 =>
-              (if Void_Candidate (F, T, J) then
-                 V.N_Subj = Rv_Max
-                 or else (for some I in 1 .. V.N_Subj =>
-                            Void_Subject (F, V, I) = Kome.Frontier.Auth_Held (F, 1, J).V.Author)));
-         pragma Assert
-           (if V.N < Rv_Max then
-              (for all J in 1 .. N1 =>
-                 (if Void_Candidate (F, T, J)
-                    and then Kome.Frontier.Auth_Held (F, 1, J).V.T = 0
-                  then (for some I in 1 .. V.N => V.Picked (I) = J))));
-      end;
-      pragma Assert (Voids_OK (F, T, V));
-      return V;
-   end Select_Voids;
-
-   procedure Lemma_Voids_Cover
-     (F : Kome.Frontier.State; T : Frame_Table; V : Void_Set; K : Key256)
-   is
-      N1 : constant Kome.Frontier.Slice_Count := Kome.Frontier.Slot_Count (F, 1);
-   begin
-      Kome.Views.Lemma_Root_Void_Slot (F, K);
-      --  A slot-1 REVOKE of K exists; find it.
-      for J in 1 .. N1 loop
-         pragma Loop_Invariant
-           (for all J2 in 1 .. J - 1 =>
-              not (Kome.Frontier.Auth_Held (F, 1, J2).K = K_Revoke
-                   and then Kome.Frontier.Auth_Held (F, 1, J2).V.Author = K));
-         if Kome.Frontier.Auth_Held (F, 1, J).K = K_Revoke
-           and then Kome.Frontier.Auth_Held (F, 1, J).V.Author = K
-         then
-            pragma Assert (Void_Candidate (F, T, J));
-            pragma Assert
-              (V.N_Subj = Rv_Max
-               or else (for some I in 1 .. V.N_Subj => Void_Subject (F, V, I) = K));
-            return;
-         end if;
-      end loop;
-      pragma Assert (False);
-   end Lemma_Voids_Cover;
+   end Encode_Root;
 
    ----------------------------------------------------------------------
    --  HELLO
@@ -2256,48 +1928,96 @@ package body Kome.Reconcile with SPARK_Mode is
       end;
    end Decode_Hello;
 
-   --  The RANGE fields, in a small context.
-   procedure Lemma_Range_Fields (Input : Byte_Array; M : Message) with
-     Ghost, Global => null,
-     Pre  => Range_Wire_OK (Input)
-             and then M.Count = Natural (Wire_U32 (Input, Input'First + Range_O_Count))
-             and then M.Fp = Input (Input'First + Range_O_Fp
-                                    .. Input'First + Range_O_Fp + 31),
-     Post => Range_Fields (Input, M);
 
-   procedure Lemma_Range_Fields (Input : Byte_Array; M : Message) is null;
+   ----------------------------------------------------------------------
+   --  RANGE part / ROOT / ELEMENTS / HAVE decode
+   ----------------------------------------------------------------------
+
+   function Item_Places (Input : Byte_Array) return Places is
+      R   : Places;
+      Bad : constant Places := (others => <>);
+   begin
+      if Input'Last < Input'First
+        or else Input'Last - Input'First >= Max_Message_Len
+        or else Input'Last - Input'First < Elems_Fixed - 1
+      then
+         return Bad;
+      end if;
+      declare
+         Len : constant Natural := Input'Last - Input'First + 1;
+         F   : constant Natural := Input'First;
+         NN  : constant Natural := Wire_U16 (Input, F + Elems_O_N);
+         Pos : Natural := Elems_Fixed;   --  relative to F
+      begin
+         if NN > Ship_Threshold then
+            return Bad;
+         end if;
+         for T in 1 .. NN loop
+            pragma Loop_Invariant (Pos >= Elems_Fixed and then Pos <= Len);
+            pragma Loop_Invariant (not R.OK);
+            pragma Loop_Invariant
+              (for all T2 in 1 .. T - 1 =>
+                 R.Off (T2) >= Input'First
+                 and then R.Off (T2) <= Input'Last
+                 and then Input'Last - R.Off (T2) >= R.Len (T2) - 1);
+            if Len - Pos < Item_Overhead + 1 then
+               return Bad;
+            end if;
+            declare
+               FL : constant Natural := Wire_U16 (Input, F + Pos);
+            begin
+               if FL < 1 or else FL > Frame_Ship_Max
+                 or else Len - Pos - Item_Overhead < FL
+               then
+                  return Bad;
+               end if;
+               R.Off (T) := F + Pos + Item_Overhead;
+               R.Len (T) := FL;
+               Pos := Pos + Item_Overhead + FL;
+            end;
+         end loop;
+         if Pos /= Len then
+            return Bad;
+         end if;
+         R.N := NN;
+         R.OK := True;
+         return R;
+      end;
+   end Item_Places;
 
    --  An ELEMENTS / HAVE that is built from checked items is well-formed,
    --  in a small context.
    procedure Lemma_Items_OK
-     (K : Msg_Kind; G : Group_Size; Lo, Hi : Elem_Key; N : Item_Count;
-      Items : In_Items)
+     (K : Msg_Kind; Lo, Hi : Elem_Key; N : Item_Count; Items : In_Items)
    with
      Ghost, Global => null,
      Pre  => K in M_Elements | M_Have and then Key_Lt (Lo, Hi)
-             and then (for all T in 1 .. N =>
-                         Items (T).Key.K <= 4 and then In_Window (Items (T).Key, Lo, Hi))
+             and then (for all T in 1 .. N => In_Window (Items (T).Key, Lo, Hi))
              and then (for all T in 2 .. N => Key_Lt (Items (T - 1).Key, Items (T).Key)),
-     Post => Msg_OK ((Kind => K, G => G, Lo => Lo, Hi => Hi, Count => 0,
+     Post => Msg_OK ((Kind => K, Root => False, Lo => Lo, Hi => Hi, Count => 0,
                       Fp => [others => 0], N => N, Items => Items));
 
    procedure Lemma_Items_OK
-     (K : Msg_Kind; G : Group_Size; Lo, Hi : Elem_Key; N : Item_Count;
-      Items : In_Items) is null;
+     (K : Msg_Kind; Lo, Hi : Elem_Key; N : Item_Count; Items : In_Items) is null;
 
    procedure Decode_Raw
      (Input  : Byte_Array;
+      Part   : Positive;
+      Keys   : Key_List;
       M      : out Message;
       OK     : out Boolean)
    with
      Global => null,
-     Post   => Decode_Facts (Input, M, OK);
+     Post   => Decode_Facts (Input, Part, Keys, M, OK);
 
    procedure Decode_Raw
      (Input  : Byte_Array;
+      Part   : Positive;
+      Keys   : Key_List;
       M      : out Message;
       OK     : out Boolean)
    is
+      No_Items : constant In_Items := [others => (Key => Min_Key, Off => 0, Len => 1)];
    begin
       M := (others => <>);
       OK := False;
@@ -2305,133 +2025,140 @@ package body Kome.Reconcile with SPARK_Mode is
       --  knows that the length is at most Max_Message_Len.
       if Input'Last < Input'First
         or else Input'Last - Input'First >= Max_Message_Len
-        or else Input'Last - Input'First < Elems_Fixed - 1
       then
          return;
       end if;
 
       declare
-         Len : constant Natural := Input'Last - Input'First + 1;
          F   : constant Natural := Input'First;
          Tag : constant Byte := Input (F);
-         G   : constant Byte := Input (F + O_G);
-         Lo  : constant Elem_Key := Wire_Key (Input, F + O_Lo);
-         Hi  : constant Elem_Key := Wire_Key (Input, F + O_Hi);
       begin
-         if G > Split_Fanout or else not Key_Lt (Lo, Hi) then
-            return;
-         end if;
-
-         if Tag = Tag_Range then
-            if Len /= Range_Len then
+         if Tag = Tag_Root then
+            if Input'Last - F /= Root_Len - 1 or else Part /= 1 then
                return;
             end if;
             declare
-               C : constant Word := Wire_U32 (Input, F + Range_O_Count);
+               C : constant U48 := Wire_U48 (Input, F + Root_O_Count);
             begin
-               if C > Kome.Digest.Elem_Max then
+               if C > Elem_Max then
                   return;
                end if;
                M := (Kind   => M_Range,
-                     G      => Natural (G),
-                     Lo     => Lo,
-                     Hi     => Hi,
+                     Root   => True,
+                     Lo     => Min_Key,
+                     Hi     => Max_Key,
                      Count  => Elem_Count (C),
-                     Fp     => Input (F + Range_O_Fp .. F + Range_O_Fp + 31),
+                     Fp     => Input (F + Root_O_Fp .. F + Root_O_Fp + 31),
                      N      => 0,
-                     Items  => [others => (Key => Min_Key, Off => 0, Len => 1)]);
+                     Items  => No_Items);
                pragma Assert (Msg_OK (M));
-               pragma Assert (Range_Wire_OK (Input));
-               Lemma_Range_Fields (Input, M);
+               pragma Assert (Root_Wire_OK (Input));
+               pragma Assert (Root_Fields (Input, M));
                OK := True;
             end;
 
-         elsif Tag = Tag_Elements or else Tag = Tag_Have then
+         elsif Tag = Tag_Range then
+            if Input'Last - F < 1 then
+               return;
+            end if;
             declare
-               NB    : constant Byte := Input (F + Elems_O_N);
-               Items : In_Items := [others => (Key => Min_Key, Off => 0, Len => 1)];
-               Pos   : Natural := Elems_Fixed;   --  relative to F
+               KB : constant Natural := Natural (Input (F + Range_O_K));
             begin
-               if NB > Ship_Threshold then
+               if KB < 1 or else KB > Split_Fanout
+                 or else Input'Last - F /= Range_Msg_Len (KB) - 1
+                 or else Part > KB
+               then
                   return;
                end if;
-               for T in 1 .. Item_Count (NB) loop
-                  pragma Loop_Invariant (Pos >= Elems_Fixed and then Pos <= Len);
-                  pragma Loop_Invariant
-                    (for all T2 in 1 .. T - 1 =>
-                       Items (T2).Key.K <= 4
-                       and then In_Window (Items (T2).Key, Lo, Hi)
-                       and then Items (T2).Off >= Input'First
-                       and then Items (T2).Off <= Input'Last
-                       and then Input'Last - Items (T2).Off >= Items (T2).Len - 1);
-                  pragma Loop_Invariant
-                    (for all T2 in 2 .. T - 1 =>
-                       Key_Lt (Items (T2 - 1).Key, Items (T2).Key));
-                  if Len - Pos < Item_Overhead + 1 then
+               --  The whole message: strictly ascending bounds and counts
+               --  within Elem_Max.
+               for I in 1 .. KB loop
+                  if not Key_Lt (Wire_Key (Input, F + Bound_At (I - 1)),
+                                 Wire_Key (Input, F + Bound_At (I)))
+                    or else Wire_U48 (Input, F + Part_At (KB, I)) > Elem_Max
+                  then
                      return;
                   end if;
-                  declare
-                     K  : constant Elem_Key := Wire_Key (Input, F + Pos);
-                     FL : constant Word := Wire_U32 (Input, F + Pos + Key_Wire_Len);
-                  begin
-                     if FL < 1 or else FL > Frame_Ship_Max
-                       or else Word (Len - Pos - Item_Overhead) < FL
-                       or else K.K > 4
-                       or else not In_Window (K, Lo, Hi)
-                       or else (T > 1 and then not Key_Lt (Items (T - 1).Key, K))
-                     then
-                        return;
-                     end if;
-                     Items (T) := (Key => K,
-                                   Off => F + Pos + Item_Overhead,
-                                   Len => Frame_Size (FL));
-                     Pos := Pos + Item_Overhead + Natural (FL);
-                  end;
                end loop;
-               if Pos /= Len then
+               declare
+                  Lo : constant Elem_Key := Wire_Key (Input, F + Bound_At (Part - 1));
+                  Hi : constant Elem_Key := Wire_Key (Input, F + Bound_At (Part));
+                  C  : constant U48 := Wire_U48 (Input, F + Part_At (KB, Part));
+               begin
+                  if not Key_Lt (Lo, Hi) or else C > Elem_Max then
+                     return;
+                  end if;
+                  M := (Kind   => M_Range,
+                        Root   => False,
+                        Lo     => Lo,
+                        Hi     => Hi,
+                        Count  => Elem_Count (C),
+                        Fp     => Input (F + Part_At (KB, Part) + Count_Len
+                                         .. F + Part_At (KB, Part) + Count_Len + 31),
+                        N      => 0,
+                        Items  => No_Items);
+                  pragma Assert (Msg_OK (M));
+                  pragma Assert (Range_Head_OK (Input, Part));
+                  pragma Assert (Range_Fields (Input, Part, M));
+                  OK := True;
+               end;
+            end;
+
+         elsif Tag = Tag_Elements or else Tag = Tag_Have then
+            if Part /= 1 or else Input'Last - F < Elems_Fixed - 1 then
+               return;
+            end if;
+            declare
+               Lo : constant Elem_Key := Wire_Key (Input, F + O_Lo);
+               Hi : constant Elem_Key := Wire_Key (Input, F + O_Hi);
+               PL : constant Places := Item_Places (Input);
+               Items : In_Items := No_Items;
+            begin
+               if not Key_Lt (Lo, Hi) or else not PL.OK then
                   return;
                end if;
-               pragma Assert
-                 (for all T2 in 1 .. Item_Count (NB) =>
-                    Items (T2).Key.K <= 4
-                    and then In_Window (Items (T2).Key, Lo, Hi));
-               pragma Assert
-                 (for all T2 in 2 .. Item_Count (NB) =>
-                    Key_Lt (Items (T2 - 1).Key, Items (T2).Key));
+               for T in 1 .. PL.N loop
+                  pragma Loop_Invariant
+                    (for all T2 in 1 .. T - 1 =>
+                       In_Window (Keys (T2), Lo, Hi)
+                       and then Items (T2) = (Key => Keys (T2), Off => PL.Off (T2),
+                                              Len => PL.Len (T2)));
+                  pragma Loop_Invariant
+                    (for all T2 in 2 .. T - 1 => Key_Lt (Keys (T2 - 1), Keys (T2)));
+                  if not In_Window (Keys (T), Lo, Hi)
+                    or else (T > 1 and then not Key_Lt (Keys (T - 1), Keys (T)))
+                  then
+                     return;
+                  end if;
+                  Items (T) := (Key => Keys (T), Off => PL.Off (T), Len => PL.Len (T));
+               end loop;
                Lemma_Items_OK ((if Tag = Tag_Elements then M_Elements else M_Have),
-                               Natural (G), Lo, Hi, Item_Count (NB), Items);
+                               Lo, Hi, PL.N, Items);
                M := (Kind   => (if Tag = Tag_Elements then M_Elements else M_Have),
-                     G      => Natural (G),
+                     Root   => False,
                      Lo     => Lo,
                      Hi     => Hi,
                      Count  => 0,
                      Fp     => [others => 0],
-                     N      => Item_Count (NB),
+                     N      => PL.N,
                      Items  => Items);
                pragma Assert (Msg_OK (M));
+               pragma Assert (Msg_In (M, Input));
+               pragma Assert (Keys_Given (M, Keys));
                OK := True;
             end;
          end if;
       end;
    end Decode_Raw;
 
-   function Decode_Of (Input : Byte_Array) return Decoding is
+   function Decode_Of (Input : Byte_Array; Part : Positive; Keys : Key_List)
+     return Decoding
+   is
       D : Decoding;
    begin
-      Decode_Raw (Input, D.M, D.OK);
+      Decode_Raw (Input, Part, Keys, D.M, D.OK);
       return D;
    end Decode_Of;
-
-   procedure Decode
-     (Input  : Byte_Array;
-      M      : out Message;
-      OK     : out Boolean)
-   is
-      D : constant Decoding := Decode_Of (Input);
-   begin
-      M := D.M;
-      OK := D.OK;
-   end Decode;
 
    ----------------------------------------------------------------------
    --  The FIFO of open obligations: a ring of Oblig_Cap slots.
@@ -2484,8 +2211,7 @@ package body Kome.Reconcile with SPARK_Mode is
    procedure Advance_Head (Sess : in out Session; M : Message) with
      Global => null,
      Pre  => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len >= 1
-             and then Sess.Q_Len <= Sess.Oblig_Cap
-             and then Got_After (Open (Sess, 1)) <= Split_Fanout,
+             and then Sess.Q_Len <= Sess.Oblig_Cap,
      Post => Sess = (Sess'Old with delta Q => Sess.Q)
              and then Open (Sess, 1) = Advanced (Open (Sess'Old, 1), M)
              and then (for all K in 2 .. Sess.Q_Len => Open (Sess, K) = Open (Sess'Old, K))
@@ -2508,7 +2234,7 @@ package body Kome.Reconcile with SPARK_Mode is
         Upd.Q_Len = Base + Obligations (O)
         and then (for all K in 1 .. Base =>
                     Open (Upd, K) = (if Pop = 1 then Open (Old, K + 1)
-                                     elsif K = 1 and then M.G /= 0
+                                     elsif K = 1 and then not M.Root
                                      then Advanced (Open (Old, 1), M)
                                      else Open (Old, K)))
         and then (for all T in 1 .. O.N =>
@@ -2557,11 +2283,14 @@ package body Kome.Reconcile with SPARK_Mode is
 
    --  The FIFO step of an accepted message M with the reply O: the head
    --  leaves (its group is done) or advances (M continues it), then the
+
+   --  The FIFO step of an accepted message M with the reply O: the head
+   --  leaves (its answer is done) or advances (M continues it), then the
    --  obligations of O are appended (Queue_Step).
    procedure Step_Queue (Sess : in out Session; M : Message; O : Outbox) with
      Global => null,
      Pre  => Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len <= Sess.Oblig_Cap
-             and then (if M.G /= 0 then Matches_Head (Sess, M))
+             and then (if not M.Root then Matches_Head (Sess, M))
              and then Sess.Q_Len - (if Group_Done (Sess, M) then 1 else 0)
                         + Obligations (O) <= Sess.Oblig_Cap,
      Post => Sess = (Sess'Old with delta Q      => Sess.Q,
@@ -2578,14 +2307,14 @@ package body Kome.Reconcile with SPARK_Mode is
    begin
       if Done_Grp then
          Pop_Head (Sess);
-      elsif M.G /= 0 then
+      elsif not M.Root then
          Advance_Head (Sess, M);
       end if;
       pragma Assert (Sess.Q_Len = Old.Q_Len - (if Done_Grp then 1 else 0));
       pragma Assert
         (for all K in 1 .. Sess.Q_Len =>
            Open (Sess, K) = (if Done_Grp then Open (Old, K + 1)
-                             elsif K = 1 and then M.G /= 0
+                             elsif K = 1 and then not M.Root
                              then Advanced (Open (Old, 1), M)
                              else Open (Old, K)));
       declare
@@ -2597,7 +2326,7 @@ package body Kome.Reconcile with SPARK_Mode is
          pragma Assert
            (for all K in 1 .. Mid.Q_Len =>
               Open (Sess, K) = (if Done_Grp then Open (Old, K + 1)
-                                elsif K = 1 and then M.G /= 0
+                                elsif K = 1 and then not M.Root
                                 then Advanced (Open (Old, 1), M)
                                 else Open (Old, K)));
          pragma Assert
@@ -2611,14 +2340,14 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Queue_Step (Old, Sess, M, O));
    end Step_Queue;
 
-   --  Accept the RANGE, ELEMENTS or HAVE M in Auth or Data with the reply
-   --  O (within the budgets): the counters, the FIFO step and the phase.
+   --  Accept the RANGE part, ROOT, ELEMENTS or HAVE M in Auth or Data with
+   --  the reply O (within the budgets): the counters, the FIFO step and
+   --  the phase.
    procedure Accept_Data
      (Sess     : in out Session;
       S        : Snapshot;
       M        : Message;
-      O        : Outbox;
-      Auth_Gen : U64)
+      O        : Outbox)
    with
      Global => null,
      Pre  => Valid (S) and then Outbox_OK (S, O) and then Session_OK (Sess)
@@ -2635,17 +2364,15 @@ package body Kome.Reconcile with SPARK_Mode is
                         - (if Group_Done (Sess'Old, M) then 1 else 0)
                         + Obligations (O)
              and then Queue_Step (Sess'Old, Sess, M, O)
-             and then Sess.Gate_Gen = Auth_Gen
-             and then Sess.Auth_Root_Seen = (Sess'Old.Auth_Root_Seen or else M.G = 0)
+             and then Sess.Auth_Root_Seen = (Sess'Old.Auth_Root_Seen or else M.Root)
              and then Sess.P =
                         (if Sess'Old.P = Data
-                           or else (M.G = 0 and then Sess'Old.Auth_Root_Seen)
+                           or else (M.Root and then Sess'Old.Auth_Root_Seen)
                          then (if Sess.Q_Len = 0 then Done else Data)
                          else Auth)
              and then Sess = (Sess'Old with delta
                                 Msgs           => Sess'Old.Msgs + 1,
                                 P              => Sess.P,
-                                Gate_Gen       => Auth_Gen,
                                 Q              => Sess.Q,
                                 Q_Head         => Sess.Q_Head,
                                 Q_Len          => Sess.Q_Len,
@@ -2662,10 +2389,9 @@ package body Kome.Reconcile with SPARK_Mode is
          Sess.Ranges := Sess.Ranges + Num_Ranges (O);
          Sess.Shipped := Sess.Shipped + Item_Bytes (S, O);
          Sess.Msgs := Sess.Msgs + 1;
-         Sess.Gate_Gen := Auth_Gen;
-         if M.G = 0 then
+         if M.Root then
             if Sess.Auth_Root_Seen then
-               Sess.P := Data;          --  (b) the data root
+               Sess.P := Data;          --  the data ROOT
             end if;
             Sess.Auth_Root_Seen := True;
          end if;
@@ -2685,39 +2411,23 @@ package body Kome.Reconcile with SPARK_Mode is
    procedure Start
      (Sess    : out Session;
       As      : Role;
-      NS      : Id128;
-      Peer_DH : Pubkey;
-      F       : Kome.Frontier.State;
-      Auth_T  : Frame_Table;
-      Buf     : out Msg_Buffer;
-      Len     : out Msg_Length)
+      Cid     : Hash256;
+      Peer_DH : Pubkey)
    is
-      Known : constant Boolean := Lists_Peer (Auth_T, Peer_DH);
-      O     : Open_Msg := (Proto => Proto_Version, NS => NS, N_RV => 0,
-                           RV => [others => Zero_Rv]);
    begin
-      if Known then
-         declare
-            V : constant Void_Set := Select_Voids (F, Auth_T);
-         begin
-            O.N_RV := V.N;
-            O.RV := V.RV;
-         end;
-      end if;
       Sess := (Oblig_Cap       => Sess.Oblig_Cap,
                R               => As,
-               P               => Await_Open,
-               NS              => NS,
+               P               => Gate,
+               Cid             => Cid,
                Peer_DH         => Peer_DH,
-               Peer_Known      => Known,
-               Our_Open        => O,
                Aborted         => False,
                Hello_Sent      => False,
                Peer_Hello_Seen => False,
                Auth_Root_Seen  => False,
-               Gate_Gen        => 0,
                Our_N           => 0,
                Our_Digest      => (others => 0),
+               Our_Auth_N      => 0,
+               Our_Auth_Fp     => [others => 0],
                Peer_Auth       => 0,
                Peer_Data       => 0,
                Peer_Digest     => (others => 0),
@@ -2728,29 +2438,18 @@ package body Kome.Reconcile with SPARK_Mode is
                Q               => [others => Fresh (Min_Key, Max_Key)],
                Q_Head          => 1,
                Q_Len           => 0);
-      if As = Initiator then
-         Encode_Open (O, Buf, Len);
-         pragma Assert (Open_Written (O, Buf, Len));
-      else
-         Buf := [others => 0];
-         Len := 0;
-      end if;
    end Start;
 
    --  The two HELLOs have passed. If the digests are equal, the session
    --  ends. If not, the phase is Auth, and the initiator opens the
-   --  authorization root.
-   procedure Exchange_Done (Sess : in out Session; S : Snapshot; O : out Outbox) with
+   --  authorization ROOT.
+   procedure Exchange_Done (Sess : in out Session; R : out Root_Out) with
      Global => null,
-     Pre  => Valid (S)
-             and then Sess.P = Gate and then Sess.Hello_Sent
+     Pre  => Sess.P = Gate and then Sess.Hello_Sent
              and then Sess.Peer_Hello_Seen and then Sess.Msgs <= Pre_Gate_Budget
-             and then Sess.Our_Open.Proto = Proto_Version
-             and then Sess.Our_Open.NS = Sess.NS
              and then not Sess.Aborted and then not Sess.Auth_Root_Seen
              and then Sess.Q_Head <= Sess.Oblig_Cap and then Sess.Q_Len = 0,
-     Post => After_Hellos (S, Sess, O) and then Session_OK (Sess)
-             and then Outbox_OK (S, O)
+     Post => After_Hellos (Sess, R) and then Session_OK (Sess)
              and then Sess = (Sess'Old with delta
                                 P              => Sess.P,
                                 Budget         => Sess.Budget,
@@ -2759,24 +2458,12 @@ package body Kome.Reconcile with SPARK_Mode is
                                 Auth_Root_Seen => Sess.Auth_Root_Seen)
    is
    begin
-      O := Empty_Box;
+      R := No_Root;
       Sess.Budget := Msg_Budget (Sess.Our_N, Peer_Claim (Sess));
       if Sess.Our_Digest = Sess.Peer_Digest then
          Sess.P := Done;
       elsif Sess.R = Initiator then
-         declare
-            W : constant Span := Window (S, Min_Key, Data_Lo);
-         begin
-            O.N := 1;
-            O.P (1) := (Kind  => P_Range,
-                        Lo    => Min_Key,
-                        Hi    => Data_Lo,
-                        First => W.First,
-                        Last  => W.Last,
-                        N     => 0,
-                        Items => [others => 1]);
-            pragma Assert (Plan_OK (S, O.P (1)));
-         end;
+         R := (Send => True, Count => Sess.Our_Auth_N, Fp => Sess.Our_Auth_Fp);
          Push (Sess, Min_Key, Data_Lo);
          Sess.Auth_Root_Seen := True;
          Sess.P := Auth;
@@ -2787,33 +2474,27 @@ package body Kome.Reconcile with SPARK_Mode is
 
    procedure Admit
      (Sess     : in out Session;
-      S        : Snapshot;
-      P        : Prefix;
       F        : Kome.Frontier.State;
-      G        : Kome.Guard.Guard_State;
       Eff      : Kome.Records.Roster_Record;
-      Auth_Gen : U64;
+      Auth     : Kome.Digest.Digest_State;
+      Data     : Kome.Digest.Digest_State;
       Cred     : Byte_Array;
       Buf      : out Msg_Buffer;
       Len      : out Msg_Length;
-      Out_Box  : out Outbox)
+      Root     : out Root_Out)
    is
-      WA : constant Span := Window (S, Min_Key, Data_Lo);
-      WD : constant Span := Window (S, Data_Lo, Max_Key);
-      FP : Hash256;
+      TF : constant Hash256 := Total_Fp (Auth, Data);
    begin
-      Out_Box := Empty_Box;
-      Fingerprint_Of (S, P, 1, Count (S), FP);
-      Encode_Hello (Word (WA.Last + 1 - WA.First), Word (WD.Last + 1 - WD.First),
-                    FP, Cred, Buf, Len);
-      Kome.Keys.Lemma_Key_Eq_Is_Bytewise (FP, Range_Fp (S, 1, Count (S)));
+      Root := No_Root;
+      Encode_Hello (Word (Kome.Digest.Count (Auth)), Word (Kome.Digest.Count (Data)),
+                    TF, Cred, Buf, Len);
       Sess.Hello_Sent := True;
-      Sess.Gate_Gen := Auth_Gen;
-      Sess.Our_N := Count (S);
-      Sess.Our_Digest := Kome.Keys.To_Key256 (FP);
-      pragma Assert (Sess.Our_Digest = Kome.Keys.To_Key256 (Range_Fp (S, 1, Count (S))));
+      Sess.Our_N := Kome.Digest.Count (Auth) + Kome.Digest.Count (Data);
+      Sess.Our_Digest := Kome.Keys.To_Key256 (TF);
+      Sess.Our_Auth_N := Kome.Digest.Count (Auth);
+      Sess.Our_Auth_Fp := Kome.Digest.Fingerprint (Auth);
       if Sess.Peer_Hello_Seen then
-         Exchange_Done (Sess, S, Out_Box);
+         Exchange_Done (Sess, Root);
       end if;
    end Admit;
 
@@ -2822,33 +2503,24 @@ package body Kome.Reconcile with SPARK_Mode is
       S        : Snapshot;
       P        : Prefix;
       F        : Kome.Frontier.State;
-      G        : Kome.Guard.Guard_State;
       Eff      : Kome.Records.Roster_Record;
-      Auth_Gen : U64;
-      Out_Box  : out Outbox;
+      Root     : out Root_Out;
       Result   : out Session_Status)
    is
-      W : constant Span := Window (S, Data_Lo, Max_Key);
+      W  : constant Span := Window (S, Data_Lo, Max_Key);
+      FP : Hash256;
    begin
-      Out_Box := Empty_Box;
-      if not Gate_Holds (Sess, F, G, Eff, Auth_Gen) then
+      Root := No_Root;
+      if not Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH) then
          Sess.P := Done;
          Sess.Aborted := True;
          Result := S_Aborted;
          return;
       end if;
-      Out_Box.N := 1;
-      Out_Box.P (1) := (Kind  => P_Range,
-                        Lo    => Data_Lo,
-                        Hi    => Max_Key,
-                        First => W.First,
-                        Last  => W.Last,
-                        N     => 0,
-                        Items => [others => 1]);
-      pragma Assert (Plan_OK (S, Out_Box.P (1)));
+      Fingerprint_Of (S, P, W.First, W.Last, FP);
+      Root := (Send => True, Count => W.Last + 1 - W.First, Fp => FP);
       Push (Sess, Data_Lo, Max_Key);
       Sess.P := Data;
-      Sess.Gate_Gen := Auth_Gen;
       Result := S_OK;
    end Next_Phase;
 
@@ -2857,100 +2529,53 @@ package body Kome.Reconcile with SPARK_Mode is
       S          : Snapshot;
       P          : Prefix;
       F          : Kome.Frontier.State;
-      G          : Kome.Guard.Guard_State;
       Eff        : Kome.Records.Roster_Record;
-      Auth_Gen   : U64;
       Input      : Byte_Array;
+      Part       : Positive;
+      Keys       : Key_List;
       M          : out Message;
-      Open       : out Open_Msg;
       Peer       : out Hello;
       Out_Box    : out Outbox;
       Got        : out Delivery;
-      Open_Buf   : out Msg_Buffer;
-      Open_Bytes : out Msg_Length;
+      Root       : out Root_Out;
       Result     : out Session_Status)
    is
       OK    : Boolean;
       Sess0 : constant Session := Sess with Ghost;
    begin
       M := (others => <>);
-      Open := (Proto => Proto_Version,
-               NS    => (others => 0),
-               N_RV  => 0,
-               RV    => [others => Zero_Rv]);
       Peer := Empty_Hello;
       Out_Box := Empty_Box;
       Got := No_Delivery;
-      Open_Buf := [others => 0];
-      Open_Bytes := 0;
+      Root := No_Root;
 
       if Sess.P = Done then
          Result := S_Unexpected;
-         pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+         pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
          return;
       end if;
       if Input'Last < Input'First then
          Result := S_Malformed;
-         pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+         pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
          return;
       end if;
 
-      if Input (Input'First) = Tag_Open then
-         --  The OPEN, once, first.
-         M.Kind := M_Open;
-         if Sess.P /= Await_Open then
-            Result := S_Unexpected;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
-            return;
-         end if;
-         if Sess.Msgs = Sess.Budget then
-            Result := S_Limit;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
-            return;
-         end if;
-         Decode_Open (Input, Open, OK);
-         if not OK then
-            Result := S_Malformed;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
-            return;
-         end if;
-         if Open.NS /= Sess.NS then
-            Sess.P := Done;
-            Sess.Aborted := True;
-            Result := S_Aborted;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
-            pragma Assert (Open_Wire_OK (Input) and then Open_Decoded (Input, Open));
-            pragma Assert (Session_OK (Sess));
-            return;
-         end if;
-         Sess.P := Gate;
-         Sess.Msgs := Sess.Msgs + 1;
-         if Sess.R = Responder then
-            --  The responder answers with its own OPEN (A14).
-            Encode_Open (Sess.Our_Open, Open_Buf, Open_Bytes);
-            pragma Assert (Open_Written (Sess.Our_Open, Open_Buf, Open_Bytes));
-         end if;
-         Result := S_OK;
-         pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
-         pragma Assert (Open_Wire_OK (Input) and then Open_Decoded (Input, Open));
-         pragma Assert (Session_OK (Sess));
-
-      elsif Input (Input'First) = Tag_Hello then
+      if Input (Input'First) = Tag_Hello then
          --  The HELLO, once, in the gate.
          M.Kind := M_Hello;
          if Sess.P /= Gate or else Sess.Peer_Hello_Seen then
             Result := S_Unexpected;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             return;
          end if;
          if Sess.Msgs = Sess.Budget then
             Result := S_Limit;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             return;
          end if;
          if not Hello_Wire_OK (Input) then
             Result := S_Malformed;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             return;
          end if;
          --  The credential check (A13, G12), before the decode: a refused
@@ -2959,7 +2584,7 @@ package body Kome.Reconcile with SPARK_Mode is
             Sess.P := Done;
             Sess.Aborted := True;
             Result := S_Aborted;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             pragma Assert (Session_OK (Sess));
             return;
          end if;
@@ -2971,15 +2596,14 @@ package body Kome.Reconcile with SPARK_Mode is
          Sess.Peer_Digest := Kome.Keys.To_Key256 (Peer.Digest);
          Sess.Msgs := Sess.Msgs + 1;
          if Sess.Hello_Sent then
-            Exchange_Done (Sess, S, Out_Box);
+            Exchange_Done (Sess, Root);
          end if;
          Result := S_OK;
-         pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+         pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
          pragma Assert (Hello_Wire_OK (Input) and then Hello_Decoded (Input, Peer));
          pragma Assert (Session_OK (Sess));
-         pragma Assert (Outbox_OK (S, Out_Box));
-         pragma Assert (if Sess.Hello_Sent then After_Hellos (S, Sess, Out_Box)
-                        else Sess.P = Gate and then Out_Box.N = 0
+         pragma Assert (if Sess.Hello_Sent then After_Hellos (Sess, Root)
+                        else Sess.P = Gate and then not Root.Send
                              and then Sess.Budget = Sess0.Budget
                              and then Sess.Q_Len = 0);
          pragma Assert (Sess = (Sess0 with delta
@@ -2995,41 +2619,41 @@ package body Kome.Reconcile with SPARK_Mode is
                                   Auth_Root_Seen  => Sess.Auth_Root_Seen));
 
       else
-         --  RANGE, ELEMENTS, HAVE: only in Auth and Data.
+         --  RANGE part, ROOT, ELEMENTS, HAVE: only in Auth and Data.
          if Sess.P not in Auth | Data then
             Result := S_Unexpected;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             return;
          end if;
-         --  The gate again (H11).
-         if not Gate_Holds (Sess, F, G, Eff, Auth_Gen) then
+         --  The gate, after the last batch (S9).
+         if not Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH) then
             Sess.P := Done;
             Sess.Aborted := True;
             Result := S_Aborted;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             pragma Assert (Session_OK (Sess));
             return;
          end if;
          if Sess.Msgs = Sess.Budget then
             Result := S_Limit;
-            pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+            pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
             return;
          end if;
          declare
-            D : constant Decoding := Decode_Of (Input);
+            D : constant Decoding := Decode_Of (Input, Part, Keys);
          begin
             if not D.OK then
                Result := S_Malformed;
-               pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+               pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
                return;
             end if;
-            M := D.M;
-            --  g = 0 is a root RANGE: only the expected root, with exact
-            --  bounds (D14). Every other message continues the reply
-            --  group of our head obligation (G4, H19).
+            M := Bind (Sess, D.M);
+            pragma Assert (Msg_OK (M));
+            --  A ROOT only as the expected one (D14); every other message
+            --  continues the tiling answer of our head obligation (S19).
             if not Root_Or_Owed (Sess, M) then
                Result := S_Unexpected;
-               pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+               pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
                return;
             end if;
             declare
@@ -3052,20 +2676,19 @@ package body Kome.Reconcile with SPARK_Mode is
                pragma Assert (R.Box = Reply_Of (S, M).Box and then R.Got = Reply_Of (S, M).Got);
                if not Within_Budgets (Sess, S, M, R.Box) then
                   Result := S_Limit;
-                  pragma Assert (Result = Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input));
+                  pragma Assert (Result = Status_Of (Sess0, S, F, Eff, Input, Part, Keys));
                   return;
                end if;
-               pragma Assert (Status_Of (Sess0, S, F, G, Eff, Auth_Gen, Input) = S_OK);
+               pragma Assert (Status_Of (Sess0, S, F, Eff, Input, Part, Keys) = S_OK);
                Out_Box := R.Box;
                Got := R.Got;
-               Accept_Data (Sess, S, M, Out_Box, Auth_Gen);
+               Accept_Data (Sess, S, M, Out_Box);
                Result := S_OK;
                pragma Assert (Out_Box = Reply_Of (S, M).Box);
                pragma Assert (Got = Reply_Of (S, M).Got);
-               pragma Assert (Decode_Facts (Input, M, True));
-               pragma Assert (M = Decode_Of (Input).M);
-               pragma Assert (Msg_OK (M) and then Msg_In (M, Input));
-               pragma Assert (if M.G = 0 then Root_OK (Sess0, M));
+               pragma Assert (Decode_Facts (Input, Part, Keys, D.M, True));
+               pragma Assert (M = Bind (Sess0, Decode_Of (Input, Part, Keys).M));
+               pragma Assert (Msg_OK (M));
                pragma Assert (Delivers (S, M, Got) and then Answers (S, M, Out_Box)
                               and then Shrinks (S, M, Out_Box));
             end;
