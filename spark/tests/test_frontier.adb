@@ -278,7 +278,7 @@ begin
    begin
       Lemma_Roster_Dom (R1, R2);
       Lemma_Grant_Dom (G1, G2);
-      Lemma_Dominator_Keeps_Registers (R2, R1);
+      Lemma_Dominator_Same_Key (R2, R1);
       Lemma_Same_Row (D1, P1);
       Lemma_Same_Row (G2, G1);
       Lemma_Dominates_Trans (P1, Put (1, 'n', V (200, 1, 1, 11)), D1);

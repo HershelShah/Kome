@@ -1066,7 +1066,7 @@ package body Kome.Frontier with SPARK_Mode is
          pragma Assert (Upd.H (K0, Dst (J)).Hdr.K = K_Grant
                         and then Upd.H (K0, Dst (J)).Hdr.V.Author = W);
       else
-         Lemma_Dominator_Keeps_Registers (R, Old.H (K0, J).Hdr);
+         Lemma_Dominator_Same_Key (R, Old.H (K0, J).Hdr);
          pragma Assert (R.K = K_Grant and then R.V.Author = W);
          pragma Assert (Upd.H (K0, SC (Upd, K0)).Hdr = R);
          pragma Assert (Upd.H (K0, SC (Upd, K0)).Hdr.K = K_Grant
@@ -1102,7 +1102,7 @@ package body Kome.Frontier with SPARK_Mode is
                         and then Upd.H (K0, Dst (J)).Hdr.V.Author = W
                         and then Upd.H (K0, Dst (J)).Hdr.V.T = C);
       else
-         Lemma_Dominator_Keeps_Registers (R, Old.H (K0, J).Hdr);
+         Lemma_Dominator_Same_Key (R, Old.H (K0, J).Hdr);
          pragma Assert (R.K = K_Grant and then R.V.Author = W and then Cap_Of (R) >= C);
       end if;
    end Lemma_Grant_Cap_Kept;
@@ -1130,7 +1130,7 @@ package body Kome.Frontier with SPARK_Mode is
          pragma Assert (Upd.H (K0, Dst (J)).Hdr.K = K_Roster
                         and then Upd.H (K0, Dst (J)).Hdr.V.T = C);
       else
-         Lemma_Dominator_Keeps_Registers (R, Old.H (K0, J).Hdr);
+         Lemma_Dominator_Same_Key (R, Old.H (K0, J).Hdr);
          pragma Assert (R.K = K_Roster and then R.V.T = C);
          pragma Assert (Upd.H (K0, SC (Upd, K0)).Hdr = R);
          pragma Assert (Upd.H (K0, SC (Upd, K0)).Hdr.K = K_Roster
@@ -1762,7 +1762,7 @@ package body Kome.Frontier with SPARK_Mode is
                pragma Assert (Find_Held (After, Held (Before, I)) /= 0);
                pragma Assert (Max_Ceil (Before) <= Max_Ceil (After));
             else
-               Lemma_Dominator_Keeps_Registers (R, Held (Before, I));
+               Lemma_Dominator_Same_Key (R, Held (Before, I));
                pragma Assert (Max_Ceil (Before) <= Ceil_Of (R));
             end if;
          end;
@@ -1797,7 +1797,7 @@ package body Kome.Frontier with SPARK_Mode is
             if Holds (After, Held (Before, I)) then
                pragma Assert (Find_Held (After, Held (Before, I)) /= 0);
             else
-               Lemma_Dominator_Keeps_Registers (R, Held (Before, I));
+               Lemma_Dominator_Same_Key (R, Held (Before, I));
                pragma Assert (RW);
             end if;
          end;
@@ -1825,7 +1825,7 @@ package body Kome.Frontier with SPARK_Mode is
                pragma Assert (Find_Held (After, Held (Before, I)) /= 0);
                pragma Assert (W_Cap (Before, K) <= W_Cap (After, K));
             else
-               Lemma_Dominator_Keeps_Registers (R, Held (Before, I));
+               Lemma_Dominator_Same_Key (R, Held (Before, I));
                pragma Assert (W_Cap (Before, K) <= R.V.T);
             end if;
          end;

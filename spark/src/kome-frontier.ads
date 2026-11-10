@@ -14,7 +14,7 @@
 --  are not stored: a binding may cache them outside the proof. A record
 --  that is not held never raises them: a dominated roster or grant
 --  changes nothing (DESIGN.md §4, D1′). Domination does not make them
---  lose a value (T4', Kome.Headers.Lemma_Dominator_Keeps_Registers;
+--  lose a value (T4', Kome.Headers.Lemma_Dominator_Same_Key;
 --  Lemma_Views_Step):
 --    * a roster leaves F only under a roster of its signer with a ceiling
 --      that is at least its own ceiling;
