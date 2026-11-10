@@ -1,0 +1,8 @@
+--  Configuration pragmas of the release build mode (kome_spark.gpr,
+--  -XMode=release; SIMPLIFY.md S24). Every assertion kind is ignored:
+--  Pre, Post, Ghost, Loop_Invariant, Loop_Variant, Assert, Assert_And_Cut,
+--  Type_Invariant, Predicate, Contract_Cases, Subprogram_Variant and the
+--  rest. gnatprove discharges them in check mode, so the release binary
+--  does not evaluate them, and ghost code is not compiled. A local
+--  pragma Assertion_Policy in a unit still overrides this for its region.
+pragma Assertion_Policy (Ignore);

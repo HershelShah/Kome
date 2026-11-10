@@ -31,6 +31,7 @@ with Ada.Directories;
 with Ada.Exceptions;
 with Ada.Assertions;
 with Ada.Strings.Fixed;
+with Contract_Mode;    use Contract_Mode;
 with Kome;             use Kome;
 with Kome.Keys;
 with Kome.Crypto;
@@ -447,7 +448,11 @@ procedure Test_Epochs with SPARK_Mode => Off is
          end Hedge_Invalid;
          function R is new Refused (Hedge_Invalid);
       begin
-         Check ("key_for_gen_invalid_issuer_refused_by_pre", R);
+         if Contracts_On then
+            Check ("key_for_gen_invalid_issuer_refused_by_pre", R);
+         else
+            Skip ("key_for_gen_invalid_issuer_refused_by_pre");
+         end if;
       end;
       Wipe (SK_A);
       Wipe (SK_B);
@@ -694,7 +699,11 @@ procedure Test_Epochs with SPARK_Mode => Off is
          end Box_Zero;
          function Box_Zero_Refused is new Refused (Box_Zero);
       begin
-         Check ("box_zero_key_refused_by_pre", Box_Zero_Refused);
+         if Contracts_On then
+            Check ("box_zero_key_refused_by_pre", Box_Zero_Refused);
+         else
+            Skip ("box_zero_key_refused_by_pre");
+         end if;
       end;
 
       --  The bundle key: one PRF output under k_g, different per key.

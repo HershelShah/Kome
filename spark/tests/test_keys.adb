@@ -15,6 +15,7 @@ pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Assertions;
+with Contract_Mode;    use Contract_Mode;
 with Kome;             use Kome;
 with Kome.Keys;        use Kome.Keys;
 
@@ -372,14 +373,19 @@ begin
    end;
 
    ----------------------------------------------------------------------
-   --  (f) Wrong length: the precondition fails (Assertion_Error).
+   --  (f) Wrong length: the precondition fails (Assertion_Error). Only
+   --  in the check mode (Contract_Mode).
    ----------------------------------------------------------------------
-   for N of Bad_Key_Lens loop
-      Expect_Key_Pre_Failure (N);
-   end loop;
-   for N of Bad_Id_Lens loop
-      Expect_Id_Pre_Failure (N);
-   end loop;
+   if Contracts_On then
+      for N of Bad_Key_Lens loop
+         Expect_Key_Pre_Failure (N);
+      end loop;
+      for N of Bad_Id_Lens loop
+         Expect_Id_Pre_Failure (N);
+      end loop;
+   else
+      Skip ("To_Key256 and To_Id128 on a wrong length fail their Pre");
+   end if;
 
    if Failed then
       Set_Exit_Status (Failure);

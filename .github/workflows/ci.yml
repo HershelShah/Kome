@@ -3,7 +3,9 @@ name: ci
 # Two kinds of run. A pull request runs the gate job: the Lean build and
 # the SPARK tests (PROVE=0), which take minutes. The full proof takes about
 # an hour, so it runs nightly and on demand (Actions > ci > Run workflow),
-# not on every push. GitHub runs scheduled workflows on the default branch
+# not on every push. Every run also has the release job: the SPARK test
+# mains built and run in the release mode of kome_spark.gpr (MODE=release,
+# SIMPLIFY.md S24), so both build modes are built on each event. GitHub runs scheduled workflows on the default branch
 # only. A ruleset that requires the gate job and the dco check is a GitHub
 # setting, not a file in this repository.
 on:
@@ -32,6 +34,16 @@ jobs:
         run: ./lean/build.sh
       - name: Build and run every SPARK test main (no proof)
         run: PROVE=0 ./spark/check.sh all
+
+  release:
+    name: SPARK tests in release mode (no contracts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: Build and run every SPARK test main in release mode (no proof)
+        run: MODE=release PROVE=0 ./spark/check.sh all
 
   lean:
     name: Lean model (machine-check)
