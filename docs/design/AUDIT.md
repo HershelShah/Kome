@@ -13,6 +13,33 @@ theorems with no `sorry`, and `lean/Kome/Axioms.lean` confirms that every
 declaration of `Kome.Frontier` uses only `propext`, `Classical.choice`
 and `Quot.sound`.
 
+**Simplification (SIMPLIFY.md), 2026-11-10.** The simplification of
+`SIMPLIFY.md` (S1 to S24) was applied on top of the state that this
+section describes (commit 2355b6f), and `DESIGN.md` now describes the
+design as built. The text below stays as the record of the audit-fix
+state; where it and `SIMPLIFY.md` disagree, `SIMPLIFY.md` and the code
+win. It supersedes these items: A7 is reopened and resolved differently
+by S4 (a fresh hedged key `k_g` per roster generation; the hash chain,
+segments, links, segment tops and the A15 self-check are gone, and with
+them H6's fixed segment boundaries); A2 is moot, since there is no epoch
+and `ROSTER_eff` is the `(gen, h)`-maximum; H15 is moot, since `del_ttl`
+left the roster and is fixed at founding (S2); H24 is superseded by S7
+(the horizon is a function of `F`, the log has no `EXPIRE` entry, there
+is no replay clamp, and the reserved code `2^48 − 1`, the stated
+exception to REQUIREMENTS H6, is gone); H26 by S15 (the log is `HEADER ‖
+(APPLY | SEQ)*`; `Compact_Due` stays); A10 and A5 by S16 (`seq_self`
+lives in the log, `Kome.Write.Write` is one call, and `Prepare`/`Commit`,
+`Seq_Persist` and `SEQ_CORRUPT` are gone); H28 by S8 (one write lower
+bound `maxceil − Cap_Lead`; no expire mark); H11 by S9 (no `Auth_Gen`;
+the gate is evaluated on every `Receive` and `Next_Phase`); H2's
+quarantine is now a view of `F` (S10, `Kome.Views.Quarantined`; no
+`Guard_State`); and A14 and H5 go with the `OPEN` message (S11). H12
+stays deferred. G15's index and boundary table are replaced by the tags
+of S14, and A11's slice and `data_cap` fields by S15. `SIMPLIFY.md` gives
+the decisions, and its "As built" note the places where the code
+deviated from the plan.
+Final counts: see IMPLEMENTATION_PLAN.md.
+
 1. Roster and gate integrity: H1 (domination strict in gen, `ROSTER_FORK`
    view, `Lemma_Equal_Gen_No_Dom`), A2 (epoch in `Header`, `ROSTER_eff` by
    `(epoch, gen, h)`), H6 (fixed segment boundaries, `Kome.Epochs`), H7
