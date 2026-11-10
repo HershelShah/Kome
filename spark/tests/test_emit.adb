@@ -20,10 +20,9 @@
 --      The test builds and applies each record, and each gets the
 --      predicted outcome. The two H lemmas are true on each emitted write.
 --  (m) Seq_Exhausted after an H8 jump to 2^48 - 1.
---  (n) H22: Clamped iff t < max (Now, floor.t + 1); Born_Expired iff a
---      DEL with t + del_ttl_eff <= Now. A refusal gives no flag.
---  (o) H28: the expire mark is a floor term: t > mark below the ceiling,
---      t = ceiling (Clamped) when the mark is at or above it.
+--  (n) H22, S17: Clamped iff t < max (Now, floor_t + 1). A refusal gives
+--      no flag.
+--  (o) S8: one lower bound, maxceil - Cap_Lead, for PUT and DEL alike.
 --  (p) G21: the header of Kome.Records.Make_Put / Make_Del is
 --      To_Header (Put_Target / Del_Target, Stamp), and the built record
 --      lands on the cell that Choose looked at.
@@ -43,7 +42,6 @@ with Kome.Headers;     use Kome.Headers;
 with Kome.Keys;        use Kome.Keys;
 with Kome.Crypto;
 with Kome.Records;
-with Kome.Registers;   use Kome.Registers;
 with Kome.Frontier;    use Kome.Frontier;
 with Kome.Emit;        use Kome.Emit;
 
@@ -59,7 +57,6 @@ procedure Test_Emit with SPARK_Mode => Off is
       end if;
    end Check;
 
-   NS  : constant Id128 := (others => 7);
    Fnd : constant Byte  := 9;   --  the founding key
 
    function Key (B : Byte) return Key256 is (others => Word (B));
@@ -76,34 +73,34 @@ procedure Test_Emit with SPARK_Mode => Off is
      (T => T, Author => Key (A), Seq => Seq, H => Hsh (H));
 
    function Put (E : Byte; F : Character; V : Version) return Header is
-     (K => K_Put, NS => NS, Ent => Ent (E), FH => Fld (F), V => V,
-      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
+     (K => K_Put, Ent => Ent (E), FH => Fld (F), V => V,
+      Issuer => Zero_Key);
 
    function Del (E : Byte; V : Version) return Header is
-     (K => K_Del, NS => NS, Ent => Ent (E), FH => Zero_Key, V => V,
-      Issuer => Zero_Key, Del_TTL => 0, Epoch => 0);
+     (K => K_Del, Ent => Ent (E), FH => Zero_Key, V => V,
+      Issuer => Zero_Key);
 
    --  A founding-key roster: V = (ceiling_t, signer, gen, h).
    function Roster (Gen, Ceiling : U48; H : Byte) return Header is
-     (K => K_Roster, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+     (K => K_Roster, Ent => Zero_Id, FH => Zero_Key,
       V => (T => Ceiling, Author => Key (Fnd), Seq => Gen, H => Hsh (H)),
-      Issuer => Key (Fnd), Del_TTL => Del_TTL_Default, Epoch => 0);
+      Issuer => Key (Fnd));
 
    --  A founding-key GRANT to Subject: V = (cap, subject, 0, h), with the
    --  founding key's cap 2^48 - 1 unless Cap says otherwise.
    function Grant (Subject : Byte; Cap : U48 := U48'Last) return Header is
-     (K => K_Grant, NS => NS, Ent => Zero_Id, FH => Zero_Key,
+     (K => K_Grant, Ent => Zero_Id, FH => Zero_Key,
       V => (T => Cap, Author => Key (Subject), Seq => 0, H => Hsh (Subject)),
-      Issuer => Key (Fnd), Del_TTL => 0, Epoch => 0);
+      Issuer => Key (Fnd));
 
    --  G21: targets come from the constructors.
    function Put_T (E : Byte; F : Character) return Target is
-     (Put_Target (NS, Ent (E), Fbytes (F)));
+     (Put_Target (Ent (E), Fbytes (F)));
    function Del_T (E : Byte) return Target is
-     (Del_Target (NS, Ent (E)));
+     (Del_Target (Ent (E)));
 
    function New_State (Cap : Data_Size) return State is
-     (Empty (NS, Key (Fnd), Cap, 8));
+     (Empty (Key (Fnd), Cap));
 
    No_V : constant Version := (others => <>);
 
@@ -124,14 +121,13 @@ procedure Test_Emit with SPARK_Mode => Off is
    V   : Version;
    Cl  : Boolean;   --  Clone_Suspected of the last call
    Cm  : Boolean;   --  Clamped of the last call (H22)
-   Bx  : Boolean;   --  Born_Expired of the last call (H22)
    Out_Ok : Boolean := True;   --  each Choose output agreed with Seq_Self
 
    --  Writers: 1, 2, 3 (this device), 5 (a key above 3), 6 (above 5).
    procedure Grant_Writers (X : in out State) is
    begin
       for B of Writers loop
-         Apply (X, Grant (B), St);
+         Apply (X, Grant (B), 0, St);
          if St /= OK then
             Out_Ok := False;
          end if;
@@ -141,15 +137,13 @@ procedure Test_Emit with SPARK_Mode => Off is
    --  Step 1 (Choose), then the version that the record gets after step 2
    --  hashes it with content hash H. A refusal gives (0, 0, 0, 0). The D8
    --  lemmas run on each chosen write, for H and for two other hashes.
-   --  Mark is the store's expire mark (H28) and TTL del_ttl_eff (H22).
    procedure Do_Emit
      (X    : State; Tgt : Target; Now : U48; Self : Key256; H : Key256;
-      Seq  : in out U48; V : out Version; R : out Status;
-      Mark : U48 := 0; TTL : U48 := Del_TTL_Default)
+      Seq  : in out U48; V : out Version; R : out Status)
    is
       T, Sq : U48;
    begin
-      Choose (X, Tgt, Now, Mark, TTL, Self, Seq, T, Sq, R, Cl, Cm, Bx);
+      Choose (X, Tgt, Now, Self, Seq, T, Sq, R, Cl, Cm);
       if R in OK | Shadowed then
          V := Stamp (T, Self, Sq, H);
          if Sq /= Seq then
@@ -168,7 +162,7 @@ procedure Test_Emit with SPARK_Mode => Off is
 
    procedure Apply_Data (X : Header) is
    begin
-      Apply (S, X, St);
+      Apply (S, X, 0, St);
    end Apply_Data;
 
    --  D8: do these steps:
@@ -179,17 +173,16 @@ procedure Test_Emit with SPARK_Mode => Off is
    --       OK -> held; Shadowed (on a PUT) -> Dominated.
    function Same_Under_Two_Hashes (X : State; Tgt : Target; Now : U48;
                                    Self : Key256; Seq_Self : U48;
-                                   Expect : Status; Mark : U48 := 0)
+                                   Expect : Status)
                                    return Boolean
    is
       Sq_S  : U48 := Seq_Self;
       T, Sq : U48;
       Res   : Status;
-      C, Cp, Be : Boolean;
+      C, Cp : Boolean;
       Good  : Boolean := True;
    begin
-      Choose (X, Tgt, Now, Mark, Del_TTL_Default, Self, Sq_S, T, Sq, Res,
-              C, Cp, Be);
+      Choose (X, Tgt, Now, Self, Sq_S, T, Sq, Res, C, Cp);
       if Res /= Expect then
          return False;
       end if;
@@ -199,7 +192,7 @@ procedure Test_Emit with SPARK_Mode => Off is
             Rec : constant Header := To_Header (Tgt, Stamp (T, Self, Sq, HX));
             A   : Status;
          begin
-            Apply (Y, Rec, A);
+            Apply (Y, Rec, 0, A);
             case Res is
                when OK =>
                   Good := Good and then A = OK and then Holds (Y, Rec);
@@ -213,9 +206,8 @@ procedure Test_Emit with SPARK_Mode => Off is
       return Good;
    end Same_Under_Two_Hashes;
 
-   --  A State has a Register_File of Writers_Max keys. Under -gnata, each
-   --  Post evaluation copies states, so the checks run in a task with a
-   --  large stack (as in test_frontier).
+   --  Under -gnata, each Post evaluation copies states, so the checks run
+   --  in a task with a large stack (as in test_frontier).
    procedure Run_All;
 
    task Runner with Storage_Size => 512 * 1024 * 1024;
@@ -232,22 +224,22 @@ procedure Test_Emit with SPARK_Mode => Off is
    procedure Run_All is
    begin
    Grant_Writers (S);
-   Apply (S, Roster (1, 10_000, 1), St);
+   Apply (S, Roster (1, 10_000, 1), 0, St);
    Check ("setup: writers granted, roster ceiling 10000",
-          Out_Ok and St = OK and Ceil (Regs (S)) = 10_000);
+          Out_Ok and St = OK and Max_Ceil (S) = 10_000);
 
-   --  (d) No floor, no clock: the mark (0) is the floor term, so t = 1.
+   --  (d) No floor, no clock: floor_t = 0 is the floor term, so t = 1.
    Seq := 0;
    Do_Emit (S, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
-   Check ("no floor, Now = 0, mark 0: t = 1 (above the mark), OK, seq 1",
+   Check ("no floor, Now = 0: t = 1 (above floor_t = 0), OK, seq 1",
           R = OK and V.T = 1 and V.Seq = 1 and Seq = 1 and not Cl
-          and not Cm and not Bx
+          and not Cm
           and V.Author = Self and V.H = HC);
 
    --  No floor, clock above the ceiling: clamped.
    Do_Emit (S, Put_T (1, 'n'), 50_000, Self, HC, Seq, V, R);
    Check ("no floor, Now above ceiling: t = ceiling, OK, Clamped",
-          R = OK and V.T = 10_000 and Seq = 2 and Cm and not Bx);
+          R = OK and V.T = 10_000 and Seq = 2 and Cm);
 
    --  (a) Chase above a far-future floor.
    Apply_Data (Put (1, 'n', Ver (9_000, 2, 1, 10)));
@@ -319,9 +311,9 @@ procedure Test_Emit with SPARK_Mode => Off is
    declare
       S1 : constant State := S;
    begin
-      Apply (S, Roster (2, 20_000, 2), St);
+      Apply (S, Roster (2, 20_000, 2), 0, St);
       Check ("setup: ceiling raised to 20000",
-             St = OK and Ceil (Regs (S)) = 20_000);
+             St = OK and Max_Ceil (S) = 20_000);
       --  T9 state form: each floor of the new state is below its ceiling.
       Lemma_Roster_Unpins (S1, S, Put_T (8, 'n'));
       Lemma_Roster_Unpins (S1, S, Del_T (6));
@@ -346,8 +338,8 @@ procedure Test_Emit with SPARK_Mode => Off is
       T : State := New_State (8);
    begin
       Grant_Writers (T);
-      Apply (T, Roster (1, U48'Last, 1), St);
-      Apply (T, Put (1, 'n', Ver (U48'Last, 5, 1, 40)), St);
+      Apply (T, Roster (1, U48'Last, 1), 0, St);
+      Apply (T, Put (1, 'n', Ver (U48'Last, 5, 1, 40)), 0, St);
       Check ("setup: PUT at t = 2^48 - 1 held", St = OK);
       Seq := 10;
       Do_Emit (T, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
@@ -384,9 +376,9 @@ procedure Test_Emit with SPARK_Mode => Off is
       F : Version;
    begin
       Grant_Writers (U);
-      Apply (U, Roster (1, 10_000, 1), St);
+      Apply (U, Roster (1, 10_000, 1), 0, St);
       --  The device emitted seq 50 before. A restore set seq_self to 10.
-      Apply (U, Put (1, 'n', Ver (9_000, 3, 50, 50)), St);
+      Apply (U, Put (1, 'n', Ver (9_000, 3, 50, 50)), 0, St);
       Check ("setup: own record with seq 50 held", St = OK);
       Seq := 10;
       Do_Emit (U, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
@@ -405,7 +397,7 @@ procedure Test_Emit with SPARK_Mode => Off is
              R = OK and not Cl and V.Seq = 51);
       --  A record of a different key with a high seq is not a record of
       --  this device.
-      Apply (U, Put (7, 'n', Ver (100, 2, 900, 51)), St);
+      Apply (U, Put (7, 'n', Ver (100, 2, 900, 51)), 0, St);
       Seq := 60;
       Do_Emit (U, Put_T (7, 'n'), 0, Self, HC, Seq, V, R);
       Check ("other author's high seq: no clone", R = OK and not Cl
@@ -417,33 +409,33 @@ procedure Test_Emit with SPARK_Mode => Off is
       --  wins.
       Seq := 60;
       F := (T => 10_000, Author => Self, Seq => 61, H => HC);
-      Apply (U, Put (3, 'n', F), St);
+      Apply (U, Put (3, 'n', F), 0, St);
       Check ("setup: floor = (ceil, self, seq_self + 1, h) held", St = OK);
       Do_Emit (U, Put_T (3, 'n'), 0, Self, HC, Seq, V, R);
       Check ("v_emit = floor is impossible: seq jumps, OK above the floor",
              R = OK and Cl and V.Seq = 62 and V.T = 10_000 and Lt (F, V)
              and V /= F);
-      Apply (U, To_Header (Put_T (3, 'n'), V), St);
+      Apply (U, To_Header (Put_T (3, 'n'), V), 0, St);
       Check ("that write applied is held, the floor freed",
              St = OK and Holds (U, To_Header (Put_T (3, 'n'), V))
              and not Holds (U, Put (3, 'n', F)));
 
       --  DEL with a nonzero FH in the target: Choose ignores FH.
-      Apply (U, Put (5, 'a', Ver (400, 2, 1, 1)), St);
+      Apply (U, Put (5, 'a', Ver (400, 2, 1, 1)), 0, St);
       Seq := 100;
-      Do_Emit (U, (Op => W_Del, NS => NS, Ent => Ent (5), FH => Fld ('z')),
+      Do_Emit (U, (Op => W_Del, Ent => Ent (5), FH => Fld ('z')),
                0, Self, HC, Seq, V, R);
       Check ("DEL with nonzero target FH: floor spans the entity",
              R = OK and V.T = 401
-             and To_Header ((Op => W_Del, NS => NS, Ent => Ent (5),
+             and To_Header ((Op => W_Del, Ent => Ent (5),
                              FH => Fld ('z')), V)
                  = To_Header (Del_T (5), V)
              and To_Header (Del_T (5), V).FH = Key256'(others => 0));
 
       --  In_Floor excludes different entities and different fields.
-      Apply (U, Put (11, 'n', Ver (9_500, 2, 2, 2)), St);
-      Apply (U, Del (12, Ver (9_600, 2, 3, 3)), St);
-      Apply (U, Put (10, 'm', Ver (9_700, 2, 4, 4)), St);
+      Apply (U, Put (11, 'n', Ver (9_500, 2, 2, 2)), 0, St);
+      Apply (U, Del (12, Ver (9_600, 2, 3, 3)), 0, St);
+      Apply (U, Put (10, 'm', Ver (9_700, 2, 4, 4)), 0, St);
       Check ("setup: neighbours held", St = OK);
       Do_Emit (U, Put_T (10, 'n'), 100, Self, HC, Seq, V, R);
       Check ("other entities and fields are not the PUT's floor",
@@ -461,8 +453,8 @@ procedure Test_Emit with SPARK_Mode => Off is
       X : State := New_State (8);
    begin
       Grant_Writers (X);
-      Apply (X, Roster (1, 10_000, 1), St);
-      Apply (X, Put (4, 'n', Ver (5, 3, U48'Last, 9)), St);
+      Apply (X, Roster (1, 10_000, 1), 0, St);
+      Apply (X, Put (4, 'n', Ver (5, 3, U48'Last, 9)), 0, St);
       Check ("setup: own record at seq 2^48 - 1 held", St = OK);
       Seq := 10;
       V := Ver (1, 1, 1, 1);
@@ -479,14 +471,14 @@ procedure Test_Emit with SPARK_Mode => Off is
       M : State := New_State (8);
    begin
       Grant_Writers (M);
-      Apply (M, Roster (1, 10_000, 1), St);
-      Apply (M, Put (4, 'n', Ver (5, 3, U48'Last - 1, 9)), St);
+      Apply (M, Roster (1, 10_000, 1), 0, St);
+      Apply (M, Put (4, 'n', Ver (5, 3, U48'Last - 1, 9)), 0, St);
       Check ("setup: own record at seq 2^48 - 2 held", St = OK);
       Seq := 10;
       Do_Emit (M, Put_T (1, 'n'), 0, Self, HC, Seq, V, R);
       Check ("H8 jump to 2^48 - 1: OK, clone, seq = 2^48 - 1",
              R = OK and Cl and Seq = U48'Last and V.Seq = U48'Last);
-      Apply (M, To_Header (Put_T (1, 'n'), V), St);
+      Apply (M, To_Header (Put_T (1, 'n'), V), 0, St);
       Check ("the write at seq 2^48 - 1 is held",
              St = OK and Holds (M, To_Header (Put_T (1, 'n'), V)));
       Do_Emit (M, Put_T (2, 'n'), 0, Self, HC, Seq, V, R);
@@ -505,15 +497,15 @@ procedure Test_Emit with SPARK_Mode => Off is
       D : State := New_State (32);
    begin
       Grant_Writers (D);
-      Apply (D, Roster (1, 10_000, 1), St);
-      Apply (D, Put (1, 'n', Ver (9_000, 2, 1, 10)), St);
-      Apply (D, Put (8, 'n', Ver (10_000, 5, 6, 30)), St);
-      Apply (D, Put (9, 'n', Ver (10_000, 2, 7, 31)), St);
+      Apply (D, Roster (1, 10_000, 1), 0, St);
+      Apply (D, Put (1, 'n', Ver (9_000, 2, 1, 10)), 0, St);
+      Apply (D, Put (8, 'n', Ver (10_000, 5, 6, 30)), 0, St);
+      Apply (D, Put (9, 'n', Ver (10_000, 2, 7, 31)), 0, St);
       --  Own record at the ceiling with seq 61 and h = HC, seq_self 60.
       --  Without H8, the all-zero h would lose and the all-ones h would
       --  win.
       Apply (D, Put (3, 'n', (T => 10_000, Author => Self, Seq => 61,
-                              H => HC)), St);
+                              H => HC)), 0, St);
       Check ("setup: D8 floors held", St = OK);
       Check ("D8: chase, OK under every h",
              Same_Under_Two_Hashes (D, Put_T (1, 'n'), 100, Self, 0, OK));
@@ -557,24 +549,24 @@ procedure Test_Emit with SPARK_Mode => Off is
       Big  : constant U48 := 30 * 86_400_000;   --  30 days
    begin
       Grant_Writers (U);
-      Apply (U, Roster (1, Big, 9), St);
+      Apply (U, Roster (1, Big, 9), 0, St);
       Seq := 0;
       Do_Emit (U, Del_T (9), 0, Self, HC, Seq, V, R);
       Check ("A5: a DEL at Now = 0 is emitted at maxceil - Cap_Lead",
-             R = OK and V.T = Big - Cap_Lead and Del_Low (Big) = Big - Cap_Lead);
+             R = OK and V.T = Big - Cap_Lead and Write_Low (Big) = Big - Cap_Lead);
       Do_Emit (U, Put_T (9, 'n'), 0, Self, HC, Seq, V, R);
-      Check ("A5: a PUT at Now = 0 is not raised to the DEL bound: t = 1",
-             R = OK and V.T = 1 and not Cm);
+      Check ("S8: a PUT at Now = 0 is raised to the same bound",
+             R = OK and V.T = Big - Cap_Lead and not Cm);
       Do_Emit (U, Del_T (9), Big - 1000, Self, HC, Seq, V, R);
       Check ("A5: a DEL with a clock above the bound keeps its clock",
              R = OK and V.T = Big - 1000);
       --  A capped writer (key 7, cap 5000).
-      Apply (U, Grant (7, Cap => 5000), St);
+      Apply (U, Grant (7, Cap => 5000), 0, St);
       Seq := 0;
       Do_Emit (U, Put_T (9, 'n'), Big, Key (7), HC, Seq, V, R);
       Check ("A1: a capped writer's PUT is at its cap, below maxceil",
              R = OK and V.T = 5000 and Eff_Ceil (U, Key (7)) = 5000);
-      Apply (U, Put (9, 'n', Ver (6000, 2, 1, 29)), St);
+      Apply (U, Put (9, 'n', Ver (6000, 2, 1, 29)), 0, St);
       Do_Emit (U, Put_T (9, 'n'), Big, Key (7), HC, Seq, V, R);
       Check ("A1: a floor above the writer's cap shadows it at the cap",
              R = Shadowed and V.T = 5000);
@@ -583,109 +575,77 @@ procedure Test_Emit with SPARK_Mode => Off is
              R = Shadowed and V.T = 5000);
    end;
 
-   --  (n) H22: Clamped and Born_Expired.
+   --  (n) H22, S17: Clamped.
    declare
       W   : State := New_State (16);
       Big : constant U48 := 30 * 86_400_000;   --  30 days
+      Low : constant U48 := Big - Cap_Lead;
    begin
       Grant_Writers (W);
-      Apply (W, Roster (1, Big, 1), St);
+      Apply (W, Roster (1, Big, 1), 0, St);
       Seq := 0;
-      Do_Emit (W, Put_T (1, 'n'), 100, Self, HC, Seq, V, R);
+      Do_Emit (W, Put_T (1, 'n'), Low + 100, Self, HC, Seq, V, R);
       Check ("H22: a write below the ceiling is not clamped",
-             R = OK and V.T = 100 and not Cm and not Bx);
+             R = OK and V.T = Low + 100 and not Cm);
       Do_Emit (W, Put_T (1, 'n'), Big + 1, Self, HC, Seq, V, R);
       Check ("H22: Now above the ceiling: Clamped, t = ceiling",
-             R = OK and V.T = Big and Cm and not Bx);
+             R = OK and V.T = Big and Cm);
       Do_Emit (W, Put_T (1, 'n'), Big, Self, HC, Seq, V, R);
       Check ("H22: Now = ceiling: t = ceiling, not clamped",
              R = OK and V.T = Big and not Cm);
-      Apply (W, Put (2, 'n', Ver (Big, 5, 6, 30)), St);
+      Apply (W, Put (2, 'n', Ver (Big, 5, 6, 30)), 0, St);
       Do_Emit (W, Put_T (2, 'n'), 0, Self, HC, Seq, V, R);
       Check ("H22: floor at the ceiling: Shadowed and Clamped",
              St = OK and R = Shadowed and V.T = Big and Cm);
-      Apply (W, Put (3, 'n', Ver (Big, 2, 7, 31)), St);
+      Apply (W, Put (3, 'n', Ver (Big, 2, 7, 31)), 0, St);
       Do_Emit (W, Put_T (3, 'n'), 0, Self, HC, Seq, V, R);
       Check ("H22: floor at the ceiling, write wins the tie: OK and Clamped",
              St = OK and R = OK and V.T = Big and Cm);
-      --  A DEL at the ceiling with a clock del_ttl_eff ahead.
-      Do_Emit (W, Del_T (1), Big + Del_TTL_Default, Self, HC, Seq, V, R);
-      Check ("H22: a DEL clamped by del_ttl_eff is Born_Expired",
-             R = OK and V.T = Big and Cm and Bx);
-      Do_Emit (W, Del_T (1), Big + Del_TTL_Default - 1, Self, HC, Seq, V, R);
-      Check ("H22: one ms earlier the DEL is clamped, not born expired",
-             R = OK and V.T = Big and Cm and not Bx);
-      Do_Emit (W, Del_T (1), Big + Del_TTL_Default, Self, HC, Seq, V, R,
-               TTL => Del_TTL_Max);
-      Check ("H22: with a longer del_ttl_eff the DEL is not born expired",
-             R = OK and V.T = Big and Cm and not Bx);
-      Do_Emit (W, Put_T (1, 'n'), Big + Del_TTL_Default, Self, HC, Seq, V, R);
-      Check ("H22: a PUT is never Born_Expired",
-             R = OK and V.T = Big and Cm and not Bx);
       Do_Emit (W, Del_T (1), 0, Self, HC, Seq, V, R);
-      Check ("H22: a clockless DEL at maxceil - Cap_Lead is neither flag",
-             R = OK and V.T = Big - Cap_Lead and not Cm and not Bx);
+      Check ("S8: a clockless DEL at maxceil - Cap_Lead is not clamped",
+             R = OK and V.T = Low and not Cm);
       Seq := U48'Last;
-      Do_Emit (W, Del_T (1), Big + Del_TTL_Default, Self, HC, Seq, V, R);
-      Check ("H22: a refusal gives no flag",
-             R = Seq_Exhausted and not Cm and not Bx);
+      Do_Emit (W, Del_T (1), Big + 1, Self, HC, Seq, V, R);
+      Check ("H22: a refusal gives no flag", R = Seq_Exhausted and not Cm);
       Seq := 0;
-      Do_Emit (W, Del_T (1), Big + Del_TTL_Default, Key (8), HC, Seq, V, R);
-      Check ("H22: Inadmissible gives no flag",
-             R = Inadmissible and not Cm and not Bx);
+      Do_Emit (W, Del_T (1), Big + 1, Key (8), HC, Seq, V, R);
+      Check ("H22: Inadmissible gives no flag", R = Inadmissible and not Cm);
    end;
 
-   --  (o) H28: the expire mark is a floor term.
+   --  (o) S8: the one lower bound maxceil - Cap_Lead, PUT and DEL alike.
    declare
-      M : State := New_State (16);
+      M   : State := New_State (16);
+      Big : constant U48 := 30 * 86_400_000;   --  30 days
    begin
       Grant_Writers (M);
-      Apply (M, Roster (1, 10_000, 1), St);
+      Apply (M, Roster (1, Big, 1), 0, St);
       Seq := 0;
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 5_000);
-      Check ("H28: no floor, mark 5000: t = mark + 1, not clamped",
-             R = OK and V.T = 5_001 and not Cm);
-      Do_Emit (M, Put_T (1, 'n'), 6_000, Self, HC, Seq, V, R, Mark => 5_000);
-      Check ("H28: a clock above the mark wins", R = OK and V.T = 6_000);
-      Apply (M, Put (1, 'n', Ver (7_000, 2, 1, 10)), St);
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 5_000);
-      Check ("H28: floor above the mark: t = floor.t + 1",
-             St = OK and R = OK and V.T = 7_001);
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 8_000);
-      Check ("H28: mark above the floor: t = mark + 1, OK above the floor",
-             R = OK and V.T = 8_001 and Lt (Ver (7_000, 2, 1, 10), V) and not Cm);
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 9_999);
-      Check ("H28: mark just below the ceiling: t = ceiling = mark + 1",
-             R = OK and V.T = 10_000 and not Cm);
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 10_000);
-      Check ("H28: mark at the ceiling: t = ceiling, Clamped, OK on held records",
-             R = OK and V.T = 10_000 and Cm);
-      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R, Mark => 20_000);
-      Check ("H28: mark above the ceiling: t = ceiling, Clamped",
-             R = OK and V.T = 10_000 and Cm);
-      Do_Emit (M, Del_T (1), 0, Self, HC, Seq, V, R, Mark => 8_000);
-      Check ("H28: a clockless DEL is above the mark",
-             R = OK and V.T = 8_001 and not Cm);
-      Do_Emit (M, Put_T (1, 'n'), 0, Self, HC, Seq, V, R, Mark => 0);
-      Check ("H28: mark 0, no clock: chase the floor", R = OK and V.T = 7_001);
-      Check ("H28 / D8: above the mark, OK under every h",
-             Same_Under_Two_Hashes (M, Put_T (1, 'n'), 0, Self, 0, OK,
-                                    Mark => 8_000));
-      --  A capped writer (key 7, cap 5000) with a mark above its cap.
-      Apply (M, Grant (7, Cap => 5000), St);
+      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R);
+      Check ("S8: a slow PUT lands at maxceil - Cap_Lead, not clamped",
+             St = OK and R = OK and V.T = Big - Cap_Lead and not Cm);
+      Do_Emit (M, Del_T (1), 100, Self, HC, Seq, V, R);
+      Check ("S8: a slow DEL lands at the same bound",
+             R = OK and V.T = Big - Cap_Lead and not Cm);
+      Apply (M, Put (1, 'n', Ver (Big - 10, 2, 1, 10)), 0, St);
+      Do_Emit (M, Put_T (1, 'n'), 100, Self, HC, Seq, V, R);
+      Check ("S8: a floor above the bound: t = floor_t + 1",
+             St = OK and R = OK and V.T = Big - 9);
+      Check ("S8: Write_Low is 0 below Cap_Lead",
+             Write_Low (Cap_Lead - 1) = 0 and Write_Low (Cap_Lead) = 0
+             and Now_Eff (5, Cap_Lead + 7) = 7);
+      Check ("S8 / D8: above the bound, OK under every h",
+             Same_Under_Two_Hashes (M, Put_T (5, 'n'), 0, Self, 0, OK));
+      --  A capped writer (key 7, cap 5000) below the bound: the cap wins.
+      Apply (M, Grant (7, Cap => 5000), 0, St);
       Seq := 0;
-      Do_Emit (M, Put_T (2, 'n'), 100, Key (7), HC, Seq, V, R, Mark => 6_000);
-      Check ("H28: mark above the writer's cap: t = cap, Clamped",
-             St = OK and R = OK and V.T = 5_000 and Cm);
-      Do_Emit (M, Put_T (2, 'n'), 100, Key (7), HC, Seq, V, R, Mark => 4_000);
-      Check ("H28: mark below the cap: t = mark + 1",
-             R = OK and V.T = 4_001 and not Cm);
+      Do_Emit (M, Put_T (2, 'n'), 100, Key (7), HC, Seq, V, R);
+      Check ("S8 / A1: the bound above the writer's cap: t = cap, not clamped",
+             St = OK and R = OK and V.T = 5_000 and not Cm);
    end;
 
    --  (p) G21: the built record occupies the cell of the target.
    declare
       G      : State := New_State (16);
-      NS_B   : constant Id_Bytes  := To_Bytes (NS);
       --  A collection context (A26): any 32 bytes do for G21.
       Cid_B  : constant Hash256   := [others => 16#5C#];
       E1_B   : constant Id_Bytes  := To_Bytes (Ent (1));
@@ -696,46 +656,44 @@ procedure Test_Emit with SPARK_Mode => Off is
       HP     : Header;
    begin
       Grant_Writers (G);
-      Apply (G, Roster (1, 10_000, 1), St);
-      Apply (G, Put (1, 'n', Ver (9_000, 2, 1, 10)), St);
+      Apply (G, Roster (1, 10_000, 1), 0, St);
+      Apply (G, Put (1, 'n', Ver (9_000, 2, 1, 10)), 0, St);
       Check ("setup: G21 floor on the real field hash held", St = OK);
       Check ("G21: Put_Target's FH is the field's BLAKE2b-256 hash",
              Put_T (1, 'n').FH = To_Key256 (Kome.Crypto.Blake2b_256 (Fn))
              and Put_T (1, 'n').Op = W_Put
              and Del_T (1).FH = Zero_Key and Del_T (1).Op = W_Del);
       Seq := 0;
-      Choose (G, Put_T (1, 'n'), 100, 0, Del_TTL_Default, Self, Seq, T, Sq,
-              R, Cl, Cm, Bx);
+      Choose (G, Put_T (1, 'n'), 100, Self, Seq, T, Sq, R, Cl, Cm);
       declare
          P  : constant Kome.Records.Put_Record :=
-           Kome.Records.Make_Put (Cid_B, NS_B, E1_B, Fn, T, Sq, Self_B, Val);
+           Kome.Records.Make_Put (Cid_B, E1_B, Fn, T, Sq, Self_B, Val);
          HV : constant Key256 := To_Key256 (Kome.Records.Hash (Cid_B, P.C));
       begin
          HP := Kome.Records.To_Header (Cid_B, P);
-         Lemma_Put_Target_Matches (Cid_B, NS_B, E1_B, Fn, T, Sq, Self_B, Val);
+         Lemma_Put_Target_Matches (Cid_B, E1_B, Fn, T, Sq, Self_B, Val);
          Check ("G21: Make_Put's header is To_Header (Put_Target, Stamp)",
                 R = OK and T = 9_001 and Sq = 1
                 and HP = To_Header (Put_T (1, 'n'), Stamp (T, Self, Sq, HV)));
          Lemma_OK_Undominated (G, Put_T (1, 'n'), T, Self, Sq, HV);
-         Apply (G, HP, St);
+         Apply (G, HP, 0, St);
          Check ("G21: the built PUT is held, the floor freed",
                 St = OK and Holds (G, HP)
                 and not Holds (G, Put (1, 'n', Ver (9_000, 2, 1, 10))));
       end;
-      Choose (G, Del_T (1), 0, 0, Del_TTL_Default, Self, Seq, T, Sq,
-              R, Cl, Cm, Bx);
+      Choose (G, Del_T (1), 0, Self, Seq, T, Sq, R, Cl, Cm);
       declare
          D  : constant Kome.Records.Del_Record :=
-           Kome.Records.Make_Del (Cid_B, NS_B, E1_B, T, Sq, Self_B);
+           Kome.Records.Make_Del (Cid_B, E1_B, T, Sq, Self_B);
          HD : constant Header := Kome.Records.To_Header (Cid_B, D);
          HV : constant Key256 := To_Key256 (Kome.Records.Hash (Cid_B, D.C));
       begin
-         Lemma_Del_Target_Matches (Cid_B, NS_B, E1_B, T, Sq, Self_B);
+         Lemma_Del_Target_Matches (Cid_B, E1_B, T, Sq, Self_B);
          Check ("G21: Make_Del's header is To_Header (Del_Target, Stamp)",
                 R = OK and T = 9_002 and Sq = 2
                 and HD = To_Header (Del_T (1), Stamp (T, Self, Sq, HV)));
          Lemma_OK_Undominated (G, Del_T (1), T, Self, Sq, HV);
-         Apply (G, HD, St);
+         Apply (G, HD, 0, St);
          Check ("G21: the built DEL is held, the PUT freed",
                 St = OK and Holds (G, HD) and not Holds (G, HP));
       end;
@@ -746,22 +704,22 @@ procedure Test_Emit with SPARK_Mode => Off is
       P : State := New_State (16);
    begin
       Grant_Writers (P);
-      Apply (P, Roster (1, 10_000, 1), St);
+      Apply (P, Roster (1, 10_000, 1), 0, St);
       Lemma_Clone_Pair_Def (P, Self);
       Check ("H18: no data: no pair", not Clone_Pair (P, Self));
-      Apply (P, Put (1, 'n', Ver (100, 3, 7, 1)), St);
-      Apply (P, Put (2, 'n', Ver (100, 2, 7, 2)), St);   --  other author
-      Apply (P, Put (3, 'n', Ver (100, 3, 8, 3)), St);   --  other seq
+      Apply (P, Put (1, 'n', Ver (100, 3, 7, 1)), 0, St);
+      Apply (P, Put (2, 'n', Ver (100, 2, 7, 2)), 0, St);   --  other author
+      Apply (P, Put (3, 'n', Ver (100, 3, 8, 3)), 0, St);   --  other seq
       Check ("setup: H18 records held", St = OK);
       Lemma_Clone_Pair_Def (P, Self);
       Lemma_Clone_Pair_Def (P, Key (2));
       Check ("H18: distinct own seqs, another author's equal seq: no pair",
              not Clone_Pair (P, Self) and not Clone_Pair (P, Key (2)));
-      Apply (P, Put (4, 'n', Ver (100, 3, 7, 1)), St);   --  same version
+      Apply (P, Put (4, 'n', Ver (100, 3, 7, 1)), 0, St);   --  same version
       Lemma_Clone_Pair_Def (P, Self);
       Check ("H18: the same version at two cells is not a pair",
              St = OK and not Clone_Pair (P, Self));
-      Apply (P, Del (5, Ver (100, 3, 7, 9)), St);        --  seq 7, other h
+      Apply (P, Del (5, Ver (100, 3, 7, 9)), 0, St);        --  seq 7, other h
       Lemma_Clone_Pair_Def (P, Self);
       Check ("H18: two own records with equal seq and different h: pair",
              St = OK and Clone_Pair (P, Self));
@@ -781,20 +739,16 @@ procedure Test_Emit with SPARK_Mode => Off is
              and not Pair (Roster (7, 10, 1), Roster (7, 10, 2), Key (Fnd)));
    end;
 
-   --  The H22 / H28 lemmas at run time.
+   --  The H22 / T8 lemmas at run time.
    Lemma_Clamped_Formula (5, 7, 3);
    Lemma_Clamped_Formula (10, 7, 10);
    Lemma_Clamped_Formula (10, 7, 9);
    Lemma_Clamped_Formula (U48'Last, 0, U48'Last);
-   Lemma_Born_Expired_Formula (Del_T (1), 100, Del_TTL_Min, Del_TTL_Min + 100);
-   Lemma_Born_Expired_Formula (Del_T (1), 101, Del_TTL_Min, Del_TTL_Min + 100);
-   Lemma_Born_Expired_Formula (Put_T (1, 'n'), 0, Del_TTL_Min, U48'Last);
-   Lemma_Born_Expired_Formula (Del_T (1), U48'Last, Del_TTL_Max, U48'Last);
    Lemma_Above_Floor (0, 50, 100);
    Lemma_Above_Floor (70, 50, 100);
    Lemma_Above_Floor (0, 100, 100);
    Lemma_Above_Floor (0, U48'Last, U48'Last);
-   Check ("H22 / H28 lemmas evaluated", True);
+   Check ("H22 / T8 lemmas evaluated", True);
 
    if Failed then
       Set_Exit_Status (Failure);

@@ -3847,6 +3847,109 @@ package body Kome.Frontier with SPARK_Mode is
       end loop;
    end Expire;
 
+   ---------------------------------------------------------------------
+   --  Set_Tag (SIMPLIFY.md S14)
+   ---------------------------------------------------------------------
+
+   --  A retag of the authorization rows keeps every data record admitted:
+   --  the rows agree on every header (Lemma_Rows_Agree_Views, one author
+   --  at a time).
+   procedure Lemma_Retag_Data (Old, Upd : State) with
+     Ghost, Global => null,
+     Pre  => Is_Frontier (Old) and then Upd.Cap = Old.Cap and then Upd.ND = Old.ND
+             and then Upd.Data_E = Old.Data_E
+             and then Rows_Agree (Old.A, Upd.A),
+     Post => (for all D in 1 .. Data_Count (Upd) => Data_Item_OK (Upd, Upd.Data_E (D).Hdr))
+             and then Max_Ceil (Upd) = Max_Ceil (Old)
+   is
+      --  Proved; at run time the invariant would cost O(n^2) per call.
+      pragma Assertion_Policy (Loop_Invariant => Ignore);
+   begin
+      Lemma_Rows_Agree_Views (Old.A, Upd.A, Zero_Key);
+      for D in 1 .. Data_Count (Upd) loop
+         pragma Assert (Data_Item_OK (Old, Old.Data_E (D).Hdr));
+         Lemma_Rows_Agree_Views (Old.A, Upd.A, Old.Data_E (D).Hdr.V.Author);
+         pragma Assert (Data_Item_OK (Upd, Upd.Data_E (D).Hdr));
+         pragma Loop_Invariant
+           (for all D2 in 1 .. D => Data_Item_OK (Upd, Upd.Data_E (D2).Hdr));
+      end loop;
+   end Lemma_Retag_Data;
+
+   --  The flat view after a retag at row position (K, J) = flat index I.
+   procedure Lemma_Retag_Flat (Old, Upd : State; I : Held_Index; T : U64) with
+     Ghost, Global => null,
+     Pre  => Shape (Old) and then Upd.Cap = Old.Cap and then Upd.ND = Old.ND
+             and then Upd.A.NSlots = Old.A.NSlots and then Upd.A.NAuth = Old.A.NAuth
+             and then Upd.A.NA = Old.A.NA and then Upd.A.Offs = Old.A.Offs
+             and then I <= Count (Old)
+             and then (for all D in 1 .. Data_Count (Old) =>
+                         Upd.Data_E (D).Hdr = Old.Data_E (D).Hdr
+                         and then Upd.Data_E (D).Tag
+                                  = (if Row_Of (Old, I) = 0 and then D = Pos_Of (Old, I)
+                                     then T else Old.Data_E (D).Tag))
+             and then (for all K in Slot_Index =>
+                         (for all J in 1 .. SC (Old.A, K) =>
+                            Upd.A.H (K, J).Hdr = Old.A.H (K, J).Hdr
+                            and then Upd.A.H (K, J).Tag
+                                     = (if K = Row_Of (Old, I) and then J = Pos_Of (Old, I)
+                                        then T else Old.A.H (K, J).Tag))),
+     Post => Count (Upd) = Count (Old)
+             and then (for all J in 1 .. Count (Upd) =>
+                         Held (Upd, J) = Held (Old, J)
+                         and then Tag (Upd, J) = (if J = I then T else Tag (Old, J)))
+   is
+      --  Proved; at run time the invariant would cost O(n^2) per call.
+      pragma Assertion_Policy (Loop_Invariant => Ignore);
+   begin
+      Lemma_Flat_Row (Old, I);
+      for J in 1 .. Count (Old) loop
+         Lemma_Flat_Row (Old, J);
+         pragma Assert (Row_Of (Upd, J) = Row_Of (Old, J));
+         pragma Assert (Pos_Of (Upd, J) = Pos_Of (Old, J));
+         pragma Assert
+           (if Row_Of (Old, J) = Row_Of (Old, I) and then Pos_Of (Old, J) = Pos_Of (Old, I)
+            then J = I);
+         pragma Assert (Held (Upd, J) = Held (Old, J));
+         pragma Assert (Tag (Upd, J) = (if J = I then T else Tag (Old, J)));
+         pragma Loop_Invariant
+           (for all J2 in 1 .. J =>
+              Held (Upd, J2) = Held (Old, J2)
+              and then Tag (Upd, J2) = (if J2 = I then T else Tag (Old, J2)));
+      end loop;
+   end Lemma_Retag_Flat;
+
+   procedure Set_Tag (S : in out State; I : Held_Index; T : U64) is
+      Old : constant State := S with Ghost;
+      K   : constant Slot_Number := Row_Of (S, I);
+      J   : constant Integer := Pos_Of (S, I);
+   begin
+      Lemma_Off_Mono (S);
+      Lemma_Flat_Row (S, I);
+      if K = 0 then
+         S.Data_E (J).Tag := T;
+         pragma Assert (S.A = Old.A);
+         pragma Assert (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Auth_OK (S.A));
+         pragma Assert (for all D in 1 .. Data_Count (S) =>
+                          S.Data_E (D).Hdr = Old.Data_E (D).Hdr);
+         pragma Assert (Data_OK (S));
+         pragma Assert (Data_Sorted (S));
+         pragma Assert (Max_Ceil (S) = Max_Ceil (Old));
+      else
+         S.A.H (K, J).Tag := T;
+         pragma Assert (S.Data_E = Old.Data_E);
+         pragma Assert (Rows_Agree (Old.A, S.A));
+         Lemma_Retag_Data (Old, S);
+         pragma Assert (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Auth_OK (S.A));
+         pragma Assert (Data_OK (S));
+         pragma Assert (Data_Sorted (S));
+      end if;
+      Lemma_Retag_Flat (Old, S, I, T);
+      pragma Assert (Is_Frontier (S));
+      pragma Assert (for all K2 in 1 .. Slots_Used (S) =>
+                       (for all J2 in 1 .. Slot_Count (S, K2) =>
+                          Auth_Held (S, K2, J2) = Auth_Held (Old, K2, J2)));
+   end Set_Tag;
+
    --  A map that is the identity below Lo and increasing from Lo on, into
    --  values at least Lo, is increasing.
    procedure Lemma_Src_Split (Src : Index_Map; Lo, Kept : Natural) with

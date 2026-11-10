@@ -196,33 +196,28 @@ package body Kome.Emit with SPARK_Mode is
      (S               : in     State;
       Tgt             : in     Target;
       Now             : in     U48;
-      Mark            : in     U48;
-      Del_TTL         : in     U48;
       Self            : in     Key256;
       Seq_Self        : in out U48;
       T               :    out U48;
       Seq             :    out U48;
       Result          :    out Status;
       Clone_Suspected :    out Boolean;
-      Clamped         :    out Boolean;
-      Born_Expired    :    out Boolean)
+      Clamped         :    out Boolean)
    is
       F : constant Floor_View   := Floor (S, Tgt);
-      --  The floor term: the held floor's t (0 if absent) raised to the
-      --  expire mark (H28).
-      FT : constant U48         := Floor_Time (S, Tgt, Mark);
+      --  The floor term (S8): the held floor's t, 0 if absent.
+      FT : constant U48         := F.V.T;
       --  The writer's ceiling (maxceil and its cap), and the clock that a
-      --  DEL reads (raised to maxceil - Cap_Lead).
+      --  write reads (raised to maxceil - Cap_Lead, S8).
       C : constant U48          := Eff_Ceil (S, Self);
-      Nw : constant U48         := Now_Eff (Tgt, Now, Ceil (Regs (S)));
+      Nw : constant U48         := Now_Eff (Now, Max_Ceil (S));
       O : constant Own_Seq_View := Max_Own_Seq (S, Self);
       B : constant U48          := Seq_Base (Seq_Self, O);
    begin
       Clone_Suspected := Clone_Detected (Seq_Self, O);
       Clamped := False;
-      Born_Expired := False;
 
-      if not In_W (Regs (S), Self) then
+      if not In_W (S, Self) then
          T := 0;
          Seq := 0;
          Result := Inadmissible;
@@ -240,21 +235,16 @@ package body Kome.Emit with SPARK_Mode is
       Seq := Seq_Self;
       T := T_Emit (Nw, True, FT, C);
       Lemma_Emit_Bounded (Nw, True, FT, C);
-      pragma Assert (T <= Ceil (Regs (S)) and then T <= W_Cap (Regs (S), Self));
-      --  A DEL: Nw >= Del_Low, and t_emit >= min (Nw, C).
-      pragma Assert (if Tgt.Op = W_Del then T >= U48'Min (Del_Low (Ceil (Regs (S))), C));
-      --  H28: the floor term is at least the mark. Below the ceiling, T is
-      --  above the floor term; otherwise T is the ceiling.
+      pragma Assert (T <= Max_Ceil (S) and then T <= W_Cap (S, Self));
+      --  S8: Nw >= Write_Low, and t_emit >= min (Nw, C).
+      pragma Assert (T >= U48'Min (Write_Low (Max_Ceil (S)), C));
+      --  T8: below the ceiling, T is above the floor term; otherwise T is
+      --  the ceiling.
       Lemma_Above_Floor (Nw, FT, C);
-      pragma Assert (FT >= Mark and then (F.Present or else FT = Mark));
-      pragma Assert (if Mark < C then T > Mark);
-      --  T8: the held floor is at most the floor term, so T is above it
-      --  when it is below the ceiling.
       pragma Assert (if F.Present and then F.V.T < C then T > F.V.T);
 
-      --  H22: the flags.
+      --  H22, S17: the flag.
       Clamped := Is_Clamped (T, Now, FT);
-      Born_Expired := Is_Born_Expired (Tgt, T, Del_TTL, Now);
       --  Clamped means the ceiling held the write back: T < Now <= Nw, or
       --  T <= FT. In both cases T_Emit gave the ceiling.
       pragma Assert (if Clamped then T = C);
@@ -266,7 +256,7 @@ package body Kome.Emit with SPARK_Mode is
 
       if F.Present then
          Lemma_Floor_Admitted (S, Tgt);
-         pragma Assert (F.V.T <= Ceil (Regs (S)));
+         pragma Assert (F.V.T <= Max_Ceil (S));
          --  The floor is a held data record: by a different author, or by
          --  Self with a smaller seq. In the two cases, its prefix is
          --  different (D8).
@@ -390,9 +380,6 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Clamped_Formula (T, Now, Floor_T : U48) is null;
 
-   procedure Lemma_Born_Expired_Formula
-     (Tgt : Target; T, Del_TTL, Now : U48) is null;
-
    procedure Lemma_Above_Floor (Now, Floor_T, Ceil : U48) is null;
 
    ---------------------------------------------------------------------------
@@ -402,7 +389,6 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Put_Target_Matches
      (Cid    : Hash256;
-      NS     : NS_Id;
       Ent    : Ent_Id;
       Field  : Byte_Array;
       T, Seq : U48;
@@ -411,7 +397,6 @@ package body Kome.Emit with SPARK_Mode is
 
    procedure Lemma_Del_Target_Matches
      (Cid    : Hash256;
-      NS     : NS_Id;
       Ent    : Ent_Id;
       T, Seq : U48;
       Author : Pubkey) is null;
@@ -432,7 +417,7 @@ package body Kome.Emit with SPARK_Mode is
             pragma Loop_Invariant
               (for all J in 1 .. I =>
                  (if In_Floor (Held (S, J), Tgt)
-                  then Held (S, J).V.T <= Ceil (Regs (S))));
+                  then Held (S, J).V.T <= Max_Ceil (S)));
          end loop;
       end if;
    end Lemma_Floor_Admitted;
@@ -457,14 +442,14 @@ package body Kome.Emit with SPARK_Mode is
                   pragma Loop_Invariant
                     (for all K in 1 .. J =>
                        (if Held (S1, K) = Held (S2, I)
-                        then Held (S2, I).V.T <= Ceil (Regs (S1))));
+                        then Held (S2, I).V.T <= Max_Ceil (S1)));
                end loop;
-               pragma Assert (Held (S2, I).V.T <= Ceil (Regs (S1)));
+               pragma Assert (Held (S2, I).V.T <= Max_Ceil (S1));
             end if;
             pragma Loop_Invariant
               (for all J in 1 .. I =>
                  (if In_Floor (Held (S2, J), Tgt)
-                  then Held (S2, J).V.T <= Ceil (Regs (S1))));
+                  then Held (S2, J).V.T <= Max_Ceil (S1)));
          end loop;
       end if;
    end Lemma_Roster_Unpins;

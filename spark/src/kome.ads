@@ -108,20 +108,19 @@ package Kome with SPARK_Mode, Pure is
 
    --  The ceiling lead (DESIGN.md §7, §10.3; AUDIT.md H14, A5): an honest
    --  root sets ceiling_t at most Cap_Lead ahead of its clock, so that
-   --  maxceil - now <= Cap_Lead while every root is honest. The expiry
-   --  clamp then protects a tombstone for at least del_ttl_eff - Cap_Lead
-   --  at every replica, and a DEL is emitted at t >= maxceil - Cap_Lead
-   --  (Kome.Emit), so it never expires on arrival at a clocked replica.
-   --  Cap_Lead must stay below Del_TTL_Min.
+   --  maxceil - now <= Cap_Lead while every root is honest. Every write is
+   --  emitted at t >= maxceil - Cap_Lead (Kome.Emit, SIMPLIFY.md S8),
+   --  above the expiry horizon hz(F) = maxceil - del_ttl (S7), so a DEL
+   --  lives at least del_ttl - Cap_Lead at every replica whose maxceil is
+   --  the writer's. Cap_Lead must stay below Del_TTL_Min.
    Cap_Lead : constant := 259_200_000;               --  3 days
    pragma Compile_Time_Error (Cap_Lead >= Del_TTL_Min,
                               "DESIGN.md §7: Cap_Lead must be below Del_TTL_Min");
 
-   --  Signed 64-bit time for the expiry horizon (DESIGN.md §7). The code
-   --  computes horizon := min (now_local, maxceil) - del_ttl_eff in 64 bits,
-   --  so it never wraps. A value below 0 means "no horizon".
+   --  Signed 64-bit time for the advisory clock skew (Kome.Views.Skew,
+   --  now - maxceil), so it never wraps. The expiry horizon is a U48 of
+   --  the frontier (SIMPLIFY.md S7, Kome.Store.Hz) and has no sentinel.
    type Time64 is range -(2**62) .. 2**62 with Size => 64;
-   No_Horizon : constant Time64 := -1;
 
    --  Reconciliation (DESIGN.md §8).
    Split_Fanout    : constant := 16;
@@ -145,9 +144,9 @@ package Kome with SPARK_Mode, Pure is
                         --  table, is full; nothing changed (DESIGN.md §7)
       Log_Full,         --  the record fits F but not the log; nothing
                         --  changed: compact and retry (DESIGN.md §7, E2)
-      Seq_Corrupt);     --  the binding cannot read the persisted seq_self
-                        --  (torn, bad checksum); a report, apart from
-                        --  Seq_Exhausted: the write path starts from
-                        --  Max_Own_Seq (Kome.Write.Open_Seq, AUDIT.md A10)
+      Busy);            --  Kome.Store.Compact while a reconciliation
+                        --  session holds a snapshot of the log
+                        --  (Kome.Store.Pinned, SIMPLIFY.md S21); nothing
+                        --  changed: compact after the session
 
 end Kome;

@@ -1,41 +1,34 @@
---  Test main for Kome.Store (DESIGN.md §7, §9 T11, T13, T18). Real signed
---  frames from Kome.Records go through the store.
+--  Test main for Kome.Store (DESIGN.md §7 after SIMPLIFY.md S7, S14 to
+--  S17, S21; T11, T13, T18). Real signed frames from Kome.Records go
+--  through the store.
 --
 --  The tests cover these items:
---    * the HEADER against independent vectors (vectors/store.txt);
---    * put and overwrite (the older frame leaves the index), a dominated
---      re-offer and a duplicate (nothing appended), and a DEL that frees
---      every field of its entity;
---    * refusals that change nothing: an unrostered author and a record
---      above the ceiling (Inadmissible), a full frontier (No_Space), a full
---      slice (Auth_Full) and a full log (Log_Full);
---    * a dominated PUT and a dominated roster on a full log give Dominated,
---      not No_Space;
---    * an authorization record of a foreign founding key;
---    * expiry: the horizon of DESIGN.md §7 with del_ttl_eff and the maxceil
---      clamp; EXPIRE logged iff a record was removed or the horizon was
---      lowered; periodic calls that do not make the log larger; a clock set
---      back; a horizon below 0;
---    * apply-then-expire: an arriving expired DEL frees its entity, the
---      store logs it as APPLY_EXPIRED, and the DEL is not held;
---    * compaction: the HEADER, authorization records first, each part in
---      index order, byte for byte, EXPIRE (horizon);
---    * the index itself never causes a refusal (index = F);
---    * replay (T18) after these sequences: a roster refresh, a
---      dominated-on-arrival roster and a stale incomparable roster; a member
---      revoke; a GRANT that arrives after a PUT that it admits; a clock set
---      back and a stale PUT; a data row full of DELs that expire. When the
---      store opens again from the log, it has the same held set (Holds both
---      ways), the same index entries up to order, the same
---      Kome.Digest.Frontier_Digest and a horizon at most the live horizon.
---      Its log is the input byte for byte;
---    * Open_From_Log opens at any data capacity that the log replays at
---      and refuses another slice (No_Space); a corrupt or torn log is
---      Malformed, and Valid_Length names the replayed prefix (H23); a
---      duplicated APPLY replays as OK; a logged horizon above the bound
---      is clamped (H24);
---    * the counters Auth_Gen (H11) and Expire_Mark (H28), the compaction
---      duty Compact_Due (H26) and Horizon_Frozen (N4).
+--    * the HEADER, the APPLY prefix and the SEQ entry against independent
+--      vectors (vectors/store.txt, with its embedded generator);
+--    * tags (S14): Make_Tag / Tag_Off / Tag_Len round trips, and every
+--      held record's tag reads back its own frame (Read_Frame, Lemma_Tag);
+--    * put, overwrite, a dominated re-offer and a duplicate (nothing
+--      appended), refusals that change nothing (Inadmissible, No_Space,
+--      Log_Full);
+--    * the digests (S21): Digest_Data and Digest_Auth against a digest
+--      recomputed from the rows, and against Kome.Digest.State_Of (F)
+--      (Lemma_Digest_Split), after puts, an expiry and a compaction;
+--    * automatic expiry (S7): a ROSTER that raises Max_Ceil expires the
+--      DELs at or below the new horizon in the same call; a DEL that
+--      arrives expired drops what it dominates and is not held, or is a
+--      no-op when it drops nothing; and the replay of both;
+--    * seq_self (S16): from own APPLY entries (also a peer frame signed by
+--      the device key), and after Compact from the SEQ entry when the
+--      record with the largest own seq is no longer held;
+--    * Compact: Busy while Pinned, the layout (HEADER, authorization rows
+--      first, frames byte for byte, SEQ), not due afterwards, and the
+--      replay of the compacted log;
+--    * replay (T18): the reopened pair holds the same records, the same
+--      digests and seq_self, and its log is the input; every APPLY frame
+--      of a written log is a verified frame (Trusted_Frame); a corrupt,
+--      torn or foreign log is refused with the right Valid_Length (H23);
+--      a duplicated APPLY replays as OK; a smaller data capacity gives
+--      No_Space; Compact_Due (H26).
 --  The build uses -gnata, so the tests also execute every Pre / Post (Valid
 --  included) and every ghost lemma on these stores.
 pragma Ada_2022;
@@ -45,18 +38,23 @@ with Ada.Directories;
 with Ada.Exceptions;   use Ada.Exceptions;
 with Kome;             use Kome;
 with Kome.Headers;     use Kome.Headers;
-with Kome.Registers;   use type Kome.Registers.Writer_Count;
 with Kome.Frontier;    use Kome.Frontier;
 with Kome.Keys;        use Kome.Keys;
 with Kome.Crypto;
 with Kome.Records;     use Kome.Records;
+with Kome.Accumulator;
 with Kome.Digest;
 with Kome.Store;       use Kome.Store;
 
 procedure Test_Store with SPARK_Mode => Off is
 
+   use type Kome.Accumulator.Acc;
+   use type Kome.Digest.Digest_State;
+
    subtype Store_T is Kome.Store.Store;
    subtype Lattice is Kome.Frontier.State;
+
+   function Cnt (L : Lattice) return Held_Count renames Kome.Frontier.Count;
 
    Failed : Boolean := False;
 
@@ -81,10 +79,6 @@ procedure Test_Store with SPARK_Mode => Off is
       K (31) := K (31) and 16#3F#;
       return K;
    end Good_DH;
-
-   --  One roster member { sign_pk dh_pk nonce box } with a good dh_pk.
-   function Member (PK : Pubkey; Seed : Natural) return Byte_Array is
-     (PK & Good_DH (Seed) & Fill (Nonce_Len, Seed + 1) & Fill (Box_Len, Seed + 2));
 
    function Hex (S : String) return Byte_Array is
       function Nib (C : Character) return Byte is
@@ -111,100 +105,68 @@ procedure Test_Store with SPARK_Mode => Off is
       end if;
    end Find;
 
-   --  Big-endian u48 and u32, written independently of Kome.Records.
-   function BE48 (V : U48) return Byte_Array is
-     ([for I in 0 .. 5 => Byte ((V / 2 ** (8 * (5 - I))) mod 256)]);
-   function BE32 (V : Natural) return Byte_Array is
-     ([for I in 0 .. 3 => Byte ((V / 2 ** (8 * (3 - I))) mod 256)]);
-
    Day : constant U48 := 86_400_000;
    TTL : constant U48 := Del_TTL_Min;   --  7 days
 
-   Root_SK, Root2_SK, RootX_SK, Author_SK, Author2_SK, Stranger_SK : Kome.Crypto.Secret_Key;
-   Root_PK, Root2_PK, RootX_PK, Author_PK, Author2_PK, Stranger_PK : Pubkey;
+   Root_SK, Author_SK, Author2_SK, Stranger_SK : Kome.Crypto.Secret_Key;
+   Root_PK, Author_PK, Author2_PK, Stranger_PK : Pubkey;
    Salt_A : constant Salt := Salt (Fill (Salt_Len, 90));
-   NS_A   : NS_Id;
-   Cid_A  : Hash256;   --  the collection context of (Root_PK, Salt_A) (A26)
-   NS     : Id128;
+   Cid_A  : Hash256;
+   Cert_R : Sig;    --  the founding key's certificate of itself (S3)
    Fnd    : Key256;
-
-   --  The certified root Root2, with two certificates (two caps), so that
-   --  it can sign two different GRANTs of one subject.
-   Cap2           : constant U48 := 1000 * Day;
-   Cert2a, Cert2b : Sig;
 
    ---------------------------------------------------------------------------
    --  Frames.
    ---------------------------------------------------------------------------
 
-   function Roster_Of
-     (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig;
-      Gen, Ceil, Del_TTL : U48; Members : Byte_Array) return Byte_Array
-   is
+   function Member (PK : Pubkey; Seed : Natural) return Byte_Array is
+     (PK & Good_DH (Seed) & Fill (Nonce_Len, Seed + 1) & Fill (Box_Len, Seed + 2));
+
+   function Roster_Of (Gen, Ceil : U48) return Byte_Array is
       R : Roster_Record :=
-        Make_Roster (Root_PK, Salt_A, PK, Cap, Cert, Good_DH (77), Gen, Ceil, Del_TTL, 0,
-                     [], Members);
+        Make_Roster (Cid_A, Root_PK, Founding_Cap, Cert_R, Good_DH (77), Gen, Ceil,
+                     Member (Author_PK, 11) & Member (Author2_PK, 21));
    begin
-      Sign (R, SK);
+      Sign (Cid_A, R, Root_SK);
       return Encode (R);
    end Roster_Of;
 
-   function Founding_Roster (Gen, Ceil : U48; Del_TTL : U48 := TTL) return Byte_Array is
-     (Roster_Of (Root_SK, Root_PK, 0, Zero_Sig, Gen, Ceil, Del_TTL,
-                 Member (Author_PK, 11) & Member (Author2_PK, 21)));
-
-   function Grant_Of
-     (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig; Subject : Pubkey)
-      return Byte_Array
-   is
-      G : Grant_Record := Make_Grant (Root_PK, Salt_A, PK, Cap, Cert, Subject);
+   function Grant_Of (Subject : Pubkey) return Byte_Array is
+      G : Grant_Record := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, Subject);
    begin
-      Sign (G, SK);
+      Sign (Cid_A, G, Root_SK);
       return Encode (G);
    end Grant_Of;
 
-   function Founding_Grant (Subject : Pubkey) return Byte_Array is
-     (Grant_Of (Root_SK, Root_PK, 0, Zero_Sig, Subject));
-
-   function Revoke_Of (Subject : Pubkey; From_T : U48) return Byte_Array is
-      R : Revoke_Record :=
-        Make_Revoke (Root_PK, Salt_A, Root_PK, 0, Zero_Sig, Subject, From_T);
-   begin
-      Sign (R, Root_SK);
-      return Encode (R);
-   end Revoke_Of;
+   function Ent_B (Ent : Byte) return Ent_Id is (Ent_Id (Fill (Ent_Len, Natural (Ent))));
 
    function Put_Of
      (Ent : Byte; Field : Character; T, Seq : U48; Value : Byte_Array;
       SK  : Kome.Crypto.Secret_Key; PK : Pubkey) return Byte_Array
    is
       R : Put_Record :=
-        Make_Put (Cid_A, NS_A, Ent_Id (Fill (Ent_Len, Natural (Ent))),
-                  [Character'Pos (Field)], T, Seq, PK, Value);
+        Make_Put (Cid_A, Ent_B (Ent), [Character'Pos (Field)], T, Seq, PK, Value);
    begin
       Sign (Cid_A, R, SK);
       return Encode (R);
    end Put_Of;
 
-   function Put_Of (Ent : Byte; Field : Character; T, Seq : U48; Value : Byte_Array)
-     return Byte_Array is (Put_Of (Ent, Field, T, Seq, Value, Author_SK, Author_PK));
+   function Put_Of (Ent : Byte; Field : Character; T, Seq : U48) return Byte_Array is
+     (Put_Of (Ent, Field, T, Seq, Fill (3, Natural (Seq)), Author_SK, Author_PK));
 
-   function Del_Of (Ent : Byte; T, Seq : U48) return Byte_Array is
-      R : Del_Record;
+   function Del_Of
+     (Ent : Byte; T, Seq : U48; SK : Kome.Crypto.Secret_Key; PK : Pubkey) return Byte_Array
+   is
+      R : Del_Record := Make_Del (Cid_A, Ent_B (Ent), T, Seq, PK);
    begin
-      R.C := (NS => NS_A, Ent => Ent_Id (Fill (Ent_Len, Natural (Ent))),
-              T => T, Seq => Seq, Author => Author_PK);
-      Sign (Cid_A, R, Author_SK);
+      Sign (Cid_A, R, SK);
       return Encode (R);
    end Del_Of;
 
+   function Del_Of (Ent : Byte; T, Seq : U48) return Byte_Array is
+     (Del_Of (Ent, T, Seq, Author_SK, Author_PK));
+
    function Hdr (F : Byte_Array) return Header is (Header_Of (Cid_A, F));
-
-   function Cell_Of (Field : Character) return Key256 is
-     (To_Key256 (Kome.Crypto.Blake2b_256 ([Character'Pos (Field)])));
-
-   function Ent_Of (Ent : Byte) return Id128 is
-     (To_Id128 (Ent_Id (Fill (Ent_Len, Natural (Ent)))));
 
    ---------------------------------------------------------------------------
    --  Operations and comparisons.
@@ -214,7 +176,7 @@ procedure Test_Store with SPARK_Mode => Off is
      (S : in out Store_T; L : in out Lattice; F : Byte_Array; Off : out Log_Size;
       St : out Status) is
    begin
-      if not Verified (Cid (S), F) then
+      if not Verified (Cid (S), Root_Key (S), F) then
          raise Program_Error with "test frame not well-formed";
       end if;
       Put_Frame (S, L, F, Header_Of (Cid (S), F), Off, St);
@@ -235,148 +197,115 @@ procedure Test_Store with SPARK_Mode => Off is
       end if;
    end Put;
 
-   procedure Exp (S : in out Store_T; L : in out Lattice; Now : U48) is
-      St : Status;
+   --  The digest of the data row and of the authorization rows, from the
+   --  rows (Kome.Digest.Digest_Of), independent of the store's states.
+   function Data_Digest (L : Lattice) return Kome.Digest.Digest_State is
+     (Kome.Digest.Digest_Of
+        (Kome.Digest.Hash_Array'
+           [for I in 1 .. Data_Count (L) => Data_Held (L, I).V.H]));
+
+   function Auth_Digest (L : Lattice) return Kome.Digest.Digest_State is
+     (Kome.Digest.Digest_Of
+        (Kome.Digest.Hash_Array'
+           [for I in 1 .. Auth_Count (L) => Held (L, Data_Count (L) + I).V.H]));
+
+   function Same_State (A, B : Kome.Digest.Digest_State) return Boolean is
+     (Kome.Digest.Count (A) = Kome.Digest.Count (B)
+      and then Kome.Digest.Sum (A) = Kome.Digest.Sum (B));
+
+   --  The two store digests are the digests of the rows, and together the
+   --  digest of F (S21).
+   function Digests_Match (S : Store_T; L : Lattice) return Boolean is
    begin
-      Kome.Store.Expire (S, L, Now, St);
-      if St /= OK then
-         raise Program_Error with "setup expire refused";
-      end if;
-   end Exp;
+      Lemma_Digest_Split (S, L);
+      return Same_State (Digest_Data (S), Data_Digest (L))
+        and then Same_State (Digest_Auth (S), Auth_Digest (L))
+        and then Kome.Digest.Count (Digest_Data (S)) + Kome.Digest.Count (Digest_Auth (S))
+                 = Kome.Digest.Count (Kome.Digest.State_Of (L))
+        and then Kome.Accumulator.Add (Kome.Digest.Sum (Digest_Data (S)),
+                                       Kome.Digest.Sum (Digest_Auth (S)))
+                 = Kome.Digest.Sum (Kome.Digest.State_Of (L));
+   end Digests_Match;
 
-   --  Compact into a binding buffer (AUDIT.md G15). The buffer starts
-   --  with bytes that are in no log; on return its first Log_Length bytes
-   --  must be the new log. Buf_Calls counts the calls, Buf_Images the
-   --  calls where the buffer was the image.
-   Buf_Calls  : Natural := 0;
-   Buf_Images : Natural := 0;
-
-   procedure Compact (S : in out Store_T; L : Lattice) is
-      Buf : Byte_Array (0 .. S.Log_Cap) := [others => 16#EE#];
+   --  S14: every held record's tag reads back a frame whose header is the
+   --  record.
+   function Tags_Read_Back (S : Store_T; L : Lattice) return Boolean is
    begin
-      Kome.Store.Compact (S, L, Buf);
-      Buf_Calls := Buf_Calls + 1;
-      if Buf (0 .. Log_Length (S) - 1) = Log_Bytes (S) then
-         Buf_Images := Buf_Images + 1;
-      end if;
-   end Compact;
-
-   function Frame_Of (S : Store_T; I : Positive) return Byte_Array is
-     (Read_Frame (S, Entry_At (S, I).Off));
-
-   function Has_Header (S : Store_T; X : Header) return Boolean is
-     (for some I in 1 .. Entries (S) => Entry_At (S, I).H = X);
-
-   --  The frame of each index entry decodes to its header (tested, not
-   --  proved).
-   function Every_Frame_Matches (S : Store_T) return Boolean is
-     (for all I in 1 .. Entries (S) =>
-        Is_Record_Frame (Frame_Of (S, I))
-        and then Hdr (Frame_Of (S, I)) = Entry_At (S, I).H
-        and then Frame_Of (S, I)'Length = Entry_At (S, I).Len);
-
-   --  A scan of the log as a file (offset 0, then Next_Offset) visits
-   --  exactly the entry chain of the invariant and stops at the end of the
-   --  log.
-   function Scan_Matches_Chain (S : Store_T; L : Lattice) return Boolean is
-      Off : Natural := 0;
-      K   : Natural := 0;
-   begin
-      Lemma_Scan (S, L);
-      while Off < Log_Length (S) loop
-         K := K + 1;
-         if K > Log_Entries (S) or else Entry_Start (S, K) /= Off
-           or else not Has_Log_Entry (S, Off)
-           or else (Op_At (S, Off) = Op_Header) /= (K = 1)
-         then
-            return False;
-         end if;
-         Off := Next_Offset (S, Off);
-      end loop;
-      return K = Log_Entries (S) and then Off = Log_Length (S);
-   end Scan_Matches_Chain;
-
-   --  The index is F exactly.
-   function Index_Is_F (S : Store_T; L : Lattice) return Boolean is
-     (Entries (S) = Kome.Frontier.Count (L)
-      and then (for all K in 1 .. Kome.Frontier.Count (L) => Indexed (S, Held (L, K)))
-      and then (for all I in 1 .. Entries (S) => Holds (L, Entry_At (S, I).H)));
-
-   function Same_Set (A, B : Lattice) return Boolean is
-     (Kome.Frontier.Count (A) = Kome.Frontier.Count (B)
-      and then (for all K in 1 .. Kome.Frontier.Count (A) => Holds (B, Held (A, K)))
-      and then (for all K in 1 .. Kome.Frontier.Count (B) => Holds (A, Held (B, K))));
-
-   function Same_Index (A, B : Store_T) return Boolean is
-     (Entries (A) = Entries (B)
-      and then (for all I in 1 .. Entries (A) => Indexed (B, Entry_At (A, I).H))
-      and then (for all I in 1 .. Entries (B) => Indexed (A, Entry_At (B, I).H)));
-
-   --  T18: the same held set (and thus the same registers and digest), the
-   --  same index entries up to order, and a horizon at most the live horizon.
-   function T18 (S : Store_T; L : Lattice; R : Store_T; RL : Lattice) return Boolean is
-     (Valid (R, RL)
-      and then Same_Set (L, RL)
-      and then Same_Index (S, R)
-      and then Kome.Digest.Frontier_Digest (L) = Kome.Digest.Frontier_Digest (RL)
-      and then Kome.Registers.Ceil (Regs (L)) = Kome.Registers.Ceil (Regs (RL))
-      and then Kome.Registers.Count (Regs (L)) = Kome.Registers.Count (Regs (RL))
-      and then Horizon (R) <= Horizon (S)
-      and then Expire_Mark (R) <= Expire_Mark (S)
-      and then Log_Bytes (R) = Log_Bytes (S));
-
-   --  The number of APPLY entries of authorization records in the log:
-   --  Auth_Gen after a reopen (AUDIT.md H11).
-   function Auth_Applies (S : Store_T) return Natural is
-      N : Natural := 0;
-   begin
-      for K in 2 .. Log_Entries (S) loop
+      for I in 1 .. Cnt (L) loop
+         Lemma_Tag (S, L, I);
          declare
-            Off : constant Natural := Entry_Start (S, K);
+            T : constant U64 := Tag (L, I);
          begin
-            if Op_At (S, Off) = Op_Apply
-              and then Is_Auth_Frame (Read_Frame (S, Off))
+            if not Has_Frame (S, Tag_Off (T))
+              or else Len_At (S, Tag_Off (T)) /= Tag_Len (T)
+              or else Header_Of (Cid (S), Read_Frame (S, Tag_Off (T))) /= Held (L, I)
             then
-               N := N + 1;
+               return False;
             end if;
          end;
       end loop;
-      return N;
-   end Auth_Applies;
+      return True;
+   end Tags_Read_Back;
 
-   --  An EXPIRE entry with the code C, as the log writes it.
-   function Expire_Entry (C : U48) return Byte_Array is
-     (Byte_Array'(0 => Op_Expire) & BE48 (C));
+   function Same_Set (A, B : Lattice) return Boolean is
+     (Cnt (A) = Cnt (B)
+      and then (for all I in 1 .. Cnt (A) => Holds (B, Held (A, I)))
+      and then (for all I in 1 .. Cnt (B) => Holds (A, Held (B, I))));
 
-   --  The compacted layout: authorization entries first, then data.
-   function Auth_First (S : Store_T) return Boolean is
-     (for all I in 1 .. Entries (S) =>
-        (for all J in I + 1 .. Entries (S) =>
-           (if Is_Data (Entry_At (S, I).H) then Is_Data (Entry_At (S, J).H))));
-
-   function Position_Of (S : Store_T; X : Header) return Natural is
+   --  The entries of a log after its HEADER, as the test reads the file:
+   --  each APPLY frame is a verified frame of the collection (the replay
+   --  assumption Trusted_Frame, S15), and the scan ends at the length.
+   --  Applies and Seqs count the entries.
+   procedure Scan
+     (Log : Byte_Array; Good : out Boolean; Applies, Seqs : out Natural)
+   is
+      P : Natural := Header_Len;
    begin
-      for I in 1 .. Entries (S) loop
-         if Entry_At (S, I).H = X then
-            return I;
+      Good := True;
+      Applies := 0;
+      Seqs := 0;
+      while P < Log'Length loop
+         if Log (P) = Op_Apply and then Log'Length - P >= Apply_Prefix then
+            declare
+               L : constant Natural := U24_Of (Log (P + 1), Log (P + 2), Log (P + 3));
+            begin
+               if L = 0 or else Log'Length - P - Apply_Prefix < L
+                 or else not Verified (Cid_A, Root_PK, Log (P + 4 .. P + 3 + L))
+               then
+                  Good := False;
+                  return;
+               end if;
+               Applies := Applies + 1;
+               P := P + Apply_Prefix + L;
+            end;
+         elsif Log (P) = Op_Seq and then Log'Length - P >= Seq_Len then
+            Seqs := Seqs + 1;
+            P := P + Seq_Len;
+         else
+            Good := False;
+            return;
          end if;
       end loop;
-      return 0;
-   end Position_Of;
+   end Scan;
 
-   --  An APPLY entry for Frame, as the log writes it.
-   function Apply_Entry (Frame : Byte_Array) return Byte_Array is
-     (Byte_Array'(0 => Op_Apply) & BE32 (Frame'Length) & Frame);
+   --  T18: the reopened pair has the same held records, digests,
+   --  seq_self and log.
+   function T18 (S : Store_T; L : Lattice; R : Store_T; RL : Lattice) return Boolean is
+     (Same_Set (L, RL)
+      and then Max_Ceil (L) = Max_Ceil (RL)
+      and then Same_State (Digest_Data (S), Digest_Data (R))
+      and then Same_State (Digest_Auth (S), Digest_Auth (R))
+      and then Seq_Self (S) = Seq_Self (R)
+      and then Log_Bytes (S) = Log_Bytes (R)
+      and then Cid (R) = Cid (S)
+      and then Del_TTL (R) = Del_TTL (S));
 
-   Cap     : constant := 32;
-   Slice   : constant := 8;
-   ICap    : constant := Cap + Signers_Max * Slice;
-   LCap    : constant := 16_384;
+   Log_Cap_A : constant := 64 * 1024;
 
    procedure Fresh_Store (S : out Store_T; L : out Lattice) is
    begin
-      L := Empty (NS, Fnd, L.Cap, L.Slice);
-      Open (Root_PK, Salt_A, L, S);
+      L := Empty (Fnd, L.Cap);
+      Open (Root_PK, Salt_A, TTL, Author_PK, L, S);
    end Fresh_Store;
 
    procedure Reopen
@@ -384,14 +313,23 @@ procedure Test_Store with SPARK_Mode => Off is
    is
       VL : Log_Size;
    begin
-      Open_From_Log (Log_Bytes (S), RL, R, VL, St);
+      Open_From_Log (Log_Bytes (S), Author_PK, RL, R, VL, St);
       if St = OK and then VL /= Log_Length (S) then
          raise Program_Error with "Valid_Length is not the input length on OK";
       end if;
    end Reopen;
 
-   --  A State contains a Register_File of Writers_Max keys (256 KiB). Under
-   --  -gnata, each evaluation of a Post copies states and stores, so the
+   procedure Compact (S : in out Store_T; L : in out Lattice; St : out Status) is
+      Buf : Byte_Array (0 .. S.Log_Cap) := [others => 16#EE#];
+   begin
+      Kome.Store.Compact (S, L, Buf, St);
+      if St = OK and then Buf (0 .. Log_Length (S) - 1) /= Log_Bytes (S) then
+         raise Program_Error with "Buf is not the image of the compacted log";
+      end if;
+   end Compact;
+
+   --  A State holds Signers_Max * Slice_Max authorization entries, and under
+   --  -gnata each evaluation of a Post copies states and stores, so the
    --  checks run in a task with a large stack.
    procedure Run_All;
 
@@ -411,24 +349,20 @@ procedure Test_Store with SPARK_Mode => Off is
    Kome.Crypto.Key_Pair (Seed_Of (1), Author_SK, Author_PK);
    Kome.Crypto.Key_Pair (Seed_Of (2), Stranger_SK, Stranger_PK);
    Kome.Crypto.Key_Pair (Seed_Of (3), Root_SK, Root_PK);
-   Kome.Crypto.Key_Pair (Seed_Of (4), Root2_SK, Root2_PK);
    Kome.Crypto.Key_Pair (Seed_Of (5), Author2_SK, Author2_PK);
-   Kome.Crypto.Key_Pair (Seed_Of (6), RootX_SK, RootX_PK);
-   NS_A := Collection_Id (Root_PK, Salt_A);
-   Cid_A := Cid_Of (Root_PK, Salt_A);
-   NS := To_Id128 (NS_A);
+   Cid_A := Cid_Of (Root_PK, Salt_A, TTL);
    Fnd := To_Key256 (Root_PK);
-   Cert2a := Make_Cert (Root_SK, NS_A, Root2_PK, Cap2);
-   Cert2b := Make_Cert (Root_SK, NS_A, Root2_PK, Cap2 + 1);
+   Cert_R := Make_Cert (Root_SK, Cid_A, Root_PK, Founding_Cap);
 
    ---------------------------------------------------------------------------
-   --  Known-answer vectors: the HEADER and EXPIRE encodings.
+   --  Known-answer vectors: the HEADER, the APPLY prefix, the SEQ entry.
    ---------------------------------------------------------------------------
    declare
       File    : File_Type;
       Headers : Natural := 0;
-      Expires : Natural := 0;
-      Ok      : Boolean := True;
+      Applies : Natural := 0;
+      Seqs    : Natural := 0;
+      All_Good : Boolean := True;
    begin
       Open (File, In_File, Find ("vectors/store.txt"));
       while not End_Of_File (File) loop
@@ -450,1125 +384,409 @@ procedure Test_Store with SPARK_Mode => Off is
                return Line (Start .. Line'Last);
             end Field;
          begin
-            if Line'Length > 7 and then Line (Line'First .. Line'First + 6) = "header " then
+            if Line'Length >= 7 and then Line (Line'First .. Line'First + 6) = "header " then
                declare
-                  RK  : constant Pubkey := Pubkey (Hex (Field (2)));
-                  SL  : constant Salt := Salt (Hex (Field (3)));
-                  DC  : constant Natural := Natural'Value (Field (4));
-                  SC  : constant Natural := Natural'Value (Field (5));
-                  Exp : constant Byte_Array := Hex (Field (6));
-                  VL  : Lattice (DC, SC);
-                  VS  : Store_T (DC + Signers_Max * SC, 128, Bnd_Cap_For (128));
+                  RP  : constant Pubkey  := Pubkey (Hex (Field (2)));
+                  SL  : constant Salt    := Salt (Hex (Field (3)));
+                  DT  : constant U48     := U48'Value (Field (4));
+                  CI  : constant Hash256 := Hash256 (Hex (Field (5)));
+                  HB  : constant Byte_Array := Hex (Field (6));
+                  L   : Lattice (4);
+                  S   : Store_T (256);
                begin
-                  VL := Empty (To_Id128 (Collection_Id (RK, SL)), To_Key256 (RK), DC, SC);
-                  Open (RK, SL, VL, VS);
-                  Ok := Ok and then Log_Bytes (VS) = Exp;
+                  L := Empty (To_Key256 (RP), 4);
+                  Open (RP, SL, DT, Author_PK, L, S);
+                  All_Good := All_Good and then Log_Bytes (S) = HB and then Cid (S) = CI
+                        and then Cid_Of (RP, SL, DT) = CI and then Del_TTL (S) = DT
+                        and then Header_Well_Formed (HB);
                   Headers := Headers + 1;
                end;
-            elsif Line'Length > 7 and then Line (Line'First .. Line'First + 6) = "expire " then
+            elsif Line'Length >= 6 and then Line (Line'First .. Line'First + 5) = "apply " then
                declare
-                  C   : constant U48 := U48'Value (Field (2));
-                  Exp : constant Byte_Array := Hex (Field (3));
+                  N  : constant Natural := Natural'Value (Field (2));
+                  PB : constant Byte_Array := Hex (Field (3));
                begin
-                  Ok := Ok and then Horizon_Code (Horizon_Of_Code (C)) = C
-                    and then Byte_Array'(0 => Op_Expire) & BE48 (C) = Exp;
-                  Expires := Expires + 1;
+                  All_Good := All_Good and then PB'Length = Apply_Prefix
+                        and then PB (0) = Op_Apply
+                        and then PB (1) = Byte_Of_U24 (N, 0)
+                        and then PB (2) = Byte_Of_U24 (N, 1)
+                        and then PB (3) = Byte_Of_U24 (N, 2)
+                        and then U24_Of (PB (1), PB (2), PB (3)) = N;
+                  Applies := Applies + 1;
+               end;
+            elsif Line'Length >= 4 and then Line (Line'First .. Line'First + 3) = "seq " then
+               declare
+                  V  : constant U48 := U48'Value (Field (2));
+                  SB : constant Byte_Array := Hex (Field (3));
+                  L  : Lattice (4);
+                  S  : Store_T (256);
+                  R  : Store_T (256);
+                  RL : Lattice (4);
+                  VL : Log_Size;
+                  St : Status;
+               begin
+                  --  A log that is a HEADER and this SEQ entry reopens with
+                  --  seq_self = V, and its log is the input (S16).
+                  L := Empty (Fnd, 4);
+                  Open (Root_PK, Salt_A, TTL, Author_PK, L, S);
+                  Open_From_Log (Log_Bytes (S) & SB, Author_PK, RL, R, VL, St);
+                  All_Good := All_Good and then SB'Length = Seq_Len and then St = OK
+                        and then Seq_Self (R) = V and then Log_Entries (R) = 1
+                        and then Log_Bytes (R) = Log_Bytes (S) & SB;
+                  Seqs := Seqs + 1;
                end;
             end if;
          end;
       end loop;
       Close (File);
-      Check ("vectors: 3 HEADERs written by Open and 4 EXPIRE codes match hashlib",
-             Ok and then Headers = 3 and then Expires = 4);
-      Check ("horizon codes: none is 2**48 - 1, a horizon is its own code",
-             Horizon_Code (No_Horizon) = U48'Last
-             and then Horizon_Of_Code (U48'Last) = No_Horizon
-             and then Horizon_Code (0) = 0
-             and then Horizon_Of_Code (U48'Last - 1) = Time64 (U48'Last - 1));
-   end;
-
-   declare
-      R1  : constant Byte_Array := Founding_Roster (1, 100 * Day);
-      G1  : constant Byte_Array := Founding_Grant (Author_PK);
-      P1  : constant Byte_Array := Put_Of (1, 'n', 10 * Day, 1, [1, 2, 3]);
-      P2  : constant Byte_Array := Put_Of (1, 'n', 20 * Day, 2, [4, 5]);
-      P3  : constant Byte_Array := Put_Of (1, 'a', 15 * Day, 3, []);
-      D1  : constant Byte_Array := Del_Of (1, 30 * Day, 4);
-      P4  : constant Byte_Array := Put_Of (2, 'n', 40 * Day, 5, [9]);
-      P5  : constant Byte_Array := Put_Of (3, 'x', 20 * Day, 6, [7, 7]);
-      D2  : constant Byte_Array := Del_Of (3, 25 * Day, 7);
-      PX  : constant Byte_Array := Put_Of (4, 'n', 10 * Day, 1, [1], Stranger_SK, Stranger_PK);
-      PH  : constant Byte_Array := Put_Of (5, 'n', 200 * Day, 8, [1]);
-      S       : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL      : Lattice (Cap, Slice);
-      Raw     : Store_T (ICap, LCap, Bnd_Cap_For (LCap));   --  the log before compaction
-      RawL    : Lattice (Cap, Slice);
-      Off     : Log_Size;
-      St      : Status;
-      Found   : Boolean;
-      I       : Held_Count;
-   begin
-      ------------------------------------------------------------------------
-      --  Open.
-      ------------------------------------------------------------------------
-      Fresh_Store (S, SL);
-      Check ("open: valid, the HEADER only",
-             Valid (S, SL) and then Entries (S) = 0 and then Log_Length (S) = Header_Len
-             and then Log_Entries (S) = 1 and then Horizon (S) = No_Horizon
-             and then Logged_Cap (S) = Cap and then Logged_Slice (S) = Slice
-             and then Collection (S) = NS and then Founding (S) = Fnd
-             and then Auth_Gen (S) = 0 and then Expire_Mark (S) = 0
-             and then not Compact_Due (S));
-      Check ("open: Cid = BLAKE2b-256 (root_pk ‖ salt), and ns is its first 16 bytes (A26)",
-             Cid (S) = Cid_Of (Root_PK, Salt_A)
-             and then Cid (S) = Kome.Crypto.Blake2b_256 (Root_PK & Salt_A)
-             and then Cid (S) (0 .. NS_Len - 1) = NS_A);
-      Lemma_Log_Header (S, SL);
-      Lemma_Valid_Facts (S, SL);
-      Check ("open: the HEADER bytes (op, magic, version, ns, root_pk, salt, caps)",
-             Log_Bytes (S) =
-               Byte_Array'(0 => 0) & Magic & Byte_Array'(0 => 1) & NS_A & Root_PK & Salt_A
-               & BE32 (Cap) & Byte_Array'(0 => 0, 1 => Slice));
-
-      ------------------------------------------------------------------------
-      --  Put.
-      ------------------------------------------------------------------------
-      Put (S, SL, R1, Off, St);
-      Check ("roster: OK, an APPLY at offset 80, maxceil raised",
-             St = OK and then Off = Header_Len and then Entries (S) = 1
-             and then Log_Length (S) = Header_Len + Apply_Prefix + R1'Length
-             and then Op_At (S, Off) = Op_Apply and then Read_Frame (S, Off) = R1
-             and then Kome.Registers.Ceil (Regs (SL)) = 100 * Day);
-      Check ("roster: Auth_Gen went up to 1", Auth_Gen (S) = 1);
-      Put (S, SL, G1, St);
-      Check ("grant: OK, its subject is a writer",
-             St = OK and then Entries (S) = 2
-             and then Kome.Registers.In_W (Regs (SL), To_Key256 (Author_PK)));
-      Check ("grant: Auth_Gen went up to 2", Auth_Gen (S) = 2);
-
-      Put (S, SL, P1, Off, St);
-      Check ("put: OK, appended", St = OK and then Read_Frame (S, Off) = P1);
-      Check ("put: Auth_Gen unchanged by a data record", Auth_Gen (S) = 2);
-      Find_Cell (S, SL, NS, Ent_Of (1), Cell_Of ('n'), Found, I);
-      Check ("put: the cell index finds it",
-             Found and then Entry_At (S, I).Off = Off and then Entry_At (S, I).H = Hdr (P1));
-
-      declare
-         L : constant Log_Size := Log_Length (S);
-      begin
-         Put (S, SL, P2, Off, St);
-         Find_Cell (S, SL, NS, Ent_Of (1), Cell_Of ('n'), Found, I);
-         Check ("overwrite: newer PUT indexed, older gone from index and frontier",
-                St = OK and then Off = L and then Found and then Entry_At (S, I).H = Hdr (P2)
-                and then not Has_Header (S, Hdr (P1)) and then not Holds (SL, Hdr (P1)));
-         Check ("overwrite: the log is append-only (the old frame is still there)",
-                Read_Frame (S, Off - Apply_Prefix - P1'Length) = P1
-                and then Log_Length (S) = L + Apply_Prefix + P2'Length);
-      end;
-      declare
-         L : constant Log_Size := Log_Length (S);
-      begin
-         Put (S, SL, P1, Off, St);
-         Check ("older PUT re-offered: Dominated, nothing appended, Off = the log length",
-                St = Dominated and then Log_Length (S) = L and then Off = L);
-         Put (S, SL, P2, Off, St);
-         Check ("duplicate: OK, nothing appended, Off = the log length",
-                St = OK and then Log_Length (S) = L and then Off = L);
-      end;
-      Put (S, SL, P3, St);
-      Check ("second field of the entity", St = OK and then Entries (S) = 4);
-      Put (S, SL, D1, St);
-      Find_Cell (S, SL, NS, Ent_Of (1), Cell_Of ('n'), Found, I);
-      Check ("delete: DEL indexed, every field of the entity freed",
-             St = OK and then Entries (S) = 3 and then Has_Header (S, Hdr (D1))
-             and then not Has_Header (S, Hdr (P2)) and then not Has_Header (S, Hdr (P3))
-             and then not Found and then not Holds (SL, Hdr (P2)));
-      Put (S, SL, P4);
-      Put (S, SL, P5);
-      Check ("other entities; the index is F", Entries (S) = 5 and then Index_Is_F (S, SL));
-      Check ("every entry's frame decodes to its header", Every_Frame_Matches (S));
-      Check ("the log scans as its entry chain", Scan_Matches_Chain (S, SL));
-
-      ------------------------------------------------------------------------
-      --  Refusals change nothing.
-      ------------------------------------------------------------------------
-      declare
-         B  : constant Store_T := S;
-         BL : constant Lattice := SL;
-      begin
-         Put (S, SL, PX, Off, St);
-         Check ("author without a GRANT: Inadmissible, nothing changed, Off = the log length",
-                St = Inadmissible and then S = B and then SL = BL and then Off = Log_Length (B));
-         Put (S, SL, PH, St);
-         Check ("t above maxceil: Inadmissible, nothing changed",
-                St = Inadmissible and then S = B and then SL = BL);
-      end;
-
-      --  An authorization record of a foreign founding key. Its ns is the
-      --  collection of that key, so the precondition of Put_Frame
-      --  (H.NS = Collection) already excludes it, unless a 128-bit collision
-      --  occurs. But step 0 of the store still names it, and a log that
-      --  contains it is Malformed.
-      declare
-         GX : Byte_Array := Founding_Grant (Author2_PK);
-      begin
-         declare
-            G : Grant_Record := Make_Grant (RootX_PK, Salt_A, RootX_PK, 0, Zero_Sig, Author2_PK);
-         begin
-            Sign (G, RootX_SK);
-            GX := Encode (G);
-         end;
-         Check ("foreign root_pk: Foreign_Root, and its ns is not the collection's",
-                Verified (Cid (S), GX) and then Foreign_Root (S, GX)
-                and then Hdr (GX).NS /= Collection (S)
-                and then not Foreign_Root (S, G1) and then not Foreign_Root (S, P1));
-         declare
-            R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-            RL : Lattice (Cap, Slice);
-            VL : Log_Size;
-         begin
-            Open_From_Log (Log_Bytes (S) & Apply_Entry (GX), RL, R, VL, St);
-            Check ("foreign root_pk: a log carrying it is Malformed, Valid_Length before it",
-                   St = Malformed and then VL = Log_Length (S) and then Valid (R, RL)
-                   and then Log_Bytes (R) = Log_Bytes (S) and then Same_Set (SL, RL));
-         end;
-      end;
-
-      ------------------------------------------------------------------------
-      --  A26: a data record binds the full cid, not only its ns bytes.
-      --  Collection B has the same founding key and another salt. A PUT
-      --  that carries B's ns but was signed under A's cid (the frame that
-      --  a 2^64 ns collision would let A's writers hand to B) does not
-      --  verify in B, and a log of B that carries it is Malformed. The
-      --  same PUT signed under B's cid verifies and replays.
-      ------------------------------------------------------------------------
-      declare
-         Salt_B : constant Salt    := Salt (Fill (Salt_Len, 91));
-         Cid_B  : constant Hash256 := Cid_Of (Root_PK, Salt_B);
-         NS_B   : constant NS_Id   := Collection_Id (Root_PK, Salt_B);
-         SB     : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         LB     : Lattice (Cap, Slice);
-         R      : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL     : Lattice (Cap, Slice);
-         VL     : Log_Size;
-
-         function Put_In (C : Hash256) return Byte_Array is
-            X : Put_Record :=
-              Make_Put (C, NS_B, Ent_Id (Fill (Ent_Len, 9)), [Character'Pos ('n')],
-                        10 * Day, 1, Author_PK, [7]);
-         begin
-            Sign (C, X, Author_SK);
-            return Encode (X);
-         end Put_In;
-
-         function Roster_B return Byte_Array is
-            X : Roster_Record :=
-              Make_Roster (Root_PK, Salt_B, Root_PK, 0, Zero_Sig, Good_DH (77), 1, 100 * Day,
-                           TTL, 0, [], Member (Author_PK, 11));
-         begin
-            Sign (X, Root_SK);
-            return Encode (X);
-         end Roster_B;
-
-         function Grant_B return Byte_Array is
-            X : Grant_Record := Make_Grant (Root_PK, Salt_B, Root_PK, 0, Zero_Sig, Author_PK);
-         begin
-            Sign (X, Root_SK);
-            return Encode (X);
-         end Grant_B;
-
-         XA : constant Byte_Array := Put_In (Cid_A);
-         XB : constant Byte_Array := Put_In (Cid_B);
-      begin
-         LB := Empty (To_Id128 (NS_B), Fnd, LB.Cap, LB.Slice);
-         Open (Root_PK, Salt_B, LB, SB);
-         Put (SB, LB, Roster_B);
-         Put (SB, LB, Grant_B);
-         Check ("A26: two salts of one root give two cids and two stores",
-                Cid (SB) = Cid_B and then Cid (SB) /= Cid (S)
-                and then Collection (SB) = To_Id128 (NS_B));
-         Check ("A26: one PUT's bytes, two cids, two h",
-                XA'Length = XB'Length
-                and then Header_Of (Cid_A, XA).V.H /= Header_Of (Cid_B, XA).V.H
-                and then Header_Of (Cid_A, XA).NS = Collection (SB));
-         Check ("A26: a PUT with B's ns signed under A's cid is not Verified in B",
-                Verified (Cid_A, XA) and then not Verified (Cid (SB), XA));
-         Check ("A26: A's own frame P1 is not Verified in B, B's XB not in A",
-                Verified (Cid (S), P1) and then not Verified (Cid (SB), P1)
-                and then Verified (Cid (SB), XB) and then not Verified (Cid (S), XB));
-         Open_From_Log (Log_Bytes (SB) & Apply_Entry (XA), RL, R, VL, St);
-         Check ("A26: a log of B carrying the PUT signed under A's cid is Malformed",
-                St = Malformed and then VL = Log_Length (SB) and then Valid (R, RL)
-                and then Cid (R) = Cid_B);
-         Open_From_Log (Log_Bytes (SB) & Apply_Entry (XB), RL, R, VL, St);
-         Check ("A26: the same PUT signed under B's cid replays in B",
-                St = OK and then Entries (R) = 3 and then Cid (R) = Cid_B
-                and then Holds (RL, Header_Of (Cid_B, XB)));
-         Put (SB, LB, XB, St);
-         Check ("A26: Put_Frame in B holds the PUT signed under B's cid",
-                St = OK and then Holds (LB, Header_Of (Cid (SB), XB)));
-      end;
-
-      ------------------------------------------------------------------------
-      --  Room: Dominated never needs room; No_Space and Auth_Full change
-      --  nothing.
-      ------------------------------------------------------------------------
-      declare
-         Room   : constant Natural :=
-           Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
-           + Apply_Prefix + P2'Length + 3;
-         Sm     : Store_T (ICap, Room, Bnd_Cap_For (Room));
-         SmL    : Lattice (Cap, Slice);
-         Stale  : constant Byte_Array := Founding_Roster (0, 50 * Day);
-         R2     : constant Byte_Array := Founding_Roster (2, 200 * Day);
-         DE     : constant Byte_Array := Del_Of (1, 24 * Day, 9);
-         DN     : constant Byte_Array := Del_Of (9, 24 * Day, 10);
-      begin
-         SmL := Empty (NS, Fnd, Cap, Slice);
-         Open (Root_PK, Salt_A, SmL, Sm);
-         Put (Sm, SmL, R1);
-         Put (Sm, SmL, G1);
-         Put (Sm, SmL, P2);
-         Check ("small log: holds the roster, the grant and one PUT, no room for more",
-                Log_Short (Sm, Apply_Prefix + P1'Length)
-                and then Log_Short (Sm, Apply_Prefix + DE'Length));
-         declare
-            B  : constant Store_T := Sm;
-            BL : constant Lattice := SmL;
-         begin
-            Put (Sm, SmL, P1, St);
-            Check ("log full: a dominated PUT is Dominated (not No_Space), nothing changed",
-                   St = Dominated and then Sm = B and then SmL = BL);
-            Put (Sm, SmL, Stale, St);
-            Check ("log full: a dominated roster is Dominated (not No_Space), nothing changed",
-                   St = Dominated and then Sm = B and then SmL = BL);
-            Put (Sm, SmL, P2, St);
-            Check ("log full: a duplicate needs no room and is OK",
-                   St = OK and then Sm = B and then SmL = BL);
-            Put (Sm, SmL, P4, St);
-            Check ("log full: a PUT Frontier would hold is Log_Full, nothing changed",
-                   St = Log_Full and then Sm = B and then SmL = BL);
-            Put (Sm, SmL, R2, St);
-            Check ("log full: a roster refresh is Log_Full, maxceil not raised",
-                   St = Log_Full and then Sm = B and then SmL = BL
-                   and then Kome.Registers.Ceil (Regs (SmL)) = 100 * Day);
-         end;
-         Kome.Store.Expire (Sm, SmL, 32 * Day, St);
-         Check ("log full: an Expire that removes nothing raises the horizon, logs nothing",
-                St = OK and then Horizon (Sm) = Time64 (25 * Day));
-         declare
-            B  : constant Store_T := Sm;
-            BL : constant Lattice := SmL;
-         begin
-            Put (Sm, SmL, DE, St);
-            Check ("log full: an expired DEL that drops something is Log_Full, nothing changed",
-                   St = Log_Full and then Sm = B and then SmL = BL
-                   and then Holds (SmL, Hdr (P2)));
-            Put (Sm, SmL, DN, St);
-            Check ("log full: an expired DEL that drops nothing is OK and changes nothing",
-                   St = OK and then Sm = B and then SmL = BL);
-         end;
-      end;
-
-      declare
-         --  A data row of 2.
-         Tiny  : Store_T (2 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-         TinyL : Lattice (2, Slice);
-      begin
-         TinyL := Empty (NS, Fnd, 2, Slice);
-         Open (Root_PK, Salt_A, TinyL, Tiny);
-         Put (Tiny, TinyL, R1);
-         Put (Tiny, TinyL, G1);
-         Put (Tiny, TinyL, P1);
-         Put (Tiny, TinyL, P4);
-         declare
-            B  : constant Store_T := Tiny;
-            BL : constant Lattice := TinyL;
-         begin
-            Put (Tiny, TinyL, P5, St);
-            Check ("data row full: No_Space, nothing changed",
-                   St = No_Space and then Tiny = B and then TinyL = BL);
-         end;
-         Put (Tiny, TinyL, P2, St);
-         Check ("data row full: an overwrite still fits (it frees its slot); index = F",
-                St = OK and then Has_Header (Tiny, Hdr (P2))
-                and then not Has_Header (Tiny, Hdr (P1)) and then Index_Is_F (Tiny, TinyL));
-      end;
-
-      declare
-         --  A slice of 2: the founding roster and one GRANT fill it.
-         Sl   : Store_T (Cap + Signers_Max * 2, LCap, Bnd_Cap_For (LCap));
-         SlL  : Lattice (Cap, 2);
-         G2   : constant Byte_Array := Founding_Grant (Author2_PK);
-         R2   : constant Byte_Array := Founding_Roster (2, 100 * Day);
-      begin
-         SlL := Empty (NS, Fnd, Cap, 2);
-         Open (Root_PK, Salt_A, SlL, Sl);
-         Put (Sl, SlL, R1);
-         Put (Sl, SlL, G1);
-         declare
-            B  : constant Store_T := Sl;
-            BL : constant Lattice := SlL;
-         begin
-            Put (Sl, SlL, G2, St);
-            Check ("slice full: Auth_Full, nothing changed, no writer added",
-                   St = Auth_Full and then Sl = B and then SlL = BL
-                   and then not Kome.Registers.In_W (Regs (SlL), To_Key256 (Author2_PK)));
-         end;
-         Put (Sl, SlL, R2, St);
-         Check ("slice full: a roster that dominates the held one frees its place",
-                St = OK and then Holds (SlL, Hdr (R2)) and then not Holds (SlL, Hdr (R1))
-                and then Index_Is_F (Sl, SlL));
-      end;
-
-      Raw := S;
-      RawL := SL;
-
-      ------------------------------------------------------------------------
-      --  Expire (D10): horizon = min (now, maxceil) - del_ttl_eff.
-      ------------------------------------------------------------------------
-      declare
-         L0 : constant Log_Size := Log_Length (S);
-         E0 : constant Natural := Log_Entries (S);
-      begin
-         Check ("before expiry: the mark is 0; the clamp is not active at 36 d (maxceil 100 d)",
-                Expire_Mark (S) = 0 and then not Horizon_Frozen (SL, 36 * Day)
-                and then Horizon_Frozen (SL, 100 * Day + 1));
-         Kome.Store.Expire (S, SL, 36 * Day, St);
-         Check ("expire at 36 d (DEL at 30 d, del_ttl 7 d): kept, horizon 29 d, nothing logged",
-                St = OK and then Horizon (S) = Time64 (29 * Day)
-                and then Has_Header (S, Hdr (D1)) and then Holds (SL, Hdr (D1))
-                and then Log_Length (S) = L0);
-         Check ("the mark follows the raised horizon (29 d)", Expire_Mark (S) = 29 * Day);
-         Kome.Store.Expire (S, SL, 37 * Day, St);
-         Check ("expire at 37 d: the DEL leaves F and the index, EXPIRE (30 d) logged",
-                St = OK and then Horizon (S) = Time64 (30 * Day)
-                and then not Has_Header (S, Hdr (D1)) and then not Holds (SL, Hdr (D1))
-                and then Has_Header (S, Hdr (P4)) and then Index_Is_F (S, SL)
-                and then Log_Entries (S) = E0 + 1
-                and then Log_Length (S) = L0 + Expire_Len
-                and then Op_At (S, L0) = Op_Expire
-                and then Code_At (S, L0 + 1) = 30 * Day
-                and then Expire_Mark (S) = 30 * Day and then Auth_Gen (S) = 2);
-         Check ("the EXPIRE entry is the vector's bytes",
-                Byte_Array'[for J in 0 .. Expire_Len - 1 => Log_Byte (S, L0 + J)]
-                = Hex ("0300009a7ec800"));
-      end;
-      declare
-         L0 : constant Log_Size := Log_Length (S);
-      begin
-         for K in 1 .. 5 loop
-            Exp (S, SL, 37 * Day + U48 (K));
-         end loop;
-         Check ("periodic Expire calls that remove nothing do not grow the log",
-                Log_Length (S) = L0 and then Horizon (S) = Time64 (30 * Day) + 5);
-         Exp (S, SL, 1000 * Day);
-         Check ("a clock far ahead is clamped to maxceil: horizon 100 d - 7 d, nothing logged",
-                Horizon (S) = Time64 (93 * Day) and then Log_Length (S) = L0
-                and then Horizon_Frozen (SL, 1000 * Day) and then Expire_Mark (S) = 93 * Day);
-      end;
-
-      --  Apply-then-expire.
-      declare
-         L0 : constant Log_Size := Log_Length (S);
-      begin
-         Put (S, SL, D2, Off, St);
-         Check ("arriving expired DEL: applied, frees its entity, not held, not indexed",
-                St = OK and then not Holds (SL, Hdr (D2)) and then not Has_Header (S, Hdr (D2))
-                and then not Holds (SL, Hdr (P5)) and then not Has_Header (S, Hdr (P5))
-                and then Index_Is_F (S, SL));
-         Check ("it is logged as APPLY_EXPIRED (replay frees the same fields)",
-                Off = L0 and then Op_At (S, Off) = Op_Apply_Expired
-                and then Read_Frame (S, Off) = D2
-                and then Log_Length (S) = L0 + Apply_Prefix + D2'Length);
-         Put (S, SL, D2, St);
-         Check ("re-offered expired DEL: drops nothing, OK, nothing appended",
-                St = OK and then Log_Length (S) = L0 + Apply_Prefix + D2'Length);
-      end;
-
-      --  A clock set back, then a stale PUT.
-      declare
-         L0 : constant Log_Size := Log_Length (S);
-         PS : constant Byte_Array := Put_Of (1, 'n', 25 * Day, 11, [6]);
-      begin
-         Kome.Store.Expire (S, SL, 20 * Day, St);
-         Check ("clock stepped back: the horizon is lowered (13 d) and EXPIRE logged",
-                St = OK and then Horizon (S) = Time64 (13 * Day)
-                and then Log_Length (S) = L0 + Expire_Len
-                and then Code_At (S, L0 + 1) = 13 * Day);
-         Check ("a lowered horizon does not lower the mark (93 d)", Expire_Mark (S) = 93 * Day);
-         Put (S, SL, PS, St);
-         Check ("a stale PUT older than the expired DEL is held again (A4' residual)",
-                St = OK and then Holds (SL, Hdr (PS)) and then Index_Is_F (S, SL));
-         Kome.Store.Expire (S, SL, 3 * Day, St);
-         Check ("a horizon below 0 is none, logged as 2**48 - 1",
-                St = OK and then Horizon (S) = No_Horizon
-                and then Code_At (S, Log_Length (S) - 6) = No_Horizon_Code);
-         declare
-            L1 : constant Log_Size := Log_Length (S);
-         begin
-            Exp (S, SL, 40 * Day);
-            Check ("and raised again (33 d) without removing anything: not logged",
-                   Horizon (S) = Time64 (33 * Day) and then Log_Length (S) = L1);
-         end;
-      end;
-
-      --  No_Space from Expire: a full log refuses an EXPIRE that Expire must
-      --  write.
-      declare
-         Room : constant Natural :=
-           Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
-           + Apply_Prefix + D1'Length + 3;
-         Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
-         SmL  : Lattice (Cap, Slice);
-      begin
-         SmL := Empty (NS, Fnd, Cap, Slice);
-         Open (Root_PK, Salt_A, SmL, Sm);
-         Put (Sm, SmL, R1);
-         Put (Sm, SmL, G1);
-         Put (Sm, SmL, D1);
-         declare
-            B  : constant Store_T := Sm;
-            BL : constant Lattice := SmL;
-         begin
-            Kome.Store.Expire (Sm, SmL, 50 * Day, St);
-            Check ("expire on a full log, something to remove: Log_Full, nothing changed",
-                   St = Log_Full and then Sm = B and then SmL = BL
-                   and then Holds (SmL, Hdr (D1)));
-         end;
-      end;
-
-      ------------------------------------------------------------------------
-      --  Compact, then open again (T18). Also open the raw log again.
-      ------------------------------------------------------------------------
-      declare
-         Before  : constant Store_T := S;
-         BeforeL : constant Lattice := SL;
-         R       : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL      : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("reopen the uncompacted log (APPLY_EXPIRED, EXPIREs, a stale PUT): T18",
-                St = OK and then T18 (S, SL, R, RL));
-         Check ("reopen: Auth_Gen is the number of logged authorization APPLYs (2); "
-                & "the mark is the largest logged horizon (30 d)",
-                Auth_Gen (R) = 2 and then Auth_Applies (R) = 2
-                and then Expire_Mark (R) = 30 * Day);
-         Compact (S, SL);
-         Check ("compact: frontier, horizon, counters and index records unchanged",
-                SL = BeforeL and then Horizon (S) = Horizon (Before)
-                and then Auth_Gen (S) = Auth_Gen (Before)
-                and then Expire_Mark (S) = Expire_Mark (Before)
-                and then Same_Index (S, Before) and then Index_Is_F (S, SL)
-                and then not Compact_Due (S));
-         Check ("compact: the HEADER, then authorization first, contiguous APPLYs",
-                Log_Bytes (S) (0 .. Header_Len - 1) = Log_Bytes (Before) (0 .. Header_Len - 1)
-                and then Auth_First (S)
-                and then Entry_At (S, 1).Off = Header_Len
-                and then (for all K in 1 .. Entries (S) - 1 =>
-                            Entry_At (S, K + 1).Off = End_Of (Entry_At (S, K))));
-         Check ("compact: then EXPIRE (horizon), and nothing else",
-                Log_Length (S) = End_Of (Entry_At (S, Entries (S))) + Expire_Len
-                and then Op_At (S, End_Of (Entry_At (S, Entries (S)))) = Op_Expire
-                and then Code_At (S, End_Of (Entry_At (S, Entries (S))) + 1) = 33 * Day
-                and then Log_Entries (S) = Entries (S) + 2
-                and then Log_Length (S) < Log_Length (Before));
-         Check ("compact: the same frames, byte for byte",
-                (for all K in 1 .. Entries (S) =>
-                   Frame_Of (S, K) = Frame_Of (Before, Position_Of (Before, Entry_At (S, K).H))));
-         Check ("compact: frames decode to their headers", Every_Frame_Matches (S));
-         Check ("compact: the entry chain scans", Scan_Matches_Chain (S, SL));
-         Find_Cell (S, SL, NS, Ent_Of (2), Cell_Of ('n'), Found, I);
-         Check ("compact: the cell index still finds the live PUT",
-                Found and then Read_Frame (S, Entry_At (S, I).Off) = P4);
-      end;
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("reopen the compacted log: T18 (same set, index, digest, horizon <= live)",
-                St = OK and then T18 (S, SL, R, RL));
-         Check ("the reopened horizon is the compacted one (made durable); "
-                & "the mark is that horizon (33 d), Auth_Gen the held authorization records",
-                Horizon (R) = Horizon (S) and then Expire_Mark (R) = 33 * Day
-                and then Auth_Gen (R) = 2);
-      end;
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Kome.Store.Expire (Raw, RawL, 37 * Day, St);
-         Reopen (Raw, R, RL, St);
-         Check ("reopen an older log (before expiry): T18",
-                St = OK and then T18 (Raw, RawL, R, RL));
-      end;
-
-      --  Capacities (AUDIT.md A11), corruption and Valid_Length (AUDIT.md
-      --  H23). The compacted log holds 2 authorization records and 2 data
-      --  records, then EXPIRE.
-      declare
-         R   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RLs : Lattice (Cap - 1, Slice);
-         RL1 : Lattice (1, Slice);
-         R1s : Store_T (1 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-         RLt : Lattice (Cap, Slice - 1);
-         RLu : Lattice (Cap, Slice + 1);
-         Ru  : Store_T (Cap + Signers_Max * (Slice + 1), LCap, Bnd_Cap_For (LCap));
-         RLb : Lattice (Cap + 4, Slice);
-         Rb  : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2, Bnd_Cap_For (LCap * 2));
-         Rs  : Store_T (ICap, 200, Bnd_Cap_For (200));
-         RL  : Lattice (Cap, Slice);
-         Img : constant Byte_Array := Log_Bytes (S);
-         VL  : Log_Size;
-      begin
-         Check ("the compacted log: 2 authorization and 2 data records",
-                Entries (S) = 4 and then Data_Count (SL) = 2);
-         Open_From_Log (Img, RLs, R, VL, St);
-         Check ("reopen with a smaller data capacity that fits: OK, T18, the HEADER unchanged",
-                St = OK and then T18 (S, SL, R, RLs) and then Logged_Cap (R) = Cap);
-         Open_From_Log (Img, RL1, R1s, VL, St);
-         Check ("reopen with a data capacity of 1 (2 data records): No_Space at the second "
-                & "data APPLY; Valid_Length names it, and the pair is the replay of the prefix",
-                St = No_Space and then VL = Entry_At (S, 4).Off
-                and then Valid (R1s, RL1) and then Log_Length (R1s) = VL
-                and then Log_Bytes (R1s) = Img (0 .. VL - 1)
-                and then Entries (R1s) = 3 and then Data_Count (RL1) = 1);
-         Open_From_Log (Img, RLt, R, VL, St);
-         Check ("reopen with a smaller slice: No_Space, Valid_Length 0", St = No_Space and then VL = 0);
-         Open_From_Log (Img, RLu, Ru, VL, St);
-         Check ("reopen with a larger slice: No_Space (the slice is fixed)", St = No_Space);
-         Open_From_Log (Img, RL, Rs, VL, St);
-         Check ("reopen into a log buffer too small for the log: No_Space, Valid_Length 0",
-                St = No_Space and then VL = 0);
-         Open_From_Log (Img, RLb, Rb, VL, St);
-         Check ("reopen with a larger data capacity: OK, T18, the HEADER keeps the old one",
-                St = OK and then T18 (S, SL, Rb, RLb) and then Logged_Cap (Rb) = Cap);
-         declare
-            Img_B : constant Byte_Array := Log_Bytes (Rb);
-            R2    : Store_T (Cap + 4 + Signers_Max * Slice, LCap * 2, Bnd_Cap_For (LCap * 2));
-            RL2   : Lattice (Cap + 4, Slice);
-         begin
-            Open_From_Log (Img_B, RL, R, VL, St);
-            Check ("its log still opens at the old capacity (T18)",
-                   St = OK and then T18 (Rb, RLb, R, RL));
-            Open_From_Log (Img_B, RL2, R2, VL, St);
-            Check ("and at the new one byte for byte (T18)",
-                   St = OK and then T18 (Rb, RLb, R2, RL2));
-         end;
-         declare
-            Bad : Byte_Array := Img;
-         begin
-            Check ("Header_Well_Formed holds of a store's log", Header_Well_Formed (Img));
-            Bad (HO_Magic) := Character'Pos ('K');
-            Check ("Header_Well_Formed fails on a corrupt magic", not Header_Well_Formed (Bad));
-            Open_From_Log (Bad, RL, R, VL, St);
-            Check ("corrupt magic: Malformed, Valid_Length 0", St = Malformed and then VL = 0);
-            Bad := Img;
-            Bad (HO_NS + 3) := Bad (HO_NS + 3) xor 1;
-            Check ("Header_Well_Formed fails on a wrong ns", not Header_Well_Formed (Bad));
-            Open_From_Log (Bad, RL, R, VL, St);
-            Check ("ns not BLAKE2b (root_pk || salt): Malformed", St = Malformed);
-            Bad := Img;
-            Bad (HO_Version) := 2;
-            Open_From_Log (Bad, RL, R, VL, St);
-            Check ("unknown version: Malformed", St = Malformed);
-            Bad := Img;
-            Bad (HO_Cap) := 16#FF#;
-            Check ("Header_Well_Formed fails on a data_cap out of range",
-                   not Header_Well_Formed (Bad));
-            Open_From_Log (Bad, RL, R, VL, St);
-            Check ("data_cap above Data_Size'Last: Malformed", St = Malformed);
-            Bad := Img;
-            Bad (Bad'Last - Expire_Len - 1) := Bad (Bad'Last - Expire_Len - 1) xor 16#40#;
-            Open_From_Log (Bad, RL, R, VL, St);
-            Check ("a frame whose signature fails: Malformed; Valid_Length is its offset, "
-                   & "and the pair is the replay of the prefix",
-                   St = Malformed and then VL = Entry_At (S, 4).Off
-                   and then Valid (R, RL) and then Log_Bytes (R) = Img (0 .. VL - 1)
-                   and then Entries (R) = 3);
-         end;
-         Open_From_Log (Img (0 .. Img'Last - 1), RL, R, VL, St);
-         Check ("a truncated last entry (EXPIRE): Malformed, Valid_Length at its boundary",
-                St = Malformed and then VL = Body_End (S)
-                and then Valid (R, RL) and then Same_Set (SL, RL)
-                and then Horizon (R) = No_Horizon);
-         declare
-            Cut : constant Byte_Array := Img (0 .. Entry_At (S, 4).Off + 20);
-         begin
-            Open_From_Log (Cut, RL, R, VL, St);
-            Check ("a log cut inside the last APPLY: Malformed, Valid_Length at its start",
-                   St = Malformed and then VL = Entry_At (S, 4).Off);
-            Open_From_Log (Cut (0 .. VL - 1), RL, R, VL, St);
-            Check ("truncated to Valid_Length, the log opens (T18-prefix)",
-                   St = OK and then VL = Entry_At (S, 4).Off and then Entries (R) = 3);
-         end;
-         Open_From_Log (Img & Img (0 .. Header_Len - 1), RL, R, VL, St);
-         Check ("a second HEADER: Malformed, Valid_Length = the whole log before it",
-                St = Malformed and then VL = Img'Length);
-         Open_From_Log (Img & Apply_Entry (P4), RL, R, VL, St);
-         Check ("an APPLY of a record already held: OK as for Put_Frame, no change, "
-                & "the entry stays in the log",
-                St = OK and then VL = Img'Length + Apply_Prefix + P4'Length
-                and then Same_Set (SL, RL) and then Same_Index (S, R)
-                and then Log_Bytes (R) = Img & Apply_Entry (P4)
-                and then Log_Entries (R) = Log_Entries (S) + 1
-                and then Auth_Gen (R) = Auth_Gen (S));
-         Open_From_Log (Img & Apply_Entry (P4) & Apply_Entry (P4), RL, R, VL, St);
-         Check ("twice: still OK", St = OK and then Same_Index (S, R));
-         Open_From_Log (Img (0 .. Header_Len - 2), RL, R, VL, St);
-         Check ("a log shorter than the HEADER: Malformed", St = Malformed);
-         Open_From_Log (Img (0 .. Header_Len - 1), RL, R, VL, St);
-         Check ("a log that is only the HEADER: OK, empty",
-                St = OK and then Kome.Frontier.Count (RL) = 0 and then Entries (R) = 0
-                and then VL = Header_Len);
-         --  The completeness clause of the Post of Open_From_Log. (Without it,
-         --  a replay that refused every log would meet the contract.)
-         Open_From_Log (Img (0 .. Header_Len - 1), RLb, Rb, VL, St);
-         Check ("only the HEADER, a larger data capacity: OK, empty, the HEADER as logged",
-                St = OK and then Kome.Frontier.Count (RLb) = 0 and then Entries (Rb) = 0
-                and then Logged_Cap (Rb) = Cap and then Logged_Slice (Rb) = Slice
-                and then Log_Length (Rb) = Header_Len);
-      end;
-
-      --  AUDIT.md H24: replay clamps a logged horizon to maxceil -
-      --  del_ttl_eff of the frontier at that point.
-      declare
-         Img : constant Byte_Array := Log_Bytes (S);
-         R   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL  : Lattice (Cap, Slice);
-         VL  : Log_Size;
-      begin
-         Open_From_Log (Img & Expire_Entry (U48'Last - 1), RL, R, VL, St);
-         Check ("an EXPIRE far above the bound replays at maxceil - del_ttl_eff (93 d), "
-                & "the bytes stay",
-                St = OK and then Horizon (R) = Time64 (93 * Day)
-                and then Expire_Mark (R) = 93 * Day
-                and then Log_Bytes (R) = Img & Expire_Entry (U48'Last - 1));
-         Open_From_Log (Img & Expire_Entry (No_Horizon_Code), RL, R, VL, St);
-         Check ("an EXPIRE (none) after it lowers the horizon to none",
-                St = OK and then Horizon (R) = No_Horizon);
-      end;
-
-      --  The invariant, unpacked, on the final store.
-      declare
-         Ok : Boolean := True;
-      begin
-         for K in 1 .. Entries (S) loop
-            Lemma_Entry_Held (S, SL, K);
-            Lemma_Indexed (S, Entry_At (S, K).H);
-            Lemma_Position (S, SL, K);
-         end loop;
-         for K in 1 .. Kome.Frontier.Count (SL) loop
-            Lemma_Held_Indexed (S, SL, K);
-            Lemma_No_Expired (S, SL, K);
-            Ok := Ok and then Indexed (S, Held (SL, K));
-         end loop;
-         Check ("lemmas evaluated on the final store; held records are indexed", Ok);
-      end;
+      Check ("vectors: HEADER (59 bytes) and cid, APPLY prefix, SEQ entry",
+             All_Good and then Headers = 3 and then Applies = 6 and then Seqs = 5);
    end;
 
    ---------------------------------------------------------------------------
-   --  T18: a roster refresh, a dominated-on-arrival roster, a stale
-   --  incomparable roster, a GRANT, data, Compact, open again.
+   --  Tags (S14).
+   ---------------------------------------------------------------------------
+   Check ("tags: Make_Tag / Tag_Off / Tag_Len round trip",
+          Tag_Off (Make_Tag (0, 1)) = 0 and then Tag_Len (Make_Tag (0, 1)) = 1
+          and then Tag_Off (Make_Tag (Log_Max, Kome.Records.Frame_Max)) = Log_Max
+          and then Tag_Len (Make_Tag (Log_Max, Kome.Records.Frame_Max)) = Kome.Records.Frame_Max
+          and then Tag_Off (Make_Tag (123_456, 125)) = 123_456
+          and then Make_Tag (2, 3) = 2 * 2**24 + 3);
+   Lemma_Tag_Round_Trip (Log_Max, Kome.Records.Frame_Max);
+   Lemma_U24_Round_Trip (2**24 - 1);
+   Lemma_U24_Bytes_Round_Trip (16#AB#, 16#CD#, 16#EF#);
+
+   ---------------------------------------------------------------------------
+   --  Put, overwrite, duplicates, refusals; digests and tags.
    ---------------------------------------------------------------------------
    declare
-      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL  : Lattice (Cap, Slice);
-      R1  : constant Byte_Array := Founding_Roster (1, 200 * Day);
-      R2  : constant Byte_Array := Founding_Roster (2, 200 * Day);
-      --  RD's del_ttl is at most R2's: a roster with a longer del_ttl is
-      --  never dominated (AUDIT.md H15).
-      RD  : constant Byte_Array := Founding_Roster (1, 180 * Day, TTL);
-      RS  : constant Byte_Array := Founding_Roster (1, 250 * Day, 9 * Day);
-      PA  : constant Byte_Array := Put_Of (6, 'n', 150 * Day, 21, [1]);
-      PB  : constant Byte_Array := Put_Of (7, 'n', 240 * Day, 22, [2]);
-      G2  : constant Byte_Array := Founding_Grant (Author2_PK);
-      PC  : constant Byte_Array := Put_Of (8, 'q', 100 * Day, 1, [3], Author2_SK, Author2_PK);
+      L   : Lattice (32);
+      S   : Store_T (Log_Cap_A);
       St  : Status;
+      Off : Log_Size;
+      LL  : Log_Size;
+      P1  : constant Byte_Array := Put_Of (1, 'a', 2 * Day, 1);
+      P2  : constant Byte_Array := Put_Of (1, 'a', 3 * Day, 2);
    begin
-      Fresh_Store (S, SL);
-      Put (S, SL, R1);
-      Put (S, SL, Founding_Grant (Author_PK));
-      Put (S, SL, PA);
-      Put (S, SL, R2);
-      Check ("roster refresh: the newer roster replaces the older; the PUT it admits stays",
-             Holds (SL, Hdr (R2)) and then not Holds (SL, Hdr (R1)) and then Holds (SL, Hdr (PA))
-             and then Position_Of (S, Hdr (PA)) < Position_Of (S, Hdr (R2)));
-      declare
-         B  : constant Store_T := S;
-         BL : constant Lattice := SL;
-      begin
-         Put (S, SL, RD, St);
-         Check ("a dominated-on-arrival roster: Dominated, nothing changed (not even del_ttl)",
-                St = Dominated and then S = B and then SL = BL);
-      end;
-      Put (S, SL, RS, St);
-      Check ("a stale incomparable roster (lower gen, higher ceiling) is held beside it",
-             St = OK and then Holds (SL, Hdr (RS)) and then Holds (SL, Hdr (R2))
-             and then Kome.Registers.Ceil (Regs (SL)) = 250 * Day);
-      Put (S, SL, PB);
-      Put (S, SL, G2);
-      Put (S, SL, PC);
-      Check ("rosters: Auth_Gen counts the applied authorization records (5), "
-             & "not the dominated one",
-             Auth_Gen (S) = 5);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("rosters: reopen before Compact: T18, Auth_Gen rebuilt (5)",
-                St = OK and then T18 (S, SL, R, RL) and then Auth_Gen (R) = 5);
-      end;
-      Compact (S, SL);
-      Check ("rosters: Compact puts the authorization records first, keeps Auth_Gen",
-             Auth_First (S) and then Position_Of (S, Hdr (R2)) < Position_Of (S, Hdr (PA))
-             and then Auth_Gen (S) = 5);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("rosters: reopen after Compact: T18 (every held PUT replays); "
-                & "Auth_Gen is the held authorization records (4)",
-                St = OK and then T18 (S, SL, R, RL) and then Holds (RL, Hdr (PA))
-                and then Holds (RL, Hdr (PB)) and then Auth_Gen (R) = 4);
-      end;
+      Fresh_Store (S, L);
+      Check ("open: HEADER only, no entries, empty digests",
+             Log_Length (S) = Header_Len and then Log_Entries (S) = 0
+             and then Seq_Self (S) = 0 and then Pinned (S) = 0
+             and then Kome.Digest.Count (Digest_Data (S)) = 0
+             and then Kome.Digest.Count (Digest_Auth (S)) = 0
+             and then Digests_Match (S, L));
+      Put (S, L, Roster_Of (1, 30 * Day), Off, St);
+      Check ("roster: OK at the HEADER's end, Max_Ceil", St = OK and then Off = Header_Len
+             and then Max_Ceil (L) = 30 * Day
+             and then Tag_Of (L, Hdr (Roster_Of (1, 30 * Day)))
+                      = Make_Tag (Header_Len, Roster_Of (1, 30 * Day)'Length));
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Grant_Of (Author2_PK));
+      Check ("authorization digests", Digests_Match (S, L) and then Auth_Count (L) = 3);
+      Put (S, L, P1, Off, St);
+      Check ("put: OK, held, its tag is its APPLY entry",
+             St = OK and then Holds (L, Hdr (P1))
+             and then Tag_Off (Tag_Of (L, Hdr (P1))) = Off
+             and then Read_Frame (S, Off) = P1
+             and then Log_Byte (S, Off) = Op_Apply);
+      Put (S, L, Put_Of (1, 'b', 2 * Day, 3));
+      Put (S, L, Put_Of (2, 'a', 2 * Day, 4));
+      Put (S, L, P2, Off, St);
+      Check ("overwrite: the newer PUT replaces the older",
+             St = OK and then Holds (L, Hdr (P2)) and then not Holds (L, Hdr (P1)));
+      Check ("data digests after an overwrite", Digests_Match (S, L));
+      Check ("tags read back their frames", Tags_Read_Back (S, L));
+      LL := Log_Length (S);
+      Put (S, L, P1, St);
+      Check ("dominated re-offer: Dominated, nothing appended",
+             St = Dominated and then Log_Length (S) = LL);
+      Put (S, L, P2, St);
+      Check ("duplicate: OK, nothing appended", St = OK and then Log_Length (S) = LL);
+      Put (S, L, Put_Of (3, 'a', 2 * Day, 1, [1], Stranger_SK, Stranger_PK), St);
+      Check ("a non-writer: Inadmissible, nothing appended",
+             St = Inadmissible and then Log_Length (S) = LL);
+      Put (S, L, Put_Of (3, 'a', 31 * Day, 9), St);
+      Check ("above the ceiling: Inadmissible", St = Inadmissible and then Log_Length (S) = LL);
+      Check ("seq_self: the largest own seq of the APPLY entries", Seq_Self (S) = 4);
+      Put (S, L, Put_Of (4, 'a', 2 * Day, 9, [7], Author2_SK, Author2_PK));
+      Check ("seq_self: another author's seq does not count", Seq_Self (S) = 4);
+      --  A frame signed by the device key that arrives from a peer (a
+      --  clone or a restored device) also raises seq_self (S16).
+      Put (S, L, Put_Of (5, 'a', 2 * Day, 11));
+      Check ("seq_self: an own frame from a peer counts", Seq_Self (S) = 11);
+      Check ("digests and tags after the puts",
+             Digests_Match (S, L) and then Tags_Read_Back (S, L));
    end;
 
-   ---------------------------------------------------------------------------
-   --  AUDIT.md H26: Compact_Due after many overwrites of one cell, and
-   --  never after Compact.
-   ---------------------------------------------------------------------------
+   --  The data row is full: No_Space, nothing changes.
    declare
-      S  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL : Lattice (Cap, Slice);
+      L  : Lattice (2);
+      S  : Store_T (Log_Cap_A);
       St : Status;
-      --  Overwrites of one cell: 3 held records, and the HEADER, so the log
-      --  has exactly 2 * 3 + Compact_Slack entries after them.
-      N  : constant := 2 * 3 + Compact_Slack - 3;
+      LL : Log_Size;
    begin
-      Fresh_Store (S, SL);
-      Put (S, SL, Founding_Roster (1, 100 * Day));
-      Put (S, SL, Founding_Grant (Author_PK));
-      for K in 1 .. N loop
-         Put (S, SL, Put_Of (70, 'n', 10 * Day + U48 (K), U48 (K), [Byte (K mod 256)]));
-      end loop;
-      Check ("compaction duty: one entry below the bound is not due",
-             Entries (S) = 3 and then Log_Entries (S) = 2 * Entries (S) + Compact_Slack
-             and then not Compact_Due (S));
-      Put (S, SL, Put_Of (70, 'n', 20 * Day, U48 (N + 1), [9]));
-      Check ("one more dominated-away entry: Compact_Due", Compact_Due (S));
-      Compact (S, SL);
-      Check ("after Compact: not due, 3 APPLYs and the HEADER",
-             not Compact_Due (S) and then Log_Entries (S) = 4);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("compaction duty: reopen (T18)", St = OK and then T18 (S, SL, R, RL));
-      end;
+      Fresh_Store (S, L);
+      Put (S, L, Roster_Of (1, 30 * Day));
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Put_Of (1, 'a', 2 * Day, 1));
+      Put (S, L, Put_Of (2, 'a', 2 * Day, 2));
+      LL := Log_Length (S);
+      Put (S, L, Put_Of (3, 'a', 2 * Day, 3), St);
+      Check ("full data row: No_Space, nothing appended",
+             St = No_Space and then Log_Length (S) = LL and then Data_Count (L) = 2);
+      Put (S, L, Put_Of (1, 'a', 3 * Day, 4), St);
+      Check ("full data row: an overwrite frees its own room, OK",
+             St = OK and then Data_Count (L) = 2);
+   end;
+
+   --  The log is full: Log_Full, nothing changes.
+   declare
+      L  : Lattice (8);
+      S  : Store_T (Header_Len + 212 + 2 * 136 + 4 + 199 + 4 + 150);
+      St : Status;
+      LL : Log_Size;
+   begin
+      Fresh_Store (S, L);
+      Put (S, L, Roster_Of (1, 30 * Day));
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Put_Of (1, 'a', 2 * Day, 1));
+      LL := Log_Length (S);
+      Put (S, L, Put_Of (2, 'a', 2 * Day, 2), St);
+      Check ("full log: Log_Full, nothing appended",
+             St = Log_Full and then Log_Length (S) = LL and then Data_Count (L) = 1);
+      Put (S, L, Put_Of (1, 'a', 1 * Day, 3), St);
+      Check ("full log: a dominated record is Dominated, not Log_Full", St = Dominated);
    end;
 
    ---------------------------------------------------------------------------
-   --  T18: a member revoke and a roster that drops a member.
+   --  Automatic expiry (S7) and its replay.
    ---------------------------------------------------------------------------
    declare
-      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL  : Lattice (Cap, Slice);
-      R2  : constant Byte_Array :=
-        Roster_Of (Root_SK, Root_PK, 0, Zero_Sig, 2, 100 * Day, TTL, Member (Author_PK, 11));
+      L   : Lattice (32);
+      S   : Store_T (Log_Cap_A);
+      R   : Store_T (Log_Cap_A);
+      RL  : Lattice (32);
       St  : Status;
+      LL  : Log_Size;
+      D1  : constant Byte_Array := Del_Of (3, 25 * Day, 3);   --  above hz = 23 days
+      D0  : constant Byte_Array := Del_Of (4, 22 * Day, 5);   --  at or below hz
+      DN  : constant Byte_Array := Del_Of (6, 21 * Day, 6);   --  below hz, drops nothing
+      P4  : constant Byte_Array := Put_Of (4, 'a', 20 * Day, 4);
+      P5  : constant Byte_Array := Put_Of (5, 'a', 26 * Day, 7);
    begin
-      Fresh_Store (S, SL);
-      Put (S, SL, Founding_Roster (1, 100 * Day));
-      Put (S, SL, Founding_Grant (Author_PK));
-      Put (S, SL, Founding_Grant (Author2_PK));
-      Put (S, SL, Put_Of (1, 'n', 10 * Day, 1, [1]));
-      Put (S, SL, Put_Of (2, 'n', 11 * Day, 1, [2], Author2_SK, Author2_PK));
-      Put (S, SL, Revoke_Of (Author2_PK, 0));
-      Put (S, SL, R2);
-      Put (S, SL, Put_Of (3, 'n', 12 * Day, 2, [3], Author2_SK, Author2_PK));
-      Check ("revoke: admission ignores REVOKE; the revoked key's records stay held",
-             Kome.Frontier.Count (SL) = 7 and then Index_Is_F (S, SL));
-      Compact (S, SL);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("revoke: Compact then reopen: T18", St = OK and then T18 (S, SL, R, RL));
-      end;
-   end;
-
-   ---------------------------------------------------------------------------
-   --  T18: a GRANT that arrives after a PUT that it admits.
-   ---------------------------------------------------------------------------
-   declare
-      S    : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL   : Lattice (Cap, Slice);
-      RR2  : constant Byte_Array :=
-        Roster_Of (Root2_SK, Root2_PK, Cap2, Cert2a, 1, 100 * Day, TTL, Member (Author2_PK, 31));
-      Ga   : constant Byte_Array := Grant_Of (Root2_SK, Root2_PK, Cap2, Cert2a, Author2_PK);
-      Gb   : constant Byte_Array := Grant_Of (Root2_SK, Root2_PK, Cap2 + 1, Cert2b, Author2_PK);
-      --  A1: GRANT domination is the product order (cap, h). Gb has the
-      --  larger cap. If it also has the larger h, it replaces Ga; if not,
-      --  both stay, and wcap is the larger cap either way.
-      Lo   : constant Boolean := Kome.Lt (Hdr (Ga).V.H, Hdr (Gb).V.H);
-      GLow : constant Byte_Array := Ga;
-      GHi  : constant Byte_Array := Gb;
-      PG   : constant Byte_Array := Put_Of (4, 'g', 50 * Day, 1, [4], Author2_SK, Author2_PK);
-      St   : Status;
-   begin
-      Fresh_Store (S, SL);
-      Put (S, SL, RR2);
-      Put (S, SL, PG, St);
-      Check ("a PUT before the GRANT that admits it: Inadmissible", St = Inadmissible);
-      Put (S, SL, GLow);
-      Put (S, SL, PG, St);
-      Check ("after the GRANT the re-offered PUT is held", St = OK);
-      Put (S, SL, GHi, St);
-      Check ("a second GRANT of the same issuer and subject, with a larger cap and h, replaces the first after the PUT; with a smaller h both stay",
-             St = OK and then Holds (SL, Hdr (GHi))
-             and then (if Lo then not Holds (SL, Hdr (GLow)) else Holds (SL, Hdr (GLow)))
-             and then Kome.Registers.W_Cap (Regs (SL), To_Key256 (Author2_PK)) = Cap2 + 1
-             and then Position_Of (S, Hdr (PG)) < Position_Of (S, Hdr (GHi)));
-      Compact (S, SL);
-      Check ("Compact writes the GRANT before the PUT it admits",
-             Auth_First (S) and then Position_Of (S, Hdr (GHi)) < Position_Of (S, Hdr (PG)));
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("grant after put: Compact then reopen: T18, the PUT replays",
-                St = OK and then T18 (S, SL, R, RL) and then Holds (RL, Hdr (PG)));
-      end;
-   end;
-
-   ---------------------------------------------------------------------------
-   --  A data row full of DELs (the "wedge"): expired DELs leave F, so the
-   --  frontier does not stay full.
-   ---------------------------------------------------------------------------
-   declare
-      W   : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-      WL  : Lattice (4, Slice);
-      P8  : constant Byte_Array := Put_Of (8, 'n', 50 * Day, 9, [8]);
-      St  : Status;
-   begin
-      WL := Empty (NS, Fnd, 4, Slice);
-      Open (Root_PK, Salt_A, WL, W);
-      Put (W, WL, Founding_Roster (1, 100 * Day));
-      Put (W, WL, Founding_Grant (Author_PK));
-      for E in Byte range 5 .. 8 loop
-         Put (W, WL, Put_Of (E, 'n', 10 * Day, U48 (E), [E]));
-         Put (W, WL, Del_Of (E, 20 * Day, U48 (E) + 10));
+      Fresh_Store (S, L);
+      Put (S, L, Roster_Of (1, 30 * Day));
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Put_Of (3, 'a', 24 * Day, 1));
+      Put (S, L, D1);
+      Put (S, L, P4);
+      Put (S, L, P5);
+      Check ("expiry setup: hz = maxceil - del_ttl = 23 days",
+             Has_Hz (L, TTL) and then Hz (L, TTL) = 23 * Day
+             and then Holds (L, Hdr (D1)) and then Holds (L, Hdr (P4))
+             and then not Expired_In (Hdr (D1), L, TTL)
+             and then Expired_In (Hdr (D0), L, TTL));
+      Put (S, L, D0, St);
+      Check ("a DEL that arrives expired drops what it dominates and is not held",
+             St = OK and then not Holds (L, Hdr (D0)) and then not Holds (L, Hdr (P4))
+             and then Holds (L, Hdr (D1)));
+      LL := Log_Length (S);
+      Put (S, L, DN, St);
+      Check ("an expired DEL that drops nothing: OK, nothing appended",
+             St = OK and then Log_Length (S) = LL and then not Holds (L, Hdr (DN)));
+      Check ("digests after an expired arrival", Digests_Match (S, L));
+      --  A ROSTER that raises Max_Ceil to 40 days: hz = 33 days, and the
+      --  DEL at 25 days expires in the same call.
+      Put (S, L, Roster_Of (2, 40 * Day), St);
+      Check ("a ceiling raise expires the DELs at or below the new horizon",
+             St = OK and then Max_Ceil (L) = 40 * Day and then Hz (L, TTL) = 33 * Day
+             and then not Holds (L, Hdr (D1)) and then Holds (L, Hdr (P5))
+             and then not Holds (L, Hdr (Roster_Of (1, 30 * Day))));
+      Check ("digests and tags after the expiry",
+             Digests_Match (S, L) and then Tags_Read_Back (S, L));
+      for I in 1 .. Cnt (L) loop
+         Lemma_No_Expired (S, L, I);
       end loop;
-      Check ("wedge setup: the data row is full of DELs",
-             Data_Count (WL) = 4 and then Kome.Frontier.Count (WL) = 6);
-      Exp (W, WL, 30 * Day);
-      Check ("expiry removes the DELs from F, not only from the index",
-             Data_Count (WL) = 0 and then Index_Is_F (W, WL));
-      Put (W, WL, P8, St);
-      Check ("so a new PUT is held (formerly No_Space for good)", St = OK);
-      Compact (W, WL);
+      Reopen (S, R, RL, St);
+      Check ("replay reproduces the expiry (T18)", St = OK and then T18 (S, L, R, RL));
+      Check ("replayed digests and tags",
+             Digests_Match (R, RL) and then Tags_Read_Back (R, RL));
       declare
-         R  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (4, Slice);
+         Good : Boolean;
+         A, Q : Natural;
       begin
-         Reopen (W, R, RL, St);
-         Check ("and a reopened replica has the same frontier and digest (T18)",
-                St = OK and then T18 (W, WL, R, RL));
+         Scan (Log_Bytes (S), Good, A, Q);
+         Check ("every APPLY frame of the log is a verified frame (Trusted_Frame)",
+                Good and then A = Log_Entries (S) and then Q = 0);
       end;
    end;
 
-   --  T18 with a raised capacity (AUDIT.md A11): a log of data_cap 4 opens
-   --  again with data_cap 8 and then gets more than 4 data records. Its
-   --  HEADER still records 4 (no rewrite). An open at 4 refuses it where
-   --  the fifth data record does not fit (No_Space, Valid_Length there),
-   --  and it replays at 8, before and after Compact.
+   ---------------------------------------------------------------------------
+   --  Compact, Pinned, seq_self from SEQ (S14, S16, S21).
+   ---------------------------------------------------------------------------
    declare
-      S4  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-      L4  : Lattice (4, Slice);
-      S8  : Store_T (8 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-      L8  : Lattice (8, Slice);
-      R4  : Store_T (4 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-      RL4 : Lattice (4, Slice);
-      R8  : Store_T (8 + Signers_Max * Slice, LCap, Bnd_Cap_For (LCap));
-      RL8 : Lattice (8, Slice);
+      L   : Lattice (32);
+      S   : Store_T (Log_Cap_A);
+      R   : Store_T (Log_Cap_A);
+      RL  : Lattice (32);
+      St  : Status;
+      Old : Byte_Array (0 .. Log_Cap_A);
+      OL  : Log_Size;
+      Own : constant Byte_Array := Put_Of (1, 'a', 2 * Day, 7);
+   begin
+      Fresh_Store (S, L);
+      Put (S, L, Roster_Of (1, 30 * Day));
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Put_Of (2, 'a', 2 * Day, 1));
+      Put (S, L, Grant_Of (Author2_PK));
+      Put (S, L, Put_Of (3, 'b', 2 * Day, 2));
+      Put (S, L, Own);
+      --  Another author overwrites the record with the largest own seq.
+      Put (S, L, Put_Of (1, 'a', 3 * Day, 1, [9], Author2_SK, Author2_PK));
+      Put (S, L, Put_Of (3, 'b', 3 * Day, 3));
+      Check ("compact setup: seq_self 7, the own seq-7 record is not held",
+             Seq_Self (S) = 7 and then not Holds (L, Hdr (Own)));
+      Reopen (S, R, RL, St);
+      Check ("replay recovers seq_self from the APPLY entries",
+             St = OK and then Seq_Self (R) = 7 and then T18 (S, L, R, RL));
+      Pin (S, L);
+      OL := Log_Length (S);
+      Old (0 .. OL - 1) := Log_Bytes (S);
+      Compact (S, L, St);
+      Check ("Compact while Pinned: Busy, nothing changes",
+             St = Busy and then Log_Length (S) = OL and then Log_Bytes (S) = Old (0 .. OL - 1));
+      Unpin (S, L);
+      Check ("Unpin", Pinned (S) = 0);
+      Compact (S, L, St);
+      Check ("Compact: OK, one APPLY per held record and a SEQ",
+             St = OK and then Log_Entries (S) = Cnt (L) + 1
+             and then not Compact_Due (S, L)
+             and then Log_Bytes (S) (0 .. Header_Len - 1) = Old (0 .. Header_Len - 1)
+             and then Log_Byte (S, Log_Length (S) - Seq_Len) = Op_Seq
+             and then Code_At (S, Log_Length (S) - Seq_Len + 1) = 7
+             and then Log_Length (S) < OL);
+      Check ("Compact: the authorization rows come first",
+             Auth_Count (L) = 3
+             and then Tag_Off (Tag (L, Data_Count (L) + 1)) = Header_Len
+             and then (for all I in 1 .. Data_Count (L) =>
+                         Tag_Off (Tag (L, I)) > Tag_Off (Tag (L, Data_Count (L) + 3))));
+      Check ("Compact: tags and digests", Tags_Read_Back (S, L) and then Digests_Match (S, L));
+      Reopen (S, R, RL, St);
+      Check ("replay of the compacted log: seq_self from the SEQ entry",
+             St = OK and then Seq_Self (R) = 7 and then T18 (S, L, R, RL));
+      declare
+         Good : Boolean;
+         A, Q : Natural;
+      begin
+         Scan (Log_Bytes (S), Good, A, Q);
+         Check ("the compacted log scans: Count APPLYs and one SEQ",
+                Good and then A = Cnt (L) and then Q = 1);
+      end;
+   end;
+
+   ---------------------------------------------------------------------------
+   --  Replay refusals (H23), duplicates, capacity, Compact_Due (H26).
+   ---------------------------------------------------------------------------
+   declare
+      L   : Lattice (32);
+      S   : Store_T (Log_Cap_A);
+      R   : Store_T (Log_Cap_A);
+      RL  : Lattice (32);
+      St  : Status;
       VL  : Log_Size;
-      St  : Status;
+      LB  : Byte_Array (0 .. Log_Cap_A);
+      N   : Log_Size;
+      E1  : Log_Size;   --  the offset of the second APPLY entry
    begin
-      L4 := Empty (NS, Fnd, 4, Slice);
-      Open (Root_PK, Salt_A, L4, S4);
-      Put (S4, L4, Founding_Roster (1, 100 * Day));
-      Put (S4, L4, Founding_Grant (Author_PK));
-      Put (S4, L4, Put_Of (30, 'n', 10 * Day, 1, [1]));
-      Open_From_Log (Log_Bytes (S4), L8, S8, VL, St);
-      Check ("raised capacity: reopen with data_cap 8 over a log of data_cap 4 (T18)",
-             St = OK and then Logged_Cap (S8) = 4 and then T18 (S4, L4, S8, L8));
-      for E in Byte range 31 .. 36 loop
-         Put (S8, L8, Put_Of (E, 'n', 10 * Day, U48 (E), [E]));
+      Fresh_Store (S, L);
+      Put (S, L, Roster_Of (1, 30 * Day));
+      E1 := Log_Length (S);
+      Put (S, L, Grant_Of (Author_PK));
+      Put (S, L, Put_Of (1, 'a', 2 * Day, 1));
+      N := Log_Length (S);
+      LB (0 .. N - 1) := Log_Bytes (S);
+
+      --  A torn tail: the last entry is cut.
+      Open_From_Log (LB (0 .. N - 2), Author_PK, RL, R, VL, St);
+      Check ("torn tail: Malformed, Valid_Length = the start of the torn entry",
+             St = Malformed and then VL = N - (Apply_Prefix + Put_Of (1, 'a', 2 * Day, 1)'Length)
+             and then Cnt (RL) = 2);
+      --  A corrupt frame byte in the second entry.
+      declare
+         C : Byte_Array := LB (0 .. N - 1);
+      begin
+         C (E1 + Apply_Prefix + Grant_O_Subject + 5) :=
+           C (E1 + Apply_Prefix + Grant_O_Subject + 5) xor 1;
+         Open_From_Log (C, Author_PK, RL, R, VL, St);
+         --  Replay does not verify signatures (S15, Trusted_Frame): the
+         --  corrupt GRANT replays as a GRANT to another key, so the PUT
+         --  after it is Inadmissible and refused.
+         Check ("a corrupt entry: the first refused entry ends the replay",
+                St = Malformed
+                and then VL = N - (Apply_Prefix + Put_Of (1, 'a', 2 * Day, 1)'Length)
+                and then Cnt (RL) = 2);
+      end;
+      --  An unknown op.
+      Open_From_Log (LB (0 .. N - 1) & Byte_Array'[16#07#], Author_PK, RL, R, VL, St);
+      Check ("an unknown op: Malformed, Valid_Length = the whole valid log",
+             St = Malformed and then VL = N);
+      --  A bad HEADER.
+      declare
+         C : Byte_Array := LB (0 .. N - 1);
+      begin
+         C (0) := 16#4C#;
+         Open_From_Log (C, Author_PK, RL, R, VL, St);
+         Check ("a bad magic: Malformed, Valid_Length 0", St = Malformed and then VL = 0);
+         C := LB (0 .. N - 1);
+         C (HO_TTL + 5) := 0;
+         C (HO_TTL + 4) := 0;
+         C (HO_TTL + 3) := 0;
+         Open_From_Log (C, Author_PK, RL, R, VL, St);
+         Check ("a del_ttl out of range: Malformed", St = Malformed and then VL = 0);
+      end;
+      --  A log that does not fit.
+      declare
+         Small  : Store_T (N - 1);
+         SmallL : Lattice (32);
+      begin
+         Open_From_Log (LB (0 .. N - 1), Author_PK, SmallL, Small, VL, St);
+         Check ("a log larger than Log_Cap: No_Space", St = No_Space and then VL = 0);
+      end;
+      --  A smaller data capacity than the log needs.
+      declare
+         Tiny  : Store_T (Log_Cap_A);
+         TinyL : Lattice (0);
+      begin
+         Open_From_Log (LB (0 .. N - 1), Author_PK, TinyL, Tiny, VL, St);
+         Check ("a smaller data capacity: No_Space at the first data entry",
+                St = No_Space and then VL = N - (Apply_Prefix + Put_Of (1, 'a', 2 * Day, 1)'Length));
+      end;
+      --  A duplicated APPLY (a retried append) replays as OK and stays.
+      declare
+         Dup : constant Byte_Array :=
+           LB (0 .. N - 1) & Byte_Array'(Op_Apply, Byte_Of_U24 (Grant_Of (Author_PK)'Length, 0),
+                                         Byte_Of_U24 (Grant_Of (Author_PK)'Length, 1),
+                                         Byte_Of_U24 (Grant_Of (Author_PK)'Length, 2))
+           & Grant_Of (Author_PK);
+      begin
+         Open_From_Log (Dup, Author_PK, RL, R, VL, St);
+         Check ("a duplicated APPLY replays as OK and stays in the log",
+                St = OK and then VL = Dup'Length and then Log_Bytes (R) = Dup
+                and then Same_Set (L, RL) and then Log_Entries (R) = 4);
+      end;
+      --  A HEADER only.
+      Open_From_Log (LB (0 .. Header_Len - 1), Author_PK, RL, R, VL, St);
+      Check ("a HEADER only opens", St = OK and then VL = Header_Len and then Cnt (RL) = 0);
+      --  Compact_Due: overwrite one cell until the log has more than
+      --  2 * |F| + Compact_Slack entries.
+      for I in 1 .. 2 * 4 + Compact_Slack loop
+         Put (S, L, Put_Of (1, 'a', 2 * Day + U48 (I), U48 (I + 1)));
       end loop;
-      Check ("raised capacity: 7 data records held, the HEADER still says 4",
-             Data_Count (L8) = 7 and then Logged_Cap (S8) = 4);
-      Open_From_Log (Log_Bytes (S8), RL4, R4, VL, St);
-      Check ("raised capacity: reopen at 4 is refused (No_Space) at the fifth data APPLY",
-             St = No_Space and then VL = Entry_At (S8, 7).Off
-             and then Valid (R4, RL4) and then Data_Count (RL4) = 4);
-      Open_From_Log (Log_Bytes (S8), RL8, R8, VL, St);
-      Check ("raised capacity: reopen at 8 (T18)", St = OK and then T18 (S8, L8, R8, RL8));
-      Compact (S8, L8);
-      Open_From_Log (Log_Bytes (S8), RL4, R4, VL, St);
-      Check ("raised capacity: compacted, reopen at 4 is refused", St = No_Space);
-      Open_From_Log (Log_Bytes (S8), RL8, R8, VL, St);
-      Check ("raised capacity: compacted, reopen at 8 (T18)",
-             St = OK and then T18 (S8, L8, R8, RL8));
+      Check ("Compact_Due after many overwrites", Compact_Due (S, L));
+      Compact (S, L, St);
+      Check ("not due after Compact", St = OK and then not Compact_Due (S, L)
+             and then Digests_Match (S, L));
    end;
-
-   --  Expire lowers the horizon on a full log: No_Space, and nothing
-   --  changes. If Compact has no room for the EXPIRE, it keeps the horizon
-   --  in memory only, and the reopened horizon is none.
-   declare
-      R1   : constant Byte_Array := Founding_Roster (1, 100 * Day);
-      G1   : constant Byte_Array := Founding_Grant (Author_PK);
-      P1   : constant Byte_Array := Put_Of (40, 'n', 10 * Day, 1, [1]);
-      Room : constant Natural :=
-        Header_Len + Apply_Prefix + R1'Length + Apply_Prefix + G1'Length
-        + Apply_Prefix + P1'Length + 3;
-      Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
-      SmL  : Lattice (Cap, Slice);
-      St   : Status;
-   begin
-      SmL := Empty (NS, Fnd, Cap, Slice);
-      Open (Root_PK, Salt_A, SmL, Sm);
-      Put (Sm, SmL, R1);
-      Put (Sm, SmL, G1);
-      Put (Sm, SmL, P1);
-      Exp (Sm, SmL, 50 * Day);
-      Check ("full log: a raise that removes nothing is kept in memory",
-             Horizon (Sm) = Time64 (43 * Day) and then Log_Length (Sm) = Room - 3);
-      declare
-         B  : constant Store_T := Sm;
-         BL : constant Lattice := SmL;
-      begin
-         Kome.Store.Expire (Sm, SmL, 20 * Day, St);
-         Check ("full log: lowering the horizon is Log_Full, nothing changed",
-                St = Log_Full and then Sm = B and then SmL = BL);
-      end;
-      Compact (Sm, SmL);
-      Check ("full log: Compact has no room for EXPIRE, the horizon stays in memory",
-             Horizon (Sm) = Time64 (43 * Day)
-             and then Log_Entries (Sm) = Entries (Sm) + 1);
-      declare
-         R  : Store_T (ICap, Room, Bnd_Cap_For (Room));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (Sm, R, RL, St);
-         Check ("full log: reopen (T18), the reopened horizon is none",
-                St = OK and then T18 (Sm, SmL, R, RL) and then Horizon (R) = No_Horizon);
-      end;
-   end;
-
-   --  Compact, then more operations (an APPLY_EXPIRED, a lowered EXPIRE, a
-   --  DEL that is held again), then open again.
-   declare
-      S   : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-      SL  : Lattice (Cap, Slice);
-      St  : Status;
-      DA  : constant Byte_Array := Del_Of (50, 20 * Day, 2);
-   begin
-      Fresh_Store (S, SL);
-      Put (S, SL, Founding_Roster (1, 100 * Day));
-      Put (S, SL, Founding_Grant (Author_PK));
-      Put (S, SL, Put_Of (50, 'n', 10 * Day, 1, [1]));
-      Put (S, SL, Put_Of (51, 'n', 10 * Day, 3, [1]));
-      Put (S, SL, Del_Of (51, 15 * Day, 4));
-      Exp (S, SL, 25 * Day);    --  horizon 18 d, removes DEL 51 (logged)
-      Compact (S, SL);
-      Exp (S, SL, 30 * Day);    --  horizon 23 d, nothing removed, not logged
-      Put (S, SL, DA, St);      --  DEL t = 20 d <= 23 d: APPLY_EXPIRED
-      Check ("after Compact: an expired DEL applied for its effect; the mark (23 d) stays",
-             St = OK and then not Holds (SL, Hdr (DA)) and then Expire_Mark (S) = 23 * Day);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("reopen: the mark is max (logged horizon 18 d, APPLY_EXPIRED t 20 d) = 20 d",
-                St = OK and then Expire_Mark (R) = 20 * Day and then Horizon (R) = Time64 (18 * Day));
-      end;
-      Exp (S, SL, 26 * Day);    --  lowered to 19 d: logged
-      Put (S, SL, DA, St);      --  t = 20 d > 19 d: held now
-      Check ("after a lowered horizon the DEL is held again",
-             St = OK and then Holds (SL, Hdr (DA)) and then Horizon (S) = Time64 (19 * Day));
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("reopen a compacted log with entries after it: T18, the last EXPIRE's horizon",
-                St = OK and then T18 (S, SL, R, RL) and then Horizon (R) = Time64 (19 * Day));
-      end;
-      Compact (S, SL);
-      declare
-         R  : Store_T (ICap, LCap, Bnd_Cap_For (LCap));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (S, R, RL, St);
-         Check ("compact again, reopen: T18",
-                St = OK and then T18 (S, SL, R, RL) and then Horizon (R) = Horizon (S));
-      end;
-   end;
-
-   ---------------------------------------------------------------------------
-   --  AUDIT.md G15: the entry boundaries need Log_Cap / Min_Entry slots.
-   --  A log of 7-byte EXPIRE entries (the smallest entry that an operation
-   --  appends) fills to Log_Full inside Bnd_Cap_For (Log_Cap), and it
-   --  replays.
-   ---------------------------------------------------------------------------
-   declare
-      R1   : constant Byte_Array := Founding_Roster (1, 100 * Day);
-      Room : constant Natural := Header_Len + Apply_Prefix + R1'Length + 40 * Expire_Len + 3;
-      Sm   : Store_T (ICap, Room, Bnd_Cap_For (Room));
-      SmL  : Lattice (Cap, Slice);
-      St   : Status;
-      Logs : Natural := 0;
-   begin
-      SmL := Empty (NS, Fnd, Cap, Slice);
-      Open (Root_PK, Salt_A, SmL, Sm);
-      Put (Sm, SmL, R1);
-      loop
-         Kome.Store.Expire (Sm, SmL, 32 * Day, St);   --  a raise: removes nothing, not logged
-         exit when St /= OK;
-         Kome.Store.Expire (Sm, SmL, 31 * Day, St);   --  a lower: logged
-         exit when St /= OK;
-         Logs := Logs + 1;
-         exit when Logs > 100;
-      end loop;
-      Check ("G15: EXPIREs fill the log to Log_Full, the chain fits Bnd_Cap_For (Log_Cap)",
-             St = Log_Full and then Logs = 40 and then Valid (Sm, SmL)
-             and then Log_Entries (Sm) = 2 + Logs
-             and then Log_Entries (Sm) <= Sm.Bnd_Cap
-             and then Sm.Bnd_Cap = Room / Min_Entry
-             and then Sm.Bnd_Cap < Room);
-      declare
-         R  : Store_T (ICap, Room, Bnd_Cap_For (Room));
-         RL : Lattice (Cap, Slice);
-      begin
-         Reopen (Sm, R, RL, St);
-         Check ("G15: the log of EXPIREs reopens (T18)",
-                St = OK and then T18 (Sm, SmL, R, RL) and then Log_Entries (R) = Log_Entries (Sm));
-      end;
-      Compact (Sm, SmL);
-      Check ("G15: compact the log of EXPIREs: HEADER, the roster, one EXPIRE",
-             Valid (Sm, SmL) and then Log_Entries (Sm) = 3);
-   end;
-
-   Check ("G15: after every Compact the binding buffer is the new log image",
-          Buf_Calls >= 10 and then Buf_Images = Buf_Calls);
 
    if Failed then
       Set_Exit_Status (Failure);
