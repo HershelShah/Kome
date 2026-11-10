@@ -11,10 +11,10 @@ The work starts with the design and the proofs. The code comes after them:
 | Layer | Where | State |
 |---|---|---|
 | The problem and the constraints | `docs/design/REQUIREMENTS.md` | fixed |
-| The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided |
-| Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T3, T4 (a) and (b), T4′, T5, T8, T9, T10, T11 (a) and (b), T12, T13 and T18 proved, in the scope that `DESIGN.md` §10.1 lists (no `sorry`); T4 (c) and T7 open |
-| The implementation, in SPARK, proved against the Lean model | `spark/` | 17 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). Eight of them (`Kome.Versions`, `Headers`, `Registers`, `Frontier`, `Records`, `Store`, `Emit`, `Views`) refine `Frontier.lean`; the others implement encodings, cryptography and protocols. The plan's Phases table holds the per-package test and proof counts, and its Known gaps section lists the remaining gaps |
-| The design audit: holes, removable assumptions, residue | `docs/design/AUDIT.md` | 160 confirmed findings at 2be1260; §0 of the audit lists what is applied |
+| The chosen design, the **frontier store** | `docs/design/DESIGN.md` | decided; simplified by `docs/design/SIMPLIFY.md` (S1–S24), and `DESIGN.md` describes the result as built |
+| Its mathematics, machine-checked in Lean 4 | `lean/` | T1–T3, T4 (a) and (b), T4′, T5, T8, T9, T10, T11 (a) and (b), T12, T13 and T18 proved (202 theorems and 2 instances), in the scope that `DESIGN.md` §10.1 lists (no `sorry`); T4 (c) and T7 open |
+| The implementation, in SPARK, proved against the Lean model | `spark/` | 17 packages (phases 0–8 of `docs/design/IMPLEMENTATION_PLAN.md`, except `Kome.Roster`). Seven of them (`Kome.Versions`, `Headers`, `Frontier`, `Records`, `Store`, `Emit`, `Views`) refine `Frontier.lean`; the others implement encodings, cryptography and protocols. The plan's Phases table holds the per-package test and proof counts, and its Known gaps section lists the remaining gaps |
+| The design audit: holes, removable assumptions, residue | `docs/design/AUDIT.md` | 160 confirmed findings at 2be1260; §0 of the audit lists what is applied, and which items the simplification superseded |
 
 ## The design in one paragraph
 
@@ -35,10 +35,29 @@ The one theorem that makes this work is the frontier homomorphism
 `F(H₁ ∪ H₂) = F(F(H₁) ∪ F(H₂))`. It means that if you drop a beaten record
 anywhere and at any time, no future state changes.
 
+## Wire and log in brief
+
+A collection is fixed at founding by its founding key, a salt and the
+tombstone lifetime: `cid = BLAKE2b-256(root_pk ‖ salt ‖ u48(del_ttl))`,
+and `ns = cid[0:16]` routes it. Every record is `tag ‖ content ‖ sig`
+with `h = BLAKE2b-256(tag ‖ cid ‖ content)`, signed with Ed25519, and no
+frame carries the `cid`: the verifier supplies it. The founding key
+certifies the other roots (and itself). Each roster carries a fresh
+collection key for its generation, boxed to each member, and the bundle
+key derives from it. The log of a replica is `HEADER` (`"KOME"`, version,
+`root_pk`, `salt`, `del_ttl`; 59 bytes), then `APPLY` entries (one
+applied frame each) and `SEQ` entries (the device's sequence counter,
+written by compaction). Tombstones expire at `maxceil(F) − del_ttl`, a
+function of the state, so replay of the log gives back the same frontier.
+Sync runs over Noise XK, reconciles the authorization records and then
+the data records by range fingerprints, and every reply tiles the range
+that it answers. `docs/design/DESIGN.md` §2, §7 and §8 give the exact
+bytes.
+
 ## Layout
 
 ```
-docs/design/          REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md, AUDIT.md
+docs/design/          REQUIREMENTS.md, DESIGN.md, SIMPLIFY.md, IMPLEMENTATION_PLAN.md, AUDIT.md
 lean/                 Lean 4 model: lean/Kome/Frontier.lean and its theorems
 spark/                SPARK implementation: src/, tests/, vectors/, check.sh
 third_party/          monocypher, the only cryptographic dependency
@@ -57,6 +76,13 @@ nixpkgs revision (`nixpkgs.pin`). So a machine with Nix needs nothing else.
 PROVE=0 ./spark/check.sh all   # tests only
 ```
 
+`spark/kome_spark.gpr` has a `Mode` scenario variable. `check`, the
+default, compiles with `-gnata`, so every contract, ghost call and loop
+invariant runs in the tests. `release` (for example `gprbuild -P
+spark/kome_spark.gpr -XMode=release`) builds without run-time contract
+checks, which is the build to measure or ship; the proofs do not depend on
+the mode. `spark/check.sh` documents how it selects the mode.
+
 `spark/check.sh` uses GNAT 14, gprbuild, gnatprove 14 and the cvc5 and z3
 provers (the proof switches are in `spark/kome_spark.gpr`). It fails if a
 module has an unproved check, if a source uses `pragma Assume` or `pragma
@@ -69,18 +95,19 @@ full proof takes about an hour. Before you push, run `PROVE=0
 
 ## How the SPARK code relates to the Lean proofs
 
-Eight SPARK packages refine a part of `lean/Kome/Frontier.lean`:
-`Kome.Versions`, `Kome.Headers`, `Kome.Registers`, `Kome.Frontier`,
-`Kome.Records`, `Kome.Store`, `Kome.Emit` and `Kome.Views`. The Lean file
+Seven SPARK packages refine a part of `lean/Kome/Frontier.lean`:
+`Kome.Versions`, `Kome.Headers`, `Kome.Frontier`, `Kome.Records`,
+`Kome.Store`, `Kome.Emit` and `Kome.Views`. The Lean file
 proves the theorems about *sets* of records: convergence in any order with
 any duplication, the frontier homomorphism, and monotone admission. The
 SPARK contracts state that the bounded, in-place code implements exactly
 the functions that those theorems are about. gnatprove discharges these
 contracts. The other packages implement encodings (`Kome.Byteorder`,
 `Kome.Keys`), cryptography (`Kome.Crypto`, `Kome.Epochs`) and protocols
-(`Kome.Accumulator`, `Kome.Digest`, `Kome.Reconcile`, `Kome.Guard`), and
-`Kome.Write` joins `Kome.Emit`, `Kome.Records` and `Kome.Store` into the
-write path.
+(`Kome.Accumulator`, `Kome.Digest`, `Kome.Reconcile`, `Kome.Guard`),
+`Kome.Frames` hides the frame-to-record predicate from the store's proofs,
+and `Kome.Write` joins `Kome.Emit`, `Kome.Records` and `Kome.Store` into
+the write path.
 
 The per-package test and proof counts come from the clean per-module runs
 in CI (gnatprove 14, `--level=3`, cvc5 and z3), and the Phases table of
@@ -91,21 +118,21 @@ in CI (gnatprove 14, `--level=3`, cvc5 and z3), and the Phases table of
 |---|---|---|
 | `Kome.Byteorder` | — | Little-endian u64 encoding (D7): `To_LE_U64` and `Read_U64LE` are inverse bijections |
 | `Kome.Versions` | `Version`, `Version.lt`, T1 | The order is a strict total order |
-| `Kome.Headers` | `Record`, `dominates`, T2' | Domination is the product order on rosters (strict in gen, with the epoch and del_ttl) and on GRANTs (cap and h, keyed by (issuer, subject)). Domination is irreflexive and transitive. No record dominates a REVOKE. `Canonical` is a property of a header |
-| `Kome.Registers` | `maxCeil`, `isWriter`, `wcap`, T4' | The three registers only grow: a writer stays a writer, and its cap never falls |
-| `Kome.Frontier` | `adm`, `applyD`, `expire`, `maxCeil_F`, `isWriter_F`, `wcap_F`, T4', T11 | `Apply` keeps exactly the undominated admitted records (`t ≤ maxceil`, `author ∈ W`, `t ≤ wcap`). The Post states each outcome (OK, Dominated, Inadmissible, No_Space, Auth_Full) as an iff. A refusal leaves the state `Unchanged`. The register cache equals maxceil(F), W(F) and wcap(F) (`Coherent`). `Expire` removes exactly the expired DELs |
+| `Kome.Headers` | `Record`, `dominates`, T2' | The header is `(Kind, Ent, FH, V, Issuer)`. Domination is the product order on rosters (strict in gen, ceiling not lower) and on GRANTs (cap and h, keyed by (issuer, subject)), and on REVOKEs of one (issuer, subject) a lower `from_t` wins. Domination is irreflexive and transitive, and no authorization record dominates a data record. `Canonical` is a property of a header |
+| `Kome.Frontier` | `adm`, `applyD`, `expire`, `maxCeil_F`, `isWriter_F`, `wcap_F`, T4', T11 | `Apply` keeps exactly the undominated admitted records (`t ≤ maxceil`, `author ∈ W`, `t ≤ wcap`). The Post states each outcome (OK, Dominated, Inadmissible, No_Space, Auth_Full) as an iff. A refusal leaves the state `Unchanged`. `Max_Ceil`, `In_W` and `W_Cap` are views of F with `_Def` lemmas, and `Lemma_Views_Step` gives their growth. Each held record carries a payload tag; an Apply changes one entity run or one signer slot. `Expire (F, Hz)` removes exactly the DELs at or below `Hz` |
 | `Kome.Keys` | — | Key and id word records: big-endian round trips, injectivity, and `Lt`/`Id_Lt` as byte-lexicographic order |
 | `Kome.Crypto` | — | Monocypher binding (X25519, RFC 8032 Ed25519 with SHA-512 only inside the signature, BLAKE2b, XChaCha20-Poly1305 with a 24-byte nonce) with `SPARK_Mode Off` bodies: spec-level run-time checks, data dependencies and refusal preconditions. `Verify` is the cofactored verification predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys. The Posts of the bodies, `Raw_Ed25519_Check` and the two congruence axioms `Lemma_Blake2b_Congruent` and `Lemma_X25519_Congruent` are assumptions. RFC 8032, Wycheproof and other known-answer vectors check them |
-| `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Signer certificates (`Cert_OK`) for ROSTER, REVOKE and GRANT; `gen ≤ ceiling_t`; a GRANT's header carries its issuer's cap. `Decode` gives only canonical headers. `Make_Put` and `Make_Del` state their headers |
-| `Kome.Store` | T11, T18 (`auth_first`, tested) | `Valid` relates the index, the journal log and F. Each outcome of `Put_Frame` is an iff in D11 order, with `Log_Full` for the log bytes (`Log_Fits` is the binding's bound). A refusal changes nothing. `Expire` is at `Horizon_At` (T11 (a)). `Compact` writes authorization records first, and the binding calls it when `Compact_Due` holds. Replay clamps each `EXPIRE` to `Horizon_At (F, U48'Last)`. gnatprove proves `Open_From_Log` for HEADER-only logs, and that the prefix of length `Valid_Length` replays to a `Valid` pair (T18-prefix) |
-| `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13, `lt_iff_prefix` | `Choose` picks (t, seq) without h, and the outcome does not depend on h. Also: `V.T <= min(maxceil, wcap)`, a DEL at `t ≥ maxceil − Cap_Lead`, no `seq` wrap, the H8 jump, SHADOWED exactly as in §5, and an OK write is admitted and undominated |
-| `Kome.Write` | `chase` T8 (through `Kome.Emit`) | The write path (AUDIT.md A10): `Prepare` (Choose, Make, Sign; T8 from `Choose`, the record's header is the target and the chosen version) returns the `seq_self` that the binding persists before `Commit` (`Store.Put_Frame`, `Valid` kept). `Seq_Self_At_Open` is max (stored, own held seq); `Open_Seq` reports `SEQ_CORRUPT`. `Receive` is `Put_Frame` plus the apply-side `CLONE_SUSPECTED` (H18): an own record that was not held and is held now sets it |
-| `Kome.Views` | T5 (`rootVoid_F`, `wEff_F`, `voided_F`, `rosterEff_F`), T12 | `cell`, `exists`, `deleted_at`, `maxceil`, `W`, `root_void`, `W_eff`, `void`, `revoked`, `ROSTER_eff` (by `(epoch, gen, h)`), `ROSTER_FORK` and `del_ttl_eff` are functions of F (T5). `far` is a per-replica advisory predicate that reads the local clock, not a function of F. Each cell has one value on every frontier |
+| `Kome.Records` | T13, D1, D3, E5 | Canonical encoding, total `Decode` and both round trips. Every `h` binds the `cid`. Signer certificates over the `cid` (`Cert_OK`), the founding key self-certified, for ROSTER, REVOKE and GRANT; `gen ≤ ceiling_t ≤ cert_cap`; a GRANT's header carries its issuer's cap. `Decode` gives only canonical headers. Every `Make_*` states its header |
+| `Kome.Store` | T11, `applyH`, T18 (`auth_first`, tested) | `Valid` relates the log, the tags of F and F: every tag points at the APPLY of its record. Each outcome of `Put_Frame` is an iff in D11 order, with `Log_Full` for the log bytes (`Log_Fits` is the binding's bound), and an OK apply is Lean's `applyH` with automatic expiry at `hz(F)` (T11 (a)). A refusal changes nothing. `seq_self` comes from the log, and the two digest states model the authorization and data rows. `Compact` writes row order, retags, ends with `SEQ`, and is refused while pinned. gnatprove proves `Open_From_Log` for HEADER-only logs, and that the prefix of length `Valid_Length` replays to a `Valid` pair (T18-prefix) |
+| `Kome.Frames` | — | `Frame_Is (Frame, Cid, X)`, opaque outside its body, with its definition and congruence lemmas |
+| `Kome.Emit` | `chase` T8, `adm_put_le` T9, `emitT_le` T13, `lt_iff_prefix` | `Choose` picks (t, seq) without h, and the outcome does not depend on h. Also: `V.T <= min(maxceil, wcap)`, every write at `t ≥ maxceil − Cap_Lead` unless its ceiling is lower, no `seq` wrap, the H8 jump, SHADOWED and CLAMPED exactly as in §5, and an OK write is admitted and undominated |
+| `Kome.Write` | `chase` T8 (through `Kome.Emit`) | The write path in one call: `Write` = Choose, Make, Sign, `Put_Frame` (T8 from `Choose`; the record's header is the target and the chosen version; seq = `Seq_Self (S) + 1`), with each outcome as an iff and SHADOWED decided before signing. `Receive` is `Put_Frame` plus the apply-side `CLONE_SUSPECTED` (H18): an own record that changes the pair sets it |
+| `Kome.Views` | T5 (`rootVoid_F`, `wEff_F`, `voided_F`, `isMinFrom_F`, `rosterEff_F`), T12 | `cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `revoked_at`, `void`, `revoked`, `ROSTER_eff` and `Roster_Max` (by the roster key `(gen, h, signer, ceiling_t)`), `contested` and `quarantined` are functions of F (T5). `far` and `skew` are per-replica advisories that read the local clock. Each cell has one value on every frontier |
 | `Kome.Accumulator` | T6 (DESIGN.md §8) | 4096-bit `Add`/`Sub` modulo 2^4096 against an exact integer model. Commutative and associative, `Add_Sub`, the byte bijection and congruence |
-| `Kome.Digest` | T6 (DESIGN.md §8) | The layouts of `acc(e)` and `fp`, incremental add/remove and order independence. `Range_Sum` over D15 prefix sums is exact, with the cost formula of at most 64 Adds |
-| `Kome.Reconcile` | T7 (open in Lean) | Message size bounds and the OPEN/HELLO formats. The auth-then-data phases with exact root ranges. The reply kinds are pinned, and the split is well founded. A refusal changes nothing, and `Key_Lt` is bytewise order. T7 itself is tested only |
-| `Kome.Epochs` | T14 (paper) | `Derive` and the chain lemmas. Fixed-length boxes whose wrap key covers ns and the epoch, with the synthetic nonce in the Post. Segment links and fixed segment boundaries. Non-canonical and low-order peers are refused |
-| `Kome.Guard` | — | The REVOKE-aware session gate (a member whose sign_pk is `revoked` passes no gate) and the quarantine flag after a pre-gate root-void |
+| `Kome.Digest` | T6 (DESIGN.md §8) | The layouts of `acc(e)` (eight BLAKE2b-512 chunks) and `fp`, incremental add/remove and order independence. `Range_Sum` over D15 prefix sums is exact, with the cost formula of at most 64 Adds |
+| `Kome.Reconcile` | T7 (open in Lean) | Message size bounds and the HELLO, RANGE, ELEMENTS, HAVE and ROOT formats. The gate on every call. The auth-then-data phases with ROOT bounds fixed by phase. The reply kinds are pinned, replies tile their obligation, and the split is well founded. The snapshot is sorted, distinct and has the digest of F. A refusal changes nothing, and `Key_Lt` is bytewise order. T7 itself is tested only |
+| `Kome.Epochs` | T14 (paper) | The hedged per-generation key `k_g` (`Key_For_Gen`), `box_pk` from the derived `eph_sk`, fixed-length boxes whose wrap key covers the cid and the gen, with the synthetic nonce in the Post, and the bundle key. Non-canonical and low-order peers and the all-zero key are refused |
+| `Kome.Guard` | — | The REVOKE-aware session gate (a member whose sign_pk is `revoked` passes no gate) and `Admits = Gate ∧ ¬ quarantined`, with the lemmas that set and clear the quarantine. No state |
 
 Lean proves the theorems about the functions. SPARK proves the same facts
 about the code. Neither tool does the other's work. The remaining
