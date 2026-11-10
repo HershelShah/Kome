@@ -3,7 +3,8 @@
 --  Kome.Store (SIMPLIFY.md S14).
 --
 --  Kome.Store's invariant says that the tag of every held record points
---  at an APPLY entry whose frame has that record as its header. Stated
+--  at an APPLY entry whose frame has that record as its header (and the
+--  tag of the ceiling cell's record at a CEIL entry, AUDIT.md H12). Stated
 --  with Kome.Store.Header_Of directly, every goal about tags unfolds the
 --  Kome.Records parsers and the content hash of two frames (the old and
 --  the new place of the bytes) and times out, though the tag lemmas only

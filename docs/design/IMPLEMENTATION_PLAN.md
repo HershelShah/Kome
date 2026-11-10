@@ -128,9 +128,10 @@ No package has an unproved check. In this section, a gap is one of these:
   - `kome-store.adb`: `Loop_Invariant` in `Lemma_Tags_Kept`,
     `Lemma_Tags_Same`, `Lemma_Tags_Apply`, `Lemma_Tags_Expire`,
     `Lemma_Self_Tags`, `Lemma_Copied_Kept`, `Copy_Frames`,
-    `Lemma_Rest_Same`, `Lemma_Hashes_Same`, `Lemma_Offs_Step`,
-    `Lemma_Slot_Flat`, `Lemma_Auth_Flat`, `Lemma_Expire_Flat`,
-    `Lemma_Seq_Apply`, `Lemma_Seq_Sub`, `Lemma_Applied_H` and
+    `Lemma_Rest_Same`, `Lemma_Seq_Same`, `Lemma_Hashes_Same`,
+    `Lemma_Offs_Step`, `Lemma_Slot_Flat`, `Lemma_Auth_Flat`,
+    `Lemma_Expire_Flat`, `Lemma_Seq_Apply`, `Lemma_Seq_Sub`,
+    `Lemma_Applied_H`, `Lemma_Ceiled`, `Lemma_Ceiled_Old` and
     `Lemma_Digest_Split`; `Loop_Invariant`, `Assert` and `Ghost` in
     `Data_Range_Sum` and `Auth_Range_Sum`.
   - `kome-write.adb`: `Loop_Invariant` in `Lemma_Seq_Base`.

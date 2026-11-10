@@ -1,5 +1,6 @@
-# Kome.Store log encodings (SIMPLIFY.md S15). Python's hashlib (BLAKE2b-256)
-# computed them, independently of the SPARK code. The generator is embedded
+# Kome.Store log encodings (SIMPLIFY.md S15; the CEIL entry of AUDIT.md H12).
+# Python's hashlib (BLAKE2b-256) computed them, independently of the SPARK
+# code. The generator is embedded
 # below (lines that start with '#|'); this command prints the file again:
 #   sed -n 's/^#| \{0,1\}//p' spark/vectors/store.txt | python3 -I -
 # header <root_pk> <salt> <del_ttl (u48 decimal)> <cid> <59-byte HEADER>
@@ -22,16 +23,23 @@ seq 1 02000000000001
 seq 2592000000 0200009a7ec800
 seq 281474976710654 02fffffffffffe
 seq 281474976710655 02ffffffffffff
+# ceil <len (decimal)> <4-byte CEIL prefix: 03 len:u24> (AUDIT.md H12: a CEIL
+#   entry holds a ROSTER frame, 212 .. 8916 bytes)
+ceil 212 030000d4
+ceil 348 0300015c
+ceil 8916 030022d4
 # The generator (run as above):
 #| """Independent reference for spark/vectors/store.txt (SIMPLIFY.md S15 log
-#| layout, written from the layout text, not from Kome.Store). Prints the
-#| vector file above its own "#|" lines on stdout."""
+#| layout and the CEIL entry of AUDIT.md H12, written from the layout text,
+#| not from Kome.Store). Prints the vector file above its own "#|" lines on
+#| stdout."""
 #| import hashlib
 #| def u48(v): return v.to_bytes(6, 'big')
 #| def cid(root, salt, ttl): return hashlib.blake2b(root + salt + u48(ttl), digest_size=32).digest()
 #| out = []
-#| out.append("# Kome.Store log encodings (SIMPLIFY.md S15). Python's hashlib (BLAKE2b-256)")
-#| out.append("# computed them, independently of the SPARK code. The generator is embedded")
+#| out.append("# Kome.Store log encodings (SIMPLIFY.md S15; the CEIL entry of AUDIT.md H12).")
+#| out.append("# Python's hashlib (BLAKE2b-256) computed them, independently of the SPARK")
+#| out.append("# code. The generator is embedded")
 #| out.append("# below (lines that start with '#|'); this command prints the file again:")
 #| out.append("#   sed -n 's/^#| \\{0,1\\}//p' spark/vectors/store.txt | python3 -I -")
 #| out.append("# header <root_pk> <salt> <del_ttl (u48 decimal)> <cid> <59-byte HEADER>")
@@ -53,5 +61,9 @@ seq 281474976710655 02ffffffffffff
 #| out.append("# seq <seq_self (u48 decimal)> <7-byte SEQ entry: 02 seq:u48>")
 #| for v in (0, 1, 2592000000, 2**48 - 2, 2**48 - 1):
 #|     out.append("seq %d %s" % (v, (b'\x02' + u48(v)).hex()))
+#| out.append("# ceil <len (decimal)> <4-byte CEIL prefix: 03 len:u24> (AUDIT.md H12: a CEIL")
+#| out.append("#   entry holds a ROSTER frame, 212 .. 8916 bytes)")
+#| for n in (212, 348, 8916):
+#|     out.append("ceil %d %s" % (n, (b'\x03' + n.to_bytes(3, 'big')).hex()))
 #| out.append("# The generator (run as above):")
 #| print("\n".join(out))

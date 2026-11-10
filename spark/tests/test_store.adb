@@ -28,7 +28,26 @@
 --      of a written log is a verified frame (Trusted_Frame); a corrupt,
 --      torn or foreign log is refused with the right Valid_Length (H23);
 --      a duplicated APPLY replays as OK; a smaller data capacity gives
---      No_Space; Compact_Due (H26).
+--      No_Space; Compact_Due (H26);
+--    * the ceiling cell (AUDIT.md H12, T19; procedure Ceiling_Cell): the
+--      audit scenario in both arrival orders (the roster that finds no
+--      room is captured, Ceil_Only; with room it is held) with the same
+--      Max_Ceil, the same horizon and the same data row; two more
+--      deliveries; reopen (T18 with a cell); Compact (the CEIL entry
+--      first) and reopen; re-offers; a dead cell; the cell's record
+--      entering its slice; Log_Full; the replay refusals and duplicates
+--      of a CEIL; Put_Ceil with room (the roster never enters a row);
+--      Log_Fits; the CEIL prefix against vectors/store.txt.
+--      The scenario runs in two forms. "full slot table": 15 certified
+--      roots take the slots, so the roster of a 16th root finds none (17
+--      signers with the founding key). "full slice": the audit's own
+--      case, 512 REVOKEs of one root. Under -gnata each Put_Frame
+--      evaluates the digest models with the ghost big-integer arithmetic
+--      of Kome.Accumulator, and its time grows with the square of the
+--      number of held records (about 3 s at 20 records), so the 512-record
+--      form runs only in the release mode (MODE=release), where no
+--      contract executes; the check mode runs the slot-table form, which
+--      takes the same paths of Put_Frame, Put_Ceil, replay and Compact.
 --  The build uses -gnata, so the tests also execute every Pre / Post (Valid
 --  included) and every ghost lemma on these stores.
 pragma Ada_2022;
@@ -36,6 +55,9 @@ with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Directories;
 with Ada.Exceptions;   use Ada.Exceptions;
+with Ada.Assertions;
+with Ada.Strings.Fixed;
+with Contract_Mode;    use Contract_Mode;
 with Kome;             use Kome;
 with Kome.Headers;     use Kome.Headers;
 with Kome.Frontier;    use Kome.Frontier;
@@ -45,6 +67,7 @@ with Kome.Records;     use Kome.Records;
 with Kome.Accumulator;
 with Kome.Digest;
 with Kome.Store;       use Kome.Store;
+with Kome.Views;
 
 procedure Test_Store with SPARK_Mode => Off is
 
@@ -168,6 +191,46 @@ procedure Test_Store with SPARK_Mode => Off is
 
    function Hdr (F : Byte_Array) return Header is (Header_Of (Cid_A, F));
 
+   --  A roster and a REVOKE of any signer (a certified root with its
+   --  certificate), for the ceiling-cell tests.
+   function Roster_By
+     (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig; Gen, Ceil : U48;
+      Members : Byte_Array) return Byte_Array
+   is
+      R : Roster_Record := Make_Roster (Cid_A, PK, Cap, Cert, Good_DH (77), Gen, Ceil, Members);
+   begin
+      Sign (Cid_A, R, SK);
+      return Encode (R);
+   end Roster_By;
+
+   function Revoke_By
+     (SK : Kome.Crypto.Secret_Key; PK : Pubkey; Cap : U48; Cert : Sig; Subject : Pubkey)
+      return Byte_Array
+   is
+      X : Revoke_Record := Make_Revoke (Cid_A, PK, Cap, Cert, Subject, 0);
+   begin
+      Sign (Cid_A, X, SK);
+      return Encode (X);
+   end Revoke_By;
+
+   --  The I-th key pair of a family (the seed holds I in two bytes, so the
+   --  keys of one family are distinct).
+   procedure Key_Of_Index
+     (Family : Byte; I : Natural; SK : out Kome.Crypto.Secret_Key; PK : out Pubkey)
+   is
+      Sd : Byte_Array := Fill (Kome.Crypto.Seed_Len, 77);
+   begin
+      Sd (0) := Byte (I mod 256);
+      Sd (1) := Byte (I / 256);
+      Sd (2) := Family;
+      Kome.Crypto.Key_Pair (Kome.Crypto.Seed (Sd), SK, PK);
+   end Key_Of_Index;
+
+   --  A log entry: op ‖ len:u24 ‖ frame.
+   function Entry_Of (Op : Byte; F : Byte_Array) return Byte_Array is
+     (Byte_Array'(Op, Byte_Of_U24 (F'Length, 0), Byte_Of_U24 (F'Length, 1),
+                  Byte_Of_U24 (F'Length, 2)) & F);
+
    ---------------------------------------------------------------------------
    --  Operations and comparisons.
    ---------------------------------------------------------------------------
@@ -196,6 +259,17 @@ procedure Test_Store with SPARK_Mode => Off is
          raise Program_Error with "setup frame refused: " & St'Image;
       end if;
    end Put;
+
+   --  Put_Ceil of a ROSTER frame (the ceiling frame of a HELLO).
+   procedure Ceil
+     (S : in out Store_T; L : in out Lattice; F : Byte_Array; Off : out Log_Size;
+      St : out Status) is
+   begin
+      if not Verified (Cid (S), Root_Key (S), F) then
+         raise Program_Error with "test frame not well-formed";
+      end if;
+      Put_Ceil (S, L, F, Header_Of (Cid (S), F), Off, St);
+   end Ceil;
 
    --  The digest of the data row and of the authorization rows, from the
    --  rows (Kome.Digest.Digest_Of), independent of the store's states.
@@ -228,15 +302,31 @@ procedure Test_Store with SPARK_Mode => Off is
    end Digests_Match;
 
    --  S14: every held record's tag reads back a frame whose header is the
-   --  record.
+   --  record, from an APPLY entry; and the tag of the ceiling cell's record
+   --  reads back its frame from a CEIL entry (AUDIT.md H12).
    function Tags_Read_Back (S : Store_T; L : Lattice) return Boolean is
    begin
+      if Has_Ceil (L) then
+         Lemma_Ceil_Tag (S, L);
+         declare
+            T : constant U64 := Ceil_Tag (L);
+         begin
+            if not Has_Frame (S, Tag_Off (T))
+              or else Log_Byte (S, Tag_Off (T)) /= Op_Ceil
+              or else Len_At (S, Tag_Off (T)) /= Tag_Len (T)
+              or else Header_Of (Cid (S), Read_Frame (S, Tag_Off (T))) /= Ceil_Held (L)
+            then
+               return False;
+            end if;
+         end;
+      end if;
       for I in 1 .. Cnt (L) loop
          Lemma_Tag (S, L, I);
          declare
             T : constant U64 := Tag (L, I);
          begin
             if not Has_Frame (S, Tag_Off (T))
+              or else Log_Byte (S, Tag_Off (T)) /= Op_Apply
               or else Len_At (S, Tag_Off (T)) /= Tag_Len (T)
               or else Header_Of (Cid (S), Read_Frame (S, Tag_Off (T))) /= Held (L, I)
             then
@@ -253,19 +343,21 @@ procedure Test_Store with SPARK_Mode => Off is
       and then (for all I in 1 .. Cnt (B) => Holds (A, Held (B, I))));
 
    --  The entries of a log after its HEADER, as the test reads the file:
-   --  each APPLY frame is a verified frame of the collection (the replay
-   --  assumption Trusted_Frame, S15), and the scan ends at the length.
-   --  Applies and Seqs count the entries.
+   --  each APPLY and each CEIL frame is a verified frame of the collection
+   --  (the replay assumption Trusted_Frame, S15), a CEIL frame is a ROSTER,
+   --  and the scan ends at the length. Applies, Seqs and Ceils count the
+   --  entries.
    procedure Scan
-     (Log : Byte_Array; Good : out Boolean; Applies, Seqs : out Natural)
+     (Log : Byte_Array; Good : out Boolean; Applies, Seqs, Ceils : out Natural)
    is
       P : Natural := Header_Len;
    begin
       Good := True;
       Applies := 0;
       Seqs := 0;
+      Ceils := 0;
       while P < Log'Length loop
-         if Log (P) = Op_Apply and then Log'Length - P >= Apply_Prefix then
+         if Log (P) in Op_Apply | Op_Ceil and then Log'Length - P >= Apply_Prefix then
             declare
                L : constant Natural := U24_Of (Log (P + 1), Log (P + 2), Log (P + 3));
             begin
@@ -275,7 +367,15 @@ procedure Test_Store with SPARK_Mode => Off is
                   Good := False;
                   return;
                end if;
-               Applies := Applies + 1;
+               if Log (P) = Op_Ceil then
+                  if not Is_Roster_Frame (Log (P + 4 .. P + 3 + L)) then
+                     Good := False;
+                     return;
+                  end if;
+                  Ceils := Ceils + 1;
+               else
+                  Applies := Applies + 1;
+               end if;
                P := P + Apply_Prefix + L;
             end;
          elsif Log (P) = Op_Seq and then Log'Length - P >= Seq_Len then
@@ -288,10 +388,22 @@ procedure Test_Store with SPARK_Mode => Off is
       end loop;
    end Scan;
 
-   --  T18: the reopened pair has the same held records, digests,
-   --  seq_self and log.
+   --  The two states have the same ceiling cell, tag included.
+   function Same_Cell (A, B : Lattice) return Boolean is
+     (Has_Ceil (A) = Has_Ceil (B)
+      and then (if Has_Ceil (A)
+                then Ceil_Held (A) = Ceil_Held (B) and then Ceil_Tag (A) = Ceil_Tag (B)));
+
+   --  The two data rows hold the same records.
+   function Same_Data (A, B : Lattice) return Boolean is
+     (Data_Count (A) = Data_Count (B)
+      and then (for all I in 1 .. Data_Count (A) => Holds (B, Data_Held (A, I))));
+
+   --  T18: the reopened pair has the same held records, the same ceiling
+   --  cell, digests, seq_self and log.
    function T18 (S : Store_T; L : Lattice; R : Store_T; RL : Lattice) return Boolean is
      (Same_Set (L, RL)
+      and then Same_Cell (L, RL)
       and then Max_Ceil (L) = Max_Ceil (RL)
       and then Same_State (Digest_Data (S), Digest_Data (R))
       and then Same_State (Digest_Auth (S), Digest_Auth (R))
@@ -328,6 +440,545 @@ procedure Test_Store with SPARK_Mode => Off is
       end if;
    end Compact;
 
+
+   ---------------------------------------------------------------------------
+   --  The ceiling cell (AUDIT.md H12, T19; DESIGN.md §7).
+   ---------------------------------------------------------------------------
+
+   --  The stolen root R of the audit scenario, with a long cert cap, and
+   --  the numbers of the scenario: the founding roster r0 has the ceiling
+   --  C0; R's roster r2 has the ceiling C2 = del_ttl + 600, so after a
+   --  raise to C2 the horizon is 600: a DEL at 500 expires, a PUT at 900
+   --  stays.
+   RR_SK   : Kome.Crypto.Secret_Key;
+   RR_PK   : Pubkey;
+   Cert_RR : Sig;
+   Cap_RR  : constant U48 := Del_TTL_Min + 1_000_000;
+   C0      : constant U48 := 1_000;
+   C2      : constant U48 := Del_TTL_Min + 600;
+
+   function Both_Members return Byte_Array is
+     (Member (Author_PK, 11) & Member (Author2_PK, 21));
+
+   function RR_Roster (Gen, Ceil : U48; Members : Byte_Array) return Byte_Array is
+     (Roster_By (RR_SK, RR_PK, Cap_RR, Cert_RR, Gen, Ceil, Members));
+
+   --  A call that its precondition must refuse (run only when
+   --  Contracts_On).
+   generic
+      with procedure Run;
+   function Refused return Boolean;
+   function Refused return Boolean is
+   begin
+      Run;
+      return False;
+   exception
+      when E : Ada.Assertions.Assertion_Error =>
+         if Ada.Strings.Fixed.Index
+              (Exception_Message (E), "failed precondition from kome-store.ads") = 0
+         then
+            Put_Line ("  unexpected assertion: " & Exception_Message (E));
+            return False;
+         end if;
+         return True;
+   end Refused;
+
+   --  How the authorization rows are filled, so that R's roster r2 finds
+   --  no room: By_Slots, 15 certified roots Q1 .. Q15 each sign one REVOKE
+   --  and take the slots 2 .. 16 (R is then a 17th signer, with no slot);
+   --  By_Slice, R signs Slice_Max REVOKEs on distinct subjects (the audit
+   --  scenario as written).
+   type Fill_Kind is (By_Slots, By_Slice);
+
+   procedure Ceiling_Cell (Kind : Fill_Kind) is
+      Name  : constant String :=
+        (if Kind = By_Slice then "H12 (full slice) " else "H12 (full slot table) ");
+      N     : constant Positive := (if Kind = By_Slice then Slice_Max else Signers_Max - 1);
+      Log_H : constant := 192 * 1024;
+      subtype Sto is Store_T (Log_H);
+      subtype Lat is Lattice (8);
+
+      procedure Chk (What : String; Cond : Boolean) is
+      begin
+         Check (Name & What, Cond);
+      end Chk;
+
+      --  x1 .. xN.
+      type Rev_Frames is array (1 .. N) of Byte_Array (0 .. Revoke_Frame_Len - 1);
+      X : Rev_Frames;
+
+      R0  : constant Byte_Array := Roster_Of (5, C0);
+      G   : constant Byte_Array := Grant_Of (Author_PK);
+      D   : constant Byte_Array := Del_Of (3, 500, 1);
+      P   : constant Byte_Array := Put_Of (4, 'a', 900, 2);
+      R2  : constant Byte_Array := RR_Roster (1, C2, Both_Members);
+      --  Another roster of R with the ceiling of r2, and one above it.
+      R2B : constant Byte_Array := RR_Roster (2, C2, Both_Members);
+      R4  : constant Byte_Array := RR_Roster (1, C2 + 1, Both_Members);
+      --  A founding roster above the cell (gen 6 replaces r0).
+      RF  : constant Byte_Array := Roster_Of (6, C2 + 5);
+
+      procedure Put_X (S : in out Sto; L : in out Lat; From, To : Natural) is
+      begin
+         for I in From .. To loop
+            Put (S, L, X (I));
+         end loop;
+      end Put_X;
+
+      SBase, S0A, S1, S2, S3, S7U, W, R : Sto;
+      LBase, L0A, L1, L2, L3, L7U, WL, RL : Lat;
+      St   : Status;
+      Off  : Log_Size;
+      Off1 : Log_Size;   --  the CEIL entry of S1
+      LL   : Log_Size;
+      VL   : Log_Size;
+      Good : Boolean;
+      A, Q, C : Natural;
+   begin
+      for I in 1 .. N loop
+         declare
+            K_SK : Kome.Crypto.Secret_Key;
+            K_PK : Pubkey;
+         begin
+            if Kind = By_Slice then
+               --  R revokes the I-th of N distinct keys.
+               Key_Of_Index (1, I, K_SK, K_PK);
+               X (I) := Revoke_By (RR_SK, RR_PK, Cap_RR, Cert_RR, K_PK);
+            else
+               --  The certified root Q_I revokes one key.
+               Key_Of_Index (2, I, K_SK, K_PK);
+               X (I) := Revoke_By
+                 (K_SK, K_PK, 2_000, Make_Cert (Root_SK, Cid_A, K_PK, 2_000), Stranger_PK);
+            end if;
+         end;
+      end loop;
+
+      --  The base {r0, g, d, p}.
+      Fresh_Store (SBase, LBase);
+      Put (SBase, LBase, R0);
+      Put (SBase, LBase, G);
+      Put (SBase, LBase, D);
+      Put (SBase, LBase, P);
+
+      ------------------------------------------------------------------------
+      --  S1. The audit scenario, order A: r0, g, d, p, x1 .. xN, r2.
+      ------------------------------------------------------------------------
+      S0A := SBase;
+      L0A := LBase;
+      Put_X (S0A, L0A, 1, N);
+      Chk ("setup: the rows have no room for a roster of R, maxceil is c0",
+           Auth_Rule (L0A, Hdr (R2)) and then Max_Ceil (L0A) = C0
+           and then not Has_Ceil (L0A) and then Holds (L0A, Hdr (D)));
+      S1 := S0A;
+      L1 := L0A;
+      Put (S1, L1, R2, Off1, St);
+      Chk ("S1: the roster that finds no room is captured: Ceil_Only",
+           St = Ceil_Only and then Off1 = Log_Length (S0A));
+      Chk ("S1: maxceil is its ceiling; it is not held; the cell holds it and is live",
+           Max_Ceil (L1) = C2 and then not Holds (L1, Hdr (R2))
+           and then Has_Ceil (L1) and then Ceil_Held (L1) = Hdr (R2)
+           and then Ceil_Live (L1) and then Held_Ceil (L1) = C0);
+      Chk ("S1: the expiry at the new horizon: d is gone, p is held, the rows are the old ones",
+           Hz (L1, TTL) = 600 and then not Holds (L1, Hdr (D)) and then Holds (L1, Hdr (P))
+           and then Cnt (L1) = Cnt (L0A) - 1 and then Auth_Count (L1) = Auth_Count (L0A)
+           and then Slots_Used (L1) = Slots_Used (L0A)
+           and then (for all I in 1 .. Cnt (L1) => Holds (L0A, Held (L1, I))));
+      Chk ("S1: the entry at Off is a CEIL with the frame, and the cell's tag points at it",
+           Log_Byte (S1, Off1) = Op_Ceil and then Has_Frame (S1, Off1)
+           and then Read_Frame (S1, Off1) = R2
+           and then Ceil_Tag (L1) = Make_Tag (Off1, R2'Length)
+           and then Log_Entries (S1) = Log_Entries (S0A) + 1
+           and then Log_Length (S1) = Off1 + Apply_Prefix + R2'Length);
+      Chk ("S1: the authorization digest and seq_self are the ones before; the data digest"
+           & " matches its rows",
+           Same_State (Digest_Auth (S1), Digest_Auth (S0A)) and then Digests_Match (S1, L1)
+           and then Seq_Self (S1) = Seq_Self (S0A) and then Tags_Read_Back (S1, L1));
+      for I in 1 .. Cnt (L1) loop
+         Lemma_No_Expired (S1, L1, I);
+      end loop;
+
+      ------------------------------------------------------------------------
+      --  S2. Order B: r0, g, d, p, r2, x1 .. xN.
+      ------------------------------------------------------------------------
+      S2 := SBase;
+      L2 := LBase;
+      Put (S2, L2, R2, St);
+      Chk ("S2: with room the roster is held, and expires d",
+           St = OK and then Holds (L2, Hdr (R2)) and then Max_Ceil (L2) = C2
+           and then not Holds (L2, Hdr (D)) and then Holds (L2, Hdr (P)));
+      Put_X (S2, L2, 1, N - 1);
+      LL := Log_Length (S2);
+      W := S2;
+      WL := L2;
+      Put (S2, L2, X (N), St);
+      Chk ("S2: the last REVOKE finds no room: Auth_Full, nothing changes, no cell",
+           St = Auth_Full and then Log_Length (S2) = LL and then Log_Bytes (S2) = Log_Bytes (W)
+           and then Same_Set (WL, L2) and then not Holds (L2, Hdr (X (N)))
+           and then not Has_Ceil (L2));
+
+      ------------------------------------------------------------------------
+      --  S3. T19: the same maxceil in every delivery.
+      ------------------------------------------------------------------------
+      Chk ("S3 (T19): the two arrival orders have the same maxceil, horizon and data row",
+           Max_Ceil (L1) = Max_Ceil (L2) and then Max_Ceil (L1) = C2
+           and then Hz (L1, TTL) = Hz (L2, TTL) and then Same_Data (L1, L2));
+      --  A third order: x1 .. xN, r2, r0, g, p. r2 is captured on a state
+      --  with maxceil 0.
+      Fresh_Store (S3, L3);
+      Put_X (S3, L3, 1, N);
+      Put (S3, L3, R2, St);
+      Chk ("S3: a third order: r2 is captured at maxceil 0",
+           St = Ceil_Only and then Max_Ceil (L3) = C2 and then Held_Ceil (L3) = 0);
+      Put (S3, L3, R0);
+      Put (S3, L3, G);
+      Put (S3, L3, P);
+      Put (S3, L3, D, St);
+      Chk ("S3: a third order: the same maxceil and data row (d arrives expired)",
+           St = OK and then Max_Ceil (L3) = C2 and then Has_Ceil (L3)
+           and then Same_Data (L3, L1) and then Hz (L3, TTL) = Hz (L1, TTL));
+      --  A fourth delivery: r0, g, d, p, then r2 as the ceiling frame of a
+      --  HELLO.
+      W := SBase;
+      WL := LBase;
+      Ceil (W, WL, R2, Off, St);
+      Chk ("S3: a fourth delivery (Put_Ceil): the same maxceil and data row",
+           St = Ceil_Only and then Max_Ceil (WL) = C2 and then Same_Data (WL, L1)
+           and then Hz (WL, TTL) = Hz (L1, TTL));
+
+      ------------------------------------------------------------------------
+      --  S4. Reopen.
+      ------------------------------------------------------------------------
+      Reopen (S1, R, RL, St);
+      Chk ("S4: reopen of S1: the same rows, cell, maxceil, digests, seq_self and log (T18)",
+           St = OK and then T18 (S1, L1, R, RL) and then Has_Ceil (RL)
+           and then Ceil_Held (RL) = Hdr (R2) and then Max_Ceil (RL) = C2
+           and then Tags_Read_Back (R, RL) and then Digests_Match (R, RL));
+      Reopen (S2, R, RL, St);
+      Chk ("S4: reopen of S2 (T18)",
+           St = OK and then T18 (S2, L2, R, RL) and then not Has_Ceil (RL)
+           and then Max_Ceil (RL) = C2 and then Tags_Read_Back (R, RL));
+      Scan (Log_Bytes (S1), Good, A, Q, C);
+      Chk ("S4: every APPLY and CEIL frame of S1's log is a verified frame (Trusted_Frame)",
+           Good and then C = 1 and then A = Log_Entries (S1) - 1 and then Q = 0);
+
+      ------------------------------------------------------------------------
+      --  S5. Compact, then reopen.
+      ------------------------------------------------------------------------
+      W := S1;
+      WL := L1;
+      Compact (W, WL, St);
+      Chk ("S5: Compact of S1: the CEIL of the cell is the first entry, Count + 2 entries",
+           St = OK and then Log_Entries (W) = Cnt (WL) + 2 and then not Compact_Due (W, WL)
+           and then Log_Byte (W, Header_Len) = Op_Ceil
+           and then Read_Frame (W, Header_Len) = R2
+           and then Tag_Off (Ceil_Tag (WL)) = Header_Len and then Ceil_Held (WL) = Hdr (R2)
+           and then Tag_Off (Tag (WL, Data_Count (WL) + 1))
+                    = Header_Len + Apply_Prefix + R2'Length
+           and then Same_Set (L1, WL) and then Max_Ceil (WL) = C2
+           and then Log_Byte (W, Log_Length (W) - Seq_Len) = Op_Seq);
+      Chk ("S5: Compact of S1: every tag reads back its frame, the cell's included",
+           Tags_Read_Back (W, WL) and then Digests_Match (W, WL));
+      Scan (Log_Bytes (W), Good, A, Q, C);
+      Chk ("S5: the compacted log of S1 scans: one CEIL, Count APPLYs, one SEQ",
+           Good and then C = 1 and then A = Cnt (WL) and then Q = 1);
+      Reopen (W, R, RL, St);
+      Chk ("S5: reopen of the compacted S1 (T18)",
+           St = OK and then T18 (W, WL, R, RL) and then Has_Ceil (RL)
+           and then Ceil_Held (RL) = Hdr (R2) and then Max_Ceil (RL) = C2
+           and then not Holds (RL, Hdr (R2)) and then Tags_Read_Back (R, RL));
+      LL := Log_Length (R);
+      Put (R, RL, R2, St);
+      Chk ("S5: r2 at the reopened S1: Auth_Full, nothing appended",
+           St = Auth_Full and then Log_Length (R) = LL);
+      W := S2;
+      WL := L2;
+      Compact (W, WL, St);
+      Chk ("S5: Compact of S2: no CEIL, Count + 1 entries",
+           St = OK and then Log_Entries (W) = Cnt (WL) + 1 and then not Compact_Due (W, WL)
+           and then Log_Byte (W, Header_Len) = Op_Apply and then not Has_Ceil (WL)
+           and then Tags_Read_Back (W, WL));
+      Reopen (W, R, RL, St);
+      Chk ("S5: reopen of the compacted S2 (T18)",
+           St = OK and then T18 (W, WL, R, RL) and then Max_Ceil (RL) = C2);
+
+      ------------------------------------------------------------------------
+      --  S6. Re-offers at S1.
+      ------------------------------------------------------------------------
+      W := S1;
+      WL := L1;
+      LL := Log_Length (W);
+      Put (W, WL, R2, St);
+      Chk ("S6: r2 again by Put_Frame: Auth_Full, nothing changes",
+           St = Auth_Full and then Log_Length (W) = LL and then Same_Cell (WL, L1));
+      Ceil (W, WL, R2, Off, St);
+      Chk ("S6: r2 again by Put_Ceil: OK, nothing changes",
+           St = OK and then Log_Length (W) = LL and then Same_Cell (WL, L1));
+      Put (W, WL, R2B, St);
+      Chk ("S6: another roster with the cell's ceiling by Put_Frame: Auth_Full",
+           St = Auth_Full and then Log_Length (W) = LL and then Same_Cell (WL, L1));
+      Ceil (W, WL, R2B, Off, St);
+      Chk ("S6: another roster with the cell's ceiling by Put_Ceil: OK, the cell keeps r2",
+           St = OK and then Log_Length (W) = LL and then Same_Cell (WL, L1)
+           and then Max_Ceil (WL) = C2 and then Same_Set (WL, L1));
+      Put (W, WL, R4, Off, St);
+      Chk ("S6: a roster with a higher ceiling takes the cell: Ceil_Only",
+           St = Ceil_Only and then Off = LL and then Ceil_Held (WL) = Hdr (R4)
+           and then Max_Ceil (WL) = C2 + 1 and then not Holds (WL, Hdr (R4))
+           and then Same_Set (WL, L1));
+      Compact (W, WL, St);
+      Scan (Log_Bytes (W), Good, A, Q, C);
+      Chk ("S6: Compact keeps one CEIL, of the cell's record",
+           St = OK and then Good and then C = 1 and then Read_Frame (W, Header_Len) = R4);
+      Reopen (W, R, RL, St);
+      Chk ("S6: reopen (T18)", St = OK and then T18 (W, WL, R, RL)
+           and then Ceil_Held (RL) = Hdr (R4));
+
+      ------------------------------------------------------------------------
+      --  S7. A dead cell: a held roster above it.
+      ------------------------------------------------------------------------
+      W := S1;
+      WL := L1;
+      Put (W, WL, RF, St);
+      Chk ("S7: a held roster above the cell: maxceil is its ceiling, the cell is not live",
+           St = OK and then Holds (WL, Hdr (RF)) and then Max_Ceil (WL) = C2 + 5
+           and then Has_Ceil (WL) and then Ceil_Held (WL) = Hdr (R2)
+           and then not Ceil_Live (WL));
+      S7U := W;
+      L7U := WL;
+      Compact (W, WL, St);
+      Chk ("S7: Compact keeps the dead cell",
+           St = OK and then Log_Entries (W) = Cnt (WL) + 2 and then Has_Ceil (WL)
+           and then Read_Frame (W, Header_Len) = R2 and then Tags_Read_Back (W, WL));
+      Reopen (W, R, RL, St);
+      Chk ("S7: reopen gives the same state (T18)",
+           St = OK and then T18 (W, WL, R, RL) and then Max_Ceil (RL) = C2 + 5
+           and then not Ceil_Live (RL));
+
+      ------------------------------------------------------------------------
+      --  S8. The cell's record enters its slice (the slice form only: a
+      --  slot is never freed).
+      ------------------------------------------------------------------------
+      if Kind = By_Slice then
+         declare
+            RA : constant Byte_Array := RR_Roster (1, 100, Both_Members);
+            RB : constant Byte_Array := RR_Roster (2, 50, Both_Members);
+            RC : constant Byte_Array := RR_Roster (3, 100, Both_Members);
+            S8U : Sto;
+            L8U : Lat;
+         begin
+            W := SBase;
+            WL := LBase;
+            Put (W, WL, RA);
+            Put (W, WL, RB);
+            Put_X (W, WL, 1, N - 2);
+            Put (W, WL, R2, St);
+            Chk ("S8: the slice holds two rosters and 510 REVOKEs: r2 is captured",
+                 St = Ceil_Only and then Slot_Count (WL, Slot_Of (WL, To_Key256 (RR_PK))) = Slice_Max
+                 and then Ceil_Live (WL));
+            Put (W, WL, RC, St);
+            Chk ("S8: a roster that dominates the two frees room",
+                 St = OK and then Slot_Count (WL, Slot_Of (WL, To_Key256 (RR_PK))) = Slice_Max - 1
+                 and then not Holds (WL, Hdr (RA)) and then not Holds (WL, Hdr (RB)));
+            Put (W, WL, R2, St);
+            Chk ("S8: r2 again enters the slice; the cell keeps its copy and is not live",
+                 St = OK and then Holds (WL, Hdr (R2)) and then Has_Ceil (WL)
+                 and then Ceil_Held (WL) = Hdr (R2) and then not Ceil_Live (WL)
+                 and then Max_Ceil (WL) = C2
+                 and then Log_Byte (W, Tag_Off (Tag_Of (WL, Hdr (R2)))) = Op_Apply
+                 and then Log_Byte (W, Tag_Off (Ceil_Tag (WL))) = Op_Ceil);
+            S8U := W;
+            L8U := WL;
+            Reopen (W, R, RL, St);
+            Chk ("S8: reopen of the uncompacted log (T18)",
+                 St = OK and then T18 (W, WL, R, RL) and then Holds (RL, Hdr (R2)));
+            Compact (W, WL, St);
+            Reopen (W, R, RL, St);
+            Chk ("S8: reopen of the compacted log (T18)",
+                 St = OK and then T18 (W, WL, R, RL) and then Holds (RL, Hdr (R2))
+                 and then Has_Ceil (RL) and then Tags_Read_Back (R, RL));
+            --  S10: a copy of the CEIL entry after the last entry (two
+            --  APPLYs lie between) replays as OK and changes nothing.
+            declare
+               Dup : constant Byte_Array := Log_Bytes (S8U) & Entry_Of (Op_Ceil, R2);
+            begin
+               Open_From_Log (Dup, Author_PK, RL, R, VL, St);
+               Chk ("S10: a later copy of the cell's CEIL replays as OK and changes nothing",
+                    St = OK and then VL = Dup'Length and then Log_Bytes (R) = Dup
+                    and then Same_Set (L8U, RL) and then Same_Cell (L8U, RL)
+                    and then Max_Ceil (RL) = C2
+                    and then Log_Entries (R) = Log_Entries (S8U) + 1);
+            end;
+         end;
+      end if;
+
+      ------------------------------------------------------------------------
+      --  S9. Log_Full: fewer than 4 + len (r2) bytes are left.
+      ------------------------------------------------------------------------
+      declare
+         Small : Store_T (Log_Length (S0A) + Apply_Prefix + R2'Length - 1);
+         SL    : Lat;
+      begin
+         Open_From_Log (Log_Bytes (S0A), Author_PK, SL, Small, VL, St);
+         LL := Log_Length (Small);
+         Chk ("S9: setup: the log of the state before r2 reopens in a short store",
+              St = OK and then Same_Set (SL, L0A));
+         Put (Small, SL, R2, St);
+         Chk ("S9: Put_Frame of r2 with no log room: Log_Full, nothing changes",
+              St = Log_Full and then Log_Length (Small) = LL and then Max_Ceil (SL) = C0
+              and then not Has_Ceil (SL));
+         Ceil (Small, SL, R2, Off, St);
+         Chk ("S9: Put_Ceil of r2 with no log room: Log_Full, nothing changes",
+              St = Log_Full and then Log_Length (Small) = LL and then Max_Ceil (SL) = C0
+              and then not Has_Ceil (SL) and then Holds (SL, Hdr (D)));
+      end;
+
+      ------------------------------------------------------------------------
+      --  S10. Replay of CEIL entries: refusals and duplicates.
+      ------------------------------------------------------------------------
+      declare
+         Bad : Byte_Array := Log_Bytes (S1);
+      begin
+         Bad (Off1) := Op_Apply;
+         Open_From_Log (Bad, Author_PK, RL, R, VL, St);
+         Chk ("S10: an APPLY that Put_Frame would capture: Malformed at that entry",
+              St = Malformed and then VL = Off1 and then Same_Set (L0A, RL)
+              and then not Has_Ceil (RL) and then Max_Ceil (RL) = C0);
+      end;
+      declare
+         Low : constant Byte_Array :=
+           Log_Bytes (SBase) & Entry_Of (Op_Ceil, RR_Roster (1, 100, Both_Members));
+         Gr  : constant Byte_Array :=
+           Log_Bytes (SBase) & Entry_Of (Op_Ceil, Grant_Of (Author2_PK));
+         Eq  : constant Byte_Array :=
+           Log_Bytes (S1) & Entry_Of (Op_Ceil, R2B);
+      begin
+         Open_From_Log (Low, Author_PK, RL, R, VL, St);
+         Chk ("S10: a CEIL whose ceiling is not above maxceil: Malformed",
+              St = Malformed and then VL = Log_Length (SBase) and then not Has_Ceil (RL));
+         Open_From_Log (Gr, Author_PK, RL, R, VL, St);
+         Chk ("S10: a CEIL that carries a GRANT frame: Malformed",
+              St = Malformed and then VL = Log_Length (SBase) and then not Has_Ceil (RL)
+              and then not In_W (RL, To_Key256 (Author2_PK)));
+         Open_From_Log (Eq, Author_PK, RL, R, VL, St);
+         Chk ("S10: a CEIL with the cell's ceiling that is not the cell's record: Malformed",
+              St = Malformed and then VL = Log_Length (S1) and then Ceil_Held (RL) = Hdr (R2));
+      end;
+      declare
+         Dup : constant Byte_Array := Log_Bytes (S1) & Entry_Of (Op_Ceil, R2);
+      begin
+         Open_From_Log (Dup, Author_PK, RL, R, VL, St);
+         Chk ("S10: the CEIL entry written twice in a row replays as OK, with the same state",
+              St = OK and then VL = Dup'Length and then Log_Bytes (R) = Dup
+              and then Same_Set (L1, RL) and then Same_Cell (L1, RL)
+              and then Max_Ceil (RL) = C2 and then Log_Entries (R) = Log_Entries (S1) + 1
+              and then Tags_Read_Back (R, RL));
+      end;
+      declare
+         Dup : constant Byte_Array := Log_Bytes (S7U) & Entry_Of (Op_Ceil, R2);
+      begin
+         Open_From_Log (Dup, Author_PK, RL, R, VL, St);
+         Chk ("S10: a copy of the cell's CEIL after a later APPLY replays as OK",
+              St = OK and then VL = Dup'Length and then Log_Bytes (R) = Dup
+              and then Same_Set (L7U, RL) and then Same_Cell (L7U, RL)
+              and then Max_Ceil (RL) = C2 + 5);
+      end;
+   end Ceiling_Cell;
+
+   --  S13. Put_Ceil with room: the roster goes to the cell and never to a
+   --  row, whatever room its signer's slice has. r3 is a roster of R with
+   --  gen 20 that lists only a stranger: in a row it would be ROSTER_eff.
+   procedure Ceil_With_Room is
+      Log_H : constant := 16 * 1024;
+      subtype Sto is Store_T (Log_H);
+      subtype Lat is Lattice (8);
+      use type Kome.Views.Header_View;
+      R0 : constant Byte_Array := Roster_Of (5, C0);
+      G  : constant Byte_Array := Grant_Of (Author_PK);
+      D  : constant Byte_Array := Del_Of (3, 500, 1);
+      P  : constant Byte_Array := Put_Of (4, 'a', 900, 2);
+      R3 : constant Byte_Array := RR_Roster (20, C2, Member (Stranger_PK, 31));
+      --  The founding REVOKE of R, and a recovery roster.
+      V  : constant Byte_Array := Revoke_By (Root_SK, Root_PK, Founding_Cap, Cert_R, RR_PK);
+      RR : constant Byte_Array := Roster_Of (9, C0);
+      SBase, S, R : Sto;
+      LBase, L, RL : Lat;
+      St  : Status;
+      Off : Log_Size;
+   begin
+      Fresh_Store (SBase, LBase);
+      Put (SBase, LBase, R0);
+      Put (SBase, LBase, G);
+      Put (SBase, LBase, D);
+      Put (SBase, LBase, P);
+      S := SBase;
+      L := LBase;
+      Ceil (S, L, R3, Off, St);
+      Check ("S13: Put_Ceil with room: Ceil_Only, the roster is in the cell and in no row",
+             St = Ceil_Only and then not Holds (L, Hdr (R3))
+             and then Slots_Used (L) = Slots_Used (LBase)
+             and then Auth_Count (L) = Auth_Count (LBase)
+             and then Slot_Of (L, To_Key256 (RR_PK)) = 0
+             and then Has_Ceil (L) and then Ceil_Held (L) = Hdr (R3) and then Ceil_Live (L)
+             and then Max_Ceil (L) = C2);
+      Check ("S13: the capture expires d, appends a CEIL, keeps the authorization digest",
+             not Holds (L, Hdr (D)) and then Holds (L, Hdr (P))
+             and then Off = Log_Length (SBase) and then Log_Byte (S, Off) = Op_Ceil
+             and then Read_Frame (S, Off) = R3
+             and then Same_State (Digest_Auth (S), Digest_Auth (SBase))
+             and then Digests_Match (S, L) and then Tags_Read_Back (S, L));
+      Check ("S13: ROSTER_eff is still r0, and the replica is not quarantined",
+             Kome.Views.Roster_Eff (L) = (Present => True, Hdr => Hdr (R0)) and then not Kome.Views.Quarantined (L)
+             and then Kome.Views.Roster_Max (L) = (Present => True, Hdr => Hdr (R0)));
+      Reopen (S, R, RL, St);
+      Check ("S13: reopen of the uncompacted log: the same state, r3 still in no row",
+             St = OK and then T18 (S, L, R, RL) and then not Holds (RL, Hdr (R3))
+             and then Ceil_Held (RL) = Hdr (R3)
+             and then Kome.Views.Roster_Eff (RL) = (Present => True, Hdr => Hdr (R0)));
+      Compact (S, L, St);
+      Reopen (S, R, RL, St);
+      Check ("S13: reopen of the compacted log: the same state, r3 still in no row",
+             St = OK and then T18 (S, L, R, RL) and then not Holds (RL, Hdr (R3))
+             and then Ceil_Held (RL) = Hdr (R3) and then Max_Ceil (RL) = C2
+             and then Slot_Of (RL, To_Key256 (RR_PK)) = 0);
+      --  After the root-void of R and a recovery roster.
+      S := SBase;
+      L := LBase;
+      Put (S, L, V);
+      Put (S, L, RR);
+      R := S;
+      RL := L;
+      Ceil (S, L, R3, Off, St);
+      Check ("S13: after the root-void of its signer the ceiling frame still raises maxceil",
+             St = Ceil_Only and then Max_Ceil (L) = C2 and then not Holds (L, Hdr (R3))
+             and then Kome.Views.Root_Void (L, To_Key256 (RR_PK)));
+      Check ("S13: Roster_Max is the recovery roster, and the replica is not quarantined",
+             Kome.Views.Roster_Max (L) = (Present => True, Hdr => Hdr (RR)) and then not Kome.Views.Quarantined (L)
+             and then Kome.Views.Roster_Eff (L) = (Present => True, Hdr => Hdr (RR)));
+      --  For contrast: the same roster as a record enters a row and
+      --  quarantines the replica.
+      Put (R, RL, R3, St);
+      Check ("S13: for contrast, Put_Frame of r3 holds it and quarantines the replica",
+             St = OK and then Holds (RL, Hdr (R3)) and then Kome.Views.Quarantined (RL));
+      declare
+         T : Sto := SBase;
+         TL : Lat := LBase;
+         procedure Grant_As_Ceil is
+            GF : constant Byte_Array := Grant_Of (Author2_PK);
+            O  : Log_Size;
+            X  : Status;
+         begin
+            Put_Ceil (T, TL, GF, Header_Of (Cid (T), GF), O, X);
+         end Grant_As_Ceil;
+         function Pre_Refuses is new Refused (Grant_As_Ceil);
+      begin
+         if Contracts_On then
+            Check ("S13: Put_Ceil of a GRANT frame is refused by its Pre", Pre_Refuses);
+         else
+            Skip ("S13: Put_Ceil of a GRANT frame is refused by its Pre");
+         end if;
+      end;
+   end Ceil_With_Room;
+
    --  A State holds Signers_Max * Slice_Max authorization entries, and under
    --  -gnata each evaluation of a Post copies states and stores, so the
    --  checks run in a task with a large stack.
@@ -350,9 +1001,11 @@ procedure Test_Store with SPARK_Mode => Off is
    Kome.Crypto.Key_Pair (Seed_Of (2), Stranger_SK, Stranger_PK);
    Kome.Crypto.Key_Pair (Seed_Of (3), Root_SK, Root_PK);
    Kome.Crypto.Key_Pair (Seed_Of (5), Author2_SK, Author2_PK);
+   Kome.Crypto.Key_Pair (Seed_Of (7), RR_SK, RR_PK);
    Cid_A := Cid_Of (Root_PK, Salt_A, TTL);
    Fnd := To_Key256 (Root_PK);
    Cert_R := Make_Cert (Root_SK, Cid_A, Root_PK, Founding_Cap);
+   Cert_RR := Make_Cert (Root_SK, Cid_A, RR_PK, Cap_RR);
 
    ---------------------------------------------------------------------------
    --  Known-answer vectors: the HEADER, the APPLY prefix, the SEQ entry.
@@ -362,6 +1015,7 @@ procedure Test_Store with SPARK_Mode => Off is
       Headers : Natural := 0;
       Applies : Natural := 0;
       Seqs    : Natural := 0;
+      Ceils   : Natural := 0;
       All_Good : Boolean := True;
    begin
       Open (File, In_File, Find ("vectors/store.txt"));
@@ -414,6 +1068,22 @@ procedure Test_Store with SPARK_Mode => Off is
                         and then U24_Of (PB (1), PB (2), PB (3)) = N;
                   Applies := Applies + 1;
                end;
+            elsif Line'Length >= 5 and then Line (Line'First .. Line'First + 4) = "ceil " then
+               --  S12: the CEIL prefix, 03 ‖ len:u24 (AUDIT.md H12).
+               declare
+                  N  : constant Natural := Natural'Value (Field (2));
+                  PB : constant Byte_Array := Hex (Field (3));
+                  E  : constant Byte_Array := Entry_Of (Op_Ceil, Fill (N, 1));
+               begin
+                  All_Good := All_Good and then PB'Length = Apply_Prefix
+                        and then PB (0) = Op_Ceil
+                        and then PB (1) = Byte_Of_U24 (N, 0)
+                        and then PB (2) = Byte_Of_U24 (N, 1)
+                        and then PB (3) = Byte_Of_U24 (N, 2)
+                        and then U24_Of (PB (1), PB (2), PB (3)) = N
+                        and then E (0 .. Apply_Prefix - 1) = PB;
+                  Ceils := Ceils + 1;
+               end;
             elsif Line'Length >= 4 and then Line (Line'First .. Line'First + 3) = "seq " then
                declare
                   V  : constant U48 := U48'Value (Field (2));
@@ -439,8 +1109,9 @@ procedure Test_Store with SPARK_Mode => Off is
          end;
       end loop;
       Close (File);
-      Check ("vectors: HEADER (59 bytes) and cid, APPLY prefix, SEQ entry",
-             All_Good and then Headers = 3 and then Applies = 6 and then Seqs = 5);
+      Check ("vectors: HEADER (59 bytes) and cid, APPLY prefix, SEQ entry, CEIL prefix",
+             All_Good and then Headers = 3 and then Applies = 6 and then Seqs = 5
+             and then Ceils = 3);
    end;
 
    ---------------------------------------------------------------------------
@@ -613,11 +1284,11 @@ procedure Test_Store with SPARK_Mode => Off is
              Digests_Match (R, RL) and then Tags_Read_Back (R, RL));
       declare
          Good : Boolean;
-         A, Q : Natural;
+         A, Q, C : Natural;
       begin
-         Scan (Log_Bytes (S), Good, A, Q);
+         Scan (Log_Bytes (S), Good, A, Q, C);
          Check ("every APPLY frame of the log is a verified frame (Trusted_Frame)",
-                Good and then A = Log_Entries (S) and then Q = 0);
+                Good and then A = Log_Entries (S) and then Q = 0 and then C = 0);
       end;
    end;
 
@@ -676,11 +1347,11 @@ procedure Test_Store with SPARK_Mode => Off is
              St = OK and then Seq_Self (R) = 7 and then T18 (S, L, R, RL));
       declare
          Good : Boolean;
-         A, Q : Natural;
+         A, Q, C : Natural;
       begin
-         Scan (Log_Bytes (S), Good, A, Q);
+         Scan (Log_Bytes (S), Good, A, Q, C);
          Check ("the compacted log scans: Count APPLYs and one SEQ",
-                Good and then A = Cnt (L) and then Q = 1);
+                Good and then A = Cnt (L) and then Q = 1 and then C = 0);
       end;
    end;
 
@@ -787,6 +1458,21 @@ procedure Test_Store with SPARK_Mode => Off is
       Check ("not due after Compact", St = OK and then not Compact_Due (S, L)
              and then Digests_Match (S, L));
    end;
+
+   ---------------------------------------------------------------------------
+   --  The ceiling cell (AUDIT.md H12).
+   ---------------------------------------------------------------------------
+   Check ("S11: Log_Fits keeps room for a CEIL: 17 915 fits a 1 GiB log, 17 916 does not",
+          Log_Fits (17_915, 2**30) and then not Log_Fits (17_916, 2**30));
+   Ceil_With_Room;
+   Ceiling_Cell (By_Slots);
+   if Contracts_On then
+      Put_Line ("SKIP H12 (full slice): the 512-record form of the scenario (check mode:"
+                & " under -gnata the digest contracts of 512 held records do not end in"
+                & " reasonable time; it runs with MODE=release)");
+   else
+      Ceiling_Cell (By_Slice);
+   end if;
 
    if Failed then
       Set_Exit_Status (Failure);

@@ -389,9 +389,12 @@ package body Kome.Store with SPARK_Mode is
         Pre => Log'First = 0 and then Tag_Off (T) <= Log_Max
                and then Tag_Off (T) + Apply_Prefix + Tag_Len (T) - 1 <= Log'Last;
 
-   --  S14: the tag T of the held record X points at an APPLY entry of
-   --  Log (0 .. LL - 1), after the HEADER, whose frame has the header X.
-   function Tag_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64)
+   --  S14: the tag T of the record X points at an entry with the op byte
+   --  Op of Log (0 .. LL - 1), after the HEADER, whose frame has the header
+   --  X. Op is Op_Apply for a held record (Tags_OK) and Op_Ceil for the
+   --  record of the ceiling cell (Ceil_OK; AUDIT.md H12).
+   function Tag_OK
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64; Op : Byte)
      return Boolean
    with Ghost, Global => null,
         Pre  => Log'First = 0 and then LL <= Log'Last,
@@ -400,19 +403,20 @@ package body Kome.Store with SPARK_Mode is
            and then Tag_Off (T) >= Header_Len
            and then Tag_Off (T) <= LL
            and then LL - Tag_Off (T) >= Apply_Prefix + Tag_Len (T)
-           and then Log (Tag_Off (T)) = Op_Apply
+           and then Log (Tag_Off (T)) = Op
            and then U24_Of (Log (Tag_Off (T) + 1), Log (Tag_Off (T) + 2), Log (Tag_Off (T) + 3))
                     = Tag_Len (T)
            and then Frame_Is (Slice_At (Log, T), Cid, X));
 
-   function Tag_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64)
+   function Tag_OK
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64; Op : Byte)
      return Boolean is
    begin
       return Tag_Len (T) in Frame_Size
         and then Tag_Off (T) >= Header_Len
         and then Tag_Off (T) <= LL
         and then LL - Tag_Off (T) >= Apply_Prefix + Tag_Len (T)
-        and then Log (Tag_Off (T)) = Op_Apply
+        and then Log (Tag_Off (T)) = Op
         and then U24_Of (Log (Tag_Off (T) + 1), Log (Tag_Off (T) + 2), Log (Tag_Off (T) + 3))
                  = Tag_Len (T)
         and then Frame_Is (Slice_At (Log, T), Cid, X);
@@ -422,29 +426,31 @@ package body Kome.Store with SPARK_Mode is
    --  context of Lemma_Tag the provers do not find them in Tag_OK's Post
    --  at the project's proof level.
    procedure Lemma_Tag_OK_Bounds
-     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64)
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64; Op : Byte)
    with Ghost, Global => null,
         Pre  => Log'First = 0 and then LL <= Log'Last
-                and then Tag_OK (Log, LL, Cid, X, T),
+                and then Tag_OK (Log, LL, Cid, X, T, Op),
         Post => Tag_Len (T) in Frame_Size
                 and then Tag_Off (T) >= Header_Len
                 and then Tag_Off (T) <= LL
                 and then LL - Tag_Off (T) >= Apply_Prefix + Tag_Len (T);
 
    procedure Lemma_Tag_OK_Bounds
-     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64) is null;
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64; Op : Byte) is null;
 
    function Tags_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; F : Frontier.State)
      return Boolean
    with Ghost, Global => null,
         Pre  => Log'First = 0 and then LL <= Log'Last,
         Post => Tags_OK'Result =
-          (for all I in 1 .. Count (F) => Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I)));
+          (for all I in 1 .. Count (F) =>
+             Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I), Op_Apply));
 
    function Tags_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; F : Frontier.State)
      return Boolean is
    begin
-      return (for all I in 1 .. Count (F) => Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I)));
+      return (for all I in 1 .. Count (F) =>
+                Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I), Op_Apply));
    end Tags_OK;
 
    --  Tags_OK from its quantified form (a small context).
@@ -452,12 +458,28 @@ package body Kome.Store with SPARK_Mode is
    with
      Ghost, Global => null,
      Pre  => Log'First = 0 and then LL <= Log'Last
-             and then (for all I in 1 .. Count (F) => Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I))),
+             and then (for all I in 1 .. Count (F) =>
+                         Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I), Op_Apply)),
      Post => Tags_OK (Log, LL, Cid, F)
    is
    begin
       null;
    end Lemma_Tags_OK_Intro;
+
+   --  AUDIT.md H12: the tag of the ceiling cell's record, if there is one,
+   --  points at a CEIL entry whose frame has that record as its header.
+   function Ceil_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; F : Frontier.State)
+     return Boolean
+   with Ghost, Global => null,
+        Pre  => Log'First = 0 and then LL <= Log'Last,
+        Post => Ceil_OK'Result =
+          (if Has_Ceil (F) then Tag_OK (Log, LL, Cid, Ceil_Held (F), Ceil_Tag (F), Op_Ceil));
+
+   function Ceil_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; F : Frontier.State)
+     return Boolean is
+   begin
+      return (if Has_Ceil (F) then Tag_OK (Log, LL, Cid, Ceil_Held (F), Ceil_Tag (F), Op_Ceil));
+   end Ceil_OK;
 
    --  T11 (a): no held record is a DEL at or below the horizon.
    function Fresh (F : Frontier.State; TTL : U48) return Boolean
@@ -521,6 +543,7 @@ package body Kome.Store with SPARK_Mode is
       and then S.Cid = KR.Cid_Of (S.Root, S.Slt, S.TTL)
       and then Head_OK (S.Log, S.LL, S.Root, S.Slt, S.TTL)
       and then Tags_OK (S.Log, S.LL, S.Cid, F)
+      and then Ceil_OK (S.Log, S.LL, S.Cid, F)
       and then Fresh (F, S.TTL)
       and then Seq_OK (F, S.Self, S.SS)
       and then Digests_OK (F, S.DA, S.DD));
@@ -539,6 +562,7 @@ package body Kome.Store with SPARK_Mode is
        and then S.Cid = KR.Cid_Of (S.Root, S.Slt, S.TTL)
        and then Head_OK (S.Log, S.LL, S.Root, S.Slt, S.TTL)
        and then Tags_OK (S.Log, S.LL, S.Cid, F)
+       and then Ceil_OK (S.Log, S.LL, S.Cid, F)
        and then Fresh (F, S.TTL)
        and then Seq_OK (F, S.Self, S.SS)
        and then KD.Models (S.DA, Auth_Hashes (F), Auth_Count (F))
@@ -559,6 +583,7 @@ package body Kome.Store with SPARK_Mode is
        and then S.Cid = KR.Cid_Of (S.Root, S.Slt, S.TTL)
        and then Head_OK (S.Log, S.LL, S.Root, S.Slt, S.TTL)
        and then Tags_OK (S.Log, S.LL, S.Cid, F)
+       and then Ceil_OK (S.Log, S.LL, S.Cid, F)
        and then Fresh (F, S.TTL)
        and then Seq_OK (F, S.Self, S.SS)
        and then KD.Models (S.DA, Auth_Hashes (F), Auth_Count (F))
@@ -593,20 +618,20 @@ package body Kome.Store with SPARK_Mode is
    --  (Lemma_Frame_Is_Congruent).
    procedure Lemma_Tag_OK_Kept
      (Log0 : Byte_Array; LL0 : Log_Size; Log1 : Byte_Array; LL1 : Log_Size;
-      Cid  : Hash256; X : Header; T : U64)
+      Cid  : Hash256; X : Header; T : U64; Op : Byte)
    with
      Ghost, Global => null,
      Pre  => Log0'First = 0 and then LL0 <= Log0'Last
              and then Log1'First = 0 and then LL1 <= Log1'Last
              and then LL0 <= LL1
              and then (for all J in 0 .. LL0 - 1 => Log1 (J) = Log0 (J))
-             and then Tag_OK (Log0, LL0, Cid, X, T),
-     Post => Tag_OK (Log1, LL1, Cid, X, T)
+             and then Tag_OK (Log0, LL0, Cid, X, T, Op),
+     Post => Tag_OK (Log1, LL1, Cid, X, T, Op)
    is
       O : constant Natural := Tag_Off (T);
       L : constant Natural := Tag_Len (T);
    begin
-      pragma Assert (Tag_OK (Log0, LL0, Cid, X, T));
+      pragma Assert (Tag_OK (Log0, LL0, Cid, X, T, Op));
       pragma Assert (L in Frame_Size and then O >= Header_Len and then O <= LL0);
       pragma Assert (O + Apply_Prefix + L <= LL0);
       pragma Assert (Frame_Is (Slice_At (Log0, T), Cid, X));
@@ -618,7 +643,7 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (for all J in Slice_At (Log0, T)'Range =>
                        Slice_At (Log1, T) (J) = Slice_At (Log0, T) (J));
       Lemma_Frame_Is_Congruent (Cid, X, Slice_At (Log0, T), Slice_At (Log1, T));
-      pragma Assert (Log1 (O) = Op_Apply);
+      pragma Assert (Log1 (O) = Op);
       pragma Assert (U24_Of (Log1 (O + 1), Log1 (O + 2), Log1 (O + 3)) = L);
    end Lemma_Tag_OK_Kept;
 
@@ -639,11 +664,33 @@ package body Kome.Store with SPARK_Mode is
       pragma Assertion_Policy (Loop_Invariant => Ignore);
    begin
       for I in 1 .. Count (F) loop
-         Lemma_Tag_OK_Kept (Log0, LL0, Log1, LL1, Cid, Held (F, I), Tag (F, I));
+         Lemma_Tag_OK_Kept (Log0, LL0, Log1, LL1, Cid, Held (F, I), Tag (F, I), Op_Apply);
          pragma Loop_Invariant
-           (for all I2 in 1 .. I => Tag_OK (Log1, LL1, Cid, Held (F, I2), Tag (F, I2)));
+           (for all I2 in 1 .. I => Tag_OK (Log1, LL1, Cid, Held (F, I2), Tag (F, I2), Op_Apply));
       end loop;
    end Lemma_Tags_Kept;
+
+   --  The cell's tag stays good when the log grows and the cell is the
+   --  same (AUDIT.md H12).
+   procedure Lemma_Ceil_Kept
+     (Log0 : Byte_Array; LL0 : Log_Size; Log1 : Byte_Array; LL1 : Log_Size;
+      Cid  : Hash256; F0, F1 : Frontier.State)
+   with
+     Ghost, Global => null,
+     Pre  => Log0'First = 0 and then LL0 <= Log0'Last
+             and then Log1'First = 0 and then LL1 <= Log1'Last
+             and then LL0 <= LL1
+             and then (for all J in 0 .. LL0 - 1 => Log1 (J) = Log0 (J))
+             and then Ceil_OK (Log0, LL0, Cid, F0)
+             and then Ceil_Same (F0, F1),
+     Post => Ceil_OK (Log1, LL1, Cid, F1)
+   is
+   begin
+      if Has_Ceil (F0) then
+         Lemma_Tag_OK_Kept
+           (Log0, LL0, Log1, LL1, Cid, Ceil_Held (F0), Ceil_Tag (F0), Op_Ceil);
+      end if;
+   end Lemma_Ceil_Kept;
 
    --  The HEADER stays when the log grows.
    procedure Lemma_Head_Kept
@@ -696,9 +743,9 @@ package body Kome.Store with SPARK_Mode is
       pragma Assertion_Policy (Loop_Invariant => Ignore);
    begin
       for I in 1 .. Count (F1) loop
-         pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, I), Tag (F0, I)));
+         pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, I), Tag (F0, I), Op_Apply));
          pragma Loop_Invariant
-           (for all I2 in 1 .. I => Tag_OK (Log, LL, Cid, Held (F1, I2), Tag (F1, I2)));
+           (for all I2 in 1 .. I => Tag_OK (Log, LL, Cid, Held (F1, I2), Tag (F1, I2), Op_Apply));
       end loop;
    end Lemma_Tags_Same;
 
@@ -730,6 +777,29 @@ package body Kome.Store with SPARK_Mode is
                then Held (F1, I2).V.Seq <= SS));
       end loop;
    end Lemma_Rest_Same;
+
+   --  The same records are as far below seq_self, whatever Max_Ceil is
+   --  (a capture raises it, AUDIT.md H12).
+   procedure Lemma_Seq_Same (F0, F1 : Frontier.State; Self : Key256; SS : U48) with
+     Ghost, Global => null,
+     Pre  => Seq_OK (F0, Self, SS)
+             and then Count (F1) = Count (F0)
+             and then (for all I in 1 .. Count (F0) => Held (F1, I) = Held (F0, I)),
+     Post => Seq_OK (F1, Self, SS)
+   is
+      --  Proved; at run time the invariant would cost O(n^2) per call.
+      pragma Assertion_Policy (Loop_Invariant => Ignore);
+   begin
+      for I in 1 .. Count (F1) loop
+         pragma Assert
+           (if Is_Data (Held (F0, I)) and then Held (F0, I).V.Author = Self
+            then Held (F0, I).V.Seq <= SS);
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              (if Is_Data (Held (F1, I2)) and then Held (F1, I2).V.Author = Self
+               then Held (F1, I2).V.Seq <= SS));
+      end loop;
+   end Lemma_Seq_Same;
 
    --  The same rows give the same hash lists.
    procedure Lemma_Hashes_Same (F0, F1 : Frontier.State) with
@@ -1326,10 +1396,11 @@ package body Kome.Store with SPARK_Mode is
       raise Program_Error;
    end Find_Tag;
 
-   --  The tag of the APPLY that Commit appended at LL0 is good.
+   --  The tag of the APPLY that Commit appended at LL0 is good (and of the
+   --  CEIL that Capture appended: Op).
    procedure Lemma_New_Tag
      (Log : Byte_Array; LL0, LL1 : Log_Size; Cid : Hash256; Frame : Byte_Array; H : Header;
-      Tg  : U64)
+      Tg  : U64; Op : Byte)
    with
      Ghost, Global => null,
      Pre  => Log'First = 0 and then LL1 <= Log'Last
@@ -1337,13 +1408,13 @@ package body Kome.Store with SPARK_Mode is
              and then LL0 >= Header_Len
              and then LL1 = LL0 + Apply_Prefix + Frame'Length
              and then Tg = Make_Tag (LL0, Frame'Length)
-             and then Log (LL0) = Op_Apply
+             and then Log (LL0) = Op
              and then U24_Of (Log (LL0 + 1), Log (LL0 + 2), Log (LL0 + 3)) = Frame'Length
              and then (for all J in Frame'Range =>
                          Log (J - Frame'First + (LL0 + Apply_Prefix)) = Frame (J))
              and then Is_Record_Frame (Frame)
              and then Header_Of (Cid, Frame) = H,
-     Post => Tag_OK (Log, LL1, Cid, H, Tg)
+     Post => Tag_OK (Log, LL1, Cid, H, Tg, Op)
    is
    begin
       Lemma_Tag_Round_Trip (LL0, Frame'Length);
@@ -1373,7 +1444,7 @@ package body Kome.Store with SPARK_Mode is
              and then LL0 <= LL1
              and then (for all J in 0 .. LL0 - 1 => Log1 (J) = Log0 (J))
              and then Tags_OK (Log0, LL0, Cid, F0)
-             and then Tag_OK (Log1, LL1, Cid, R, Tg)
+             and then Tag_OK (Log1, LL1, Cid, R, Tg, Op_Apply)
              and then (for all I in 1 .. Count (F1) =>
                          (if Held (F1, I) = R then Tag (F1, I) = Tg
                           else Has_Tag (F0, Held (F1, I), Tag (F1, I)))),
@@ -1386,11 +1457,11 @@ package body Kome.Store with SPARK_Mode is
       for I in 1 .. Count (F1) loop
          if Held (F1, I) /= R then
             Find_Tag (F0, Held (F1, I), Tag (F1, I), J);
-            pragma Assert (Tag_OK (Log0, LL0, Cid, Held (F0, J), Tag (F0, J)));
-            Lemma_Tag_OK_Kept (Log0, LL0, Log1, LL1, Cid, Held (F1, I), Tag (F1, I));
+            pragma Assert (Tag_OK (Log0, LL0, Cid, Held (F0, J), Tag (F0, J), Op_Apply));
+            Lemma_Tag_OK_Kept (Log0, LL0, Log1, LL1, Cid, Held (F1, I), Tag (F1, I), Op_Apply);
          end if;
          pragma Loop_Invariant
-           (for all I2 in 1 .. I => Tag_OK (Log1, LL1, Cid, Held (F1, I2), Tag (F1, I2)));
+           (for all I2 in 1 .. I => Tag_OK (Log1, LL1, Cid, Held (F1, I2), Tag (F1, I2), Op_Apply));
       end loop;
    end Lemma_Tags_Apply;
 
@@ -1410,9 +1481,9 @@ package body Kome.Store with SPARK_Mode is
    begin
       for I in 1 .. Count (F1) loop
          Find_Tag (F0, Held (F1, I), Tag (F1, I), J);
-         pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, J), Tag (F0, J)));
+         pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, J), Tag (F0, J), Op_Apply));
          pragma Loop_Invariant
-           (for all I2 in 1 .. I => Tag_OK (Log, LL, Cid, Held (F1, I2), Tag (F1, I2)));
+           (for all I2 in 1 .. I => Tag_OK (Log, LL, Cid, Held (F1, I2), Tag (F1, I2), Op_Apply));
       end loop;
    end Lemma_Tags_Expire;
 
@@ -1426,6 +1497,7 @@ package body Kome.Store with SPARK_Mode is
       Lemma_Unchanged (F0, F1);
       Lemma_Frontier_Shape (F0);
       Lemma_Tags_Same (S.Log, S.LL, S.Cid, F0, F1);
+      Lemma_Ceil_Kept (S.Log, S.LL, S.Log, S.LL, S.Cid, F0, F1);
       Lemma_Rest_Same (F0, F1, S.TTL, S.Self, S.SS);
       Lemma_Hashes_Same (F0, F1);
       Lemma_Models_Ext (S.DD, Data_Hashes (F0), Data_Hashes (F1), Data_Count (F0));
@@ -1457,9 +1529,10 @@ package body Kome.Store with SPARK_Mode is
       end loop;
    end Write_Frame;
 
-   --  Append  01 ‖ len:u24 ‖ Frame.
+   --  Append  Op ‖ len:u24 ‖ Frame  (Op_Apply: an APPLY; Op_Ceil: a CEIL).
    procedure Append_Apply
-     (Log : in out Byte_Array; LL : in out Log_Size; Frame : Byte_Array; Off : Log_Size)
+     (Log : in out Byte_Array; LL : in out Log_Size; Frame : Byte_Array; Off : Log_Size;
+      Op  : Byte)
    with
      Global => null,
      Pre  => Off = LL
@@ -1468,7 +1541,7 @@ package body Kome.Store with SPARK_Mode is
              and then Apply_Prefix + Frame'Length <= Log'Last - LL,
      Post => LL = Off + Apply_Prefix + Frame'Length
        and then (for all P in 0 .. Off - 1 => Log (P) = Log'Old (P))
-       and then Log (Off) = Op_Apply
+       and then Log (Off) = Op
        and then Log (Off + 1) = Byte_Of_U24 (Frame'Length, 0)
        and then Log (Off + 2) = Byte_Of_U24 (Frame'Length, 1)
        and then Log (Off + 3) = Byte_Of_U24 (Frame'Length, 2)
@@ -1477,7 +1550,7 @@ package body Kome.Store with SPARK_Mode is
    is
    begin
       Lemma_U24_Round_Trip (Frame'Length);
-      Log (Off)     := Op_Apply;
+      Log (Off)     := Op;
       Log (Off + 1) := Byte_Of_U24 (Frame'Length, 0);
       Log (Off + 2) := Byte_Of_U24 (Frame'Length, 1);
       Log (Off + 3) := Byte_Of_U24 (Frame'Length, 2);
@@ -1716,6 +1789,7 @@ package body Kome.Store with SPARK_Mode is
                    Holds (F'Old, Held (F, I)) and then Has_Tag (F'Old, Held (F, I), Tag (F, I)))
        and then (for all I in 1 .. Count (F'Old) =>
                    Holds (F, Held (F'Old, I)) or else Expired_In (Held (F'Old, I), F, TTL))
+       and then Ceil_Same (F'Old, F)
    is
    begin
       if Has_Hz (F, TTL) and then Expires_Any (F, Hz (F, TTL)) then
@@ -1816,7 +1890,8 @@ package body Kome.Store with SPARK_Mode is
 
    --  Step (7), the log part: append APPLY (Frame) at Off = LL, carry the
    --  HEADER across, and state the tag Tg of the new entry. Over the
-   --  components, in a small context of its own.
+   --  components, in a small context of its own. With Op_Ceil it appends
+   --  the CEIL of a capture.
    procedure Log_Apply
      (Log   : in out Byte_Array;
       LL    : in out Log_Size;
@@ -1828,7 +1903,8 @@ package body Kome.Store with SPARK_Mode is
       Frame : Byte_Array;
       H     : Header;
       Tg    : U64;
-      Off   : Log_Size)
+      Off   : Log_Size;
+      Op    : Byte)
    with
      Global => null,
      Pre  => Off = LL
@@ -1845,18 +1921,18 @@ package body Kome.Store with SPARK_Mode is
        and then NE = NE'Old + 1
        and then NE <= LL
        and then (for all P in 0 .. Off - 1 => Log (P) = Log'Old (P))
-       and then Log (Off) = Op_Apply
+       and then Log (Off) = Op
        and then U24_Of (Log (Off + 1), Log (Off + 2), Log (Off + 3)) = Frame'Length
        and then Bytes_At (Log, Off, Frame)
        and then Head_OK (Log, LL, Root, Slt, TTL)
-       and then Tag_OK (Log, LL, Cid, H, Tg)
+       and then Tag_OK (Log, LL, Cid, H, Tg, Op)
    is
       Log0 : constant Byte_Array := Log with Ghost;
    begin
-      Append_Apply (Log, LL, Frame, Off);
+      Append_Apply (Log, LL, Frame, Off, Op);
       NE := NE + 1;
       Lemma_Head_Kept (Log0, Off, Log, LL, Root, Slt, TTL);
-      Lemma_New_Tag (Log, Off, LL, Cid, Frame, H, Tg);
+      Lemma_New_Tag (Log, Off, LL, Cid, Frame, H, Tg, Op);
       pragma Assert (Bytes_At (Log, Off, Frame));
    end Log_Apply;
 
@@ -1902,8 +1978,197 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Appended (S0, S, Frame, Off));
    end Lemma_Commit_Done;
 
+   ---------------------------------------------------------------------------
+   --  The capture (AUDIT.md H12).
+   ---------------------------------------------------------------------------
+
+   --  Ceiled, from the Posts of Frontier.Raise_Ceil (F0 to F1: the same
+   --  rows) and of Expiry_Step (F1 to F2).
+   procedure Lemma_Ceiled (F0, F1, F2 : Frontier.State; H : Header; TTL : U48) with
+     Ghost, Global => null,
+     Pre  => Count (F1) = Count (F0)
+       and then (for all I in 1 .. Count (F0) => Held (F1, I) = Held (F0, I))
+       and then Max_Ceil (F2) = Ceil_Of (H)
+       and then Has_Ceil (F2) and then Ceil_Held (F2) = H
+       and then Fresh (F2, TTL)
+       and then (for all I in 1 .. Count (F2) => Holds (F1, Held (F2, I)))
+       and then (for all I in 1 .. Count (F1) =>
+                   Holds (F2, Held (F1, I)) or else Expired_In (Held (F1, I), F2, TTL)),
+     Post => Ceiled (F0, F2, H, TTL)
+   is
+      --  Proved; at run time the invariants would cost O(n^2) per call.
+      pragma Assertion_Policy (Loop_Invariant => Ignore);
+   begin
+      for I in 1 .. Count (F2) loop
+         pragma Assert (Held (F0, Index_Of (F1, Held (F2, I))) = Held (F2, I));
+         pragma Assert (not Expired_In (Held (F2, I), F2, TTL));
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              Holds (F0, Held (F2, I2)) and then not Expired_In (Held (F2, I2), F2, TTL));
+      end loop;
+      for I in 1 .. Count (F0) loop
+         pragma Assert (Held (F1, I) = Held (F0, I));
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              Holds (F2, Held (F0, I2)) or else Expired_In (Held (F0, I2), F2, TTL));
+      end loop;
+   end Lemma_Ceiled;
+
+   --  Ceiled against a state with the same records as the one the capture
+   --  started from (Commit: the state before the refused Frontier.Apply).
+   procedure Lemma_Ceiled_Old (FA, FB, F : Frontier.State; H : Header; TTL : U48) with
+     Ghost, Global => null,
+     Pre  => Count (FB) = Count (FA)
+       and then (for all I in 1 .. Count (FA) => Held (FB, I) = Held (FA, I))
+       and then Ceiled (FB, F, H, TTL),
+     Post => Ceiled (FA, F, H, TTL)
+   is
+      --  Proved; at run time the invariants would cost O(n^2) per call.
+      pragma Assertion_Policy (Loop_Invariant => Ignore);
+   begin
+      for I in 1 .. Count (F) loop
+         pragma Assert (Held (FA, Index_Of (FB, Held (F, I))) = Held (F, I));
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              Holds (FA, Held (F, I2)) and then not Expired_In (Held (F, I2), F, TTL));
+      end loop;
+      for I in 1 .. Count (FA) loop
+         pragma Assert (Held (FB, I) = Held (FA, I));
+         pragma Loop_Invariant
+           (for all I2 in 1 .. I =>
+              Holds (F, Held (FA, I2)) or else Expired_In (Held (FA, I2), F, TTL));
+      end loop;
+   end Lemma_Ceiled_Old;
+
+   --  The Post of Capture from its parts (a small context for Captured).
+   procedure Lemma_Capture_Done
+     (S0, S : Store; F0, F : Frontier.State; Frame : Byte_Array; H : Header; Off : Log_Size)
+   with
+     Ghost, Global => null,
+     Pre  => Off = S0.LL
+       and then Frame'Length in Frame_Size
+       and then S.Log_Cap = S0.Log_Cap
+       and then S.Root = S0.Root and then S.Slt = S0.Slt and then S.TTL = S0.TTL
+       and then S.Cid = S0.Cid and then S.Fnd = S0.Fnd and then S.Self = S0.Self
+       and then S.Pins = S0.Pins and then S.SS = S0.SS and then S.DA = S0.DA
+       and then S0.LL <= S0.Log_Cap and then S0.NE <= S0.LL
+       and then S.LL = Off + Apply_Prefix + Frame'Length
+       and then S.LL <= S.Log_Cap
+       and then S.NE = S0.NE + 1
+       and then (for all P in 0 .. Off - 1 => S.Log (P) = S0.Log (P))
+       and then S.Log (Off) = Op_Ceil
+       and then U24_Of (S.Log (Off + 1), S.Log (Off + 2), S.Log (Off + 3)) = Frame'Length
+       and then Bytes_At (S.Log, Off, Frame)
+       and then Ceiled (F0, F, H, S.TTL)
+       and then Ceil_Tag (F) = Make_Tag (Off, Frame'Length),
+     Post => Same_Identity (S0, S)
+       and then Pinned (S) = Pinned (S0)
+       and then Log_Extends (S0, S)
+       and then Off = Log_Length (S0)
+       and then Captured (S0, S, F0, F, Frame, H, Off)
+   is
+   begin
+      pragma Assert (Log_Length (S0) = S0.LL and then Log_Length (S) = S.LL);
+      pragma Assert (Log_Entries (S0) = S0.NE and then Log_Entries (S) = S.NE);
+      pragma Assert (Same_Identity (S0, S));
+      pragma Assert (Log_Extends (S0, S));
+      pragma Assert (for all J in Frame'Range =>
+                       S.Log (J - Frame'First + (Off + Apply_Prefix)) = Frame (J));
+      pragma Assert (for all J in Frame'Range =>
+                       Log_Byte (S, J - Frame'First + (Off + Apply_Prefix)) = Frame (J));
+      pragma Assert (Op_At (S, Off) = Op_Ceil and then Len_At (S, Off) = Frame'Length);
+      pragma Assert (Ceil_Appended (S0, S, Frame, Off));
+   end Lemma_Capture_Done;
+
+   --  Record the roster frame in the ceiling cell: the CEIL entry at S.LL,
+   --  the cell, then expiry at the new horizon. The rows keep their
+   --  records and tags (Raise_Ceil has Same_Held), so the tags, seq_self
+   --  and the two digest models go across; Expiry_Step sums the data
+   --  digest again if it removes a DEL.
+   procedure Capture
+     (S : in out Store; F : in out Frontier.State; Frame : Byte_Array; H : Header)
+   with
+     Global => null,
+     Pre  => Valid (S, F)
+       and then Frame'Length in Frame_Size
+       and then Is_Record_Frame (Frame)
+       and then Header_Of (Cid (S), Frame) = H
+       and then Canonical (H)
+       and then Raises_Ceil (F, H)
+       and then not Log_Short (S, Apply_Prefix + Frame'Length),
+     Post => Valid (S, F)
+       and Same_Identity (S'Old, S)
+       and Pinned (S) = Pinned (S'Old)
+       and Log_Extends (S'Old, S)
+       and Captured (S'Old, S, F'Old, F, Frame, H, Log_Length (S'Old))
+   is
+      Len  : constant Frame_Size := Frame'Length;
+      F0   : constant Frontier.State := F with Ghost;
+      S0   : constant Store := S with Ghost;
+      Log0 : constant Byte_Array := S.Log with Ghost;
+      LL0  : constant Log_Size := S.LL;
+      Tg   : constant U64 := Make_Tag (S.LL, Len);
+   begin
+      Lemma_Valid_Parts (S, F);
+      Lemma_Frontier_Shape (F);
+
+      --  The CEIL entry.
+      Log_Apply (S.Log, S.LL, S.NE, S.Root, S.Slt, S.TTL, S.Cid, Frame, H, Tg, LL0, Op_Ceil);
+      Lemma_Tags_Kept (Log0, LL0, S.Log, S.LL, S.Cid, F0);
+
+      --  The cell.
+      Frontier.Raise_Ceil (F, H, Tg);
+      declare
+         F1 : constant Frontier.State := F with Ghost;
+      begin
+         Lemma_Same_Held (F0, F1);
+         Lemma_Tags_Same (S.Log, S.LL, S.Cid, F0, F1);
+         Lemma_Seq_Same (F0, F1, S.Self, S.SS);
+         Lemma_Hashes_Same (F0, F1);
+         Lemma_Models_Ext (S.DD, Data_Hashes (F0), Data_Hashes (F1), Data_Count (F0));
+         Lemma_Models_Ext (S.DA, Auth_Hashes (F0), Auth_Hashes (F1), Auth_Count (F0));
+         pragma Assert (Ceil_OK (S.Log, S.LL, S.Cid, F1));
+
+         --  Expiry at the new horizon (S7).
+         Expiry_Step (F, S.DD, S.DA, S.Log, S.LL, S.Cid, S.TTL, S.Self, S.SS);
+         Lemma_Ceil_Kept (S.Log, S.LL, S.Log, S.LL, S.Cid, F1, F);
+         pragma Assert (Has_Ceil (F) and then Ceil_Held (F) = H and then Ceil_Tag (F) = Tg);
+         Lemma_Ceiled (F0, F1, F, H, S.TTL);
+      end;
+      Lemma_Valid_Of_Parts (S, F);
+      Lemma_Capture_Done (S0, S, F0, F, Frame, H, LL0);
+   end Capture;
+
+   --  Put_Done for a capture, from its parts (a small context).
+   procedure Lemma_Capture_Put_Done
+     (S0, S : Store; F0, F : Frontier.State; Frame : Byte_Array; H : Header; Off : Log_Size)
+   with
+     Ghost, Global => null,
+     Pre  => Frame'Length in Frame_Size
+       and then Valid (S, F)
+       and then Same_Identity (S0, S)
+       and then Pinned (S) = Pinned (S0)
+       and then Off = Log_Length (S0)
+       and then Log_Extends (S0, S)
+       and then Effective (F0, Del_TTL (S0), H)
+       and then not Log_Short (S0, Apply_Prefix + Frame'Length)
+       and then Auth_Rule (F0, H)
+       and then Raises_Ceil (F0, H)
+       and then Captured (S0, S, F0, F, Frame, H, Off),
+     Post => Put_Done (S0, S, F0, F, Frame, H, Off, Ceil_Only)
+   is
+   begin
+      pragma Assert (Is_Auth (H) and then not Is_Data (H));
+      pragma Assert (not Data_Full (F0, H));
+      pragma Assert (Ceil_Rule (F0, H));
+      pragma Assert (Max_Ceil (F) = Ceil_Of (H));
+      pragma Assert (Ceil_Of (H) = H.V.T and then H.V.T > Max_Ceil (F0));
+      pragma Assert (Ceil_Step (F0, F, H, Ceil_Only));
+   end Lemma_Capture_Put_Done;
+
    --  Step (7): the record is effective and the log has room. Apply,
-   --  append, digests, seq_self, then expiry.
+   --  append, digests, seq_self, then expiry. If the authorization rows
+   --  have no room for a roster that raises maxceil, the capture.
    procedure Commit
      (S      : in out Store;
       F      : in out Frontier.State;
@@ -1952,8 +2217,29 @@ package body Kome.Store with SPARK_Mode is
       Frontier.Apply (F, H, Tg, St);
       if St /= OK then
          --  No_Space or Auth_Full: nothing changed.
-         Result := St;
          Lemma_Valid_Unchanged (S, F0, F);
+         Lemma_Unchanged (F0, F);
+         pragma Assert (Max_Ceil (F) = Max_Ceil (F0));
+         if St = Auth_Full and then Raises_Ceil (F, H) then
+            --  AUDIT.md H12: the rows have no room for a roster whose
+            --  ceiling is above maxceil. Its ceiling still counts.
+            declare
+               FM : constant Frontier.State := F with Ghost;
+            begin
+               pragma Assert (Auth_Rule (F0, H) and then Raises_Ceil (F0, H));
+               Capture (S, F, Frame, H);
+               Lemma_Ceiled_Old (F0, FM, F, H, S.TTL);
+               pragma Assert (Captured (S0, S, F0, F, Frame, H, LL0));
+               Lemma_Capture_Put_Done (S0, S, F0, F, Frame, H, LL0);
+            end;
+            Result := Ceil_Only;
+         else
+            Result := St;
+            pragma Assert (if St = Auth_Full then not Raises_Ceil (F0, H));
+            pragma Assert (if St = No_Space then Is_Data (H) and then Ceil_Of (H) = 0);
+            pragma Assert (if St = Auth_Full then Ceil_Of (H) <= Max_Ceil (F0));
+            pragma Assert (Ceil_Step (F0, F, H, St));
+         end if;
          return;
       end if;
 
@@ -1962,8 +2248,9 @@ package body Kome.Store with SPARK_Mode is
          F1 : constant Frontier.State := F with Ghost;
       begin
          --  The APPLY entry, and the tags.
-         Log_Apply (S.Log, S.LL, S.NE, S.Root, S.Slt, S.TTL, S.Cid, Frame, H, Tg, LL0);
+         Log_Apply (S.Log, S.LL, S.NE, S.Root, S.Slt, S.TTL, S.Cid, Frame, H, Tg, LL0, Op_Apply);
          Lemma_Tags_Apply (Log0, LL0, S.Log, S.LL, S.Cid, F0, F1, H, Tg);
+         Lemma_Ceil_Kept (Log0, LL0, S.Log, S.LL, S.Cid, F0, F1);
 
          --  The digests (S21): the run or the slot, before and after.
          Lemma_Frontier_Shape (F);
@@ -1999,6 +2286,7 @@ package body Kome.Store with SPARK_Mode is
 
          --  Expiry (S7).
          Expiry_Step (F, S.DD, S.DA, S.Log, S.LL, S.Cid, S.TTL, S.Self, S.SS);
+         Lemma_Ceil_Kept (S.Log, S.LL, S.Log, S.LL, S.Cid, F1, F);
          Lemma_Applied_H (F0, F1, F, H, S.TTL);
          Lemma_Tag_Final (F1, F, H, Tg);
          pragma Assert (S.SS = Seq_After (S0, H));
@@ -2033,11 +2321,18 @@ package body Kome.Store with SPARK_Mode is
          Result := OK;
          if Holds (F, H) then
             Lemma_Frontier_Held (F, Index_Of (F, H));
+            --  T19, the step: a held record's ceiling is in maxceil.
+            Lemma_Ceil_Bound (F, H);
+         else
+            pragma Assert (H.K = K_Del and then Ceil_Of (H) = 0);
          end if;
       elsif not Admitted (F, H) then
          Result := Inadmissible;
+         pragma Assert (Is_Data (H) and then Ceil_Of (H) = 0);
       elsif Dom (F, H) then
          Result := Dominated;
+         --  A dominated roster's ceiling is at most its dominator's.
+         Lemma_Ceil_Bound (F, H);
       elsif S.Log_Cap - S.LL < Apply_Prefix + Frame'Length then
          Result := Log_Full;
       else
@@ -2059,6 +2354,52 @@ package body Kome.Store with SPARK_Mode is
       Lemma_Verified_Canonical (S.Cid, S.Root, Frame);
       Apply_Frame (S, F, Frame, H, Off, Result);
    end Put_Frame;
+
+   --  Ceil_Frame is Put_Ceil without the signature precondition (replay).
+   procedure Ceil_Frame
+     (S      : in out Store;
+      F      : in out Frontier.State;
+      Frame  : in     Byte_Array;
+      H      : in     Header;
+      Off    :    out Log_Size;
+      Result :    out Status)
+   with
+     Global => null,
+     Pre  => Valid (S, F)
+       and then Frame'Length in Frame_Size
+       and then Is_Record_Frame (Frame)
+       and then Header_Of (Cid (S), Frame) = H
+       and then Canonical (H)
+       and then H.K = K_Roster,
+     Post => Ceil_Done (S'Old, S, F'Old, F, Frame, H, Off, Result)
+   is
+   begin
+      Off := S.LL;
+      if not Raises_Ceil (F, H) then
+         Result := OK;
+         pragma Assert (Ceil_Of (H) <= Max_Ceil (F));
+      elsif S.Log_Cap - S.LL < Apply_Prefix + Frame'Length then
+         Result := Log_Full;
+      else
+         Capture (S, F, Frame, H);
+         Result := Ceil_Only;
+         return;
+      end if;
+      Lemma_Unchanged_Refl (F);
+   end Ceil_Frame;
+
+   procedure Put_Ceil
+     (S      : in out Store;
+      F      : in out Frontier.State;
+      Frame  : in     Byte_Array;
+      H      : in     Header;
+      Off    :    out Log_Size;
+      Result :    out Status)
+   is
+   begin
+      Lemma_Verified_Canonical (S.Cid, S.Root, Frame);
+      Ceil_Frame (S, F, Frame, H, Off, Result);
+   end Put_Ceil;
 
    ---------------------------------------------------------------------------
    --  Open.
@@ -2099,6 +2440,7 @@ package body Kome.Store with SPARK_Mode is
      Ghost, Global => null,
      Pre  => S.LL = Header_Len and then S.LL <= S.Log_Cap and then S.NE = 0
              and then Is_Frontier (F) and then Count (F) = 0
+             and then not Has_Ceil (F)
              and then Frontier.Founding (F) = S.Fnd
              and then S.Fnd = Kome.Keys.To_Key256 (S.Root)
              and then S.TTL in Del_TTL_Min .. Del_TTL_Max
@@ -2119,6 +2461,7 @@ package body Kome.Store with SPARK_Mode is
       Lemma_Eq_Iff_Value (KD.Sum_Of (Data_Hashes (F), 1, 0), Zero);
       Lemma_Eq_Iff_Value (KD.Sum (S.DD), KD.Sum_Of (Data_Hashes (F), 1, 0));
       pragma Assert (Tags_OK (S.Log, S.LL, S.Cid, F));
+      pragma Assert (Ceil_OK (S.Log, S.LL, S.Cid, F));
       pragma Assert (Fresh (F, S.TTL));
       pragma Assert (Seq_OK (F, S.Self, S.SS));
       pragma Assert (KD.Models (S.DA, Auth_Hashes (F), 0));
@@ -2199,7 +2542,11 @@ package body Kome.Store with SPARK_Mode is
       and then (for all J in 1 .. Data_Count (F) => Data_Held (F, J) = Data_Held (Old_F, J))
       and then (for all J in 1 .. Count (F) =>
                   Held (F, J) = Held (Old_F, J)
-                  and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J))));
+                  and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J)))
+      and then Has_Ceil (F) = Has_Ceil (Old_F)
+      and then (if Has_Ceil (F)
+                then Ceil_Held (F) = Ceil_Held (Old_F)
+                     and then Tag_Len (Ceil_Tag (F)) = Tag_Len (Ceil_Tag (Old_F))));
 
    function Compact_Layout (Old_S : Store; Old_F : Frontier.State; S : Store; F : Frontier.State)
      return Boolean
@@ -2211,7 +2558,10 @@ package body Kome.Store with SPARK_Mode is
                    and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J)))
        and then Op_At (S, Log_Length (S) - Seq_Len) = Op_Seq
        and then Code_At (S, Log_Length (S) - Seq_Len + 1) = Seq_Self (S)
-       and then Log_Entries (S) = Count (F) + 1);
+       and then Log_Entries (S) = Count (F) + 1 + (if Has_Ceil (F) then 1 else 0)
+       and then (if Has_Ceil (F)
+                 then Tag_Off (Ceil_Tag (F)) = Header_Len
+                      and then Tag_End (Ceil_Tag (F)) <= Log_Length (S) - Seq_Len));
 
    --  The position of flat index I in the copy order (the inverse of Ord).
    function Pos (F : Frontier.State; I : Held_Index) return Positive is
@@ -2232,24 +2582,24 @@ package body Kome.Store with SPARK_Mode is
    --  byte, keeps a good tag.
    procedure Lemma_Tag_Moved
      (Log0 : Byte_Array; LL0 : Log_Size; Log1 : Byte_Array; LL1 : Log_Size;
-      Cid : Hash256; X : Header; T0, T1 : U64)
+      Cid : Hash256; X : Header; T0, T1 : U64; Op : Byte)
    with
      Ghost, Global => null,
      Pre  => Log0'First = 0 and then LL0 <= Log0'Last
              and then Log1'First = 0 and then LL1 <= Log1'Last
-             and then Tag_OK (Log0, LL0, Cid, X, T0)
+             and then Tag_OK (Log0, LL0, Cid, X, T0, Op)
              and then Tag_Len (T1) = Tag_Len (T0)
              and then Tag_Off (T1) >= Header_Len
              and then Tag_End (T1) <= LL1
              and then (for all Q in Tag_Off (T1) .. Tag_End (T1) - 1 =>
                          Log1 (Q) = Log0 (Q - Tag_Off (T1) + Tag_Off (T0))),
-     Post => Tag_OK (Log1, LL1, Cid, X, T1)
+     Post => Tag_OK (Log1, LL1, Cid, X, T1, Op)
    is
       O0 : constant Natural := Tag_Off (T0);
       O1 : constant Natural := Tag_Off (T1);
       L  : constant Natural := Tag_Len (T0);
    begin
-      pragma Assert (Tag_OK (Log0, LL0, Cid, X, T0));
+      pragma Assert (Tag_OK (Log0, LL0, Cid, X, T0, Op));
       pragma Assert (L in Frame_Size and then O0 >= Header_Len and then O0 + Apply_Prefix + L <= LL0);
       pragma Assert (Frame_Is (Slice_At (Log0, T0), Cid, X));
       pragma Assert (Tag_End (T1) = O1 + Apply_Prefix + L);
@@ -2324,6 +2674,7 @@ package body Kome.Store with SPARK_Mode is
        and then (for all Q in 0 .. P'Old - 1 => Buf (Q) = Buf'Old (Q))
        and then (for all Q in P'Old .. P - 1 =>
                    Buf (Q) = Log (Q - P'Old + Tag_Off (Tag (F'Old, I))))
+       and then Ceil_Same (F'Old, F)
    is
       O  : constant Natural := Tag_Off (Tag (F, I));
       L  : constant Natural := Tag_Len (Tag (F, I));
@@ -2358,9 +2709,11 @@ package body Kome.Store with SPARK_Mode is
                    Held (F, J) = Held (F1, J)
                    and then (if J /= I then Tag (F, J) = Tag (F1, J)))
        and then (for all J in 1 .. Count (F1) =>
-                   (if Pos (F1, J) < C then Tag_OK (Buf0, P0, Cid, Held (F1, J), Tag (F1, J)))),
+                   (if Pos (F1, J) < C
+                    then Tag_OK (Buf0, P0, Cid, Held (F1, J), Tag (F1, J), Op_Apply))),
      Post => (for all J in 1 .. Count (F) =>
-                (if Pos (F, J) < C then Tag_OK (Buf1, P1, Cid, Held (F, J), Tag (F, J))))
+                (if Pos (F, J) < C
+                 then Tag_OK (Buf1, P1, Cid, Held (F, J), Tag (F, J), Op_Apply)))
    is
       --  Proved; at run time the invariant would cost O(n^2) per call.
       pragma Assertion_Policy (Loop_Invariant => Ignore);
@@ -2368,12 +2721,13 @@ package body Kome.Store with SPARK_Mode is
       for J in 1 .. Count (F) loop
          if Pos (F, J) < C then
             pragma Assert (Pos (F1, J) = Pos (F, J) and then J /= I);
-            pragma Assert (Tag_OK (Buf0, P0, Cid, Held (F1, J), Tag (F1, J)));
-            Lemma_Tag_OK_Kept (Buf0, P0, Buf1, P1, Cid, Held (F, J), Tag (F, J));
+            pragma Assert (Tag_OK (Buf0, P0, Cid, Held (F1, J), Tag (F1, J), Op_Apply));
+            Lemma_Tag_OK_Kept (Buf0, P0, Buf1, P1, Cid, Held (F, J), Tag (F, J), Op_Apply);
          end if;
          pragma Loop_Invariant
            (for all J2 in 1 .. J =>
-              (if Pos (F, J2) < C then Tag_OK (Buf1, P1, Cid, Held (F, J2), Tag (F, J2))));
+              (if Pos (F, J2) < C
+               then Tag_OK (Buf1, P1, Cid, Held (F, J2), Tag (F, J2), Op_Apply)));
       end loop;
    end Lemma_Copied_Kept;
 
@@ -2393,12 +2747,13 @@ package body Kome.Store with SPARK_Mode is
      Pre  => Is_Frontier (F) and then I <= Count (F) and then Pos (F, I) = C
        and then Log'First = 0 and then LL <= Log'Last
        and then Buf'First = 0 and then Buf'Last <= Log_Max
-       and then Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I))
+       and then Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I), Op_Apply)
        and then P >= Header_Len
        and then P <= Buf'Last
        and then P + Apply_Prefix + Tag_Len (Tag (F, I)) <= Buf'Last
        and then (for all J in 1 .. Count (F) =>
-                   (if Pos (F, J) < C then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J)))),
+                   (if Pos (F, J) < C
+                    then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J), Op_Apply))),
      Post => P = P'Old + Apply_Prefix + Tag_Len (Tag (F'Old, I))
        and then Is_Frontier (F)
        and then Frontier.Founding (F) = Frontier.Founding (F'Old)
@@ -2411,9 +2766,11 @@ package body Kome.Store with SPARK_Mode is
                    Held (F, J) = Held (F'Old, J)
                    and then (if J /= I then Tag (F, J) = Tag (F'Old, J)))
        and then Tag_Len (Tag (F, I)) = Tag_Len (Tag (F'Old, I))
-       and then (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Buf'Old (Q))
+       and then (for all Q in 0 .. P'Old - 1 => Buf (Q) = Buf'Old (Q))
        and then (for all J in 1 .. Count (F) =>
-                   (if Pos (F, J) <= C then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J))))
+                   (if Pos (F, J) <= C
+                    then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J), Op_Apply)))
+       and then Ceil_Same (F'Old, F)
    is
       F1   : constant Frontier.State := F with Ghost;
       Buf0 : constant Byte_Array := Buf with Ghost;
@@ -2426,35 +2783,41 @@ package body Kome.Store with SPARK_Mode is
       pragma Assert (Tag_Off (Tag (F, I)) = P0 and then Tag_End (Tag (F, I)) = P);
       pragma Assert (for all Q in Tag_Off (Tag (F, I)) .. Tag_End (Tag (F, I)) - 1 =>
                        Buf (Q) = Log (Q - Tag_Off (Tag (F, I)) + Tag_Off (Tag (F1, I))));
-      Lemma_Tag_Moved (Log, LL, Buf, P, Cid, Held (F, I), Tag (F1, I), Tag (F, I));
+      Lemma_Tag_Moved (Log, LL, Buf, P, Cid, Held (F, I), Tag (F1, I), Tag (F, I), Op_Apply);
       Lemma_Copied_Kept (Buf0, P0, Buf, P, Cid, F1, F, C, I);
       pragma Assert (for all J in 1 .. Count (F) => (if Pos (F, J) = C then J = I));
    end Copy_Step;
 
-   --  Pass 2 of Compact: copy the HEADER and every APPLY, in copy order
-   --  (Ord), into Buf, and retag the records. P is where the frames end.
+   --  Pass 2 of Compact: copy every APPLY, in copy order (Ord), into Buf
+   --  from Base on, and retag the records. Base is the end of the HEADER,
+   --  or of the CEIL entry of the cell's record; the bytes below it stay.
+   --  P is where the frames end.
    procedure Copy_Frames
-     (F   : in out Frontier.State;
-      Log : Byte_Array;
-      LL  : Log_Size;
-      Cid : Hash256;
-      Lim : Long_Long_Integer;
-      Buf : in out Byte_Array;
-      P   : out Log_Size)
+     (F    : in out Frontier.State;
+      Log  : Byte_Array;
+      LL   : Log_Size;
+      Cid  : Hash256;
+      Lim  : Long_Long_Integer;
+      Base : Log_Size;
+      Buf  : in out Byte_Array;
+      P    : out Log_Size)
    with
      Global => null,
      Pre  => Is_Frontier (F)
        and then Log'First = 0 and then LL <= Log'Last and then Log'Last <= Log_Max
        and then LL >= Header_Len
        and then Buf'First = 0 and then Buf'Last <= Log_Max
-       and then Lim >= 0 and then Lim = Long_Long_Integer (Buf'Last) - (Header_Len + Seq_Len)
+       and then Base >= Header_Len and then Base <= Buf'Last
+       and then Lim >= 0
+       and then Lim = Long_Long_Integer (Buf'Last) - Long_Long_Integer (Base + Seq_Len)
        and then Tags_OK (Log, LL, Cid, F)
        and then (for all C in 0 .. Count (F) => Body_Size (F, C) <= Lim),
      Post => Retagged (F'Old, F)
-       and then Long_Long_Integer (P) = Header_Len + Body_Size (F'Old, Count (F))
-       and then P >= Header_Len
+       and then Ceil_Same (F'Old, F)
+       and then Long_Long_Integer (P) = Long_Long_Integer (Base) + Body_Size (F'Old, Count (F))
+       and then P >= Base
        and then P <= Buf'Last - Seq_Len
-       and then (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Log (Q))
+       and then (for all Q in 0 .. Base - 1 => Buf (Q) = Buf'Old (Q))
        and then Tags_OK (Buf, P, Cid, F)
    is
       --  Proved; at run time the invariants would check every copied
@@ -2462,40 +2825,107 @@ package body Kome.Store with SPARK_Mode is
       pragma Assertion_Policy (Loop_Invariant => Ignore);
       F0 : constant Frontier.State := F with Ghost;
    begin
-      P := Header_Len;
-      for Q in 0 .. Header_Len - 1 loop
-         Buf (Q) := Log (Q);
-         pragma Loop_Invariant (for all Q2 in 0 .. Q => Buf (Q2) = Log (Q2));
-      end loop;
+      P := Base;
       for C in 1 .. Count (F) loop
          declare
             I : constant Positive := Ord (F, C);
          begin
             pragma Assert (Ord (F0, C) = I and then Pos (F, I) = C);
             pragma Assert (Tag (F, I) = Tag (F0, I) and then Held (F, I) = Held (F0, I));
-            pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, I), Tag (F0, I)));
-            pragma Assert (Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I)));
+            pragma Assert (Tag_OK (Log, LL, Cid, Held (F0, I), Tag (F0, I), Op_Apply));
+            pragma Assert (Tag_OK (Log, LL, Cid, Held (F, I), Tag (F, I), Op_Apply));
             pragma Assert (Body_Size (F0, C)
                            = Body_Size (F0, C - 1)
                              + Long_Long_Integer (Apply_Prefix + Tag_Len (Tag (F0, I))));
             pragma Assert (Body_Size (F0, C) <= Lim);
             Copy_Step (F, I, C, Log, LL, Cid, Buf, P);
-            pragma Assert (Long_Long_Integer (P) = Header_Len + Body_Size (F0, C));
+            pragma Assert (Long_Long_Integer (P) = Long_Long_Integer (Base) + Body_Size (F0, C));
          end;
          pragma Loop_Invariant (Retagged (F0, F));
-         pragma Loop_Invariant (Long_Long_Integer (P) = Header_Len + Body_Size (F0, C));
-         pragma Loop_Invariant (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Log (Q));
+         pragma Loop_Invariant (Ceil_Same (F0, F));
+         pragma Loop_Invariant
+           (Long_Long_Integer (P) = Long_Long_Integer (Base) + Body_Size (F0, C));
+         pragma Loop_Invariant (P >= Base);
+         pragma Loop_Invariant (for all Q in 0 .. Base - 1 => Buf (Q) = Buf'Loop_Entry (Q));
          pragma Loop_Invariant
            (for all J in 1 .. Count (F) =>
-              (if Pos (F, J) <= C then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J))
+              (if Pos (F, J) <= C then Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J), Op_Apply)
                else Tag (F, J) = Tag (F0, J)));
          pragma Loop_Invariant (Count (F) = Count (F0));
       end loop;
       pragma Assert (Count (F) = Count (F0));
       pragma Assert (for all J in 1 .. Count (F) => Pos (F, J) <= Count (F0));
-      pragma Assert (for all J in 1 .. Count (F) => Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J)));
+      pragma Assert (for all J in 1 .. Count (F) =>
+                       Tag_OK (Buf, P, Cid, Held (F, J), Tag (F, J), Op_Apply));
       Lemma_Tags_OK_Intro (Buf, P, Cid, F);
    end Copy_Frames;
+
+   --  AUDIT.md H12: the CEIL entry of the cell's record moved to
+   --  Header_Len of Buf, byte for byte. Give the cell the tag of its new
+   --  place; the rows keep their records and tags.
+   procedure Retag_Cell
+     (F   : in out Frontier.State;
+      Log : Byte_Array;
+      LL  : Log_Size;
+      Cid : Hash256;
+      Buf : Byte_Array;
+      P   : Log_Size)
+   with
+     Global => null,
+     Pre  => Is_Frontier (F) and then Has_Ceil (F)
+       and then Log'First = 0 and then LL <= Log'Last
+       and then Buf'First = 0 and then P <= Buf'Last
+       and then Ceil_OK (Log, LL, Cid, F)
+       and then Tags_OK (Buf, P, Cid, F)
+       and then Header_Len + Apply_Prefix + Tag_Len (Ceil_Tag (F)) <= P
+       and then (for all Q in Header_Len .. Header_Len + Apply_Prefix + Tag_Len (Ceil_Tag (F)) - 1 =>
+                   Buf (Q) = Log (Q - Header_Len + Tag_Off (Ceil_Tag (F)))),
+     Post => Is_Frontier (F)
+       and then Frontier.Founding (F) = Frontier.Founding (F'Old)
+       and then Same_Held (F'Old, F)
+       and then Max_Ceil (F) = Max_Ceil (F'Old)
+       and then Has_Ceil (F)
+       and then Ceil_Held (F) = Ceil_Held (F'Old)
+       and then Tag_Len (Ceil_Tag (F)) = Tag_Len (Ceil_Tag (F'Old))
+       and then Tag_Off (Ceil_Tag (F)) = Header_Len
+       and then Ceil_OK (Buf, P, Cid, F)
+       and then Tags_OK (Buf, P, Cid, F)
+   is
+      F1 : constant Frontier.State := F with Ghost;
+      T0 : constant U64 := Ceil_Tag (F);
+      L  : constant Natural := Tag_Len (T0);
+   begin
+      Lemma_Tag_OK_Bounds (Log, LL, Cid, Ceil_Held (F), T0, Op_Ceil);
+      Lemma_Tag_Round_Trip (Header_Len, L);
+      declare
+         NT : constant U64 := Make_Tag (Header_Len, L);
+      begin
+         pragma Assert (Tag_Off (NT) = Header_Len and then Tag_Len (NT) = L);
+         pragma Assert (Tag_End (NT) = Header_Len + Apply_Prefix + L);
+         Frontier.Set_Ceil_Tag (F, NT);
+         Lemma_Tag_Moved (Log, LL, Buf, P, Cid, Ceil_Held (F), T0, NT, Op_Ceil);
+      end;
+      Lemma_Same_Held (F1, F);
+      Lemma_Tags_Same (Buf, P, Cid, F1, F);
+   end Retag_Cell;
+
+   --  Retagged after Retag_Cell (F2 to F3) on a state that Copy_Frames
+   --  retagged (F0 to F2).
+   procedure Lemma_Retagged_Cell (F0, F2, F3 : Frontier.State) with
+     Ghost, Global => null,
+     Pre  => Retagged (F0, F2)
+       and then Is_Frontier (F3)
+       and then Frontier.Founding (F3) = Frontier.Founding (F2)
+       and then Same_Held (F2, F3)
+       and then Max_Ceil (F3) = Max_Ceil (F2)
+       and then Has_Ceil (F2) and then Has_Ceil (F3)
+       and then Ceil_Held (F3) = Ceil_Held (F2)
+       and then Tag_Len (Ceil_Tag (F3)) = Tag_Len (Ceil_Tag (F2)),
+     Post => Retagged (F0, F3)
+   is
+   begin
+      Lemma_Same_Held (F2, F3);
+   end Lemma_Retagged_Cell;
 
    procedure Compact
      (S      : in out Store;
@@ -2503,8 +2933,13 @@ package body Kome.Store with SPARK_Mode is
       Buf    : in out Byte_Array;
       Result :    out Status)
    is
+      --  The CEIL entry of the cell's record (AUDIT.md H12), and where the
+      --  APPLYs start.
+      CL   : constant Natural :=
+        (if Has_Ceil (F) then Apply_Prefix + Tag_Len (Ceil_Tag (F)) else 0);
+      Base : constant Natural := Header_Len + CL;
       Lim  : constant Long_Long_Integer :=
-        Long_Long_Integer (S.Log_Cap) - Long_Long_Integer (Header_Len + Seq_Len);
+        Long_Long_Integer (S.Log_Cap) - Long_Long_Integer (Base + Seq_Len);
       Fits : Boolean;
    begin
       if S.Pins > 0 then
@@ -2530,9 +2965,48 @@ package body Kome.Store with SPARK_Mode is
          LL0  : constant Log_Size := S.LL with Ghost;
          P    : Log_Size;
       begin
-         Copy_Frames (F, S.Log, S.LL, S.Cid, Lim, Buf, P);
+         Lemma_Valid_Parts (S, F);
+
+         --  The HEADER, then the CEIL of the cell's record.
+         for Q in 0 .. Header_Len - 1 loop
+            Buf (Q) := S.Log (Q);
+            pragma Loop_Invariant (for all Q2 in 0 .. Q => Buf (Q2) = S.Log (Q2));
+         end loop;
+         if Has_Ceil (F) then
+            Lemma_Tag_OK_Bounds (S.Log, S.LL, S.Cid, Ceil_Held (F), Ceil_Tag (F), Op_Ceil);
+            declare
+               O : constant Natural := Tag_Off (Ceil_Tag (F));
+            begin
+               Buf (Header_Len .. Base - 1) := S.Log (O .. O + CL - 1);
+               pragma Assert (for all Q in Header_Len .. Base - 1 =>
+                                Buf (Q) = S.Log (Q - Header_Len + O));
+            end;
+         end if;
+         pragma Assert (for all Q in 0 .. Header_Len - 1 => Buf (Q) = S.Log (Q));
+
+         --  The rows.
+         Copy_Frames (F, S.Log, S.LL, S.Cid, Lim, Base, Buf, P);
+         pragma Assert (for all Q in 0 .. Header_Len - 1 => Buf (Q) = S.Log (Q));
+         Lemma_Ceil_Kept (S.Log, S.LL, S.Log, S.LL, S.Cid, F0, F);
+
+         --  The cell's tag.
+         if Has_Ceil (F) then
+            declare
+               F2 : constant Frontier.State := F with Ghost;
+            begin
+               pragma Assert (Ceil_Tag (F) = Ceil_Tag (F0));
+               pragma Assert
+                 (for all Q in Header_Len .. Header_Len + Apply_Prefix + Tag_Len (Ceil_Tag (F)) - 1 =>
+                    Buf (Q) = S.Log (Q - Header_Len + Tag_Off (Ceil_Tag (F))));
+               Retag_Cell (F, S.Log, S.LL, S.Cid, Buf, P);
+               Lemma_Retagged_Cell (F0, F2, F);
+               pragma Assert (Tag_End (Ceil_Tag (F)) = Base);
+            end;
+         end if;
+         pragma Assert (Retagged (F0, F));
+         pragma Assert (Ceil_OK (Buf, P, S.Cid, F));
          pragma Assert (for all J in 1 .. Count (F) =>
-                          Tag_OK (Buf, P, S.Cid, Held (F, J), Tag (F, J)));
+                          Tag_OK (Buf, P, S.Cid, Held (F, J), Tag (F, J), Op_Apply));
          pragma Assert (for all J in 1 .. Count (F) => Tag_End (Tag (F, J)) <= P);
          declare
             Buf1 : constant Byte_Array := Buf with Ghost;
@@ -2540,6 +3014,8 @@ package body Kome.Store with SPARK_Mode is
          begin
             Append_Seq (Buf, P, S.SS);
             Lemma_Tags_Kept (Buf1, P1, Buf, P, S.Cid, F);
+            Lemma_Ceil_Kept (Buf1, P1, Buf, P, S.Cid, F, F);
+            pragma Assert (for all Q in 0 .. Header_Len - 1 => Buf (Q) = Log0 (Q));
          end;
 
          --  Copy the new log back (only its length).
@@ -2548,18 +3024,23 @@ package body Kome.Store with SPARK_Mode is
             pragma Loop_Invariant (for all J2 in 0 .. J => S.Log (J2) = Buf (J2));
          end loop;
          S.LL := P;
-         S.NE := Count (F) + 1;
+         S.NE := Count (F) + 1 + (if Has_Ceil (F) then 1 else 0);
          Lemma_Tags_Kept (Buf, P, S.Log, S.LL, S.Cid, F);
+         Lemma_Ceil_Kept (Buf, P, S.Log, S.LL, S.Cid, F, F);
          pragma Assert (for all J in 1 .. Count (F) => Tag_End (Tag (F, J)) <= S.LL - Seq_Len);
          pragma Assert (for all J in 0 .. Header_Len - 1 => S.Log (J) = Log0 (J));
          Lemma_Head_Same (Log0, LL0, S.Log, S.LL, S.Root, S.Slt, S.TTL);
          pragma Assert (Count (F) = Count (F0));
-         pragma Assert (Log_Entries (S) = Count (F) + 1);
+         pragma Assert (Log_Entries (S) = Count (F) + 1 + (if Has_Ceil (F) then 1 else 0));
          pragma Assert (not Compact_Due (S, F));
+         pragma Assert (if Has_Ceil (F)
+                        then Tag_Off (Ceil_Tag (F)) = Header_Len
+                             and then Tag_End (Ceil_Tag (F)) <= Log_Length (S) - Seq_Len);
          Lemma_Rest_Same (F0, F, S.TTL, S.Self, S.SS);
          Lemma_Hashes_Same (F0, F);
          Lemma_Models_Ext (S.DD, Data_Hashes (F0), Data_Hashes (F), Data_Count (F0));
          Lemma_Models_Ext (S.DA, Auth_Hashes (F0), Auth_Hashes (F), Auth_Count (F0));
+         Lemma_Valid_Of_Parts (S, F);
          pragma Assert (Valid (S, F));
          Result := OK;
       end;
@@ -2585,11 +3066,128 @@ package body Kome.Store with SPARK_Mode is
        and then Self_Key (S) = Kome.Keys.To_Key256 (Self_PK)
        and then Pinned (S) = 0);
 
+   --  One CEIL entry of replay at S.LL (AUDIT.md H12): the framing checks
+   --  of an APPLY; the frame must be a ROSTER. A CEIL that repeats the
+   --  cell's record stays in the log and changes nothing (a duplicated
+   --  entry, wherever it stands). Any other CEIL reruns the capture of
+   --  Put_Ceil (Ceil_Frame): the rows are not tried, and a roster whose
+   --  ceiling is not above maxceil is refused. The contract is the one of
+   --  Replay_Entry.
+   procedure Replay_Ceil
+     (Input  : Byte_Array;
+      S      : in out Store;
+      F      : in out Frontier.State;
+      Result : out Status)
+   with
+     Global => null,
+     Pre  => Input'First = 0 and then Input'Last < S.Log_Cap
+       and then Valid (S, F)
+       and then S.LL >= Header_Len and then S.LL <= Input'Last
+       and then (for all J in 0 .. S.LL - 1 => S.Log (J) = Input (J))
+       and then Input (S.LL) = Op_Ceil
+       and then Input'Last - S.LL >= Apply_Prefix,
+     Post => Valid (S, F)
+       and then Same_Identity (S'Old, S)
+       and then S.Pins = S'Old.Pins
+       and then Result in OK | Malformed | No_Space
+       and then (if Result = OK then S.LL > S'Old.LL else S.LL = S'Old.LL)
+       and then S.LL - 1 <= Input'Last
+       and then (for all J in 0 .. S.LL - 1 => S.Log (J) = Input (J))
+   is
+      P : constant Log_Size := S.LL;
+      L : constant U24_Value := U24_Of (Input (P + 1), Input (P + 2), Input (P + 3));
+   begin
+      Lemma_Valid_Parts (S, F);
+      if L not in Frame_Size or else L > Input'Last - P - Apply_Prefix + 1 then
+         Result := Malformed;
+         return;
+      end if;
+      if not Is_Record_Frame (Input (P + Apply_Prefix .. P + Apply_Prefix + L - 1)) then
+         Result := Malformed;
+         return;
+      end if;
+      declare
+         Frame : constant Byte_Array := Input (P + Apply_Prefix .. P + Apply_Prefix + L - 1);
+         H     : constant Header := Header_Of (S.Cid, Frame);
+         S1    : constant Store := S with Ghost;
+         Off   : Log_Size;
+         St    : Status;
+      begin
+         pragma Assert (for all J in 0 .. P - 1 => S1.Log (J) = Input (J));
+         if not Canonical (H) or else H.K /= K_Roster then
+            Result := Malformed;
+            return;
+         end if;
+         if Has_Ceil (F) and then Ceil_Held (F) = H then
+            --  The cell's record again: the entry stays in the log.
+            declare
+               Log1 : constant Byte_Array := S.Log with Ghost;
+            begin
+               pragma Assert (Tags_OK (S.Log, S.LL, S.Cid, F));
+               pragma Assert (Ceil_OK (S.Log, S.LL, S.Cid, F));
+               pragma Assert (Head_OK (S.Log, S.LL, S.Root, S.Slt, S.TTL));
+               pragma Assert (S.NE <= S.LL);
+               Append_Apply (S.Log, S.LL, Frame, P, Op_Ceil);
+               S.NE := S.NE + 1;
+               Lemma_Tags_Kept (Log1, P, S.Log, S.LL, S.Cid, F);
+               Lemma_Ceil_Kept (Log1, P, S.Log, S.LL, S.Cid, F, F);
+               Lemma_Head_Kept (Log1, P, S.Log, S.LL, S.Root, S.Slt, S.TTL);
+               pragma Assert (S.NE <= S.LL);
+               pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = Input (J));
+               pragma Assert (for all J in Frame'Range => S.Log (J) = Frame (J));
+               Lemma_Valid_Of_Parts (S, F);
+               pragma Assert (Valid (S, F));
+            end;
+         else
+            Ceil_Frame (S, F, Frame, H, Off, St);
+            if St /= Ceil_Only then
+               --  OK: the ceiling is not above maxceil. A store does not
+               --  write such a CEIL. (Log_Full does not happen: the entry
+               --  is inside Input, and Input fits the log.)
+               Result := Malformed;
+               return;
+            end if;
+            --  The capture appended the entry at P (Ceil_Appended).
+            pragma Assert (Ceil_Appended (S1, S, Frame, P));
+            pragma Assert (S.LL - P = Apply_Prefix + L);
+            pragma Assert (Log_Length (S1) = P);
+            pragma Assert (Log_Extends (S1, S));
+            pragma Assert (for all J in 0 .. P - 1 => Log_Byte (S, J) = Log_Byte (S1, J));
+            pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = S1.Log (J));
+            pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = Input (J));
+            pragma Assert (for all J in Frame'Range => Log_Byte (S, J) = Frame (J));
+            pragma Assert (for all J in Frame'Range => S.Log (J) = Frame (J));
+            pragma Assert (Op_At (S, P) = Op_Ceil and then Len_At (S, P) = L);
+            pragma Assert (S.Log (P) = Op_Ceil);
+            pragma Assert (U24_Of (S.Log (P + 1), S.Log (P + 2), S.Log (P + 3)) = L);
+            pragma Assert (Valid (S, F));
+         end if;
+         Lemma_U24_Bytes_Round_Trip (Input (P + 1), Input (P + 2), Input (P + 3));
+         Lemma_U24_Bytes_Round_Trip (S.Log (P + 1), S.Log (P + 2), S.Log (P + 3));
+         pragma Assert (S.LL = P + Apply_Prefix + L);
+         pragma Assert (S.Log (P) = Input (P));
+         pragma Assert (S.Log (P + 1) = Byte_Of_U24 (L, 0)
+                        and then S.Log (P + 2) = Byte_Of_U24 (L, 1)
+                        and then S.Log (P + 3) = Byte_Of_U24 (L, 2));
+         pragma Assert (S.Log (P + 1) = Input (P + 1)
+                        and then S.Log (P + 2) = Input (P + 2)
+                        and then S.Log (P + 3) = Input (P + 3));
+         pragma Assert (for all J in Frame'Range => S.Log (J) = Frame (J));
+         pragma Assert (for all J in Frame'Range => Frame (J) = Input (J));
+         pragma Assert (for all J in P + Apply_Prefix .. S.LL - 1 => S.Log (J) = Input (J));
+         pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = Input (J));
+         pragma Assert (for all J in P .. P + 3 => S.Log (J) = Input (J));
+         pragma Assert (for all J in 0 .. P + 3 => S.Log (J) = Input (J));
+         pragma Assert (for all J in 0 .. S.LL - 1 => S.Log (J) = Input (J));
+         Result := OK;
+      end;
+   end Replay_Ceil;
+
    --  One entry of replay at S.LL (S15): an APPLY reruns Put_Frame in
    --  trusted mode (one parse, one hash, no signature check), and stays in
-   --  the log when it changes nothing (H23); a SEQ raises seq_self. On OK
-   --  the log is one entry longer and is still the input's prefix; on a
-   --  refusal nothing changes.
+   --  the log when it changes nothing (H23); a SEQ raises seq_self; a CEIL
+   --  is Replay_Ceil. On OK the log is one entry longer and is still the
+   --  input's prefix; on a refusal nothing changes.
    procedure Replay_Entry
      (Input  : Byte_Array;
       S      : in out Store;
@@ -2636,7 +3234,14 @@ package body Kome.Store with SPARK_Mode is
                   Result := Malformed;
                   return;
                end if;
+               --  AUDIT.md H12: Put_Frame captures this frame, so a store
+               --  wrote a CEIL for it and never this APPLY.
+               if Ceil_Rule (F, H) then
+                  Result := Malformed;
+                  return;
+               end if;
                Apply_Frame (S, F, Frame, H, Off, St);
+               pragma Assert (St /= Ceil_Only);
                if St = No_Space then
                   Result := No_Space;
                   return;
@@ -2652,12 +3257,14 @@ package body Kome.Store with SPARK_Mode is
                   begin
                      Lemma_Valid_Parts (S, F);
                      pragma Assert (Tags_OK (S.Log, S.LL, S.Cid, F));
+                     pragma Assert (Ceil_OK (S.Log, S.LL, S.Cid, F));
                      pragma Assert (Head_OK (S.Log, S.LL, S.Root, S.Slt, S.TTL));
                      pragma Assert (S.NE <= S.LL);
                      pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = Input (J));
-                     Append_Apply (S.Log, S.LL, Frame, P);
+                     Append_Apply (S.Log, S.LL, Frame, P, Op_Apply);
                      S.NE := S.NE + 1;
                      Lemma_Tags_Kept (Log1, P, S.Log, S.LL, S.Cid, F);
+                     Lemma_Ceil_Kept (Log1, P, S.Log, S.LL, S.Cid, F, F);
                      Lemma_Head_Kept (Log1, P, S.Log, S.LL, S.Root, S.Slt, S.TTL);
                      pragma Assert (S.NE <= S.LL);
                      pragma Assert (for all J in 0 .. P - 1 => S.Log (J) = Input (J));
@@ -2700,6 +3307,8 @@ package body Kome.Store with SPARK_Mode is
                Result := OK;
             end;
          end;
+      elsif Input (P) = Op_Ceil and then Input'Last - P >= Apply_Prefix then
+         Replay_Ceil (Input, S, F, Result);
       elsif Input (P) = Op_Seq and then Input'Last - P >= Seq_Len - 1 then
          declare
             V    : constant U48 :=
@@ -2717,6 +3326,7 @@ package body Kome.Store with SPARK_Mode is
             end if;
             pragma Assert (Seq_OK (F, S.Self, S.SS));
             Lemma_Tags_Kept (Log1, P, S.Log, S.LL, S.Cid, F);
+            Lemma_Ceil_Kept (Log1, P, S.Log, S.LL, S.Cid, F, F);
             Lemma_Head_Kept (Log1, P, S.Log, S.LL, S.Root, S.Slt, S.TTL);
             KR.Lemma_U48_Bytes_Round_Trip
               (Input (P + 1), Input (P + 2), Input (P + 3),
@@ -2859,8 +3469,8 @@ package body Kome.Store with SPARK_Mode is
    procedure Lemma_Tag (S : Store; F : Frontier.State; I : Held_Index) is
    begin
       Lemma_Valid_Parts (S, F);
-      pragma Assert (Tag_OK (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I)));
-      Lemma_Tag_OK_Bounds (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I));
+      pragma Assert (Tag_OK (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I), Op_Apply));
+      Lemma_Tag_OK_Bounds (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I), Op_Apply);
       pragma Assert (Log_Length (S) = S.LL);
       pragma Assert (Tag_Off (Tag (F, I)) + Apply_Prefix + Tag_Len (Tag (F, I)) <= S.LL);
       pragma Assert (Tag_Off (Tag (F, I)) < Log_Length (S));
@@ -2881,6 +3491,34 @@ package body Kome.Store with SPARK_Mode is
         (S.Cid, Held (F, I), Slice_At (S.Log, Tag (F, I)), Read_Frame (S, Tag_Off (Tag (F, I))));
       Lemma_Frame_Is_Def (Read_Frame (S, Tag_Off (Tag (F, I))), S.Cid, Held (F, I));
    end Lemma_Tag;
+
+   procedure Lemma_Ceil_Tag (S : Store; F : Frontier.State) is
+      X : constant Header := Ceil_Held (F);
+      T : constant U64 := Ceil_Tag (F);
+   begin
+      Lemma_Valid_Parts (S, F);
+      pragma Assert (Tag_OK (S.Log, S.LL, S.Cid, X, T, Op_Ceil));
+      Lemma_Tag_OK_Bounds (S.Log, S.LL, S.Cid, X, T, Op_Ceil);
+      pragma Assert (Log_Length (S) = S.LL);
+      pragma Assert (Tag_Off (T) + Apply_Prefix + Tag_Len (T) <= S.LL);
+      pragma Assert (Tag_Off (T) < Log_Length (S));
+      pragma Assert (Log_Length (S) - Tag_Off (T) >= Apply_Prefix);
+      pragma Assert (Op_At (S, Tag_Off (T)) = Op_Ceil);
+      pragma Assert (Tag_Len (T) >= 1 and then Tag_Len (T) <= KR.Frame_Max);
+      pragma Assert (Len_At (S, Tag_Off (T)) = Tag_Len (T));
+      pragma Assert (Len_At (S, Tag_Off (T)) in Frame_Size);
+      pragma Assert (Len_At (S, Tag_Off (T)) <= Log_Length (S) - Tag_Off (T) - Apply_Prefix);
+      pragma Assert (Has_Frame (S, Tag_Off (T)));
+      pragma Assert (for all J in Slice_At (S.Log, T)'Range =>
+                       Read_Frame (S, Tag_Off (T)) (J - Slice_At (S.Log, T)'First)
+                       = Slice_At (S.Log, T) (J));
+      Lemma_Frame_Is_Congruent (S.Cid, X, Slice_At (S.Log, T), Read_Frame (S, Tag_Off (T)));
+      Lemma_Frame_Is_Def (Read_Frame (S, Tag_Off (T)), S.Cid, X);
+      --  The cell's record is a roster, so its frame is a ROSTER frame.
+      Lemma_Frontier_Ceil (F);
+      Lemma_Header_Of (S.Cid, Read_Frame (S, Tag_Off (T)));
+      pragma Assert (KR.Kind_Of (Read_Frame (S, Tag_Off (T))) = K_Roster);
+   end Lemma_Ceil_Tag;
 
    procedure Lemma_No_Expired (S : Store; F : Frontier.State; I : Held_Index) is null;
 

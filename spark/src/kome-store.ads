@@ -1,7 +1,8 @@
 --  Kome.Store: the storage model of DESIGN.md §7 after SIMPLIFY.md S7,
 --  S14 to S17 and S21. The replica of one collection has two parts:
 --    * a lattice state F (Kome.Frontier.State), whose held records each
---      carry a payload tag (S14);
+--      carry a payload tag (S14), and whose ceiling cell, if it holds a
+--      roster, carries one too (AUDIT.md H12);
 --    * a Store: an append-only log, the identity of the collection, the
 --      device's seq_self (S16), the two digest states (S21) and a pin
 --      counter.
@@ -25,8 +26,11 @@
 --                                                              (59 bytes)
 --    APPLY   01 ‖ len:u24 ‖ frame        a frame that Put_Frame applied
 --    SEQ     02 ‖ seq:u48                written by Compact: seq_self
+--    CEIL    03 ‖ len:u24 ‖ frame        a ROSTER frame that Put_Frame or
+--                                        Put_Ceil recorded in the ceiling
+--                                        cell only (AUDIT.md H12)
 --
---  The log is HEADER ‖ (APPLY | SEQ)*. The HEADER fixes the collection:
+--  The log is HEADER ‖ (APPLY | SEQ | CEIL)*. The HEADER fixes the collection:
 --  cid = BLAKE2b-256 (root_pk ‖ salt ‖ u48 (del_ttl)) (Cid_Of, S1), the
 --  founding key root_pk (D1) and the tombstone lifetime del_ttl in
 --  [Del_TTL_Min, Del_TTL_Max] (S2). There is no slice or data_cap field
@@ -50,14 +54,30 @@
 --        Lean gives back F);
 --    (5) the log has no room for its APPLY: Log_Full;
 --    (6) the frontier has no room (Frontier.Apply): No_Space for the data
---        row, Auth_Full for a full slice of the signer or the slot table;
+--        row; for a full slice of the signer or the slot table, Auth_Full,
+--        unless H is a ROSTER whose ceiling is above Max_Ceil (F): then
+--        the store records it in the ceiling cell (the capture, below)
+--        and the result is Ceil_Only;
 --    (7) Frontier.Apply holds H with the tag of its new APPLY entry, and
 --        the store appends the entry, updates the two digests and
 --        seq_self, and then expires (S7): if H raised Max_Ceil or arrived
 --        expired, Frontier.Expire (F, hz (F)) removes the DELs at or
 --        below the horizon.
 --  A refusal changes nothing (T13): the Post says Unchanged (F'Old, F)
---  and S = S'Old.
+--  and S = S'Old. Ceil_Only is not a refusal.
+--
+--  The ceiling cell (AUDIT.md H12; DESIGN.md §7). Max_Ceil (F) is the
+--  larger of the held rosters' ceiling and the ceiling of the cell's
+--  roster. A roster reaches the cell in two ways, and in no other: step
+--  (6) above, and Put_Ceil, the entry point for the ceiling frame of a
+--  peer's HELLO (§8), which never tries the rows. The capture appends the
+--  frame as a CEIL entry, calls Frontier.Raise_Ceil with the tag of that
+--  entry, and expires at the new horizon. The rows, the two digests and
+--  seq_self do not change, apart from the DELs that the expiry removes:
+--  the cell's record is not a held record and not an element. So each
+--  Put_Frame and each Put_Ceil that does not return Log_Full gives
+--    Max_Ceil (after) = max (Max_Ceil (before), Ceil_Of (H))
+--  (Ceil_Step, T19), whatever the slices or the slot table refused.
 --
 --  Expiry (S7, D10, T11): the horizon is a function of F,
 --    hz (F) = Max_Ceil (F) - del_ttl   if Max_Ceil (F) >= del_ttl, else none
@@ -101,14 +121,19 @@
 --  of a store's own log are trusted (Trusted_Frame; DESIGN.md §7 places
 --  the integrity of the log with the host); the proof does not use that
 --  assumption, and the test main checks it on each log it reopens.
---  A SEQ entry raises seq_self. Valid_Length and Replayed_Prefix give the
---  longest prefix that replays (AUDIT.md H23).
+--  A SEQ entry raises seq_self. A CEIL entry reruns the capture through
+--  the same code as Put_Ceil; an APPLY that Put_Frame would have captured
+--  is refused (a store writes a CEIL for it), and a CEIL that repeats the
+--  cell's record is kept and changes nothing. Valid_Length and
+--  Replayed_Prefix give the longest prefix that replays (AUDIT.md H23).
 --
---  Compaction (S14, S21). Compact writes HEADER ‖ one APPLY per held
---  record ‖ SEQ (seq_self), in row order (the authorization rows, slot
+--  Compaction (S14, S21). Compact writes HEADER ‖ the CEIL of the cell's
+--  record, if there is one ‖ one APPLY per held record ‖ SEQ (seq_self).
+--  The CEIL is first, so a replay has the cell before the rows. The
+--  APPLYs are in row order (the authorization rows, slot
 --  by slot, then the data row, entity-major: S18 puts the authorization
---  rows first, so a replay admits every data record), and gives each
---  record the tag of its new place (Frontier.Set_Tag). It copies each
+--  rows first, so a replay admits every data record). Compact gives each
+--  record the tag of its new place (Frontier.Set_Tag, Set_Ceil_Tag). It copies each
 --  frame once into the binding's buffer and then copies only the new
 --  length back (no whole-capacity copy). It is refused (Busy) while a
 --  reconciliation session holds a snapshot of the log (Pinned (S) > 0).
@@ -117,7 +142,9 @@
 --
 --  What is proved (Valid is the store invariant; each operation keeps it):
 --    * every held record's tag points at an APPLY entry of the log whose
---      frame has that record as its header (Tag_OK, Lemma_Tag);
+--      frame has that record as its header (Tag_OK, Lemma_Tag), and the
+--      tag of the cell's record points at a CEIL entry whose frame has
+--      that record as its header (Lemma_Ceil_Tag);
 --    * no held DEL is at or below the horizon (T11 (a), Lemma_No_Expired);
 --    * seq_self bounds every held own seq (Lemma_Seq_Self);
 --    * the two digest states model the authorization and the data rows
@@ -126,13 +153,20 @@
 --    * Put_Frame refines Lean's applyH in the order above; the contract
 --      states each refusal as an iff, a refusal changes nothing, the log
 --      only grows and the entry is at the returned offset;
---    * Compact keeps F's records, the digests and seq_self, gives every
---      record the tag of its copied frame (Valid), ends the log with the
---      SEQ entry (Compact_Layout), and the result is not due; the copy
---      order and the absence of gaps are tested, not stated;
+--    * the step of T19 (Ceil_Step) for Put_Frame and for Put_Ceil, and
+--      what a capture changes (Captured): the CEIL entry, the cell, and
+--      the DELs at or below the new horizon; no held authorization record
+--      is added or removed, and Put_Ceil changes nothing else;
+--    * Compact keeps F's records, the cell's record, the digests and
+--      seq_self, gives every record the tag of its copied frame (Valid),
+--      puts the CEIL at Header_Len and ends the log with the SEQ entry
+--      (Compact_Layout), and the result is not due; the copy order and
+--      the absence of gaps are tested, not stated;
 --    * Open_From_Log returns a Valid pair whose log is its input.
 --  SPARK does not prove that replay accepts every log that a store writes
---  and gives back its frontier (T18, Lean `auth_first`); the tests test it.
+--  and gives back its frontier and its cell (T18, Lean `auth_first`); the
+--  tests test it. The fold of T19 over a delivery is Lean
+--  (`maxCeil_order_indep_H`); SPARK proves the step.
 pragma Ada_2022;
 with Kome.Headers;  use Kome.Headers;
 with Kome.Frontier; use Kome.Frontier;
@@ -157,6 +191,7 @@ package Kome.Store with SPARK_Mode is
 
    Op_Apply : constant Byte := 1;
    Op_Seq   : constant Byte := 2;
+   Op_Ceil  : constant Byte := 3;   --  AUDIT.md H12
 
    Magic_Len   : constant := 4;
    Magic       : constant Byte_Array (0 .. Magic_Len - 1) :=
@@ -172,19 +207,22 @@ package Kome.Store with SPARK_Mode is
    pragma Compile_Time_Error
      (Header_Len /= 59, "SIMPLIFY.md S15: the HEADER is 4 + 1 + 32 + 16 + 6 = 59 bytes");
 
-   Apply_Prefix : constant := 4;   --  01 ‖ len:u24
+   Apply_Prefix : constant := 4;   --  01 ‖ len:u24 (APPLY), 03 ‖ len:u24 (CEIL)
    Seq_Len      : constant := 7;   --  02 ‖ seq:u48
 
    subtype Frame_Size is Positive range 1 .. Kome.Records.Frame_Max;
 
-   --  The largest log entry: the APPLY prefix and the largest frame.
+   --  The largest log entry: the APPLY prefix and the largest frame. (A
+   --  CEIL has the layout of an APPLY and holds a ROSTER frame, so it is
+   --  at most 4 + 8 916 bytes.)
    Entry_Max : constant := Apply_Prefix + Kome.Records.Frame_Max;   --  41 124
    pragma Compile_Time_Error (Entry_Max /= 41_124, "an APPLY is at most 41 124 bytes");
 
    --  Compaction as a store duty (AUDIT.md H26): the binding calls Compact
    --  when Compact_Due (S, F) holds, that is, when the log has more than
    --  2 * Count (F) + Compact_Slack entries after the HEADER. A compacted
-   --  log (one APPLY per held record and one SEQ) is never due.
+   --  log (at most one CEIL, one APPLY per held record and one SEQ) is
+   --  never due.
    Compact_Slack : constant := 64;
 
    ---------------------------------------------------------------------------
@@ -215,7 +253,8 @@ package Kome.Store with SPARK_Mode is
    ---------------------------------------------------------------------------
 
    --  Off in the high 40 bits, Len in the low 24 bits. Off is the offset
-   --  of the APPLY entry; the frame starts at Off + Apply_Prefix.
+   --  of the APPLY entry (of the CEIL entry, for the tag of the ceiling
+   --  cell); the frame starts at Off + Apply_Prefix.
    function Make_Tag (Off : Log_Size; Len : Frame_Size) return U64 is
      (U64 (Off) * 2**24 + U64 (Len));
 
@@ -365,7 +404,7 @@ package Kome.Store with SPARK_Mode is
    function Log_Byte (S : Store; J : Natural) return Byte with
      Global => null,
      Pre => J < Log_Length (S);
-   --  The number of APPLY and SEQ entries after the HEADER.
+   --  The number of APPLY, SEQ and CEIL entries after the HEADER.
    function Log_Entries (S : Store) return Natural with
      Global => null,
      Post => Log_Entries'Result <= Log_Max;
@@ -411,7 +450,7 @@ package Kome.Store with SPARK_Mode is
    function Op_At (S : Store; P : Natural) return Byte is (Log_Byte (S, P))
      with Pre => P < Log_Length (S);
 
-   --  The len:u24 of the APPLY entry at P.
+   --  The len:u24 of the APPLY or CEIL entry at P.
    function Len_At (S : Store; P : Natural) return U24_Value is
      (U24_Of (Log_Byte (S, P + 1), Log_Byte (S, P + 2), Log_Byte (S, P + 3)))
      with Pre => P < Log_Length (S) and then Log_Length (S) - P >= Apply_Prefix;
@@ -422,15 +461,15 @@ package Kome.Store with SPARK_Mode is
                            Log_Byte (S, P + 3), Log_Byte (S, P + 4), Log_Byte (S, P + 5)))
      with Pre => P < Log_Length (S) and then Log_Length (S) - P >= 6;
 
-   --  A whole APPLY entry starts at P.
+   --  A whole APPLY or CEIL entry starts at P.
    function Has_Frame (S : Store; P : Natural) return Boolean is
      (P < Log_Length (S)
       and then Log_Length (S) - P >= Apply_Prefix
-      and then Op_At (S, P) = Op_Apply
+      and then Op_At (S, P) in Op_Apply | Op_Ceil
       and then Len_At (S, P) in Frame_Size
       and then Len_At (S, P) <= Log_Length (S) - P - Apply_Prefix);
 
-   --  The frame of the APPLY entry at Off (indexed from 0).
+   --  The frame of the APPLY or CEIL entry at Off (indexed from 0).
    function Read_Frame (S : Store; Off : Natural) return Byte_Array with
      Global => null,
      Pre  => Has_Frame (S, Off),
@@ -465,6 +504,11 @@ package Kome.Store with SPARK_Mode is
                  and then not Drops_Any (F, R))
                 or else (Slot_Of (F, R.Issuer) = 0 and then Slots_Used (F) = Signers_Max)));
 
+   --  The capture rule of Put_Frame (AUDIT.md H12): a roster that the
+   --  authorization rows refuse for room and whose ceiling is above maxceil.
+   function Ceil_Rule (F : Frontier.State; R : Header) return Boolean is
+     (Auth_Rule (F, R) and then Raises_Ceil (F, R));
+
    --  Fewer than Need bytes of log are left.
    function Log_Short (S : Store; Need : Natural) return Boolean is
      (S.Log_Cap - Log_Length (S) < Need);
@@ -476,16 +520,16 @@ package Kome.Store with SPARK_Mode is
       and then (if Expired_In (H, F, TTL) then Drops_Any (F, H)));
 
    --  Log bytes are a capacity class shared by every record (DESIGN.md §7,
-   --  E1; AUDIT.md H3). Under Log_Fits, a compacted log (the HEADER, one
-   --  APPLY per held record, one SEQ) has room for one more entry of any
-   --  kind, so Log_Full only ever means "compact first", and no flood of
-   --  large values can block the founding REVOKE. The binding checks it
-   --  when it chooses Log_Cap for a data capacity Cap. It is stated as a
-   --  quotient so that it never overflows.
+   --  E1; AUDIT.md H3). Under Log_Fits, a compacted log (the HEADER, at
+   --  most one CEIL, one APPLY per held record, one SEQ) has room for one
+   --  more entry of any kind, so Log_Full only ever means "compact first",
+   --  and no flood of large values can block the founding REVOKE. The
+   --  binding checks it when it chooses Log_Cap for a data capacity Cap.
+   --  It is stated as a quotient so that it never overflows.
    function Log_Fits (Cap : Data_Size; Log_Cap : Log_Size) return Boolean is
      (Log_Cap >= Header_Len + Seq_Len
       and then (Log_Cap - Header_Len - Seq_Len) / Entry_Max
-               >= Cap + Signers_Max * Slice_Max + 1);
+               >= Cap + Signers_Max * Slice_Max + 2);
 
    --  Lean `applyH delTtl S r := expireHz delTtl (applyD S r)` (S7): the
    --  views grow exactly by H; each held record was held before or is H,
@@ -525,6 +569,48 @@ package Kome.Store with SPARK_Mode is
      (if Is_Data (H) and then H.V.Author = Self_Key (S)
       then U48'Max (Seq_Self (S), H.V.Seq) else Seq_Self (S));
 
+   --  CEIL (Frame) was appended at Off, as the new last entry.
+   function Ceil_Appended (Old_S, New_S : Store; Frame : Byte_Array; Off : Natural) return Boolean
+   is (Off = Log_Length (Old_S)
+       and then Log_Length (New_S) >= Off
+       and then Log_Length (New_S) - Off = Apply_Prefix + Frame'Length
+       and then Log_Entries (New_S) = Log_Entries (Old_S) + 1
+       and then Op_At (New_S, Off) = Op_Ceil
+       and then Len_At (New_S, Off) = Frame'Length
+       and then (for all J in Frame'Range =>
+                   Log_Byte (New_S, J - Frame'First + (Off + Apply_Prefix)) = Frame (J)))
+     with Pre => Frame'Length in Frame_Size;
+
+   --  A capture: the cell holds H, maxceil is H's ceiling, and the held
+   --  records are the old ones without the DELs at or below the new horizon.
+   --  (So every held authorization record stays, and none is added.)
+   function Ceiled (Old_F, New_F : Frontier.State; H : Header; TTL : U48) return Boolean is
+     (Max_Ceil (New_F) = Ceil_Of (H)
+      and then Has_Ceil (New_F) and then Ceil_Held (New_F) = H
+      and then (for all I in 1 .. Count (New_F) =>
+                  Holds (Old_F, Held (New_F, I))
+                  and then not Expired_In (Held (New_F, I), New_F, TTL))
+      and then (for all I in 1 .. Count (Old_F) =>
+                  Holds (New_F, Held (Old_F, I))
+                  or else Expired_In (Held (Old_F, I), New_F, TTL)));
+
+   --  What a capture did to the pair (Put_Frame with Ceil_Only, Put_Ceil
+   --  with Ceil_Only).
+   function Captured
+     (Old_S, S : Store; Old_F, F : Frontier.State; Frame : Byte_Array; H : Header;
+      Off : Natural) return Boolean
+   is (Ceil_Appended (Old_S, S, Frame, Off)
+       and then Ceiled (Old_F, F, H, Del_TTL (S))
+       and then Ceil_Tag (F) = Make_Tag (Off, Frame'Length)
+       and then Seq_Self (S) = Seq_Self (Old_S)
+       and then Digest_Auth (S) = Digest_Auth (Old_S))
+   with Ghost, Pre => Frame'Length in Frame_Size;
+
+   --  T19, the step: unless the log was full, maxceil is the old maxceil
+   --  joined with the ceiling of H, whatever the rows refused.
+   function Ceil_Step (Old_F, F : Frontier.State; H : Header; Result : Status) return Boolean is
+     (if Result /= Log_Full then Max_Ceil (F) = U48'Max (Max_Ceil (Old_F), Ceil_Of (H)));
+
    --  The contract of Put_Frame (Kome.Write.Receive states it too). The
    --  top-level conjuncts use "and" (each conjunct guards its own
    --  preconditions); the functions above name the long conjuncts.
@@ -537,6 +623,7 @@ package Kome.Store with SPARK_Mode is
        and Off = Log_Length (Old_S)
        and Log_Extends (Old_S, S)
        and Result in OK | Dominated | Inadmissible | No_Space | Auth_Full | Log_Full
+                     | Ceil_Only
        --  The order of DESIGN.md §7, each outcome as an iff.
        and (Result = Inadmissible) = (not Admitted (Old_F, H))
        and (Result = Dominated)
@@ -551,10 +638,17 @@ package Kome.Store with SPARK_Mode is
        and (Result = Auth_Full)
              = (Effective (Old_F, Del_TTL (Old_S), H)
                 and then not Log_Short (Old_S, Apply_Prefix + Frame'Length)
-                and then Auth_Rule (Old_F, H))
+                and then Auth_Rule (Old_F, H)
+                and then not Raises_Ceil (Old_F, H))
+       --  The capture (AUDIT.md H12).
+       and (Result = Ceil_Only)
+             = (Effective (Old_F, Del_TTL (Old_S), H)
+                and then not Log_Short (Old_S, Apply_Prefix + Frame'Length)
+                and then Ceil_Rule (Old_F, H))
        --  Nothing changes on a refusal, on a duplicate, or for an expired
        --  DEL that drops nothing (T13).
-       and (if Result /= OK or else not Effective (Old_F, Del_TTL (Old_S), H)
+       and (if Result not in OK | Ceil_Only
+              or else not Effective (Old_F, Del_TTL (Old_S), H)
             then Unchanged (Old_F, F) and then S = Old_S)
        --  OK and effective: Lean's applyH, the APPLY entry at Off, the
        --  tag of H, and seq_self (S16).
@@ -562,7 +656,32 @@ package Kome.Store with SPARK_Mode is
               Appended (Old_S, S, Frame, Off)
               and then Applied_H (Old_F, F, H, Del_TTL (S))
               and then (if Holds (F, H) then Tag_Of (F, H) = Make_Tag (Off, Frame'Length))
-              and then Seq_Self (S) = Seq_After (Old_S, H)))
+              and then Seq_Self (S) = Seq_After (Old_S, H))
+       --  Ceil_Only: the CEIL entry at Off, the cell, the expiry.
+       and (if Result = Ceil_Only then Captured (Old_S, S, Old_F, F, Frame, H, Off))
+       --  T19, the step.
+       and Ceil_Step (Old_F, F, H, Result))
+   with Ghost, Pre => Frame'Length in Frame_Size;
+
+   --  The contract of Put_Ceil.
+   function Ceil_Done
+     (Old_S, S : Store; Old_F, F : Frontier.State; Frame : Byte_Array; H : Header;
+      Off : Natural; Result : Status) return Boolean
+   is (Valid (S, F)
+       and Same_Identity (Old_S, S)
+       and Pinned (S) = Pinned (Old_S)
+       and Off = Log_Length (Old_S)
+       and Log_Extends (Old_S, S)
+       and Result in OK | Ceil_Only | Log_Full
+       and (Result = Ceil_Only)
+             = (Raises_Ceil (Old_F, H)
+                and then not Log_Short (Old_S, Apply_Prefix + Frame'Length))
+       and (Result = Log_Full)
+             = (Raises_Ceil (Old_F, H)
+                and then Log_Short (Old_S, Apply_Prefix + Frame'Length))
+       and (if Result /= Ceil_Only then Unchanged (Old_F, F) and then S = Old_S)
+       and (if Result = Ceil_Only then Captured (Old_S, S, Old_F, F, Frame, H, Off))
+       and Ceil_Step (Old_F, F, H, Result))
    with Ghost, Pre => Frame'Length in Frame_Size;
 
    ---------------------------------------------------------------------------
@@ -586,6 +705,7 @@ package Kome.Store with SPARK_Mode is
      Global => null,
      Pre  => Is_Frontier (F)
        and then Count (F) = 0
+       and then not Has_Ceil (F)
        and then Kome.Keys.To_Key256 (Root_PK) = Frontier.Founding (F)
        and then Del_TTL in Del_TTL_Min .. Del_TTL_Max
        and then S.Log_Cap >= Header_Len
@@ -623,10 +743,38 @@ package Kome.Store with SPARK_Mode is
        and then Header_Of (Cid (S), Frame) = H,
      Post => Put_Done (S'Old, S, F'Old, F, Frame, H, Off, Result);
 
-   --  Compact the log (S14, S15, S16): HEADER ‖ one APPLY per held record
+   --  Record the ceiling of the roster frame that a peer sent as the `ceil`
+   --  of its HELLO (DESIGN.md §8; AUDIT.md H12). If the roster's ceiling is
+   --  above maxceil, the frame goes to the ceiling cell (a CEIL entry) and
+   --  the store expires at the new horizon: Ceil_Only. Otherwise nothing
+   --  changes: OK. The roster never enters a row here, whatever room its
+   --  signer's slice has: ROSTER_eff, the gate and the quarantine of this
+   --  replica do not change. Before the call, the caller decodes and
+   --  verifies Frame as a ROSTER and gives its header H. Off is the log
+   --  length before the call.
+   procedure Put_Ceil
+     (S      : in out Store;
+      F      : in out Frontier.State;
+      Frame  : in     Byte_Array;
+      H      : in     Header;
+      Off    :    out Log_Size;
+      Result :    out Status)
+   with
+     Global => null,
+     Pre  => Valid (S, F)
+       and then Frame'Length in Frame_Size
+       and then Verified (Cid (S), Root_Key (S), Frame)
+       and then Header_Of (Cid (S), Frame) = H
+       and then H.K = K_Roster,
+     Post => Ceil_Done (S'Old, S, F'Old, F, Frame, H, Off, Result);
+
+   --  Compact the log (S14, S15, S16): HEADER ‖ the CEIL of the cell's
+   --  record, if Has_Ceil (F) ‖ one APPLY per held record
    --  in row order (the authorization rows slot by slot, then the data
    --  row) ‖ SEQ (Seq_Self (S)). Each record gets the tag of its new place
-   --  (Frontier.Set_Tag); nothing else of F changes. Compact builds the new
+   --  (Frontier.Set_Tag, Set_Ceil_Tag); nothing else of F changes. A cell
+   --  whose ceiling a held roster has reached is kept (nothing clears the
+   --  cell). Compact builds the new
    --  log in Buf, the binding's buffer for the new file (it reads the old
    --  log in place), and copies only the new length back into the store.
    --  On OK, Buf (0 .. Log_Length (S) - 1) is the image of the new file,
@@ -674,7 +822,11 @@ package Kome.Store with SPARK_Mode is
         and then (for all J in 1 .. Data_Count (F) => Data_Held (F, J) = Data_Held (Old_F, J))
         and then (for all J in 1 .. Count (F) =>
                     Held (F, J) = Held (Old_F, J)
-                    and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J))));
+                    and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J)))
+        and then Has_Ceil (F) = Has_Ceil (Old_F)
+        and then (if Has_Ceil (F)
+                  then Ceil_Held (F) = Ceil_Held (Old_F)
+                       and then Tag_Len (Ceil_Tag (F)) = Tag_Len (Ceil_Tag (Old_F))));
 
    --  The copy order of Compact: authorization rows first (flat indices
    --  Data_Count + 1 .. Count), then the data row (1 .. Data_Count). Ord
@@ -688,10 +840,12 @@ package Kome.Store with SPARK_Mode is
      (Tag_Off (T) + Apply_Prefix + Tag_Len (T));
 
    --  The layout clause of Compact (ghost; its Post defines it): the
-   --  HEADER bytes of the old log; every record's APPLY before the SEQ
-   --  (seq_self) that ends the log; exactly Count + 1 entries. That each
-   --  tag holds its record's frame is Valid (Lemma_Tag); Compact writes the
-   --  APPLYs in copy order (Ord) with no gaps (tested, not stated).
+   --  HEADER bytes of the old log; the CEIL of the cell's record, if there
+   --  is one, right after the HEADER; every record's APPLY before the SEQ
+   --  (seq_self) that ends the log; exactly Count + 1 entries, and one more
+   --  with a cell. That each tag holds its record's frame is Valid
+   --  (Lemma_Tag, Lemma_Ceil_Tag); Compact writes the APPLYs in copy order
+   --  (Ord) with no gaps (tested, not stated).
    function Compact_Layout (Old_S : Store; Old_F : Frontier.State; S : Store; F : Frontier.State)
      return Boolean
    with
@@ -706,7 +860,10 @@ package Kome.Store with SPARK_Mode is
                     and then Tag_Len (Tag (F, J)) = Tag_Len (Tag (Old_F, J)))
         and then Op_At (S, Log_Length (S) - Seq_Len) = Op_Seq
         and then Code_At (S, Log_Length (S) - Seq_Len + 1) = Seq_Self (S)
-        and then Log_Entries (S) = Count (F) + 1);
+        and then Log_Entries (S) = Count (F) + 1 + (if Has_Ceil (F) then 1 else 0)
+        and then (if Has_Ceil (F)
+                  then Tag_Off (Ceil_Tag (F)) = Header_Len
+                       and then Tag_End (Ceil_Tag (F)) <= Log_Length (S) - Seq_Len));
 
    --  A reconciliation session takes (Pin) and releases (Unpin) a snapshot
    --  of the log (S21). Nothing else changes.
@@ -786,11 +943,16 @@ package Kome.Store with SPARK_Mode is
    --    Malformed  a HEADER that is not well formed; an entry that does not
    --               parse; a frame that is not a record frame or whose
    --               header is not canonical; an APPLY that Put_Frame would
-   --               refuse (Inadmissible, Dominated, Auth_Full).
+   --               refuse (Inadmissible, Dominated, Auth_Full) or capture
+   --               (Ceil_Only: a store writes a CEIL for it); a CEIL whose
+   --               frame is not a ROSTER, or whose ceiling is not above
+   --               maxceil unless it repeats the cell's record.
    --  Replay applies each APPLY in trusted mode (decode once, hash once, no
    --  signature check: Trusted_Frame), and an APPLY that Put_Frame accepts
    --  without a change (a duplicate, an expired DEL that drops nothing)
-   --  stays in the log. A SEQ raises seq_self.
+   --  stays in the log. A SEQ raises seq_self. A CEIL reruns the capture
+   --  of Put_Ceil (the rows are not tried); a CEIL that repeats the cell's
+   --  record stays in the log and changes nothing, wherever it stands.
    --  Valid_Length (AUDIT.md H23) is the length of the longest prefix of
    --  Input at an entry boundary that replays: on OK the whole input; on
    --  Malformed or No_Space from an entry, the start of the refused entry
@@ -862,9 +1024,25 @@ package Kome.Store with SPARK_Mode is
      Pre  => Valid (S, F) and then I <= Count (F),
      Post => Tag_Off (Tag (F, I)) >= Header_Len
        and then Has_Frame (S, Tag_Off (Tag (F, I)))
+       and then Op_At (S, Tag_Off (Tag (F, I))) = Op_Apply
        and then Len_At (S, Tag_Off (Tag (F, I))) = Tag_Len (Tag (F, I))
        and then Is_Record_Frame (Read_Frame (S, Tag_Off (Tag (F, I))))
        and then Header_Of (Cid (S), Read_Frame (S, Tag_Off (Tag (F, I)))) = Held (F, I);
+
+   --  AUDIT.md H12: the cell's tag points at a CEIL entry whose frame has
+   --  the cell's record as its header. The frame is a ROSTER frame, so it
+   --  is at most Kome.Records.Roster_Frame_Max bytes (what
+   --  Kome.Reconcile.Admit requires of the ceiling frame of a HELLO).
+   procedure Lemma_Ceil_Tag (S : Store; F : Frontier.State) with
+     Ghost, Global => null,
+     Pre  => Valid (S, F) and then Has_Ceil (F),
+     Post => Tag_Off (Ceil_Tag (F)) >= Header_Len
+       and then Has_Frame (S, Tag_Off (Ceil_Tag (F)))
+       and then Op_At (S, Tag_Off (Ceil_Tag (F))) = Op_Ceil
+       and then Len_At (S, Tag_Off (Ceil_Tag (F))) = Tag_Len (Ceil_Tag (F))
+       and then Is_Record_Frame (Read_Frame (S, Tag_Off (Ceil_Tag (F))))
+       and then Kome.Records.Is_Roster_Frame (Read_Frame (S, Tag_Off (Ceil_Tag (F))))
+       and then Header_Of (Cid (S), Read_Frame (S, Tag_Off (Ceil_Tag (F)))) = Ceil_Held (F);
 
    --  T11 (a): no held record is a DEL at or below the horizon.
    procedure Lemma_No_Expired (S : Store; F : Frontier.State; I : Held_Index) with
