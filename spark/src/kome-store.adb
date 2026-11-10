@@ -418,6 +418,22 @@ package body Kome.Store with SPARK_Mode is
         and then Frame_Is (Slice_At (Log, T), Cid, X);
    end Tag_OK;
 
+   --  The bounds of a tag that Tag_OK accepts, on their own: in the large
+   --  context of Lemma_Tag the provers do not find them in Tag_OK's Post
+   --  at the project's proof level.
+   procedure Lemma_Tag_OK_Bounds
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64)
+   with Ghost, Global => null,
+        Pre  => Log'First = 0 and then LL <= Log'Last
+                and then Tag_OK (Log, LL, Cid, X, T),
+        Post => Tag_Len (T) in Frame_Size
+                and then Tag_Off (T) >= Header_Len
+                and then Tag_Off (T) <= LL
+                and then LL - Tag_Off (T) >= Apply_Prefix + Tag_Len (T);
+
+   procedure Lemma_Tag_OK_Bounds
+     (Log : Byte_Array; LL : Log_Size; Cid : Hash256; X : Header; T : U64) is null;
+
    function Tags_OK (Log : Byte_Array; LL : Log_Size; Cid : Hash256; F : Frontier.State)
      return Boolean
    with Ghost, Global => null,
@@ -2844,6 +2860,7 @@ package body Kome.Store with SPARK_Mode is
    begin
       Lemma_Valid_Parts (S, F);
       pragma Assert (Tag_OK (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I)));
+      Lemma_Tag_OK_Bounds (S.Log, S.LL, S.Cid, Held (F, I), Tag (F, I));
       pragma Assert (Log_Length (S) = S.LL);
       pragma Assert (Tag_Off (Tag (F, I)) + Apply_Prefix + Tag_Len (Tag (F, I)) <= S.LL);
       pragma Assert (Tag_Off (Tag (F, I)) < Log_Length (S));
