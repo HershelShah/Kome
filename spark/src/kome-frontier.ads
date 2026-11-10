@@ -413,6 +413,33 @@ package Kome.Frontier with SPARK_Mode is
                                Dominates (R, Held (S'Old, I))
                                or else Holds (S, Held (S'Old, I))));
 
+   --  Give the record at flat index I the payload tag T (SIMPLIFY.md S14:
+   --  Kome.Store.Compact moves the record's frame in the log and writes
+   --  its new place). Only that tag changes: the rows, their records, the
+   --  views and every other tag stay. The lattice does not read tags, so
+   --  the state stays a frontier.
+   procedure Set_Tag (S : in out State; I : Held_Index; T : U64) with
+     Global => null,
+     Pre    => Is_Frontier (S) and then I <= Count (S),
+     Post   => Is_Frontier (S)
+       and then Founding (S) = Founding (S'Old)
+       and then Max_Ceil (S) = Max_Ceil (S'Old)
+       and then Data_Count (S) = Data_Count (S'Old)
+       and then Auth_Count (S) = Auth_Count (S'Old)
+       and then Count (S) = Count (S'Old)
+       and then Slots_Used (S) = Slots_Used (S'Old)
+       and then (for all K in Slot_Index =>
+                   Slot_Count (S, K) = Slot_Count (S'Old, K)
+                   and then Off (S, K) = Off (S'Old, K))
+       and then (for all K in 1 .. Slots_Used (S) =>
+                   Slot_Key (S, K) = Slot_Key (S'Old, K)
+                   and then (for all J in 1 .. Slot_Count (S, K) =>
+                               Auth_Held (S, K, J) = Auth_Held (S'Old, K, J)))
+       and then (for all J in 1 .. Data_Count (S) => Data_Held (S, J) = Data_Held (S'Old, J))
+       and then (for all J in 1 .. Count (S) =>
+                   Held (S, J) = Held (S'Old, J)
+                   and then Tag (S, J) = (if J = I then T else Tag (S'Old, J)));
+
    ---------------------------------------------------------------------
    --  Lemmas
    ---------------------------------------------------------------------
