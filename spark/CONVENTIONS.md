@@ -38,10 +38,15 @@ a bug in one of the two.
   - If a check failed, the main must end with `Set_Exit_Status (Failure)`.
   - Do not use a test framework.
 
-  The tests compile with `-gnata`, so every `Pre`, `Post`,
-  `Loop_Invariant`, `Assert` and ghost lemma also *executes* on the test
-  data. If the proof of a lemma is still open, the tests at least check the
-  lemma on examples.
+  The tests compile with `-gnata` (the default build mode,
+  `-XMode=check`), so every `Pre`, `Post`, `Loop_Invariant`, `Assert` and
+  ghost lemma also *executes* on the test data. If the proof of a lemma is
+  still open, the tests at least check the lemma on examples. The release
+  mode (`-XMode=release`, `MODE=release spark/check.sh`; SIMPLIFY.md S24)
+  ignores every assertion kind (`release.adc`), and CI builds and runs
+  every test main in it too. A check that a `Pre` refuses a call runs only
+  when `Contract_Mode.Contracts_On` (`tests/contract_mode.ads`), and the
+  main prints `SKIP <check>` for it in release mode.
 - Put known-answer vectors in `vectors/<name>.txt`, with one vector on each
   line. Separate the hex fields with spaces. You can use `#` comments. For
   standard algorithms (BLAKE2b, Ed25519, X25519), get the vectors from
@@ -94,11 +99,11 @@ a bug in one of the two.
      unfold them. Keep a *quantified* expression function (a set
      membership, the postcondition of a loop) private to its package. The
      prover instantiates a public one on every goal in every unit, and
-     unrelated goals time out. (`Kome.Registers` exports `In_W` and
-     `Extends` opaquely, with lemmas.) If a unit must see the definition,
+     unrelated goals time out. (`Kome.Frontier` exports the admission
+     views `Max_Ceil`, `In_W` and `W_Cap` opaquely, with `_Def` lemmas.) If a unit must see the definition,
      make it visible only to that unit and accept the cost there.
 - Write contracts, assertions and invariants with the public functions of a
-  private type (`Held`, `Count`, `Regs`), never with its fields. After every
+  private type (`Held`, `Count`, `Tag_Of`), never with its fields. After every
   state change, assert a "bridge"
   (`for all I => Held (S, I) = Held (Old, I)`). SMT provers instantiate a
   hypothesis only on terms that are already in the goal. The bridge makes
@@ -108,11 +113,19 @@ a bug in one of the two.
   element came from is first-order, and it proves. "Some index exists"
   inside "for all" frequently does not prove.
 - Code that touches a file or a clock declares it in `Global`/`Depends`.
-  `Open_From_Log` is `Global => null`. The log is append-only: DESIGN.md
-  §10.10 (a) rewrites no byte of it. The data capacity is a parameter of
-  each open, and the HEADER keeps the `data_cap` of the open that wrote
-  it, so the only writes are appends at `Log_Length` and the rename of
-  `Compact`.
+  `Open_From_Log` is `Global => null`: the log is a byte buffer that the
+  binding reads from and writes to the file. The log
+  (`kome-store.ads`, SIMPLIFY.md S15) is `HEADER ‖ (APPLY | SEQ)*`, with
+  `HEADER = "KOME" ‖ 01 ‖ root_pk[32] ‖ salt[16] ‖ del_ttl:u48` (59
+  bytes), `APPLY = 01 ‖ len:u24 ‖ frame` for each frame that `Put_Frame`
+  applied, and `SEQ = 02 ‖ seq:u48` for `seq_self`. The HEADER fixes the
+  collection and nothing else: it has no `data_cap` or slice field (the
+  data capacity is a parameter of each open), so no byte of a log is ever
+  rewritten. The only writes are appends at `Log_Length`. `Compact`
+  writes a new log (HEADER, one APPLY per held record, a SEQ entry) into
+  the caller's buffer, which the binding then puts in place of the file;
+  it is refused (`Busy`) while a reconciliation session pins the log
+  (`Pinned (S) > 0`).
 
 ## Proof hygiene
 
@@ -147,7 +160,7 @@ a bug in one of the two.
   each layer above it its own congruence lemma. gnatprove has no
   extensionality for the array argument of a function.
 - Do not put a conjunct about only the pre-state in a `Post`. Move it to the
-  caller's `Pre` or into a ghost lemma (`Lemma_Ends_Below`). Such a
+  caller's `Pre` or into a ghost lemma. Such a
   conjunct triggers `-gnatw.t`.
 - If a function calls a procedure, give the procedure `Always_Terminates`.
 - If a value comes from a secret and only contracts use it, make it a ghost
