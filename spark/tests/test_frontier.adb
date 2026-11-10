@@ -9,12 +9,12 @@
 --  (d) each refusal leaves the state unchanged (D11, T13);
 --  (e) capacity rows: a data flood or a full slice takes no room from a
 --      different row, and the founding key's REVOKE is held (E1, E2);
---  (f) expiry (D10): Expire and Apply_Expired;
+--  (f) expiry (D10): Expire;
 --  (g) convergence: the same set in several orders, with duplicates and
 --      records offered again, gives the same held set and views (T4);
 --  (h) the sorted data row (AUDIT.md G25): insertion in the middle, an
 --      entity with many fields, an entity's DEL at the start of its run,
---      replacement in place, and Expire / Apply_Expired keep the order;
+--      replacement in place, and Expire keeps the order;
 --  (i) payload tags, runs and slots (S14): a new record has its tag, the
 --      others keep theirs, a data Apply changes only its run and an
 --      authorization Apply only its slot.
@@ -248,9 +248,9 @@ procedure Test_Frontier with SPARK_Mode => Off is
       return S;
    end Run;
 
-   --  A State has a Register_File of Writers_Max keys (256 KiB). Under
-   --  -gnata, each Post evaluation copies states and registers, so the
-   --  checks run in a task with a large stack.
+   --  A State holds its rows inline, so it is large. Under -gnata, each
+   --  Post evaluation copies states, so the checks run in a task with a
+   --  large stack.
    procedure Run_All;
 
    task Runner with Storage_Size => 512 * 1024 * 1024;
@@ -543,38 +543,6 @@ begin
       Lemmas (S);
    end;
 
-   --  (f) Apply_Expired drops what the DEL dominates and does not hold it.
-   declare
-      S      : State := New_State;
-      Before : State := New_State;
-      P1 : constant Header := Put (1, 'a', V (100, 1, 1, 1));
-      P2 : constant Header := Put (1, 'b', V (150, 1, 2, 2));
-      P3 : constant Header := Put (2, 'a', V (120, 1, 3, 3));
-      D  : constant Header := Del (1, V (200, 1, 4, 4));
-      D0 : constant Header := Del (2, V (100, 1, 5, 5));
-   begin
-      App (S, Roster (Fnd, 1, 5000, 7), St);
-      App (S, Grant (Fnd, 1, 6), St);
-      App (S, P1, St);
-      App (S, P2, St);
-      App (S, P3, St);
-      Apply_Expired (S, D, St);
-      Check ("Apply_Expired drops the PUTs the DEL dominates and does not hold it",
-             St = OK and then not Holds (S, P1) and then not Holds (S, P2)
-             and then Holds (S, P3) and then not Holds (S, D)
-             and then Kome.Frontier.Count (S) = 3);
-      App (S, Del (2, V (130, 1, 7, 9)), St);
-      Check ("a held DEL drops its entity's PUT", St = OK and then not Holds (S, P3));
-      Before := S;
-      Apply_Expired (S, D0, St);
-      Check ("Apply_Expired of a dominated DEL is Dominated, unchanged",
-             St = Dominated and then Same_State (Before, S));
-      Apply_Expired (S, Del (3, V (9000, 1, 6, 8)), St);
-      Check ("Apply_Expired of an inadmissible DEL is Inadmissible",
-             St = Inadmissible and then Same_State (Before, S));
-      Lemmas (S);
-   end;
-
    --  (g) Convergence (T4): several orders and duplications of one set.
    declare
       R1  : constant Header := Roster (Fnd, 1, 5000, 1);
@@ -703,13 +671,15 @@ begin
              and then not Holds (S, Del (2, V (110, 1, 50, 900)))
              and then Data_Count (S) = 17 - 6 + 1 and then Row_Sorted (S));
 
-      --  An expired DEL of entity 3 drops its PUTs and is not held.
-      Apply_Expired (S, Del (3, V (120, 1, 52, 904)), St);
-      Check ("Apply_Expired drops the run of entity 3 and keeps the row sorted",
-             St = OK and then Data_Count (S) = 12 - 2 and then Row_Sorted (S)
+      --  A DEL of entity 3 replaces its run, then Expire removes it (the
+      --  path of a DEL that arrives expired: Kome.Store applies, then
+      --  expires).
+      App (S, Del (3, V (120, 1, 52, 904)), St);
+      Check ("a DEL replaces the run of entity 3 and keeps the row sorted",
+             St = OK and then Data_Count (S) = 12 - 2 + 1 and then Row_Sorted (S)
              and then Data_Held (S, Data_Count (S)).Ent = Ent (5));
       Expire (S, 200);
-      Check ("Expire removes the DEL and keeps the row sorted",
+      Check ("Expire removes the DELs and keeps the row sorted",
              Data_Count (S) = 9 and then Row_Sorted (S)
              and then Data_Held (S, 2).K = K_Put);
       Lemmas (S);

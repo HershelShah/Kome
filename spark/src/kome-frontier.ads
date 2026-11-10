@@ -1,6 +1,5 @@
 --  Kome.Frontier: the replica state of one collection and its operations
---  (DESIGN.md §3, §4, §7; Frontier.lean `State`, `adm`, `keep`, `applyA`,
---  `expire`).
+--  (DESIGN.md §3, §4, §7; Frontier.lean `F`, `adm`, `applyD`, `expire`).
 --
 --  The state is the frontier F: the held records, each with an opaque
 --  payload tag (below). Nothing else in the state is important.
@@ -54,17 +53,16 @@
 --  room, commit. Nothing changes before the room decision. On each
 --  refusal, nothing changes (T13): the Post says `Unchanged (S'Old, S)`.
 --
---  Expiry (D10, DESIGN.md §7, SIMPLIFY.md S7):
---    * `Expire (F, Hz)` removes the DELs with t <= Hz from the data row
---      (G1: it is scoped to data); Kome.Store computes Hz from Max_Ceil
---      and del_ttl.
---    * `Apply_Expired` applies a DEL that is already expired, for its
---      effect (drop what it dominates), and does not hold it.
---  The two do not change an authorization row.
+--  Expiry (D10, DESIGN.md §7, SIMPLIFY.md S7): `Expire (F, Hz)` removes
+--  the DELs with t <= Hz from the data row (G1: it is scoped to data) and
+--  does not change an authorization row; Kome.Store computes Hz from
+--  Max_Ceil and del_ttl. A DEL that arrives expired is applied by Apply
+--  and then removed by Expire (Lean `applyH`).
 --
 --  Theorems:
---    * Apply refines Frontier.lean `applyA` (keep is a filter of
---      held ++ [r]; nothing is lost except by domination);
+--    * Apply refines Frontier.lean `applyD` (OK: F (held ++ [r]) for an
+--      admitted r; Inadmissible: the state unchanged; nothing is lost
+--      except by domination);
 --    * T3 (the held set is its own frontier after each step);
 --    * T4' (the admission views only grow, Lemma_Views_Step);
 --    * T11 (a) (Expire leaves a frontier with no expired DEL and the same
@@ -185,9 +183,8 @@ package Kome.Frontier with SPARK_Mode is
 
    --  Some index of S holds X with the tag T (opaque; Lemma_Has_Tag_Def).
    --  On a frontier a record is held at one index, so T is then Tag_Of
-   --  (S, X) (Lemma_Has_Tag_Of). The Posts of Apply, Expire and
-   --  Apply_Expired state tags with it: it needs no uniqueness, so it is
-   --  linear to check.
+   --  (S, X) (Lemma_Has_Tag_Of). The Posts of Apply and Expire state
+   --  tags with it: it needs no uniqueness, so it is linear to check.
    function Has_Tag (S : State; X : Header; T : U64) return Boolean with Global => null;
 
    ---------------------------------------------------------------------
@@ -390,29 +387,6 @@ package Kome.Frontier with SPARK_Mode is
                    Expired (Data_Held (S'Old, I), Hz)
                    or else Holds (S, Data_Held (S'Old, I)));
 
-   --  A DEL that is already expired when it arrives (DESIGN.md §7 step 4):
-   --  applied for its effect, and not held. The result is never No_Space or
-   --  Auth_Full: it needs no room.
-   procedure Apply_Expired (S : in out State; R : Header; Result : out Status) with
-     Global => null,
-     Pre    => Is_Frontier (S) and then Canonical (R) and then R.K = K_Del,
-     Post   => Is_Frontier (S)
-       and then Founding (S) = Founding (S'Old)
-       and then Result in OK | Dominated | Inadmissible
-       and then (Result = Inadmissible) = not Admitted (S'Old, R)
-       and then (Result = Dominated) = (Admitted (S'Old, R) and then Dom (S'Old, R))
-       and then (if Result /= OK or else Holds (S'Old, R) then Unchanged (S'Old, S))
-       and then (if Result = OK and then not Holds (S'Old, R) then
-                   not Holds (S, R)
-                   and then Max_Ceil (S) = Max_Ceil (S'Old)
-                   and then (for all I in 1 .. Count (S) =>
-                               Holds (S'Old, Held (S, I))
-                               and then not Dominates (R, Held (S, I))
-                               and then Has_Tag (S'Old, Held (S, I), Tag (S, I)))
-                   and then (for all I in 1 .. Count (S'Old) =>
-                               Dominates (R, Held (S'Old, I))
-                               or else Holds (S, Held (S'Old, I))));
-
    --  Give the record at flat index I the payload tag T (SIMPLIFY.md S14:
    --  Kome.Store.Compact moves the record's frame in the log and writes
    --  its new place). Only that tag changes: the rows, their records, the
@@ -599,7 +573,7 @@ package Kome.Frontier with SPARK_Mode is
                          else W_Cap (Before, K));
 
    --  Two frontiers with the same authorization rows have the same
-   --  admission views (Expire and Apply_Expired give the hypothesis).
+   --  admission views (Expire gives the hypothesis).
    procedure Lemma_Same_Auth_Views (S1, S2 : State; K : Key256) with
      Ghost, Global => null,
      Pre  => Is_Frontier (S1) and then Is_Frontier (S2)
