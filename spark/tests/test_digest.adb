@@ -847,8 +847,8 @@ procedure Test_Digest with SPARK_Mode => Off is
    end Run_All;
 
 begin
-   --  A Kome.Frontier.State carries a register file of Writers_Max keys.
-   --  Under -gnata, each Post evaluation copies states, so the checks run
+   --  A Kome.Frontier.State holds Signers_Max * Slice_Max authorization
+   --  rows. Under -gnata, each Post evaluation copies states, so the checks run
    --  in a task with a large stack (as in test_frontier). The block waits
    --  for the task.
    declare

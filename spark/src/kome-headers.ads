@@ -230,7 +230,7 @@ package Kome.Headers with SPARK_Mode, Pure is
    --  is a grant of the same issuer and subject, with a cap at least equal
    --  to its own. The dominator of a REVOKE is a REVOKE of the same
    --  issuer and subject with a from_t at most its own.
-   procedure Lemma_Dominator_Keeps_Registers (Q, P : Header) with
+   procedure Lemma_Dominator_Same_Key (Q, P : Header) with
      Ghost, Global => null,
      Pre  => Dominates (Q, P),
      Post => (if Is_Auth (P) then Q.K = P.K)

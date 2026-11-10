@@ -314,7 +314,7 @@ procedure Test_Views with SPARK_Mode => Off is
 
    procedure Run_All;
 
-   --  A State has a Register_File of Writers_Max keys (256 KiB). Under
+   --  A State holds Signers_Max * Slice_Max authorization rows. Under
    --  -gnata, each Post evaluation copies states, so the checks run in a
    --  task with a large stack.
    task Runner with Storage_Size => 512 * 1024 * 1024;

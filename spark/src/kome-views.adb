@@ -1035,7 +1035,7 @@ package body Kome.Views with SPARK_Mode is
                   pragma Assert (Held (After, J) = Held (Before, I));
                end;
             else
-               Lemma_Dominator_Keeps_Registers (R, Held (Before, I));
+               Lemma_Dominator_Same_Key (R, Held (Before, I));
                pragma Assert (Held (After, JR) = R);
             end if;
             pragma Assert (Covered (After, Held (Before, I)));

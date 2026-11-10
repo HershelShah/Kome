@@ -112,7 +112,7 @@ begin
    Lemma_Equal_Gen_No_Dom (R2, R2F);
    Lemma_Equal_Gen_No_Dom (R2F, R2);
    Lemma_Roster_Dom (R2, R4);
-   Lemma_Dominator_Keeps_Registers (R4, R2);
+   Lemma_Dominator_Same_Key (R4, R2);
 
    --  Grants: keyed by (issuer, subject), ordered by h (D1′).
    Check ("grant: same issuer and subject, higher h dominates",
@@ -129,7 +129,7 @@ begin
           and then not Dominates (Grant (9, 1, 14, Cap => 100), Grant (9, 1, 13, Cap => 200))
           and then not Dominates (Grant (9, 1, 13, Cap => 200), Grant (9, 1, 14, Cap => 100)));
    Lemma_Grant_Dom (Grant (9, 1, 13, Cap => 200), Grant (9, 1, 14, Cap => 100));
-   Lemma_Dominator_Keeps_Registers (Grant (9, 1, 14, Cap => 200), Grant (9, 1, 13, Cap => 100));
+   Lemma_Dominator_Same_Key (Grant (9, 1, 14, Cap => 200), Grant (9, 1, 13, Cap => 100));
 
    --  REVOKEs (S5): keyed by (issuer, subject); a lower from_t wins, an
    --  equal from_t is decided by h.
@@ -149,7 +149,7 @@ begin
              (if X.K /= K_Revoke then not Dominates (X, Revoke (9, 1, 50, 25))))
           and then (for all X of Grid =>
                       (if X.K /= K_Revoke then not Dominates (Revoke (9, 1, 0, 17), X))));
-   Lemma_Dominator_Keeps_Registers (Revoke (9, 1, 0, 17), Revoke (9, 1, 50, 25));
+   Lemma_Dominator_Same_Key (Revoke (9, 1, 0, 17), Revoke (9, 1, 50, 25));
    Check ("data: a newer DEL dominates the entity's PUTs",
           Dominates (Del (1, 150, 2, 1, 4), Put (1, 100, 1, 1, 1))
           and then not Dominates (Del (1, 150, 2, 1, 4), Put (1, 200, 1, 2, 2)));
@@ -186,7 +186,7 @@ begin
             Lemma_Equal_Gen_No_Dom (X, Y);
          end if;
          if Dominates (Y, X) then
-            Lemma_Dominator_Keeps_Registers (Y, X);
+            Lemma_Dominator_Same_Key (Y, X);
             Lemma_Same_Row (Y, X);
          end if;
          for Z of Grid loop

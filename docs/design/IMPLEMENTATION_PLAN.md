@@ -121,8 +121,8 @@ No package has an unproved check. In this section, a gap is one of these:
   - `kome-frontier.adb`: `Pre => Ignore` around `Lemma_Item`,
     `Lemma_Distinct_Held` and `Lemma_Tag_Of_P`; `Loop_Invariant` and
     `Assert` in `Lemma_All_Flat`, `Lemma_Classify`, `Lemma_Step_Flat`,
-    `Lemma_Step_Tags`, `Lemma_Distinct_Held`, `Lemma_Data_Flat`,
-    `Lemma_Src_Split` and `Lemma_Sub_Antichain`; `Loop_Invariant` in
+    `Lemma_Step_Tags`, `Lemma_Distinct_Held` and `Lemma_Data_Flat`;
+    `Loop_Invariant` in
     `Lemma_Off_Mono`, `Find_Held`, `Max_Ceil_Impl`, `W_Cap_Impl`,
     `Lemma_Retag_Data` and `Lemma_Retag_Flat`.
   - `kome-store.adb`: `Loop_Invariant` in `Lemma_Tags_Kept`,

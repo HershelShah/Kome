@@ -29,7 +29,7 @@ package body Kome.Headers with SPARK_Mode is
 
    procedure Lemma_Grant_Dom (P, Q : Header) is null;
 
-   procedure Lemma_Dominator_Keeps_Registers (Q, P : Header) is null;
+   procedure Lemma_Dominator_Same_Key (Q, P : Header) is null;
 
    procedure Lemma_Same_Row (Q, P : Header) is null;
 
