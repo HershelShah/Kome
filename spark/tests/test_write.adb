@@ -20,7 +20,10 @@
 --        nothing is flagged;
 --    (f) H18: the same-pace clone. Receive flags an own-key record that
 --        changes the pair; a duplicate, a dominated own record and another
---        key's record are not flagged; Clone_Pair and Clone_View hold.
+--        key's record are not flagged; Clone_Pair and Clone_View hold;
+--    (g) AUDIT.md H12: Receive of a roster that finds no room in the
+--        authorization rows and raises maxceil returns Ceil_Only, with no
+--        flag.
 --  The build uses -gnata, so every Pre / Post runs on these stores.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -377,6 +380,59 @@ procedure Test_Write with SPARK_Mode => Off is
       Recv (S1, L1, Put_Of (5, 'a', 1 * Day, 8, [1], Dev_SK, Dev_PK), St, Fl);
       Check ("(f) a dominated own record: Dominated, not flagged",
              St = Dominated and then not Fl);
+   end;
+
+   ---------------------------------------------------------------------------
+   --  (g) W1 (AUDIT.md H12): Receive of a roster that the authorization
+   --  rows have no room for and whose ceiling is above maxceil returns
+   --  Ceil_Only, with no flag; its Post (Put_Done) executes. The rows are
+   --  filled through the slot table (15 certified roots take the slots
+   --  2 .. 16, so the roster's signer has none): a full slice of 512
+   --  records is too slow under -gnata (see test_store.adb).
+   ---------------------------------------------------------------------------
+   declare
+      L   : Lattice (8);
+      S   : Store_T (Log_Cap_A);
+      St  : Status;
+      Fl  : Boolean;
+      LL  : Log_Size;
+      Cap_Q : constant U48 := 40 * Day;
+      Q_SK  : Kome.Crypto.Secret_Key;
+      Q_PK  : Pubkey;
+   begin
+      Setup (S, L, Dev_PK);
+      for I in 1 .. Signers_Max - 1 loop
+         Kome.Crypto.Key_Pair (Seed_Of (100 + I), Q_SK, Q_PK);
+         declare
+            X : Revoke_Record :=
+              Make_Revoke (Cid_A, Q_PK, Cap_Q, Make_Cert (Root_SK, Cid_A, Q_PK, Cap_Q),
+                           Stranger_PK, 0);
+         begin
+            Sign (Cid_A, X, Q_SK);
+            Recv (S, L, Encode (X));
+         end;
+      end loop;
+      Kome.Crypto.Key_Pair (Seed_Of (100 + Signers_Max), Q_SK, Q_PK);
+      declare
+         R : Roster_Record :=
+           Make_Roster (Cid_A, Q_PK, Cap_Q, Make_Cert (Root_SK, Cid_A, Q_PK, Cap_Q),
+                        Good_DH (77), 1, 35 * Day, Member (Dev_PK, 11));
+      begin
+         Sign (Cid_A, R, Q_SK);
+         LL := Log_Length (S);
+         Recv (S, L, Encode (R), St, Fl);
+         Check ("(g) W1: Receive of a roster with no slot and a higher ceiling: Ceil_Only,"
+                & " not flagged",
+                St = Ceil_Only and then not Fl and then Max_Ceil (L) = 35 * Day
+                and then Has_Ceil (L) and then Ceil_Held (L) = Header_Of (Cid_A, Encode (R))
+                and then not Holds (L, Header_Of (Cid_A, Encode (R)))
+                and then Log_Byte (S, LL) = Op_Ceil
+                and then Log_Length (S) = LL + Apply_Prefix + Encode (R)'Length);
+         LL := Log_Length (S);
+         Recv (S, L, Encode (R), St, Fl);
+         Check ("(g) W1: the same roster again: Auth_Full, nothing appended, not flagged",
+                St = Auth_Full and then not Fl and then Log_Length (S) = LL);
+      end;
    end;
 
    if Failed then

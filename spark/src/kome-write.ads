@@ -23,9 +23,10 @@
 --    * Inadmissible (the device key is not a writer) and Seq_Exhausted
 --      (seq_self is at 2^48 - 1, a clone alarm): Choose's refusals.
 --    * No_Space, Log_Full: Put_Frame's refusals for the data row and the
---      log. (Auth_Full is only for authorization records, which this path
---      does not write; Dominated cannot occur: an OK choice is above every
---      record that can dominate it, Kome.Emit.Lemma_OK_Undominated.)
+--      log. (Auth_Full and Ceil_Only are only for authorization records,
+--      which this path does not write; Dominated cannot occur: an OK choice
+--      is above every record that can dominate it,
+--      Kome.Emit.Lemma_OK_Undominated.)
 --    * Malformed: the signed frame failed Write's own check (below).
 --  Every outcome except OK changes nothing.
 --  One advisory flag, Clamped (H22): t_emit < max (now, floor_t + 1), the
@@ -52,7 +53,15 @@
 --    * Receive (H18): Put_Frame for a frame from a peer, plus the flag
 --      Clone_Suspected: the record is the device's own data record and
 --      Put_Frame changed the pair with it (an own-key record that was not
---      held, not dominated and not a no-op).
+--      held, not dominated and not a no-op). Receive can return Ceil_Only
+--      (AUDIT.md H12: a ROSTER that the authorization rows had no room for
+--      and whose ceiling the store recorded in the ceiling cell); it is a
+--      change of the pair, not a refusal, and it never sets the flag (a
+--      roster is not a data record).
+--  Kome.Store.Put_Ceil, the entry point for the ceiling frame of a peer's
+--  HELLO, has no wrapper here: Receive exists for the H18 flag, which is
+--  about the device's own data records. The session caller calls
+--  Kome.Store.Put_Ceil directly (kome-reconcile.ads).
 --
 --  CLONE_SUSPECTED (DESIGN.md §5, H8, H18) is shown when the Clone_Suspected
 --  of Receive is set, or when Clone_View (F, self, seq_self) holds: a held
