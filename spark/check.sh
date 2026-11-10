@@ -8,6 +8,14 @@
 #   spark/check.sh all             # every module of --list, then the sum
 #   spark/check.sh --list          # print the module list, one per line
 #   PROVE=0 spark/check.sh ...     # skip the proof step
+#   MODE=release spark/check.sh ...  # build and run the test mains in the
+#                                  # release mode of kome_spark.gpr
+#                                  # (-XMode=release: no -gnata, every
+#                                  # assertion kind Ignore, -O2; binaries
+#                                  # in bin/release/<module>). MODE=check,
+#                                  # the default, is -XMode=check (-gnata).
+#                                  # The proof step does not depend on the
+#                                  # mode: it always proves the sources.
 # A module is a child package Kome.<Module> in src/kome-<module>.adb with
 # its test main in tests/test_<module>.adb. The module list is the union of
 # the two sets, plus kome. A name that is on one side only (a source
@@ -60,9 +68,16 @@ if [ "${1:-}" = "--list" ]; then
   exit 0
 fi
 if [ -z "${1:-}" ]; then
-  echo "usage: $0 <module> | kome | all | --list" >&2
+  echo "usage: [PROVE=0] [MODE=check|release] $0 <module> | kome | all | --list" >&2
   exit 2
 fi
+MODE="${MODE:-check}"
+case "$MODE" in
+  check) BIN=bin ;;
+  release) BIN=bin/release ;;
+  *) echo "== MODE must be check or release, not '$MODE'" >&2; exit 2 ;;
+esac
+export MODE
 
 if ! command -v gnatprove >/dev/null 2>&1 || ! command -v gprbuild >/dev/null 2>&1; then
   if [ -z "${KOME_IN_NIX:-}" ]; then
@@ -131,13 +146,13 @@ run_one() {
     echo "== kome: root package (no test main), unit $unit"
   else
     unit="kome-$m.adb"
-    echo "== $m: build"
-    gprbuild -q -p -P kome_spark.gpr "tests/test_$m.adb" -XKOME_OBJ="$m"
-    echo "== $m: run"
-    "./bin/$m/test_$m"
+    echo "== $m: build ($MODE mode)"
+    gprbuild -q -p -P kome_spark.gpr "tests/test_$m.adb" -XKOME_OBJ="$m" -XMode="$MODE"
+    echo "== $m: run ($MODE mode)"
+    "./$BIN/$m/test_$m"
     echo "== $m: unbound monocypher symbols"
     local linked
-    linked="$(nm --defined-only "./bin/$m/test_$m" | awk '{ print $NF }' \
+    linked="$(nm --defined-only "./$BIN/$m/test_$m" | awk '{ print $NF }' \
       | grep -E "$UNBOUND_RE" || true)"
     if [ -n "$linked" ]; then
       echo "== $m: unbound monocypher symbols are linked:"
@@ -160,7 +175,7 @@ run_one() {
     mkdir -p obj
     exec 9>"${KOME_PROVE_LOCK:-/tmp/kome-prove.lock}"
     if command -v flock >/dev/null 2>&1; then flock 9; fi
-    gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -u "$unit" \
+    gnatprove -P kome_spark.gpr -XKOME_OBJ="$m" -XMode=check -u "$unit" \
       --report=fail --warnings=continue
     exec 9>&-
     # gnatprove exits 0 even with unproved checks. Thus read the summary,
@@ -173,7 +188,11 @@ run_one() {
       echo "== $m: $unproved UNPROVED checks"; return 1
     fi
   else
-    echo "== $m: proof skipped (contracts checked at run time via -gnata)"
+    if [ "$MODE" = check ]; then
+      echo "== $m: proof skipped (contracts checked at run time via -gnata)"
+    else
+      echo "== $m: proof skipped (release mode: contracts not evaluated)"
+    fi
   fi
 }
 
@@ -187,7 +206,7 @@ if [ "$1" = "all" ]; then
     if ! "$SELF" "$m"; then failed="$failed $m"; fi
   done
   if [ -n "$failed" ]; then echo "== FAILED:$failed"; exit 1; fi
-  echo "== all modules green"
+  echo "== all modules green ($MODE mode)"
 else
   run_one "$1"
 fi

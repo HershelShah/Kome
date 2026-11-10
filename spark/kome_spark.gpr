@@ -3,12 +3,53 @@
 --  (check.sh does this). KOME_OBJ gives each module its own object
 --  directory. Thus several modules can build at the same time, and they do
 --  not race on .ali files.
+--
+--  Build modes (SIMPLIFY.md S24), the scenario variable Mode:
+--    -XMode=check    the default: every contract, ghost call, loop
+--                    invariant and assertion executes (-gnata). The tests
+--                    and gnatprove use this mode.
+--    -XMode=release  no -gnata, and release.adc sets Assertion_Policy
+--                    (Ignore) for every assertion kind (Pre, Post, Ghost,
+--                    Loop_Invariant, Assert, Type_Invariant, Predicate and
+--                    the others): the proof discharges them, so the
+--                    binary does not evaluate them, and ghost code is not
+--                    compiled. The language run-time checks stay on.
+--  A release build has its own object and exec directories
+--  (obj/release/<KOME_OBJ>, bin/release/<KOME_OBJ>), so the two modes of
+--  one module never share a .ali file.
 project Kome_Spark is
+   type Mode_Type is ("check", "release");
+   Mode : Mode_Type := external ("Mode", "check");
+
+   Obj_Name := external ("KOME_OBJ", "default");
+
    for Languages use ("Ada", "C");
    for Source_Dirs use ("src", "tests", "../third_party/monocypher");
-   for Object_Dir use "obj/" & external ("KOME_OBJ", "default");
-   for Exec_Dir use "bin/" & external ("KOME_OBJ", "default");
+   case Mode is
+      when "check" =>
+         for Object_Dir use "obj/" & Obj_Name;
+         for Exec_Dir use "bin/" & Obj_Name;
+      when "release" =>
+         for Object_Dir use "obj/release/" & Obj_Name;
+         for Exec_Dir use "bin/release/" & Obj_Name;
+   end case;
    for Create_Missing_Dirs use "True";
+
+   --  The switches that both modes share.
+   Ada_Common :=
+     ("-gnat2022", "-gnatwa", "-gnatw.P", "-gnatf", "-g",
+      "-gnatVa", "-gnato", "-ffunction-sections", "-fdata-sections");
+
+   package Builder is
+      case Mode is
+         when "check" =>
+            null;
+         when "release" =>
+            --  Applies to every Ada unit of the closure, the test mains
+            --  included.
+            for Global_Configuration_Pragmas use "release.adc";
+      end case;
+   end Builder;
 
    package Compiler is
       --  -ffunction-sections and -fdata-sections put each function and
@@ -18,9 +59,14 @@ project Kome_Spark is
       --  stay unmodified (third_party/monocypher/README pins them).
       --  There is no -fPIC: nothing builds a shared library until the
       --  phase-9 library project exists.
-      for Default_Switches ("Ada") use
-        ("-gnat2022", "-gnata", "-gnatwa", "-gnatw.P", "-gnatf", "-g", "-O1",
-         "-gnatVa", "-gnato", "-ffunction-sections", "-fdata-sections");
+      case Mode is
+         when "check" =>
+            for Default_Switches ("Ada") use Ada_Common & ("-gnata", "-O1");
+         when "release" =>
+            --  -gnatwF: a formal that only a contract or a ghost call
+            --  reads is unreferenced once they are ignored.
+            for Default_Switches ("Ada") use Ada_Common & ("-O2", "-gnatwF");
+      end case;
       for Default_Switches ("C") use
         ("-O2", "-std=c99", "-ffunction-sections", "-fdata-sections");
    end Compiler;

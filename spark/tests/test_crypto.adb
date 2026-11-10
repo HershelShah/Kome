@@ -26,6 +26,7 @@ with Ada.Exceptions;
 with Ada.Assertions;
 with Ada.Strings.Fixed;
 with Ada.Numerics.Discrete_Random;
+with Contract_Mode;      use Contract_Mode;
 with Kome;               use Kome;
 with Kome.Crypto;        use Kome.Crypto;
 
@@ -1292,20 +1293,28 @@ procedure Test_Crypto with SPARK_Mode => Off is
       function R11 is new Refused (Hedge_Default_Key);
       function R12 is new Refused (Hedge_Empty_Label);
    begin
-      Check ("hedge_invalid_key_refused", R11);
-      Check ("hedge_empty_label_refused", R12);
-      Check ("key_pair_zero_seed_refused", R10);
+      --  The refusals by precondition run only in the check mode
+      --  (Contract_Mode).
+      if Contracts_On then
+         Check ("hedge_invalid_key_refused", R11);
+         Check ("hedge_empty_label_refused", R12);
+         Check ("key_pair_zero_seed_refused", R10);
+      end if;
       Check ("context_default_inactive",
              not Is_Active (Ctx) and then Absorbed (Ctx) = 0);
-      Check ("update_inactive_refused", R1);
-      Check ("final_inactive_refused", R2);
-      Check ("update_after_final_refused", R3);
-      Check ("lock_length_mismatch_refused", R4);
-      Check ("unlock_length_mismatch_refused", R5);
-      Check ("sign_default_key_refused", R6);
-      Check ("sign_after_wipe_refused", R7);
-      Check ("update_after_wipe_refused", R8);
-      Check ("hash_over_max_data_len_refused", R9);
+      if Contracts_On then
+         Check ("update_inactive_refused", R1);
+         Check ("final_inactive_refused", R2);
+         Check ("update_after_final_refused", R3);
+         Check ("lock_length_mismatch_refused", R4);
+         Check ("unlock_length_mismatch_refused", R5);
+         Check ("sign_default_key_refused", R6);
+         Check ("sign_after_wipe_refused", R7);
+         Check ("update_after_wipe_refused", R8);
+         Check ("hash_over_max_data_len_refused", R9);
+      else
+         Skip ("12 refusals by precondition of Kome.Crypto");
+      end if;
 
       --  Blake2b_256 accepts the largest buffer that the bound admits, and
       --  the one-shot, procedure and incremental forms agree on it.

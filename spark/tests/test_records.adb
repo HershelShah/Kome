@@ -31,6 +31,7 @@ with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Directories;
 with Ada.Assertions;
+with Contract_Mode;    use Contract_Mode;
 with Kome;             use Kome;
 with Kome.Headers;     use Kome.Headers;
 with Kome.Keys;        use Kome.Keys;
@@ -1253,18 +1254,21 @@ begin
                declare
                   Hit : Natural := 0;
                begin
-                  begin
-                     Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, K);
-                  exception
-                     when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
-                  end;
-                  begin
-                     Cert_Sink := Make_Cert (Root_SK, Cid_A, K, Cap_2);
-                  exception
-                     when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
-                  end;
-                  if Hit /= 2 then
-                     Ok_Pre := False;
+                  --  Only in the check mode (Contract_Mode).
+                  if Contracts_On then
+                     begin
+                        Y := Make_Grant (Cid_A, Root_PK, Founding_Cap, Cert_R, K);
+                     exception
+                        when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
+                     end;
+                     begin
+                        Cert_Sink := Make_Cert (Root_SK, Cid_A, K, Cap_2);
+                     exception
+                        when Ada.Assertions.Assertion_Error => Hit := Hit + 1;
+                     end;
+                     if Hit /= 2 then
+                        Ok_Pre := False;
+                     end if;
                   end if;
                end;
             end loop;
@@ -1278,9 +1282,14 @@ begin
             Check ("small-order, zero-seed or non-canonical founding key: not well-formed"
                    & " (ROSTER, REVOKE)",
                    Ok_Roster);
-            Check ("Make_Grant and Make_Cert refuse a small-order, zero-seed or non-canonical"
-                   & " key (Pre)",
-                   Ok_Pre);
+            if Contracts_On then
+               Check ("Make_Grant and Make_Cert refuse a small-order, zero-seed or non-canonical"
+                      & " key (Pre)",
+                      Ok_Pre);
+            else
+               Skip ("Make_Grant and Make_Cert refuse a small-order, zero-seed or non-canonical"
+                     & " key (Pre)");
+            end if;
             --  The same 10 keys as a REVOKE subject (sign_pk) and as a
             --  ROSTER member sign_pk: refused by bytes, under a genuine
             --  signature of the founding key. Make_Revoke refuses them as
@@ -1320,12 +1329,14 @@ begin
                   then
                      Ok_Rv := False;
                   end if;
-                  begin
-                     Rv_Sink := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, K, 0);
-                     Ok_Rv_Pre := False;
-                  exception
-                     when Ada.Assertions.Assertion_Error => null;
-                  end;
+                  if Contracts_On then
+                     begin
+                        Rv_Sink := Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, K, 0);
+                        Ok_Rv_Pre := False;
+                     exception
+                        when Ada.Assertions.Assertion_Error => null;
+                     end;
+                  end if;
                   --  Member 2's sign_pk is K; member 1 stays usable.
                   declare
                      Mem : Byte_Array := Base_Mem;
@@ -1350,9 +1361,14 @@ begin
                Check ("REVOKE of a small-order, zero-seed or non-canonical subject: Malformed"
                       & " (10 keys), record unchanged",
                       Ok_Rv);
-               Check ("Make_Revoke refuses a small-order, zero-seed or non-canonical subject"
-                      & " (Pre)",
-                      Ok_Rv_Pre);
+               if Contracts_On then
+                  Check ("Make_Revoke refuses a small-order, zero-seed or non-canonical subject"
+                         & " (Pre)",
+                         Ok_Rv_Pre);
+               else
+                  Skip ("Make_Revoke refuses a small-order, zero-seed or non-canonical subject"
+                        & " (Pre)");
+               end if;
                Check ("ROSTER with a small-order, zero-seed or non-canonical member sign_pk:"
                       & " Malformed (10 keys)",
                       Ok_Mem);
