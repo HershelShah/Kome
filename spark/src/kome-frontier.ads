@@ -872,7 +872,23 @@ private
    type Entry_Array is array (Held_Index range <>) of Entry_Rec;
 
    subtype Slice_Pos is Positive range 1 .. Slice_Max;
-   type Auth_Matrix is array (Slot_Index, Slice_Pos) of Entry_Rec;
+
+   --  Rows 1 .. Signers_Max of the matrix are the slots. Row Cell_Row is
+   --  not a slot: its first position holds the record of the ceiling cell
+   --  (AUDIT.md H12), the roster with the largest ceiling that reached
+   --  this replica without entering a slot, with its payload tag
+   --  (Kome.Store: the place of its CEIL entry in the log). The rest of
+   --  the row is not used. No row view reads row Cell_Row: every
+   --  quantifier over the slots ranges over Slot_Index.
+   --  The cell is a matrix position, not a component of its own, for the
+   --  proof: with one more component that holds a Header (a record with
+   --  a Header, an Entry_Rec, or a one-element array of either) in
+   --  Auth_Rows, gnatprove 14 at --level=3 no longer proves the data-row
+   --  and slot procedures of the body (Expire and Lemma_Same_Auth_Views
+   --  are the smallest cases), although they do not read the cell. With
+   --  the matrix one row longer they prove as before.
+   Cell_Row : constant := 0;
+   type Auth_Matrix is array (Slot_Number, Slice_Pos) of Entry_Rec;
    type Slot_Counts is array (Slot_Index) of Slice_Count;
    type Slot_Keys   is array (Slot_Index) of Key256;
    --  Offs (K) <= (K - 1) * Slice_Max (Lemma_Frontier_Shape); the total
@@ -881,27 +897,15 @@ private
    subtype Auth_Total is Natural range 0 .. Signers_Max * Slice_Max;
    type Slot_Offs   is array (Slot_Index) of Off_Value;
 
-   --  The ceiling cell (AUDIT.md H12): the roster with the largest ceiling
-   --  that reached this replica without entering a row, and its payload
-   --  tag (Kome.Store: the place of its CEIL entry in the log).
-   --  The header and the tag are two components, not one Entry_Rec: with
-   --  an Entry_Rec as a record component of Auth_Rows, gnatprove 14 no
-   --  longer proves the row lemmas of the body (Lemma_Same_Auth_Views is
-   --  the smallest case), although no row lemma reads the cell.
-   type Ceil_Cell is record
-      Present : Boolean := False;
-      Hdr     : Header;
-      Tag     : U64 := 0;
-   end record;
-
    --  The authorization rows:
    --    * one row of Slice_Max records for each signer slot;
    --    * the number of records in each row (NA);
    --    * the signer of each slot (Keys);
    --    * the number of used slots;
    --    * the offsets of the flat view, and the total;
-   --    * the ceiling cell (C). It is here, not beside the rows, so that
-   --      Max_Ceil stays a function of this record. No row view reads it.
+   --    * the ceiling cell: Has_Cell, and its record in H (Cell_Row, 1).
+   --      It is here, not beside the rows, so that Max_Ceil stays a
+   --      function of this record. No row view reads it.
    --  They are a separate record, so an operation on the data row keeps
    --  this component equal as a whole (then the prover needs no frame
    --  lemma).
@@ -912,7 +916,8 @@ private
       NSlots : Slot_Number := 0;
       Offs   : Slot_Offs   := [others => 0];
       NAuth  : Auth_Total  := 0;
-      C      : Ceil_Cell;
+      --  The ceiling cell holds a record (it is in H (Cell_Row, 1)).
+      Has_Cell : Boolean := False;
    end record;
 
    --  Records in slot K.
@@ -950,9 +955,9 @@ private
 
    function Auth_Count (S : State) return Held_Count is (S.A.NAuth);
 
-   function Has_Ceil (S : State) return Boolean is (S.A.C.Present);
-   function Ceil_Held (S : State) return Header is (S.A.C.Hdr);
-   function Ceil_Tag (S : State) return U64 is (S.A.C.Tag);
+   function Has_Ceil (S : State) return Boolean is (S.A.Has_Cell);
+   function Ceil_Held (S : State) return Header is (S.A.H (Cell_Row, 1).Hdr);
+   function Ceil_Tag (S : State) return U64 is (S.A.H (Cell_Row, 1).Tag);
 
    function Count (S : State) return Held_Count is
      (Data_Count (S) + Auth_Count (S));

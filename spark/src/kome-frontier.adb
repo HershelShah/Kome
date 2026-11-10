@@ -402,18 +402,63 @@ package body Kome.Frontier with SPARK_Mode is
    end Auth_Views;
    use Auth_Views;
 
-   --  The ceiling of the cell, 0 if it is empty (Ceil_Value, on the rows
-   --  record).
-   function Cell_Ceil (A : Auth_Rows) return U48 is
-     (if A.C.Present then Ceil_Of (A.C.Hdr) else 0);
+   --  The two row records have the same ceiling cell, tag included.
+   function Cell_Eq (A1, A2 : Auth_Rows) return Boolean is
+     (A1.Has_Cell = A2.Has_Cell and then A1.H (Cell_Row, 1) = A2.H (Cell_Row, 1))
+   with Ghost;
 
-   --  The cell, if it holds a record, holds a canonical roster with a
-   --  ceiling of at least 1. There is no relation between the cell and the
-   --  rows.
-   function Cell_OK (A : Auth_Rows) return Boolean is
-     (if A.C.Present
-      then A.C.Hdr.K = K_Roster and then Canonical (A.C.Hdr)
-           and then A.C.Hdr.V.T >= 1);
+   --  The two views of the ceiling cell that the invariant and maxceil
+   --  read, opaque to the rest of this body like the row views above:
+   --  their definitions reach a proof only through Lemma_Cell_Def, so the
+   --  row proofs carry two atoms and not the cell's header.
+   package Cell_Views with SPARK_Mode is
+
+      --  The ceiling of the cell, 0 if it is empty (Ceil_Value, on the
+      --  rows record).
+      function Cell_Ceil (A : Auth_Rows) return U48 with
+        Global => null,
+        Post   => (if not A.Has_Cell then Cell_Ceil'Result = 0);
+
+      --  The cell, if it holds a record, holds a canonical roster with a
+      --  ceiling of at least 1. There is no relation between the cell and
+      --  the slots.
+      function Cell_OK (A : Auth_Rows) return Boolean with
+        Global => null,
+        Post   => (if not A.Has_Cell then Cell_OK'Result);
+
+      procedure Lemma_Cell_Def (A : Auth_Rows) with
+        Ghost, Global => null,
+        Post => Cell_Ceil (A) = (if A.Has_Cell then Ceil_Of (A.H (Cell_Row, 1).Hdr) else 0)
+                and then Cell_OK (A)
+                         = (if A.Has_Cell
+                            then A.H (Cell_Row, 1).Hdr.K = K_Roster
+                                 and then Canonical (A.H (Cell_Row, 1).Hdr)
+                                 and then A.H (Cell_Row, 1).Hdr.V.T >= 1);
+
+      --  The same cell has the same views.
+      procedure Lemma_Cell_Eq (A1, A2 : Auth_Rows) with
+        Ghost, Global => null,
+        Pre  => Cell_Eq (A1, A2),
+        Post => Cell_Ceil (A1) = Cell_Ceil (A2) and then Cell_OK (A1) = Cell_OK (A2);
+
+   end Cell_Views;
+
+   package body Cell_Views with SPARK_Mode is
+
+      function Cell_Ceil (A : Auth_Rows) return U48 is
+        (if A.Has_Cell then Ceil_Of (A.H (Cell_Row, 1).Hdr) else 0);
+
+      function Cell_OK (A : Auth_Rows) return Boolean is
+        (if A.Has_Cell
+         then A.H (Cell_Row, 1).Hdr.K = K_Roster and then Canonical (A.H (Cell_Row, 1).Hdr)
+              and then A.H (Cell_Row, 1).Hdr.V.T >= 1);
+
+      procedure Lemma_Cell_Def (A : Auth_Rows) is null;
+
+      procedure Lemma_Cell_Eq (A1, A2 : Auth_Rows) is null;
+
+   end Cell_Views;
+   use Cell_Views;
 
    --  Max_Ceil_A is the maximum over the rows; it never reads the cell.
    function Held_Ceil (S : State) return U48 is (Max_Ceil_A (S.A));
@@ -507,7 +552,7 @@ package body Kome.Frontier with SPARK_Mode is
       and then Old.A.NAuth = Upd.A.NAuth);
 
    function Unchanged (Old, Upd : State) return Boolean is
-     (Same_Held (Old, Upd) and then Upd.A.C = Old.A.C);
+     (Same_Held (Old, Upd) and then Cell_Eq (Old.A, Upd.A));
 
    ---------------------------------------------------------------------
    --  Lemmas on the flat view
@@ -1042,8 +1087,9 @@ package body Kome.Frontier with SPARK_Mode is
    --    * no other slot changes;
    --    * slot K0 keeps some of its old records (Src) and ends in R, with
    --      the tag Tg;
-   --    * an old record of slot K0 is kept (Dst) or dominated by R;
-   --    * the ceiling cell is the same.
+   --    * an old record of slot K0 is kept (Dst) or dominated by R.
+   --  (It does not speak of the ceiling cell: the two lemmas that need it
+   --  take the cell's views as separate hypotheses.)
    function Auth_Step
      (Old, Upd : Auth_Rows; K0 : Slot_Index; R : Header; Tg : U64; Src, Dst : Index_Map)
       return Boolean
@@ -1062,8 +1108,7 @@ package body Kome.Frontier with SPARK_Mode is
       and then (for all J in 1 .. SC (Old, K0) =>
                   (if Dst (J) = 0 then Dominates (R, Old.H (K0, J).Hdr)
                    else Dst (J) in 1 .. SC (Upd, K0) - 1
-                        and then Upd.H (K0, Dst (J)) = Old.H (K0, J)))
-      and then Upd.C = Old.C)
+                        and then Upd.H (K0, Dst (J)) = Old.H (K0, J))))
    with Ghost;
 
    procedure Lemma_Grant_Kept
@@ -1431,7 +1476,8 @@ package body Kome.Frontier with SPARK_Mode is
      Pre  => Data_OK (Old) and then Data_Sorted (Old)
              and then Upd.Cap = Old.Cap and then Upd.ND = Old.ND
              and then (for all I in 1 .. Data_Count (Old) => Upd.Data_E (I) = Old.Data_E (I))
-             and then Auth_Step (Old.A, Upd.A, K0, R, Tg, Src, Dst),
+             and then Auth_Step (Old.A, Upd.A, K0, R, Tg, Src, Dst)
+             and then Cell_Ceil (Upd.A) = Cell_Ceil (Old.A),
      Post => Data_OK (Upd) and then Data_Sorted (Upd)
    is
    begin
@@ -1439,7 +1485,6 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (Data_Sorted (Upd));
       Lemma_Ceil_Step (Old.A, Upd.A, K0, R, Tg, Src, Dst);
       --  The same cell under a row maximum that is not lower.
-      pragma Assert (Cell_Ceil (Upd.A) = Cell_Ceil (Old.A));
       pragma Assert (Max_Ceil (Upd) >= Max_Ceil (Old));
       for I in 1 .. Data_Count (Upd) loop
          pragma Assert (Data_Item_OK (Old, Old.Data_E (I).Hdr));
@@ -1559,7 +1604,7 @@ package body Kome.Frontier with SPARK_Mode is
             NSlots => 1,
             Offs   => [others => 0],
             NAuth  => 0,
-            C      => (Present => False, Hdr => Null_Header, Tag => 0)));
+            Has_Cell => False));
 
    procedure Lemma_Held_Data (S : State; I : Held_Index) is null;
 
@@ -1679,7 +1724,10 @@ package body Kome.Frontier with SPARK_Mode is
       return 1;
    end Find_Flat_Grant_Cap;
 
-   procedure Lemma_Frontier_Ceil (S : State) is null;
+   procedure Lemma_Frontier_Ceil (S : State) is
+   begin
+      Lemma_Cell_Def (S.A);
+   end Lemma_Frontier_Ceil;
 
    procedure Lemma_Held_Ceil_Def (S : State) is
       M : constant U48 := Held_Ceil (S);
@@ -1708,7 +1756,10 @@ package body Kome.Frontier with SPARK_Mode is
       end if;
    end Lemma_Held_Ceil_Def;
 
-   procedure Lemma_Max_Ceil_Def (S : State) is null;
+   procedure Lemma_Max_Ceil_Def (S : State) is
+   begin
+      Lemma_Cell_Def (S.A);
+   end Lemma_Max_Ceil_Def;
 
    --  A flat index whose record dominates X: the witness of Dom.
    function Find_Dominator (S : State; X : Header) return Held_Index with
@@ -1845,6 +1896,8 @@ package body Kome.Frontier with SPARK_Mode is
       end if;
       pragma Assert (Held_Ceil (After) = U48'Max (Held_Ceil (Before), Ceil_Of (R)));
       --  ... and maxceil follows when the cells carry the same ceiling.
+      Lemma_Cell_Def (Before.A);
+      Lemma_Cell_Def (After.A);
       pragma Assert (Cell_Ceil (After.A) = Ceil_Value (After)
                      and then Cell_Ceil (Before.A) = Ceil_Value (Before));
       pragma Assert
@@ -1928,6 +1981,8 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (Rows_Agree (S1.A, S2.A));
       Lemma_Rows_Agree_Views (S1.A, S2.A, K);
       pragma Assert (Held_Ceil (S1) = Held_Ceil (S2));
+      Lemma_Cell_Def (S1.A);
+      Lemma_Cell_Def (S2.A);
       pragma Assert (Cell_Ceil (S1.A) = Ceil_Value (S1)
                      and then Cell_Ceil (S2.A) = Ceil_Value (S2));
    end Lemma_Same_Auth_Views;
@@ -2000,7 +2055,7 @@ package body Kome.Frontier with SPARK_Mode is
    procedure Lemma_Unchanged (Old, Upd : State) is
    begin
       Lemma_Same_Held (Old, Upd);
-      pragma Assert (Cell_Ceil (Upd.A) = Cell_Ceil (Old.A));
+      Lemma_Cell_Eq (Old.A, Upd.A);
       pragma Assert (Max_Ceil (Upd) = Max_Ceil (Old));
    end Lemma_Unchanged;
 
@@ -2550,6 +2605,46 @@ package body Kome.Frontier with SPARK_Mode is
       Lemma_Insert_Kept (OH, ON, H1, N1, H2, N2, R, Tg, P, Src1, Dst1, Src2, Dst2);
    end Lemma_Insert_Maps;
 
+   --  Mid_Row as one atom. Mid_Row is an expression function, so a check
+   --  of it is proved conjunct by conjunct from its definition. For a
+   --  copy of a fact that the context already holds (the precondition of
+   --  the lemma below, after Insert_Entry), that is all of the work again,
+   --  in the large context of Commit_Data. A check of this function is one
+   --  atom, and it follows from the same atom.
+   function Mid_Row_A
+     (OH : Entry_Array; ON : Natural; H : Entry_Array; N : Natural;
+      R : Header; P : Positive; Src, Dst : Index_Map) return Boolean
+   with
+     Ghost, Global => null,
+     Post => Mid_Row_A'Result = Mid_Row (OH, ON, H, N, R, P, Src, Dst)
+   is
+   begin
+      return Mid_Row (OH, ON, H, N, R, P, Src, Dst);
+   end Mid_Row_A;
+
+   --  Lemma_Insert_Maps for a caller that holds Mid_Row as the atom.
+   procedure Lemma_Insert_Maps_A
+     (OH : Entry_Array; ON : Natural; H1 : Entry_Array; N1 : Natural;
+      H2 : Entry_Array; N2 : Natural; R : Header; Tg : U64; P, Hi : Positive;
+      Src1, Dst1 : Index_Map; Src2, Dst2 : out Index_Map)
+   with
+     Ghost, Global => null,
+     Pre  => Mid_Row_A (OH, ON, H1, N1, R, P, Src1, Dst1)
+             and then Src2'First = Src1'First and then Src2'Last = Src1'Last
+             and then Dst2'First = Dst1'First and then Dst2'Last = Dst1'Last
+             and then N1 < Src1'Last and then Src1'Last <= Held_Max
+             and then H2'First = 1 and then N2 = N1 + 1 and then N2 <= H2'Last
+             and then H2 (P) = (Hdr => R, Tag => Tg)
+             and then (for all J in 1 .. P - 1 => H2 (J) = H1 (J))
+             and then (for all J in P + 1 .. N2 => H2 (J) = H1 (J - 1))
+             and then (for all I in Hi .. ON => Dst1 (I) = I + N1 - ON and then Dst1 (I) >= P),
+     Post => Kept_Row (OH, ON, H2, N2, R, Tg, P, Src2, Dst2)
+             and then (for all I in Hi .. ON => Dst2 (I) = I + N2 - ON)
+   is
+   begin
+      Lemma_Insert_Maps (OH, ON, H1, N1, H2, N2, R, Tg, P, Hi, Src1, Dst1, Src2, Dst2);
+   end Lemma_Insert_Maps_A;
+
    --  The three row facts of a step, each on the arrays alone (a small
    --  context): the new row (H, N) holds R at P and old records elsewhere
    --  (Src).
@@ -2993,15 +3088,14 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_New_Run;
 
    --  Two authorization row sets that are equal at every used position,
-   --  tags included, with the same ceiling cell.
+   --  tags included.
    function Same_Rows (A1, A2 : Auth_Rows) return Boolean is
      (A1.NSlots = A2.NSlots and then A1.NAuth = A2.NAuth
       and then (for all K in Slot_Index =>
                   A1.NA (K) = A2.NA (K) and then A1.Keys (K) = A2.Keys (K)
                   and then A1.Offs (K) = A2.Offs (K))
       and then (for all K in Slot_Index =>
-                  (for all J in 1 .. SC (A1, K) => A1.H (K, J) = A2.H (K, J)))
-      and then A1.C = A2.C)
+                  (for all J in 1 .. SC (A1, K) => A1.H (K, J) = A2.H (K, J))))
    with Ghost;
 
    --  Rows that agree at every used position share the authorization
@@ -3009,9 +3103,9 @@ package body Kome.Frontier with SPARK_Mode is
    procedure Lemma_Same_Rows_OK (A1, A2 : Auth_Rows; Fnd : Key256) with
      Ghost, Global => null,
      Pre  => Same_Rows (A1, A2) and then Auth_Shape (A1) and then Slots_OK (A1, Fnd)
-             and then Auth_OK (A1) and then Cell_OK (A1),
+             and then Auth_OK (A1),
      Post => Auth_Shape (A2) and then Slots_OK (A2, Fnd) and then Auth_OK (A2)
-             and then Cell_OK (A2) and then Rows_Agree (A1, A2)
+             and then Rows_Agree (A1, A2)
    is
    begin
       for K in Slot_Index loop
@@ -3036,8 +3130,8 @@ package body Kome.Frontier with SPARK_Mode is
    end Lemma_Same_Rows_OK;
 
    --  The frontier invariant after a data commit, in a small context: the
-   --  new data row is a sorted frontier row and the authorization rows did
-   --  not change.
+   --  new data row is a sorted frontier row and the authorization rows and
+   --  the ceiling cell did not change.
    procedure Lemma_Data_Frontier
      (Old, Upd : State; R : Header; Tg : U64; P : Positive; Src : Index_Map)
    with
@@ -3047,6 +3141,7 @@ package body Kome.Frontier with SPARK_Mode is
              and then Upd.Cap = Old.Cap and then Upd.Fnd = Old.Fnd
              and then Upd.ND <= Upd.Cap
              and then Same_Rows (Old.A, Upd.A)
+             and then Cell_OK (Upd.A) and then Cell_Ceil (Upd.A) = Cell_Ceil (Old.A)
              and then Kept_Src (Old.Data_E, Old.ND, Upd.Data_E, Upd.ND, R, Tg, P, Src)
              and then (for all I in 1 .. Old.ND =>
                          Old.Data_E (I).Hdr /= R and then not Dominates (Old.Data_E (I).Hdr, R))
@@ -3059,7 +3154,6 @@ package body Kome.Frontier with SPARK_Mode is
    begin
       Lemma_Same_Rows_OK (Old.A, Upd.A, Old.Fnd);
       Lemma_Rows_Agree_Views (Old.A, Upd.A, R.V.Author);
-      pragma Assert (Cell_Ceil (Upd.A) = Cell_Ceil (Old.A));
       pragma Assert (Max_Ceil (Upd) = Max_Ceil (Old));
       pragma Assert (Data_Item_OK (Upd, R));
       for I in 1 .. N loop
@@ -3265,7 +3359,7 @@ package body Kome.Frontier with SPARK_Mode is
                    (if Held (S, I) = R then Tag (S, I) = Tg
                     else Has_Tag (S'Old, Held (S, I), Tag (S, I))))
        and then Outside_Run (S'Old, S, R.Ent)
-       and then S.A.C = S'Old.A.C
+       and then Cell_Eq (S'Old.A, S.A)
    is
       Old_S : constant State := S with Ghost;
       N     : constant Data_Size := S.ND;
@@ -3367,12 +3461,13 @@ package body Kome.Frontier with SPARK_Mode is
             Dst1 : constant Index_Map := Dst with Ghost;
          begin
             pragma Assert (for all J in Hi .. N => Dst1 (J) = J + N1 - N and then Dst1 (J) >= P);
-            pragma Assert (Mid_Row (Old_S.Data_E, N, H1, N1, R, P, Src1, Dst1));
+            --  The copies are the row and the maps of the assertion above.
+            pragma Assert (Mid_Row_A (Old_S.Data_E, N, H1, N1, R, P, Src1, Dst1));
             --  Insert R at P: the records from P on move up by one.
             Insert_Entry (S.Data_E, S.ND, (Hdr => R, Tag => Tg), P);
             pragma Assert (for all J in 1 .. P - 1 => S.Data_E (J) = H1 (J));
             pragma Assert (for all J in P + 1 .. S.ND => S.Data_E (J) = H1 (J - 1));
-            Lemma_Insert_Maps
+            Lemma_Insert_Maps_A
               (Old_S.Data_E, N, H1, N1, S.Data_E, S.ND, R, Tg, P, Hi, Src1, Dst1, Src, Dst);
             pragma Assert (for all J in Hi .. N => Dst (J) = J + S.ND - N);
          end;
@@ -3382,6 +3477,8 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (for all J in 1 .. P - 1 => S.Data_E (J) = Old_S.Data_E (J));
       pragma Assert (S.Cap = Cap and then S.ND <= S.Cap and then Old_S.ND = N);
       pragma Assert (Same_Rows (Old_S.A, S.A));
+      pragma Assert (Cell_Eq (Old_S.A, S.A));
+      Lemma_Cell_Eq (Old_S.A, S.A);
       Lemma_Data_Frontier (Old_S, S, R, Tg, P, Src);
       pragma Assert (Is_Frontier (S));
 
@@ -3423,7 +3520,7 @@ package body Kome.Frontier with SPARK_Mode is
                       (if Held (S, I) = R then Tag (S, I) = Tg
                                     else Has_Tag (S'Old, Held (S, I), Tag (S, I))))
                    and then Outside_Run (S'Old, S, R.Ent))
-       and then S.A.C = S'Old.A.C
+       and then Cell_Eq (S'Old.A, S.A)
    is
       Cap : constant Data_Size := S.Cap;
       N   : constant Data_Size := S.ND;
@@ -3540,7 +3637,8 @@ package body Kome.Frontier with SPARK_Mode is
                          not Dominates (R, Old.A.H (K0, Src (J)).Hdr))
              and then (for all J in 1 .. SC (Upd.A, K0) - 1 =>
                          (for all J2 in 1 .. SC (Upd.A, K0) - 1 =>
-                            (if J /= J2 then Src (J) /= Src (J2)))),
+                            (if J /= J2 then Src (J) /= Src (J2))))
+             and then Cell_OK (Upd.A) and then Cell_Ceil (Upd.A) = Cell_Ceil (Old.A),
      Post => Is_Frontier (Upd)
    is
    begin
@@ -3550,8 +3648,6 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert (Data_Sorted (Old));
       Lemma_Data_OK_Auth (Old, Upd, K0, R, Tg, Src, Dst);
       Lemma_Auth_OK_Step (Old.A, Upd.A, K0, R, Tg, Src, Dst);
-      pragma Assert (Cell_OK (Old.A) and then Upd.A.C = Old.A.C);
-      pragma Assert (Cell_OK (Upd.A));
       pragma Assert (Is_Frontier (Upd));
    end Lemma_Auth_Frontier;
 
@@ -3587,7 +3683,7 @@ package body Kome.Frontier with SPARK_Mode is
                    (if Held (S, I) = R then Tag (S, I) = Tg
                     else Has_Tag (S'Old, Held (S, I), Tag (S, I))))
        and then Outside_Slot (S'Old, S, R.Issuer)
-       and then S.A.C = S'Old.A.C
+       and then Cell_Eq (S'Old.A, S.A)
    is
       Old_S   : constant State := S with Ghost;
       N       : constant Slice_Count := SC (S.A, K0);
@@ -3610,7 +3706,7 @@ package body Kome.Frontier with SPARK_Mode is
            ((Dropped > 0)
             = (for some J2 in 1 .. J - 1 => Dominates (R, Old_S.A.H (K0, J2).Hdr)));
          pragma Loop_Invariant
-           (for all K in Slot_Index =>
+           (for all K in Slot_Number =>
               (if K /= K0 then
                  (for all J2 in 1 .. Slice_Max => S.A.H (K, J2) = Old_S.A.H (K, J2))));
          pragma Loop_Invariant
@@ -3676,7 +3772,6 @@ package body Kome.Frontier with SPARK_Mode is
            (if K /= K0 then S.A.NA (K) = Old_S.A.NA (K) and then S.A.Keys (K) = Old_S.A.Keys (K)));
       pragma Assert (S.A.Keys (K0) = R.Issuer);
 
-      pragma Assert (S.A.C = Old_S.A.C);
       pragma Assert (Auth_Step (Old_S.A, S.A, K0, R, Tg, Src, Dst));
       pragma Assert (SC (S.A, K0) = Kept + 1);
       pragma Assert
@@ -3684,11 +3779,13 @@ package body Kome.Frontier with SPARK_Mode is
       pragma Assert
         (for all J in 1 .. SC (S.A, K0) - 1 =>
            (for all J2 in 1 .. SC (S.A, K0) - 1 => (if J /= J2 then Src (J) /= Src (J2))));
+      --  The ceiling cell is row Cell_Row, which no slot step writes.
+      pragma Assert (Cell_Eq (Old_S.A, S.A));
+      Lemma_Cell_Eq (Old_S.A, S.A);
       Lemma_Auth_Frontier (Old_S, S, R, Tg, K0, Fresh, Src, Dst);
       pragma Assert (Is_Frontier (S));
       Lemma_Ceil_Step (Old_S.A, S.A, K0, R, Tg, Src, Dst);
       --  The same cell: maxceil takes the same maximum.
-      pragma Assert (Cell_Ceil (S.A) = Cell_Ceil (Old_S.A));
       pragma Assert (Max_Ceil (S) = U48'Max (Max_Ceil (Old_S), Ceil_Of (R)));
 
       --  Outside_Slot: the slot of R's issuer is K0 (slot keys are
@@ -3745,7 +3842,7 @@ package body Kome.Frontier with SPARK_Mode is
                       (if Held (S, I) = R then Tag (S, I) = Tg
                                     else Has_Tag (S'Old, Held (S, I), Tag (S, I))))
                    and then Outside_Slot (S'Old, S, R.Issuer))
-       and then S.A.C = S'Old.A.C
+       and then Cell_Eq (S'Old.A, S.A)
    is
       Old_S : constant State := S with Ghost;
       K0    : Slot_Index;
@@ -4037,7 +4134,8 @@ package body Kome.Frontier with SPARK_Mode is
          S.A.H (K, J).Tag := T;
          pragma Assert (S.Data_E = Old.Data_E);
          pragma Assert (Rows_Agree (Old.A, S.A));
-         pragma Assert (S.A.C = Old.A.C);
+         pragma Assert (Cell_Eq (Old.A, S.A));
+         Lemma_Cell_Eq (Old.A, S.A);
          Lemma_Rows_Agree_Data (Old, S);
          pragma Assert (Max_Ceil (S) = Max_Ceil (Old));
          pragma Assert (Shape (S) and then Slots_OK (S.A, S.Fnd) and then Auth_OK (S.A));
@@ -4063,7 +4161,9 @@ package body Kome.Frontier with SPARK_Mode is
      Ghost, Global => null,
      Pre  => Is_Frontier (Old) and then Upd.Cap = Old.Cap and then Upd.Fnd = Old.Fnd
              and then Upd.ND = Old.ND and then Upd.Data_E = Old.Data_E
-             and then Upd.A.H = Old.A.H and then Upd.A.NA = Old.A.NA
+             and then (for all K in Slot_Index =>
+                         (for all J in Slice_Pos => Upd.A.H (K, J) = Old.A.H (K, J)))
+             and then Upd.A.NA = Old.A.NA
              and then Upd.A.Keys = Old.A.Keys and then Upd.A.NSlots = Old.A.NSlots
              and then Upd.A.Offs = Old.A.Offs and then Upd.A.NAuth = Old.A.NAuth
              and then Cell_OK (Upd.A)
@@ -4072,12 +4172,11 @@ package body Kome.Frontier with SPARK_Mode is
              and then Max_Ceil (Upd) = U48'Max (Max_Ceil (Old), Cell_Ceil (Upd.A))
    is
    begin
-      pragma Assert (Rows_Agree (Old.A, Upd.A));
+      pragma Assert (Same_Rows (Old.A, Upd.A));
+      Lemma_Same_Rows_OK (Old.A, Upd.A, Old.Fnd);
       Lemma_Rows_Agree_Data (Old, Upd);
       pragma Assert (Data_Count (Upd) = Data_Count (Old));
       pragma Assert (Shape (Upd));
-      pragma Assert (Slots_OK (Upd.A, Upd.Fnd));
-      pragma Assert (Auth_OK (Upd.A));
       pragma Assert (Data_OK (Upd));
       pragma Assert (Data_Sorted (Upd));
       pragma Assert (Same_Held (Old, Upd));
@@ -4086,19 +4185,30 @@ package body Kome.Frontier with SPARK_Mode is
    procedure Raise_Ceil (S : in out State; R : Header; T : U64) is
       Old : constant State := S with Ghost;
    begin
-      pragma Assert (Cell_Ceil (Old.A) <= Max_Ceil (Old));
-      S.A.C := (Present => True, Hdr => R, Tag => T);
+      S.A.H (Cell_Row, 1) := (Hdr => R, Tag => T);
+      S.A.Has_Cell := True;
+      Lemma_Cell_Def (S.A);
+      pragma Assert (Cell_OK (S.A));
       pragma Assert (Cell_Ceil (S.A) = R.V.T and then Cell_Ceil (S.A) = Ceil_Of (R));
+      pragma Assert (Cell_Ceil (Old.A) <= Max_Ceil (Old));
+      pragma Assert
+        (for all K in Slot_Index =>
+           (for all J in Slice_Pos => S.A.H (K, J) = Old.A.H (K, J)));
       Lemma_Cell_Frontier (Old, S);
    end Raise_Ceil;
 
    procedure Set_Ceil_Tag (S : in out State; T : U64) is
       Old : constant State := S with Ghost;
    begin
-      pragma Assert (Cell_OK (Old.A));
-      pragma Assert (Cell_Ceil (Old.A) <= Max_Ceil (Old));
-      S.A.C.Tag := T;
+      Lemma_Cell_Def (Old.A);
+      S.A.H (Cell_Row, 1).Tag := T;
+      Lemma_Cell_Def (S.A);
+      pragma Assert (Cell_OK (S.A));
       pragma Assert (Cell_Ceil (S.A) = Cell_Ceil (Old.A));
+      pragma Assert (Cell_Ceil (Old.A) <= Max_Ceil (Old));
+      pragma Assert
+        (for all K in Slot_Index =>
+           (for all J in Slice_Pos => S.A.H (K, J) = Old.A.H (K, J)));
       Lemma_Cell_Frontier (Old, S);
    end Set_Ceil_Tag;
 
