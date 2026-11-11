@@ -23,9 +23,9 @@ If a SPARK contract mirrors a Lean theorem, name the theorem in the comment
 intentionally different from the model, say so in the comment and record
 the difference in DESIGN.md §10.1, which is the only divergence register:
 it lists what the implementation has and the model does not (no
-certificates, no `ns`, no capacity, no clock clamp, `Nat` for `u48`, no
-journal, and expiry on arrival). A difference that is not listed there is
-a bug in one of the two.
+certificates, no `ns`, no capacity rule, the ceiling cell as a number, no
+clock clamp, `Nat` for `u48`, no journal, and expiry on arrival). A
+difference that is not listed there is a bug in one of the two.
 
 ## Layout
 
@@ -100,8 +100,9 @@ a bug in one of the two.
      membership, the postcondition of a loop) private to its package. The
      prover instantiates a public one on every goal in every unit, and
      unrelated goals time out. (`Kome.Frontier` exports the admission
-     views `Max_Ceil`, `In_W` and `W_Cap` opaquely, with `_Def` lemmas.) If a unit must see the definition,
-     make it visible only to that unit and accept the cost there.
+     views `Max_Ceil`, `Held_Ceil`, `In_W` and `W_Cap` opaquely, with
+     `_Def` lemmas.) If a unit must see the definition, make it visible
+     only to that unit and accept the cost there.
 - Write contracts, assertions and invariants with the public functions of a
   private type (`Held`, `Count`, `Tag_Of`), never with its fields. After every
   state change, assert a "bridge"
@@ -115,15 +116,18 @@ a bug in one of the two.
 - Code that touches a file or a clock declares it in `Global`/`Depends`.
   `Open_From_Log` is `Global => null`: the log is a byte buffer that the
   binding reads from and writes to the file. The log
-  (`kome-store.ads`, SIMPLIFY.md S15) is `HEADER ‖ (APPLY | SEQ)*`, with
+  (`kome-store.ads`, SIMPLIFY.md S15, AUDIT.md H12) is `HEADER ‖ (APPLY |
+  SEQ | CEIL)*`, with
   `HEADER = "KOME" ‖ 01 ‖ root_pk[32] ‖ salt[16] ‖ del_ttl:u48` (59
   bytes), `APPLY = 01 ‖ len:u24 ‖ frame` for each frame that `Put_Frame`
-  applied, and `SEQ = 02 ‖ seq:u48` for `seq_self`. The HEADER fixes the
+  applied, `SEQ = 02 ‖ seq:u48` for `seq_self`, and `CEIL = 03 ‖ len:u24
+  ‖ frame` for a roster frame that `Put_Frame` or `Put_Ceil` recorded in
+  the ceiling cell only. The HEADER fixes the
   collection and nothing else: it has no `data_cap` or slice field (the
   data capacity is a parameter of each open), so no byte of a log is ever
   rewritten. The only writes are appends at `Log_Length`. `Compact`
-  writes a new log (HEADER, one APPLY per held record, a SEQ entry) into
-  the caller's buffer, which the binding then puts in place of the file;
+  writes a new log (HEADER, the CEIL of the cell's roster if there is
+  one, one APPLY per held record, a SEQ entry) into the caller's buffer, which the binding then puts in place of the file;
   it is refused (`Busy`) while a reconciliation session pins the log
   (`Pinned (S) > 0`).
 

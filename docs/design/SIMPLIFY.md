@@ -38,7 +38,7 @@ unproved checks, no `pragma Assume` or `pragma Annotate`.
 | S21 | The store keeps `(n_auth, n_data, acc_auth, acc_data)` incrementally (S14's run diff, 8 hashes per change) and `Store.Digest_Auth (S)` and `Digest_Data (S)` return them (as built). `Reconcile.Admit` takes these two digest states and the HELLO is sent from them (as built: not `Start`, because the gate may need the peer's HELLO credential first); the snapshot (frame references into the log, S14) is built only after the HELLO digests differ. `Compact` is refused while a session holds a snapshot (`Pinned`). | the snapshot build, sort and copies in every session; the unimplemented C8 "snapshot cache" duty | spark, docs |
 | S22 | `Header` is `Kind, Ent, FH, V, Issuer` (no `NS`, `Epoch`, `Del_TTL`). | ~22 B per held header and the constant `NS` in every one | spark |
 | S23 | The C8 IBLT round 0 moves from the normative design to §10 as an optional extension. | a specified, unbuilt, unowned mechanism | docs |
-| S24 | Build: `kome_spark.gpr` gains a `Mode` scenario (`check`, the default, with `-gnata`; `release` with `Assertion_Policy (Ignore)` for Pre, Post, Ghost and invariants). CI builds both. DESIGN.md §1 (decisions), §2, §3, §5, §6, §7, §8, §9, §10 are rewritten to this file; REQUIREMENTS.md loses the H6 exception; IMPLEMENTATION_PLAN.md and README.md follow; AUDIT.md §0 gains a paragraph that points here for the items it supersedes (A7 reopened by S4, H24 by S7, H26 by S15, A10/A5 by S16, H28 by S8, H11 by S9, H12 stays deferred). | — | build, docs |
+| S24 | Build: `kome_spark.gpr` gains a `Mode` scenario (`check`, the default, with `-gnata`; `release` with `Assertion_Policy (Ignore)` for Pre, Post, Ghost and invariants). CI builds both. DESIGN.md §1 (decisions), §2, §3, §5, §6, §7, §8, §9, §10 are rewritten to this file; REQUIREMENTS.md loses the H6 exception; IMPLEMENTATION_PLAN.md and README.md follow; AUDIT.md §0 gains a paragraph that points here for the items it supersedes (A7 reopened by S4, H24 by S7, H26 by S15, A10/A5 by S16, H28 by S8, H11 by S9; H12 was still deferred then, and §6 records its fix). | — | build, docs |
 
 Not done, on purpose: a structural founding reserve (the E1 rule works); sizing the authorization matrix by slots in use (memory only); a data-only header type (S22 is enough for now); `HELLO` sending `h(cred)` first (one more round trip for a few KB); the per-entry BLAKE2b in replay (S15 trusts the host's file, as §7 already does).
 
@@ -124,3 +124,32 @@ marked "as built" above carry the correction, and this list collects them.
   holds an expired `DEL` with `Apply` and expires it in the same call.
 - The REVOKE frame is 205 bytes, and `cert_sig` signs the 32-byte
   `Cert_Hash`, as §2 already states.
+
+## 6. After the simplification: the ceiling cell (AUDIT.md H12)
+
+AUDIT.md H12 was applied on top of the state that this file describes.
+It changes the statements below. DESIGN.md (E10, §3, §7, §8, T19)
+describes the result, and where this file and DESIGN.md disagree,
+DESIGN.md and the code win.
+
+- "Every view is a function of F" (the rules that do not change, above)
+  and S6: `Max_Ceil` is the larger of `Held_Ceil`, the function over the
+  authorization rows that S6 describes, and the ceiling of the roster in
+  the ceiling cell. The cell is state beside the rows, and no other view
+  reads it.
+- S7: `hz(F)` reads that `Max_Ceil`. A roster that the store records in
+  the cell expires in the same call, as a held roster does; `Put_Ceil`
+  expires too.
+- S15 and §2 (Log): the log is `HEADER ‖ (APPLY | SEQ | CEIL)*`, with
+  `CEIL = 03 len:u24 frame`. Compaction writes the cell's `CEIL` first,
+  and `Compact_Layout` states `Count + 1` entries, or one more with a
+  cell. `Log_Fits` counts one more entry.
+- S11, S21 and §2 (Messages): the `HELLO` is `01 n_auth:u32 n_data:u32
+  digest[32] cred_len:u16 ceil_len:u16 cred ceil`, at most 17 877 bytes.
+  `ceil` is the frame of the sender's cell roster while the cell is
+  live, and `Reconcile.Admit` takes it.
+- S17 and §5: `Put_Frame` and `Kome.Write.Receive` can also return
+  `CEIL_ONLY`. The outcomes of `Kome.Write.Write` are as listed.
+- §3 (package shapes): `Kome.Frontier` gains `Held_Ceil`, `Has_Ceil`,
+  `Ceil_Held`, `Ceil_Tag`, `Ceil_Live`, `Raise_Ceil` and `Set_Ceil_Tag`;
+  `Kome.Store` gains `Put_Ceil`; `Kome.Status` gains `Ceil_Only`.
