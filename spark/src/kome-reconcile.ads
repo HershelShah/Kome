@@ -190,7 +190,11 @@
 --      In both orders nothing else is applied between Admit and the seal,
 --      and the ceiling frame is applied before the next Receive or
 --      Next_Phase. Admit requires Gate_Open, so the ceiling frame of a
---      peer is applied only when our gate admitted that peer.
+--      peer is applied only when our gate admitted that peer at our
+--      HELLO. In the first order the credential can close the gate
+--      before the ceiling frame is applied; the next Receive then
+--      aborts, and the peer gains nothing that its credential, a
+--      certified roster, could not carry itself.
 --    * Ceil_Only (from the credential or from the ceiling frame) counts
 --      as an applied authorization record for the sync point.
 --    * SUSPECT_RELAY for the ceiling frame: the caller reports the peer's

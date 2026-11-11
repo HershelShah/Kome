@@ -1600,7 +1600,8 @@ its slice). Thus `|W| ≤ 8 192`. This bounds *storage*: the keys that can
 hold records. The devices that can sync are bounded by the gate, at most
 `Members_Max` = 64 per collection, the members of one roster (§6). The
 state is `F` with its tags, the ceiling cell (one roster header and its
-tag), the log (with `seq_self` in it), the two digest states and the pin
+tag; as built, `Kome.Frontier.State` reserves one more matrix row of
+`Slice_Max` entries for it and uses the first), the log (with `seq_self` in it), the two digest states and the pin
 counter; every per-session value lives in the session and is gone when it
 ends. The cell takes no slot and no slice position, and costs one `CEIL`
 entry of at most 8 920 bytes in a compacted log.
@@ -1789,7 +1790,11 @@ In both orders the caller applies nothing else between `Admit` and the
 seal, and it applies the ceiling frame before the next `Receive` or
 `Next_Phase`, that is, before any record of the session. `Admit` requires
 the gate, so a side applies the ceiling frame only of a peer that its gate
-admitted. The sender duty is a contract (the precondition of `Admit`), and
+admitted when it sent its own `HELLO`. In the first order the peer's
+credential can close the gate before the ceiling frame is applied; the
+frame is applied all the same and the next `Receive` aborts the session.
+That gives the peer nothing: the credential is a certified roster and can
+carry the same ceiling itself. The sender duty is a contract (the precondition of `Admit`), and
 so is what the receiver does with the frame (the Post of
 `Kome.Write.Receive_Ceil`). That the receiver calls `Receive_Ceil` for
 every accepted `HELLO` with a ceiling frame, and the order above, are

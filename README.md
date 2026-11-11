@@ -22,8 +22,9 @@ Every change is a small signed record. A replica's state is a set of
 records. To merge two replicas, take the set union, then drop every record
 that a newer record *dominates* under a single strict total order. The set
 that remains is the *frontier*, and it is the full state, apart from one
-*ceiling cell*: the highest roster ceiling that the replica was offered
-and had no room to hold. There is no history, no vector clock and no
+*ceiling cell*: the last roster that raised the ceiling without being
+held, because its signer had no room or because it came as the ceiling
+frame of a peer's greeting. Only the ceiling reads the cell. There is no history, no vector clock and no
 per-peer bookkeeping.
 
 A deletion is a record that dominates every field of its entity. So a

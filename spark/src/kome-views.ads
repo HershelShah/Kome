@@ -29,6 +29,11 @@
 --    far(p)              := p.t > now_local + slack                -- advisory
 --    skew(now)           := now_local − maxceil (signed)           -- advisory
 --
+--  The two advisories are the exception: they read the local clock, and
+--  skew reads maxceil, which is the larger of the held rosters' ceiling
+--  and the replica's ceiling cell (Kome.Frontier.Max_Ceil, AUDIT.md H12).
+--  No other view reads the cell.
+--
 --  REVOKEs of one (issuer, subject) dominate by a lower from_t
 --  (Kome.Headers, SIMPLIFY.md S5), so the frontier keeps the least from_t
 --  of each key. Every view above reads only "some REVOKE of the key with
