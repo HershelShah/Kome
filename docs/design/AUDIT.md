@@ -7,12 +7,12 @@ Scope: docs/design (REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md), lean/Ko
 Applied on branch `ccr-f1194bfd-dei9h4` after the audit. Items 1 to 3 are
 the fix groups that §1 recommends first; item 4 is everything else in §2
 to §5; item 5 is H12, which was applied after the simplification. Each
-item names what changed. On the final state, gnatprove at
-`--level=3` proves all 18,301 checks of the 17 packages and the root package
-with 0 unproved, 1,329 tests pass, `lake build --wfail` checks the 183 Lean
-theorems with no `sorry`, and `lean/Kome/Axioms.lean` confirms that every
-declaration of `Kome.Frontier` uses only `propext`, `Classical.choice`
-and `Quot.sound`.
+item names what changed. This section gives the counts of three states:
+the audit-fix state (items 1 to 4), the simplified state, and the final
+state (with item 5). On the audit-fix state, gnatprove at
+`--level=3` proved all 18,301 checks of the 17 packages and the root package
+with 0 unproved, 1,329 tests passed, and `lake build --wfail` checked the
+183 Lean theorems with no `sorry`.
 
 **Simplification (SIMPLIFY.md), 2026-11-10.** The simplification of
 `SIMPLIFY.md` (S1 to S24) was applied on top of the state that this
@@ -40,10 +40,19 @@ was still deferred in the simplified state; it was applied after it
 of S14, and A11's slice and `data_cap` fields by S15. `SIMPLIFY.md` gives
 the decisions, and its "As built" note the places where the code
 deviated from the plan. On the simplified state, gnatprove at
-`--level=3` proves all 16,709 checks of the 17 packages and the root
-package with 0 unproved, 1,033 tests pass, and `lake build --wfail`
-checks the 202 Lean theorems and 2 instances with no `sorry`.
-Final counts: see IMPLEMENTATION_PLAN.md.
+`--level=3` proved all 16,709 checks of the 17 packages and the root
+package with 0 unproved, 1,033 tests passed, and `lake build --wfail`
+checked the 202 Lean theorems and 2 instances with no `sorry`.
+
+**The final state (with item 5, H12).** gnatprove at `--level=3` proves
+all 17,944 checks of the 17 packages and the root package with 0
+unproved. 1,189 tests pass in the check mode (`-gnata`, every contract
+executes), and 1,287 in the release mode, which adds the full-slice forms
+of the ceiling-cell scenarios. `lake build --wfail` checks the 214 Lean
+theorems and 2 instances with no `sorry`, and `lean/Kome/Axioms.lean`
+confirms that every declaration of `Kome.Frontier` uses only `propext`,
+`Classical.choice` and `Quot.sound`. IMPLEMENTATION_PLAN.md has the
+counts of each package.
 
 1. Roster and gate integrity: H1 (domination strict in gen, `ROSTER_FORK`
    view, `Lemma_Equal_Gen_No_Dom`), A2 (epoch in `Header`, `ROSTER_eff` by
@@ -233,7 +242,8 @@ Final counts: see IMPLEMENTATION_PLAN.md.
      not an element, which is why the HELLO frame is part of the fix.
    - Tested, not proved: replay and `Compact` with a cell give back the
      state (T18); SPARK proves the step of T19 and Lean the fold over a
-     model; the receiver's caller duties above. Under `-gnata` the store and session
+     model; the receiver's caller duties above. Under `-gnata` the store
+     and session
      tests run the scenario with a full slot table; the full-slice form
      (512 REVOKEs) runs in the release mode only
      (IMPLEMENTATION_PLAN.md, Missing tests).
