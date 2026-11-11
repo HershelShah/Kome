@@ -154,21 +154,27 @@
 --  fingerprints. Without the frame, two replicas with equal rows and
 --  different cells would end the session at the HELLOs with different
 --  maxceil. It is a signed record, not a register value (D13 stands).
---  This package checks only the two lengths (Hello_Wire_OK); the content
---  of `ceil` is checked by the caller, like an item frame. The duties of
---  the caller (not proved here; the reference caller is the store session
---  of the test main):
---    * Sender. At Admit, Ceil is Kome.Store.Read_Frame (S, Tag_Off
---      (Ceil_Tag (F))) if Ceil_Live (F), else an empty array
---      (Kome.Store.Lemma_Ceil_Tag: it is the cell's ROSTER frame, at most
---      Cred_Max bytes).
+--  On receipt this package checks only the two lengths (Hello_Wire_OK);
+--  the content of a received `ceil` is checked by the caller, like an
+--  item frame. The sender duty is the precondition Ceil_Frame_OK of
+--  Admit. The receiver duties are duties of the caller; the reference
+--  caller is the store session of the test main. One of them has a proved
+--  operation, Kome.Write.Receive_Ceil; when and in which order the caller
+--  calls it is not proved.
+--    * Sender (a contract: Ceil_Frame_OK, the Pre of Admit). At Admit,
+--      Ceil is Kome.Store.Read_Frame (S, Tag_Off (Ceil_Tag (F))) if
+--      Ceil_Live (F), else an empty array (Kome.Store.Lemma_Ceil_Tag: it
+--      is the cell's ROSTER frame, at most Cred_Max bytes, and its header
+--      is Ceil_Held (F)). A caller that leaves out a live cell, or sends
+--      another roster in its place, does not meet the Pre.
 --    * Receiver, which operation takes which frame. The credential is
 --      applied as an authorization record (Kome.Write.Receive, that is,
 --      Put_Frame): it can enter a row, and it can return Ceil_Only. The
 --      ceiling frame Peer.Ceil (0 .. Peer.Ceil_Len - 1), if Ceil_Len > 0,
---      is decoded and verified as a ROSTER (a frame that does not decode
---      is a protocol violation: end the session) and applied with
---      Kome.Store.Put_Ceil and with nothing else. It never enters a row,
+--      goes to Kome.Write.Receive_Ceil and to nothing else. Receive_Ceil
+--      checks that the frame is a verified ROSTER (Malformed if not: a
+--      protocol violation, end the session) and applies it with
+--      Kome.Store.Put_Ceil only. It never enters a row,
 --      so a roster that a peer keeps only in its cell cannot become
 --      ROSTER_eff or a quarantine here.
 --    * Receiver, the order. Same_Snapshot requires the snapshot that our
@@ -185,14 +191,15 @@
 --      and the ceiling frame is applied before the next Receive or
 --      Next_Phase. Admit requires Gate_Open, so the ceiling frame of a
 --      peer is applied only when our gate admitted that peer.
---    * Ceil_Only (from the credential or from Put_Ceil) counts as an
---      applied authorization record for the sync point.
+--    * Ceil_Only (from the credential or from the ceiling frame) counts
+--      as an applied authorization record for the sync point.
 --    * SUSPECT_RELAY for the ceiling frame: the caller reports the peer's
 --      static key exactly when Put_Ceil returned Ceil_Only (the frame
 --      raised our maxceil) and the frame's signer was root-voided in our
---      view before the call (Kome.Views.Root_Void). A frame that changes
---      nothing flags nobody: an honest replica sends its live cell in
---      every HELLO, also after the cell's signer is root-voided.
+--      view before the call (Kome.Views.Root_Void). This is the flag
+--      Suspect_Relay of Kome.Write.Receive_Ceil (its Post). A frame that
+--      changes nothing flags nobody: an honest replica sends its live
+--      cell in every HELLO, also after the cell's signer is root-voided.
 --
 --  Durability: a session counts as Complete only after the log is flushed
 --  to Kome.Store.Log_Length (the sync point, DESIGN.md §8; AUDIT.md H35).
@@ -1329,7 +1336,8 @@ package Kome.Reconcile with SPARK_Mode is
 
    --  Ceil is the ceiling frame (AUDIT.md H12): the frame of the sender's
    --  ceiling-cell roster, or empty. The caller applies it with
-   --  Kome.Store.Put_Ceil only (see the package comment).
+   --  Kome.Write.Receive_Ceil (Kome.Store.Put_Ceil) only (see the package
+   --  comment).
    type Hello is record
       N_Auth   : Word       := 0;
       N_Data   : Word       := 0;
@@ -1907,11 +1915,30 @@ package Kome.Reconcile with SPARK_Mode is
                and then Sess.Budget = Pre_Gate_Budget
                and then Sess.Ranges = 0 and then Sess.Shipped = 0;
 
+   --  The sender duty for the ceiling frame (AUDIT.md H12; the package
+   --  comment): Ceil is the frame of the roster in the ceiling cell of F
+   --  when the cell is live (Kome.Frontier.Ceil_Live), and empty
+   --  otherwise. "The frame of" is: a ROSTER frame whose lattice header in
+   --  the collection of Cid is the cell's record. Admit has it as a
+   --  precondition, so a caller cannot leave out a live cell (then two
+   --  replicas with equal rows would end the session at the HELLOs with
+   --  different maxceil), and cannot send another roster in its place. The
+   --  store gives the frame and the facts: Kome.Store.Read_Frame at
+   --  Tag_Off (Ceil_Tag (F)), with Lemma_Ceil_Tag and Lemma_Header_Of.
+   function Ceil_Frame_OK
+     (Cid : Hash256; F : Kome.Frontier.State; Ceil : Byte_Array) return Boolean
+   is (if Kome.Frontier.Ceil_Live (F)
+       then Kome.Records.Is_Roster_Frame (Ceil)
+            and then Kome.Records.To_Header (Cid, Kome.Records.Parse_Roster (Ceil))
+                     = Kome.Frontier.Ceil_Held (F)
+       else Ceil'Length = 0);
+
    --  Our HELLO, when the gate admits the peer (the precondition, A13,
    --  S9). The HELLO carries the counts of the two digest states, the
    --  fingerprint of their union, our credential (S21: no snapshot) and
    --  Ceil, the frame of our ceiling-cell roster when the cell is live
-   --  (Kome.Frontier.Ceil_Live), else empty (AUDIT.md H12).
+   --  (Kome.Frontier.Ceil_Live), else empty (the precondition
+   --  Ceil_Frame_OK; AUDIT.md H12).
    --  Admit writes it to Buf (0 .. Len - 1). Send it before Root. If the
    --  HELLO of the peer is already here, the HELLO exchange is over
    --  (After_Hellos; the initiator's ROOT is in Root).
@@ -1932,6 +1959,7 @@ package Kome.Reconcile with SPARK_Mode is
                and then Sess.P = Gate and then not Sess.Hello_Sent
                and then Cred'Length <= Cred_Max
                and then Ceil'Length <= Cred_Max
+               and then Ceil_Frame_OK (Sess.Cid, F, Ceil)
                and then Kome.Digest.Count (Auth) + Kome.Digest.Count (Data) <= Elem_Max
                and then Gate_Open (Sess.Cid, F, Eff, Sess.Peer_DH),
      Post   => Session_OK (Sess)

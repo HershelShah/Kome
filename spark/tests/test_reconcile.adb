@@ -40,7 +40,8 @@
 --      duty (the cell's frame in the HELLO while the cell is live), the
 --      two frames of a HELLO and which operation takes which (the
 --      credential by Kome.Write.Receive, the ceiling frame by
---      Kome.Store.Put_Ceil only), the two orders against the snapshot, and
+--      Kome.Write.Receive_Ceil, that is, Kome.Store.Put_Ceil only), the
+--      two orders against the snapshot, and
 --      the SUSPECT_RELAY rule of the ceiling frame. R2 to R9: the audit
 --      scenario by sync in both roles (both sides end with the same
 --      maxceil); the second session (re-offers, no log growth); equal
@@ -48,7 +49,10 @@
 --      is applied); a replica with room (the roster
 --      reaches its cell, never a row); a credential that returns
 --      Ceil_Only in both orders; an exclusive roster in the carrier's
---      cell; the same after the root-void of its signer.
+--      cell; the same after the root-void of its signer. R10: the
+--      sender duty is the Pre of Admit (Ceil_Frame_OK); it refuses a
+--      HELLO that leaves out the live cell's frame or carries another
+--      roster (on the wire fixture and on the real stores; check mode).
 --      As in test_store.adb, the scenario has two forms: the rows are
 --      filled through the slot table (15 certified roots; this is what
 --      the check mode runs, with every contract of the store and of the
@@ -62,6 +66,8 @@ pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Exceptions;   use Ada.Exceptions;
+with Ada.Assertions;
+with Ada.Strings.Fixed;
 with Ada.Directories;
 with Ada.Containers.Indefinite_Vectors;
 with Kome;             use Kome;
@@ -88,6 +94,33 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          Failed := True;
       end if;
    end Check;
+
+   --  Expect a refusal by a precondition of Kome.Reconcile. Under -gnata, a
+   --  failed Pre raises Assertion_Error with the message "failed
+   --  precondition from kome-reconcile.ads:<line>". Any other exception is
+   --  not a refusal, and it propagates as a test failure. Call it only
+   --  when Contracts_On (Contract_Mode).
+   Pre_Tag : constant String := "failed precondition from kome-reconcile.ads";
+
+   generic
+      with procedure Run;
+   function Refused return Boolean;
+   function Refused return Boolean is
+   begin
+      Run;
+      return False;
+   exception
+      when E : Ada.Assertions.Assertion_Error =>
+         declare
+            Msg : constant String := Exception_Message (E);
+         begin
+            if Ada.Strings.Fixed.Index (Msg, Pre_Tag) = 0 then
+               Put_Line ("  unexpected assertion: " & Msg);
+               return False;
+            end if;
+            return True;
+         end;
+   end Refused;
 
    ----------------------------------------------------------------------
    --  Helpers
@@ -654,41 +687,33 @@ procedure Test_Reconcile with SPARK_Mode => Off is
             Rep.Cred_Applied := True;
          end Apply_Cred;
 
-         --  The ceiling frame: Put_Ceil, and nothing else. The peer is
-         --  flagged exactly when the frame raised our maxceil and its
-         --  signer was root-voided in our view before the call.
+         --  The ceiling frame: Kome.Write.Receive_Ceil (Put_Ceil, and nothing
+         --  else). The peer is flagged exactly when the frame raised our
+         --  maxceil and its signer was root-voided in our view before the
+         --  call. A frame that is not a verified ROSTER is a protocol
+         --  violation.
          procedure Apply_Ceil (X : in out Node; Rep : in out Report; Peer : Hello) is
+            Off : KS.Log_Size;
+            Fl  : Boolean;
          begin
             Rep.Ceil_Got := Peer.Ceil_Len;
             if Peer.Ceil_Len = 0 then
                return;
             end if;
-            declare
-               Fr  : constant Byte_Array := Peer.Ceil (0 .. Peer.Ceil_Len - 1);
-               Rec : Roster_Record := Eff_Of (X);
-               St  : Status;
-               Off : KS.Log_Size;
-            begin
-               Decode_Verified (Cid, K0_PK, Fr, Rec, St);
-               if St /= OK then
-                  raise Program_Error with "the ceiling frame is not a verified ROSTER";
-               end if;
-               declare
-                  H : constant Header := Hdr (Fr);
-                  V : constant Boolean := Root_Void (X.F, H.Issuer);
-               begin
-                  KS.Put_Ceil (X.S, X.F, Fr, H, Off, Rep.Ceil_St);
-                  Rep.Ceil_Applied := True;
-                  if Rep.Ceil_St = Ceil_Only and then V then
-                     Rep.Ceil_Flags := Rep.Ceil_Flags + 1;
-                  end if;
-               end;
-            end;
+            Kome.Write.Receive_Ceil
+              (X.S, X.F, Peer.Ceil (0 .. Peer.Ceil_Len - 1), Off, Rep.Ceil_St, Fl);
+            if Rep.Ceil_St = Malformed then
+               raise Program_Error with "the ceiling frame is not a verified ROSTER";
+            end if;
+            Rep.Ceil_Applied := True;
+            if Fl then
+               Rep.Ceil_Flags := Rep.Ceil_Flags + 1;
+            end if;
          end Apply_Ceil;
 
          --  Admit, when the gate is open: our HELLO from the digest states
          --  as they are now, with the cell's frame if the cell is live
-         --  (the sender duty).
+         --  (the sender duty, the Pre Ceil_Frame_OK of Admit).
          procedure Do_Admit
            (X : in out Node; SX : in out Side; Rep : in out Report; Cred : Byte_Array;
             Out_Q : in out Msg_Vectors.Vector; Open : out Boolean)
@@ -1086,6 +1111,52 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          end loop;
 
          ---------------------------------------------------------------
+         --  R10. The sender duty is the Pre of Admit (Ceil_Frame_OK). A's
+         --  cell is live. A HELLO of A without the ceiling frame would end
+         --  the session with D at the HELLOs (equal digests, no item) and
+         --  leave D at C0; Admit refuses to build it. With the cell's
+         --  frame from the log, the same call is accepted.
+         ---------------------------------------------------------------
+         if Contracts_On then
+            declare
+               Sess : Session (Oblig_Cap => 8);
+               Eff  : constant Roster_Record := Eff_Of (A2);
+               Cred : constant Byte_Array := Cred_Of_Node (A2);
+               Buf  : Msg_Buffer;
+               L    : Msg_Length;
+               Rt   : Root_Out;
+               procedure No_Frame is
+               begin
+                  Admit (Sess, A2.F, Eff, KS.Digest_Auth (A2.S), KS.Digest_Data (A2.S), Cred,
+                         Nothing, Buf, L, Rt);
+               end No_Frame;
+               procedure Other_Frame is
+               begin
+                  Admit (Sess, A2.F, Eff, KS.Digest_Auth (A2.S), KS.Digest_Data (A2.S), Cred,
+                         R3, Buf, L, Rt);
+               end Other_Frame;
+               function No_Frame_Refused is new Refused (No_Frame);
+               function Other_Frame_Refused is new Refused (Other_Frame);
+            begin
+               Start (Sess, Initiator, Cid, DHB);
+               Chk ("R10: A's cell is live and its gate admits the peer; the Pre of Admit"
+                    & " refuses a HELLO without the ceiling frame",
+                    Ceil_Live (A2.F) and then Gate_Open (Cid, A2.F, Eff, DHB)
+                    and then No_Frame_Refused and then not Sess.Hello_Sent);
+               Chk ("R10: the Pre of Admit refuses another roster of the same signer (r3) in"
+                    & " the place of the cell's",
+                    Other_Frame_Refused and then not Sess.Hello_Sent);
+               Admit (Sess, A2.F, Eff, KS.Digest_Auth (A2.S), KS.Digest_Data (A2.S), Cred,
+                      KS.Read_Frame (A2.S, KS.Tag_Off (Ceil_Tag (A2.F))), Buf, L, Rt);
+               Chk ("R10: with the cell's frame from the log, Admit builds the HELLO",
+                    Sess.Hello_Sent and then Hello_Ceil_Of (Slice (Buf, L)) = R2);
+            end;
+         else
+            Skip (Name & "R10: the Pre of Admit refuses a HELLO without the live cell's"
+                  & " frame");
+         end if;
+
+         ---------------------------------------------------------------
          --  R6. A HELLO whose credential is refused: nothing of it is
          --  applied, the ceiling frame included. A (cell r2, live) sends
          --  r3 as its credential, which does not list A's key.
@@ -1250,12 +1321,19 @@ procedure Test_Reconcile with SPARK_Mode => Off is
         Make_Roster (Cid_A, Root_PK, Founding_Cap, Zero_Sig, Box_A, 1, 5000, Mem);
       RH    : constant Header := To_Header (Cid_A, R_Eff);
       Cred_T : constant Byte_Array := Encode (R_Eff);
-      --  A ceiling frame for the wire tests (Kome.Reconcile checks only its
-      --  length), and the empty one.
-      Ceil_T : constant Byte_Array := Fill (212, 44);
+      --  A ceiling frame for the wire tests, and the empty one. Ceil_T is
+      --  the frame of the roster R_Ceil (Kome.Reconcile reads no signature,
+      --  so it is not signed). FC is F0 with R_Ceil in its ceiling cell:
+      --  the cell is live (9000 is above the 5000 of the held roster), so
+      --  Admit takes Ceil_T with FC and no ceiling frame with F0
+      --  (Ceil_Frame_OK).
+      R_Ceil : constant Roster_Record :=
+        Make_Roster (Cid_A, Root_PK, Founding_Cap, Zero_Sig, Box_A, 2, 9000, Mem);
+      Ceil_T : constant Byte_Array := Encode (R_Ceil);
       No_Ceil : constant Byte_Array (1 .. 0) := [];
       S1_Key : constant Key256 := Member_Key (R_Eff.C, 1);
       F0    : State := Empty (Fnd, 64);
+      FC    : State := Empty (Fnd, 64);
       St    : Status;
       SS    : Snap_Status;
    begin
@@ -1264,6 +1342,16 @@ procedure Test_Reconcile with SPARK_Mode => Off is
              St = OK and then Gate_Open (Cid_A, F0, R_Eff, DH1)
              and then Gate_Open (Cid_A, F0, R_Eff, DH2)
              and then not Gate_Open (Cid_A, F0, R_Eff, DHX));
+      FC := F0;
+      Raise_Ceil (FC, To_Header (Cid_A, R_Ceil), 0);
+      Check ("fixture: FC is F0 with a live ceiling cell; the gate is the same",
+             Ceil_Live (FC) and then not Ceil_Live (F0)
+             and then Ceil_Held (FC) = To_Header (Cid_A, R_Ceil)
+             and then Max_Ceil (FC) = 9000 and then Max_Ceil (F0) = 5000
+             and then Gate_Open (Cid_A, FC, R_Eff, DH1)
+             and then Gate_Open (Cid_A, FC, R_Eff, DH2)
+             and then Ceil_Frame_OK (Cid_A, FC, Ceil_T)
+             and then Ceil_Frame_OK (Cid_A, F0, No_Ceil));
 
       ------------------------------------------------------------------
       --  (a) Keys
@@ -1933,7 +2021,47 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          Recv (Ses_I, Empty_S, EP, F0, R_Eff, Root_Bytes ((True, 1, [others => 0])), 1, O, Rt, M,
                Got, Res);
          Check ("a ROOT before the HELLO exchange is unexpected", Res = S_Unexpected);
-         Admit (Ses_I, F0, R_Eff, AA, AD, Cred_T, Ceil_T, Buf, L, Rt);
+         --  The sender duty (AUDIT.md H12): the Pre of Admit refuses a
+         --  HELLO that leaves out a live cell, one that carries another
+         --  roster in its place, and one that carries a frame when the
+         --  cell is not live.
+         Check ("R10: Ceil_Frame_OK is false for an empty frame and for another roster when"
+                & " the cell is live, and for any frame when it is not",
+                not Ceil_Frame_OK (Cid_A, FC, No_Ceil)
+                and then not Ceil_Frame_OK (Cid_A, FC, Cred_T)
+                and then not Ceil_Frame_OK (Cid_A, FC, Fill (212, 44))
+                and then not Ceil_Frame_OK (Cid_A, F0, Ceil_T));
+         if Contracts_On then
+            declare
+               X : Session (Oblig_Cap => 8);
+               procedure Empty_While_Live is
+               begin
+                  Admit (X, FC, R_Eff, AA, AD, Cred_T, No_Ceil, Buf, L, Rt);
+               end Empty_While_Live;
+               procedure Other_Roster is
+               begin
+                  Admit (X, FC, R_Eff, AA, AD, Cred_T, Cred_T, Buf, L, Rt);
+               end Other_Roster;
+               procedure Frame_While_Dead is
+               begin
+                  Admit (X, F0, R_Eff, AA, AD, Cred_T, Ceil_T, Buf, L, Rt);
+               end Frame_While_Dead;
+               function R_Empty is new Refused (Empty_While_Live);
+               function R_Other is new Refused (Other_Roster);
+               function R_Dead is new Refused (Frame_While_Dead);
+            begin
+               Start (X, Initiator, Cid_A, DH2);
+               Check ("R10: the Pre of Admit refuses an empty Ceil while the cell is live",
+                      R_Empty and then not X.Hello_Sent);
+               Check ("R10: the Pre of Admit refuses a roster that is not the cell's",
+                      R_Other and then not X.Hello_Sent);
+               Check ("R10: the Pre of Admit refuses a ceiling frame while the cell is not"
+                      & " live", R_Dead and then not X.Hello_Sent);
+            end;
+         else
+            Skip ("R10: the Pre of Admit refuses a HELLO that breaks the sender duty");
+         end if;
+         Admit (Ses_I, FC, R_Eff, AA, AD, Cred_T, Ceil_T, Buf, L, Rt);
          declare
             HA : constant Byte_Array := Slice (Buf, L);
          begin
