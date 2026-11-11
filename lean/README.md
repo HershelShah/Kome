@@ -52,10 +52,20 @@ The build enforces the "no `sorry`, standard axioms only" claim:
   root-voided). The views read the minimum `from_t` of the revocations of
   a key, which the REVOKE clause of domination does not change.
 - The emitted `t` (`emitT`) and the emitted `seq` (`emitSeq`).
+- The ceiling cell (`CState`: the held list and the cell's ceiling, 0 when
+  the cell is empty). `maxCeilC` is the larger of `maxceil` of the held
+  list and the cell, and `admC` is admission under it. The two store steps
+  are modelled with an arbitrary refusal rule `refuse`: `applyC`
+  (`Put_Frame`: a refused roster whose ceiling is above `maxceil` takes the
+  cell) and `ceilC` (`Put_Ceil`: the cell alone, the held list is never
+  tried); `expireC` is the store's expiry under `maxCeilC`; `applyHC` and
+  `stepHC` are one store call with its expiry. With no refusal and an empty
+  cell, `applyHC` is `applyH` (`applyHC_no_refusal`).
 
 Out of scope: the model assumes that records are well-formed. So it does
-not model certificates, capacity (`NO_SPACE`, `AUTH_FULL`) or assumption
-A7.
+not model certificates or assumption A7. It has no capacity rule either
+(`NO_SPACE`, `AUTH_FULL`): every theorem except T19 is about a store that
+refuses nothing for room, and T19 holds for every refusal rule.
 
 ## Theorems (numbering from DESIGN.md §9)
 
@@ -78,11 +88,12 @@ A7.
 | T12 revocation | `data_F_auth_free`, `applyF_local`, `dominates_revoke`, `isMinFrom_F`, `rootVoid_mono`, `wEff_mono_fixed`, `voided_revoke_mono` |
 | T13 bounds | `emitT_le` |
 | T18 replay after compaction | `auth_first` |
+| T19 `maxceil` does not depend on the arrival order, with refusals for room | `maxCeil_order_indep_H`, through `maxCeil_stepAllHC`; the steps `maxCeil_applyC`, `maxCeil_ceilC`, `maxCeil_expireC`, `maxCeil_applyHC`, `maxCeil_stepHC`; `admC_zero`, `admC_auth`, `maxP_append_singleton`, `applyHC_no_refusal` |
 
 `exists_congr` of the audit (G3) is `existsEnt_congr`: core Lean already
 uses the name `exists_congr`.
 
-**Status:** Lean machine-checks 204 theorems (202 `theorem` and 2
+**Status:** Lean machine-checks 216 theorems (214 `theorem` and 2
 `instance` declarations), with no `sorry`. The only
 axioms that the proofs use are the standard Lean axioms `propext`,
 `Classical.choice` and `Quot.sound`; `Kome/Axioms.lean` checks this on

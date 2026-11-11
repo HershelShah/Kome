@@ -51,6 +51,15 @@ no horizon otherwise. `hz` never decreases as authorization records arrive
 (`hz_mono`), and the store's apply (`applyH`) expires at `hz` of the state
 it reaches, so a roster that raises the ceiling expires in the same step.
 
+The ceiling cell (T19). The store has capacity, and it can refuse an
+authorization record for room. It keeps the ceiling of a refused roster in a
+cell beside the held records, and `maxceil` reads the cell too. The section
+"The ceiling cell" models the two store steps with a cell and an arbitrary
+refusal rule, and proves that `maxceil` after a run does not depend on the
+arrival order (`maxCeil_order_indep_H`). The rest of the file is about a
+store that refuses nothing for room, where the cell stays empty
+(`applyHC_no_refusal`).
+
 Revocation is a set of views (§3, §6; T5, T12): `root_void`, the
 effective-writer view `W_eff`, `void` and `ROSTER_eff`. `ROSTER_eff` is the
 maximum under `(gen, h)` (then the remaining roster fields), so it does not
@@ -63,7 +72,8 @@ certificate controls who may sign it: the founding key, or a root that the
 founding key certified. A check on the record's bytes applies this rule
 (DESIGN §2). The model does not include this check: it takes every
 record to be well-formed. These items are also outside the model:
-- Capacity (data capacity, the per-signer slices, `NO_SPACE`, `AUTH_FULL`).
+- Capacity (data capacity, the per-signer slices, `NO_SPACE`, `AUTH_FULL`),
+  except as the arbitrary refusal rule of the ceiling-cell section.
 - Assumption A7 (revocation arrives first).
 
 The model uses lists for sets, up to membership. The theorems must not
@@ -1599,6 +1609,189 @@ theorem auth_first_closed_H {delTtl h : Nat} {S la ld : List Record} {d : Record
   have hD := auth_first_closed hF hA hla hld hadm hd hnd
   have hE : d ∈ expireHz delTtl (applyAllD S (la ++ ld)) := mem_expireHz.mpr ⟨hD, hlive⟩
   exact expireHz_subset _ _ ((expire_applyAllH d hF hS hSl hl hb).mpr hE)
+
+/-! ### The ceiling cell (AUDIT H12, T19)
+
+The store has capacity, and the model above has none. A signer's slice or the
+slot table can refuse an authorization record, and a refused roster is not
+held, so `maxceil` over the held rosters alone would depend on the arrival
+order. The store therefore keeps one more value beside the held records, the
+ceiling cell: the largest ceiling of the rosters that reached the replica
+without being held. `maxceil` is the larger of the held rosters' ceiling and
+the cell.
+
+This section models the two store steps (`Put_Frame`, `Put_Ceil`) with the
+cell and with an arbitrary refusal rule, and proves that `maxceil` after a
+run is the start value joined with the largest roster ceiling of the run
+(`maxCeil_stepAllHC`). So it is the same for every arrival order, every
+refusal rule and every choice of entry point (`maxCeil_order_indep_H`). The
+model's cell is a number; the store keeps the signed roster and its log
+entry. -/
+
+theorem maxP_append_singleton (p : Record → Nat) (l : List Record) (r : Record) :
+    maxP p (l ++ [r]) = max (maxP p l) (p r) := by
+  induction l with
+  | nil => simp [maxP]
+  | cons q l ih => simp only [List.cons_append, maxP, ih]; omega
+
+/-- Admission with a ceiling cell `c`: `adm`, with `max (maxceil H) c` as the
+ceiling. -/
+def admC (c : Nat) (H : List Record) : Record → Bool
+  | put _ _ v _ =>
+    decide (v.t ≤ max (maxCeil H) c) && writerB H v.author && decide (v.t ≤ wcap H v.author)
+  | del _ v =>
+    decide (v.t ≤ max (maxCeil H) c) && writerB H v.author && decide (v.t ≤ wcap H v.author)
+  | _ => true
+
+/-- With an empty cell, admission is the model's `adm`. -/
+theorem admC_zero (H : List Record) (r : Record) : admC 0 H r = adm H r := by
+  cases r <;> simp [admC, adm]
+
+theorem admC_auth {c : Nat} {H : List Record} {r : Record} (hr : isAuth r = true) :
+    admC c H r = true := by
+  cases r <;> first | rfl | simp [isAuth] at hr
+
+/-- A record that is not admitted is a data record: its ceiling is 0. -/
+theorem ceilOf_of_not_admC {c : Nat} {H : List Record} {r : Record}
+    (h : admC c H r = false) : ceilOf r = 0 := by
+  cases ha : isAuth r
+  · exact ceilOf_of_not_auth r ha
+  · rw [admC_auth ha] at h; exact absurd h.symm Bool.false_ne_true
+
+/-- A replica with a ceiling cell: the held list and the cell's ceiling (0:
+the cell is empty). -/
+structure CState where
+  held : List Record
+  cell : Nat
+
+/-- `maxceil` of a replica with a cell. -/
+def maxCeilC (s : CState) : Nat := max (maxCeil s.held) s.cell
+
+/-- `Put_Frame` without expiry, for any capacity rule. `refuse s r = true`
+means that the rows have no room for `r`. A refused record changes nothing,
+except that a refused roster whose ceiling is above `maxceil` takes the cell
+(`Raise_Ceil`). -/
+def applyC (refuse : CState → Record → Bool) (s : CState) (r : Record) : CState :=
+  if admC s.cell s.held r then
+    if refuse s r then
+      { held := s.held, cell := if maxCeilC s < ceilOf r then ceilOf r else s.cell }
+    else { held := F (s.held ++ [r]), cell := s.cell }
+  else s
+
+/-- The step of T19 for `Put_Frame`: whatever the rows refuse, `maxceil` is
+the old `maxceil` joined with the ceiling of the record. -/
+theorem maxCeil_applyC (refuse : CState → Record → Bool) (s : CState) (r : Record) :
+    maxCeilC (applyC refuse s r) = max (maxCeilC s) (ceilOf r) := by
+  unfold applyC
+  cases ha : admC s.cell s.held r with
+  | false =>
+    rw [ceilOf_of_not_admC ha]
+    simp
+  | true =>
+    cases hr : refuse s r with
+    | true =>
+      simp only [ite_true]
+      unfold maxCeilC
+      simp only
+      split <;> omega
+    | false =>
+      simp only [ite_true, Bool.false_eq_true, ite_false]
+      unfold maxCeilC
+      simp only [maxCeil_F]
+      show max (maxP ceilOf (s.held ++ [r])) s.cell
+        = max (max (maxP ceilOf s.held) s.cell) (ceilOf r)
+      rw [maxP_append_singleton]
+      omega
+
+/-- `Put_Ceil` without expiry: the cell branch alone. The rows are never
+tried. -/
+def ceilC (s : CState) (r : Record) : CState :=
+  { held := s.held, cell := if maxCeilC s < ceilOf r then ceilOf r else s.cell }
+
+/-- The step of T19 for `Put_Ceil`. -/
+theorem maxCeil_ceilC (s : CState) (r : Record) :
+    maxCeilC (ceilC s r) = max (maxCeilC s) (ceilOf r) := by
+  unfold ceilC maxCeilC
+  simp only
+  split <;> omega
+
+/-- The store's expiry with a cell: the horizon reads the cell too. -/
+def expireC (delTtl : Nat) (s : CState) : CState :=
+  { held := s.held.filter (fun x => !isExpiredAt delTtl (maxCeilC s) x), cell := s.cell }
+
+/-- Expiry keeps every authorization record and the cell, so it keeps
+`maxceil`. -/
+theorem maxCeil_expireC (delTtl : Nat) (s : CState) :
+    maxCeilC (expireC delTtl s) = maxCeilC s := by
+  have hm : maxCeil (s.held.filter (fun x => !isExpiredAt delTtl (maxCeilC s) x))
+      = maxCeil s.held := by
+    refine maxCeil_cover (fun y hy => (List.mem_filter.mp hy).1) ?_
+    intro y hy ha
+    refine Or.inl (List.mem_filter.mpr ⟨hy, ?_⟩)
+    cases he : isExpiredAt delTtl (maxCeilC s) y
+    · rfl
+    · rw [isAuth_of_expiredAt he] at ha; exact absurd ha Bool.false_ne_true
+  show max (maxCeil (s.held.filter (fun x => !isExpiredAt delTtl (maxCeilC s) x))) s.cell
+    = max (maxCeil s.held) s.cell
+  rw [hm]
+
+/-- `Put_Frame` with a capacity rule: `applyC`, then the store's expiry. -/
+def applyHC (refuse : CState → Record → Bool) (delTtl : Nat) (s : CState) (r : Record) :
+    CState :=
+  expireC delTtl (applyC refuse s r)
+
+theorem maxCeil_applyHC (refuse : CState → Record → Bool) (delTtl : Nat) (s : CState)
+    (r : Record) : maxCeilC (applyHC refuse delTtl s r) = max (maxCeilC s) (ceilOf r) := by
+  unfold applyHC
+  rw [maxCeil_expireC, maxCeil_applyC]
+
+/-- One store call: `Put_Ceil` of `c.2` (`c.1 = true`) or `Put_Frame` of `c.2`
+(`c.1 = false`), then the store's expiry. -/
+def stepHC (refuse : CState → Record → Bool) (delTtl : Nat) (s : CState)
+    (c : Bool × Record) : CState :=
+  if c.1 then expireC delTtl (ceilC s c.2) else applyHC refuse delTtl s c.2
+
+theorem maxCeil_stepHC (refuse : CState → Record → Bool) (delTtl : Nat) (s : CState)
+    (c : Bool × Record) :
+    maxCeilC (stepHC refuse delTtl s c) = max (maxCeilC s) (ceilOf c.2) := by
+  unfold stepHC
+  split
+  · rw [maxCeil_expireC, maxCeil_ceilC]
+  · exact maxCeil_applyHC refuse delTtl s c.2
+
+/-- After any run of store calls, `maxceil` is the start value joined with the
+largest roster ceiling of the records of the run. -/
+theorem maxCeil_stepAllHC (refuse : CState → Record → Bool) (delTtl : Nat)
+    (l : List (Bool × Record)) (s : CState) :
+    maxCeilC (l.foldl (stepHC refuse delTtl) s) = max (maxCeilC s) (maxCeil (l.map Prod.snd)) := by
+  induction l generalizing s with
+  | nil => simp [maxP]
+  | cons c l ih =>
+    rw [List.foldl_cons, ih, maxCeil_stepHC]
+    show max (max (maxCeilC s) (ceilOf c.2)) (maxP ceilOf (l.map Prod.snd))
+      = max (maxCeilC s) (max (ceilOf c.2) (maxP ceilOf (l.map Prod.snd)))
+    omega
+
+/-- T19 (H12's obligation): `maxceil` is the same for every arrival order of
+one record set, for every capacity rule and for every choice of entry point
+per call. -/
+theorem maxCeil_order_indep_H (refuse refuse' : CState → Record → Bool) (delTtl : Nat)
+    {l l' : List (Bool × Record)}
+    (h : ∀ r, r ∈ l.map Prod.snd ↔ r ∈ l'.map Prod.snd) {s s' : CState}
+    (hs : maxCeilC s = maxCeilC s') :
+    maxCeilC (l.foldl (stepHC refuse delTtl) s)
+      = maxCeilC (l'.foldl (stepHC refuse' delTtl) s') := by
+  rw [maxCeil_stepAllHC, maxCeil_stepAllHC, hs,
+    show maxCeil (l.map Prod.snd) = maxCeil (l'.map Prod.snd) from maxP_congr ceilOf h]
+
+/-- With no refusal and an empty cell, the `Put_Frame` step is the model's
+`applyH`, and the cell stays empty: the capacity-free model is the cell-free
+one. -/
+theorem applyHC_no_refusal (delTtl : Nat) (S : List Record) (r : Record) :
+    applyHC (fun _ _ => false) delTtl ⟨S, 0⟩ r = ⟨applyH delTtl S r, 0⟩ := by
+  unfold applyHC applyC applyH applyD expireC expireHz maxCeilC
+  simp only [admC_zero]
+  cases adm S r <;> simp
 
 /-! ### Views (§3, §6; T5, T12). `founding` is the collection's founding
 key. -/
