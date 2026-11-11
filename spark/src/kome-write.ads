@@ -58,10 +58,15 @@
 --      and whose ceiling the store recorded in the ceiling cell); it is a
 --      change of the pair, not a refusal, and it never sets the flag (a
 --      roster is not a data record).
---  Kome.Store.Put_Ceil, the entry point for the ceiling frame of a peer's
---  HELLO, has no wrapper here: Receive exists for the H18 flag, which is
---  about the device's own data records. The session caller calls
---  Kome.Store.Put_Ceil directly (kome-reconcile.ads).
+--    * Receive_Ceil (AUDIT.md H12): the receiver side of the ceiling
+--      frame of a peer's HELLO (kome-reconcile.ads). It checks the bytes
+--      (a ROSTER frame that Kome.Store.Verified accepts), applies the
+--      frame with Kome.Store.Put_Ceil and with nothing else, and gives
+--      the SUSPECT_RELAY flag of the frame: Put_Ceil returned Ceil_Only
+--      and the frame's signer was root-voided in F before the call. Bytes
+--      that fail the check give Malformed and change nothing (a protocol
+--      violation: the caller ends the session). The frame never reaches
+--      Put_Frame, so it never enters a row.
 --
 --  CLONE_SUSPECTED (DESIGN.md §5, H8, H18) is shown when the Clone_Suspected
 --  of Receive is set, or when Clone_View (F, self, seq_self) holds: a held
@@ -74,6 +79,8 @@ with Kome.Headers;   use Kome.Headers;
 with Kome.Keys;
 with Kome.Crypto;
 with Kome.Frontier;  use Kome.Frontier;
+with Kome.Views;
+with Kome.Records;
 with Kome.Emit;      use Kome.Emit;
 with Kome.Store;     use Kome.Store;
 package Kome.Write with SPARK_Mode is
@@ -214,6 +221,53 @@ package Kome.Write with SPARK_Mode is
        and (Clone_Suspected
               = (Own (H, Self_Key (S'Old)) and then Result = OK
                  and then Effective (F'Old, Del_TTL (S'Old), H)));
+
+   ---------------------------------------------------------------------------
+   --  The ceiling frame of a peer's HELLO (AUDIT.md H12).
+   ---------------------------------------------------------------------------
+
+   --  Frame is a ROSTER frame of the store's collection that verifies:
+   --  what Kome.Records.Decode_Verified accepts as a ROSTER under Cid (S)
+   --  and Root_Key (S).
+   function Ceil_Frame_Verified (S : Kome.Store.Store; Frame : Byte_Array) return Boolean is
+     (Kome.Records.Is_Roster_Frame (Frame)
+      and then Verified (Cid (S), Root_Key (S), Frame));
+
+   --  Apply the ceiling frame of a peer's HELLO (DESIGN.md §8; the
+   --  receiver duty of kome-reconcile.ads): Frame is Peer.Ceil (0 ..
+   --  Peer.Ceil_Len - 1) of an accepted HELLO with Ceil_Len > 0. A frame
+   --  that is not a verified ROSTER gives Malformed and changes nothing;
+   --  the caller ends the session. Otherwise the Post is the Post of
+   --  Kome.Store.Put_Ceil (Ceil_Done) for the frame's header: the frame
+   --  goes to the ceiling cell if it raises maxceil (Ceil_Only), and
+   --  nothing changes if it does not (OK) or if the log has no room
+   --  (Log_Full). No row changes in any case. Suspect_Relay is the
+   --  SUSPECT_RELAY flag for the peer that sent the frame: the frame
+   --  raised our maxceil and its signer was root-voided in our view
+   --  before the call. A frame that changes nothing flags nobody.
+   procedure Receive_Ceil
+     (S             : in out Kome.Store.Store;
+      F             : in out State;
+      Frame         : in     Byte_Array;
+      Off           :    out Log_Size;
+      Result        :    out Status;
+      Suspect_Relay :    out Boolean)
+   with
+     Global => null,
+     Pre  => Valid (S, F),
+     Post => (if Ceil_Frame_Verified (S'Old, Frame)
+              then Result in OK | Ceil_Only | Log_Full
+                   and then Header_Of (Cid (S'Old), Frame).K = K_Roster
+                   and then Ceil_Done (S'Old, S, F'Old, F, Frame,
+                                       Header_Of (Cid (S'Old), Frame), Off, Result)
+                   and then Suspect_Relay
+                            = (Result = Ceil_Only
+                               and then Kome.Views.Root_Void
+                                          (F'Old, Header_Of (Cid (S'Old), Frame).Issuer))
+              else Result = Malformed
+                   and then Unchanged (F'Old, F) and then S = S'Old
+                   and then Off = Log_Length (S'Old)
+                   and then not Suspect_Relay);
 
    --  CLONE_SUSPECTED as a view over F and seq_self: a held own seq above
    --  seq_self (H8), or two held own records with equal seq and different

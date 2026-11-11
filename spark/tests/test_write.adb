@@ -23,7 +23,15 @@
 --        key's record are not flagged; Clone_Pair and Clone_View hold;
 --    (g) AUDIT.md H12: Receive of a roster that finds no room in the
 --        authorization rows and raises maxceil returns Ceil_Only, with no
---        flag.
+--        flag;
+--    (h) AUDIT.md H12: Receive_Ceil, the receiver side of the ceiling
+--        frame of a HELLO. A roster above maxceil goes to the cell and to
+--        no row, although its signer's slice has room (Ceil_Only;
+--        ROSTER_eff is unchanged); the same frame again and a roster at or
+--        below maxceil change nothing (OK); bytes that are not a verified
+--        ROSTER are Malformed and change nothing; SUSPECT_RELAY is set
+--        exactly when the frame raised maxceil and its signer was
+--        root-voided before the call.
 --  The build uses -gnata, so every Pre / Post runs on these stores.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -33,6 +41,7 @@ with Kome;             use Kome;
 with Kome.Versions;    use Kome.Versions;
 with Kome.Headers;     use Kome.Headers;
 with Kome.Frontier;    use Kome.Frontier;
+with Kome.Views;       use Kome.Views;
 with Kome.Keys;        use Kome.Keys;
 with Kome.Crypto;
 with Kome.Records;     use Kome.Records;
@@ -432,6 +441,139 @@ procedure Test_Write with SPARK_Mode => Off is
          Recv (S, L, Encode (R), St, Fl);
          Check ("(g) W1: the same roster again: Auth_Full, nothing appended, not flagged",
                 St = Auth_Full and then not Fl and then Log_Length (S) = LL);
+      end;
+   end;
+
+   ---------------------------------------------------------------------------
+   --  (h) W2 (AUDIT.md H12): Receive_Ceil. The store has room in every
+   --  slice: what keeps the roster out of the rows is the operation, not
+   --  the capacity.
+   ---------------------------------------------------------------------------
+   declare
+      L   : Lattice (8);
+      S   : Store_T (Log_Cap_A);
+      S0  : Store_T (Log_Cap_A);
+      St  : Status;
+      Fl  : Boolean;
+      Off : Log_Size;
+      LL  : Log_Size;
+      LL0 : Log_Size;                       --  the log length after Setup
+      Cap_Q : constant U48 := 60 * Day;
+      Q_SK  : Kome.Crypto.Secret_Key;
+      Q_PK  : Pubkey;
+      Eff0  : Header_View;
+      Cnt0  : Held_Count;
+
+      function Q_Roster (Gen, Ceil : U48) return Byte_Array is
+         R : Roster_Record :=
+           Make_Roster (Cid_A, Q_PK, Cap_Q, Make_Cert (Root_SK, Cid_A, Q_PK, Cap_Q),
+                        Good_DH (77), Gen, Ceil, Member (Stranger_PK, 31));
+      begin
+         Sign (Cid_A, R, Q_SK);
+         return Encode (R);
+      end Q_Roster;
+
+      function Void_Q return Byte_Array is
+         X : Revoke_Record :=
+           Make_Revoke (Cid_A, Root_PK, Founding_Cap, Cert_R, Q_PK, 0);
+      begin
+         Sign (Cid_A, X, Root_SK);
+         return Encode (X);
+      end Void_Q;
+   begin
+      Kome.Crypto.Key_Pair (Seed_Of (200), Q_SK, Q_PK);
+      Setup (S, L, Dev_PK);
+      Eff0 := Roster_Eff (L);
+      Cnt0 := Cnt (L);
+      LL0 := Log_Length (S);
+      declare
+         --  A roster of Q with gen 9 (above the founding roster's gen 1)
+         --  that lists a stranger only: in a row it would be ROSTER_eff.
+         R35  : constant Byte_Array := Q_Roster (9, 35 * Day);
+         R20  : constant Byte_Array := Q_Roster (9, 20 * Day);
+         R40  : constant Byte_Array := Q_Roster (9, 40 * Day);
+         Bad  : Byte_Array := R40;
+         G    : constant Byte_Array := Grant_Of (Stranger_PK);
+         None : constant Byte_Array (1 .. 0) := [];
+      begin
+         LL := Log_Length (S);
+         Receive_Ceil (S, L, R35, Off, St, Fl);
+         Check ("(h) W2: Receive_Ceil of a roster above maxceil: Ceil_Only, a CEIL entry,"
+                & " the cell holds it, not flagged",
+                St = Ceil_Only and then not Fl and then Off = LL
+                and then Max_Ceil (L) = 35 * Day
+                and then Has_Ceil (L) and then Ceil_Held (L) = Header_Of (Cid_A, R35)
+                and then Ceil_Live (L)
+                and then Log_Byte (S, LL) = Op_Ceil
+                and then Log_Length (S) = LL + Apply_Prefix + R35'Length);
+         Check ("(h) W2: the roster is in no row although its signer has room;"
+                & " ROSTER_eff is unchanged",
+                not Holds (L, Header_Of (Cid_A, R35)) and then Cnt (L) = Cnt0
+                and then Roster_Eff (L) = Eff0);
+
+         LL := Log_Length (S);
+         S0 := S;
+         Receive_Ceil (S, L, R35, Off, St, Fl);
+         Check ("(h) W2: the same frame again: OK, nothing changes, not flagged",
+                St = OK and then not Fl and then S = S0 and then Off = LL);
+         Receive_Ceil (S, L, R20, Off, St, Fl);
+         Check ("(h) W2: a roster below maxceil: OK, nothing changes",
+                St = OK and then not Fl and then S = S0
+                and then Ceil_Held (L) = Header_Of (Cid_A, R35));
+
+         Receive_Ceil (S, L, G, Off, St, Fl);
+         Check ("(h) W2: a verified GRANT frame is not a ceiling frame: Malformed,"
+                & " nothing changes",
+                Verified (Cid_A, Root_PK, G)
+                and then St = Malformed and then not Fl and then S = S0 and then Off = LL
+                and then Max_Ceil (L) = 35 * Day);
+         Bad (Bad'Last) := Bad (Bad'Last) xor 1;
+         Receive_Ceil (S, L, Bad, Off, St, Fl);
+         Check ("(h) W2: a roster above maxceil with a bad signature: Malformed,"
+                & " nothing changes",
+                St = Malformed and then not Fl and then S = S0
+                and then Max_Ceil (L) = 35 * Day
+                and then Ceil_Held (L) = Header_Of (Cid_A, R35));
+         Receive_Ceil (S, L, None, Off, St, Fl);
+         Check ("(h) W2: an empty frame: Malformed, nothing changes",
+                St = Malformed and then not Fl and then S = S0);
+
+         --  The founding REVOKE of Q: Q is root-voided from here on.
+         Recv (S, L, Void_Q);
+         Check ("(h) W2: the founding REVOKE of the signer: root-voided; the cell stays",
+                Root_Void (L, To_Key256 (Q_PK)) and then Max_Ceil (L) = 35 * Day
+                and then Ceil_Held (L) = Header_Of (Cid_A, R35));
+         S0 := S;
+         Receive_Ceil (S, L, R35, Off, St, Fl);
+         Check ("(h) W2: a frame of a root-voided signer that changes nothing: OK,"
+                & " not flagged",
+                St = OK and then not Fl and then S = S0);
+         Receive_Ceil (S, L, R40, Off, St, Fl);
+         Check ("(h) W2: a frame of a root-voided signer that raises maxceil: Ceil_Only,"
+                & " SUSPECT_RELAY",
+                St = Ceil_Only and then Fl and then Max_Ceil (L) = 40 * Day
+                and then Ceil_Held (L) = Header_Of (Cid_A, R40)
+                and then not Holds (L, Header_Of (Cid_A, R40))
+                and then Roster_Eff (L) = Eff0);
+         Receive_Ceil (S, L, R40, Off, St, Fl);
+         Check ("(h) W2: the same frame again: OK, not flagged a second time",
+                St = OK and then not Fl);
+      end;
+
+      --  A log with room for the records of Setup and 100 bytes more:
+      --  Log_Full, nothing changes; the flag is not set.
+      declare
+         L2 : Lattice (8);
+         S2 : Store_T (LL0 + 100);
+         S3 : Store_T (LL0 + 100);
+         R45 : constant Byte_Array := Q_Roster (9, 45 * Day);
+      begin
+         Setup (S2, L2, Dev_PK);
+         S3 := S2;
+         Receive_Ceil (S2, L2, R45, Off, St, Fl);
+         Check ("(h) W2: no log room for the CEIL entry: Log_Full, nothing changes",
+                Log_Length (S3) = LL0 and then St = Log_Full and then not Fl and then S2 = S3
+                and then Max_Ceil (L2) = 30 * Day and then not Has_Ceil (L2));
       end;
    end;
 

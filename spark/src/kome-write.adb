@@ -1,5 +1,4 @@
 pragma Ada_2022;
-with Kome.Records;
 package body Kome.Write with SPARK_Mode is
 
    --  S16 under Store.Valid: seq_self bounds every held own seq, so the
@@ -189,5 +188,37 @@ package body Kome.Write with SPARK_Mode is
       Put_Frame (S, F, Frame, H, Off, Result);
       Clone_Suspected := Own_Change and then Result = OK;
    end Receive;
+
+   ------------------
+   -- Receive_Ceil --
+   ------------------
+
+   procedure Receive_Ceil
+     (S             : in out Kome.Store.Store;
+      F             : in out State;
+      Frame         : in     Byte_Array;
+      Off           :    out Log_Size;
+      Result        :    out Status;
+      Suspect_Relay :    out Boolean)
+   is
+   begin
+      if not Ceil_Frame_Verified (S, Frame) then
+         Off := Log_Length (S);
+         Result := Malformed;
+         Suspect_Relay := False;
+         Lemma_Unchanged_Refl (F);
+         return;
+      end if;
+      declare
+         H    : constant Header := Header_Of (Cid (S), Frame);
+         Void : constant Boolean := Kome.Views.Root_Void (F, H.Issuer);
+      begin
+         --  A ROSTER frame has the kind K_Roster, and so has its header.
+         Lemma_Header_Of (Cid (S), Frame);
+         pragma Assert (H.K = K_Roster);
+         Put_Ceil (S, F, Frame, H, Off, Result);
+         Suspect_Relay := Result = Ceil_Only and then Void;
+      end;
+   end Receive_Ceil;
 
 end Kome.Write;
