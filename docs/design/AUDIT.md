@@ -6,7 +6,8 @@ Scope: docs/design (REQUIREMENTS.md, DESIGN.md, IMPLEMENTATION_PLAN.md), lean/Ko
 
 Applied on branch `ccr-f1194bfd-dei9h4` after the audit. Items 1 to 3 are
 the fix groups that §1 recommends first; item 4 is everything else in §2
-to §5. Each item names what changed. On the final state, gnatprove at
+to §5; item 5 is H12, which was applied after the simplification. Each
+item names what changed. On the final state, gnatprove at
 `--level=3` proves all 18,301 checks of the 17 packages and the root package
 with 0 unproved, 1,329 tests pass, `lake build --wfail` checks the 183 Lean
 theorems with no `sorry`, and `lean/Kome/Axioms.lean` confirms that every
@@ -34,7 +35,8 @@ bound `maxceil − Cap_Lead`; no expire mark); H11 by S9 (no `Auth_Gen`;
 the gate is evaluated on every `Receive` and `Next_Phase`); H2's
 quarantine is now a view of `F` (S10, `Kome.Views.Quarantined`; no
 `Guard_State`); and A14 and H5 go with the `OPEN` message (S11). H12
-stays deferred. G15's index and boundary table are replaced by the tags
+was still deferred in the simplified state; it was applied after it
+(item 5 below). G15's index and boundary table are replaced by the tags
 of S14, and A11's slice and `data_cap` fields by S15. `SIMPLIFY.md` gives
 the decisions, and its "As built" note the places where the code
 deviated from the plan. On the simplified state, gnatprove at
@@ -166,11 +168,70 @@ Final counts: see IMPLEMENTATION_PLAN.md.
      G20, G24; A9, A15, A19, A20, A21, A23, A29, A30; N1 to N7; E1, E6,
      E7, E8, E9, E10, E13, E14, E16, E17, E20, E21, E22, E24.
    - Residue applied before item 4: E2, E3, E11.
+5. H12, the ceiling cell, applied after the simplification (DESIGN.md
+   E10, §3, §7, §8, T19). `maxceil` is the same for every arrival order
+   of one record set, `AUTH_FULL` included.
+   - Frontier: the state has one ceiling cell beside the rows (a matrix
+     position of `Auth_Rows` and the flag `Has_Cell`). `Max_Ceil` is the
+     larger of `Held_Ceil` (the function that `Max_Ceil` was) and the
+     cell's ceiling. New: `Held_Ceil`, `Has_Ceil`, `Ceil_Held`,
+     `Ceil_Tag`, `Ceil_Value`, `Ceil_Live`, `Ceil_Same`, `Raises_Ceil`,
+     `Same_Held`, `Raise_Ceil`, `Set_Ceil_Tag`, `Lemma_Held_Ceil_Def`,
+     `Lemma_Frontier_Ceil`, `Lemma_Ceil_Bound`, `Lemma_Same_Held`.
+     `Apply`, `Expire` and `Set_Tag` keep the cell (`Ceil_Same`), and
+     `Apply` keeps its five statuses and its contract.
+   - Kome: the status `Ceil_Only`.
+   - Store: the log entry `CEIL` (`Op_Ceil` = 03). `Put_Frame` records a
+     ROSTER that the rows refuse for room and whose ceiling is above
+     `maxceil` in the cell and returns `Ceil_Only` (`Ceil_Rule`,
+     `Captured`, `Ceiled`, `Ceil_Appended`); `Auth_Full` is left for a
+     refused record that does not raise the ceiling. New entry point
+     `Put_Ceil` (`Ceil_Done`) for the ceiling frame of a HELLO: it writes
+     the cell and never a row. `Ceil_Step`, in `Put_Done` and
+     `Ceil_Done`, is the step of T19. `Valid` gains the cell's tag
+     (`Lemma_Ceil_Tag`); `Lemma_Tag` states `Op_Apply`; `Has_Frame`
+     accepts both entry kinds; `Log_Fits` counts one more entry; replay
+     has the `CEIL` rules and refuses an `APPLY` that `Put_Frame` would
+     capture; `Compact` writes the cell's `CEIL` first (`Retagged`,
+     `Compact_Layout`).
+   - Write: `Receive` can return `Ceil_Only`; no wrapper for `Put_Ceil`.
+   - Reconcile: the HELLO carries a second roster frame, `ceil`
+     (`Hello_O_KLen`, `Hello_Fixed` = 45, `Hello_Max_Len` = 17 877,
+     `Hello.Ceil`, `Hello_Ceil_Of`, `Lemma_Ceil_Zero`; `Encode_Hello` and
+     `Admit` take it). The caller duties (the sender sends its live cell;
+     the receiver applies the frame with `Put_Ceil` only, in a fixed
+     order against the snapshot; the `SUSPECT_RELAY` rule of the frame)
+     are in the package header and are not proved.
+   - Lean: the section "The ceiling cell" (`CState`, `maxCeilC`, `admC`,
+     `applyC`, `ceilC`, `expireC`, `applyHC`, `stepHC`), with
+     `maxCeil_stepAllHC`, `maxCeil_order_indep_H` (T19) and
+     `applyHC_no_refusal`: 12 theorems, 214 theorems and 2 instances in
+     all.
+   - Tests: `test_frontier` (j), `test_views` (l), `test_store`
+     (`Ceiling_Cell`, `Ceil_With_Room`: both arrival orders, reopen,
+     compact, re-offers, the replay refusals), `test_write` (g),
+     `test_reconcile` (R1 on the wire; (i) `Store_Sessions`, sessions
+     between real stores); `vectors/store.txt` and
+     `vectors/reconcile.txt` gain the `CEIL` prefix and the HELLO with a
+     ceiling frame.
+   - The fix differs from the one that H12 proposes. There is one cell
+     for the state, not one per slot; it is ordered by the ceiling alone,
+     not by `(ceiling_t, gen, h)`; and it is written only for a roster
+     that does not enter a row, so it is never the home of a held roster.
+     A per-slot cell that held the signer's maximal roster would have to
+     evict a roster that the new one does not dominate (a higher ceiling
+     with a `gen` that is not higher), which is what H12 itself forbids.
+     Here the replaced occupant was never a held record, so T3 is as
+     before, and only `maxceil` reads the cell. The roster of a cell is
+     not an element, which is why the HELLO frame is part of the fix.
+   - Tested, not proved: replay and `Compact` with a cell give back the
+     state (T18); SPARK proves the step of T19 and Lean the fold over a
+     model; the caller duties above. Under `-gnata` the store and session
+     tests run the scenario with a full slot table; the full-slice form
+     (512 REVOKEs) runs in the release mode only
+     (IMPLEMENTATION_PLAN.md, Missing tests).
 
 Declined or deferred, with the reason:
-- H12 (the `CEIL(s)` cell): deferred. The AUTH_FULL arrival-order case is
-  documented in §7 and §8 as a known gap, and `maxceil` can still differ
-  between honest replicas after a slice refusal.
 - A7 (drop the chain and segments): declined. The chain, the fixed
   segments and the links stay; A6 removes the randomness instead.
 - A24 (frames by reference to the store with a generation counter):
