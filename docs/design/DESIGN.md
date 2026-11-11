@@ -20,7 +20,7 @@ version order.
 
 | # | Decision |
 |---|---|
-| C1 | The state is the frontier. Merge is set union. Then merge drops every record that a newer record on its key dominates (§3). |
+| C1 | The state is the frontier, with one ceiling cell beside it (E10). Merge is set union. Then merge drops every record that a newer record on its key dominates (§3). |
 | C2 | The ceiling is a *monotone* admission rule, not an arrival gate. The store refuses a record above `maxceil`, and admission never shrinks (§4). |
 | C3 | Tombstones use apply-then-expire, not refuse-on-arrival. The store holds a `DEL`, and the `DEL` dominates. Only expiry at the horizon `hz(F)` removes it (§7). |
 | C4 | Cross-author `DEL`s dominate in the store, so deletion is durable and needs no membership knowledge (§3). |
@@ -36,7 +36,7 @@ version order.
 | # | Decision |
 |---|---|
 | D1 | Every authorization record carries a *signer block*. The signer is a root: the founding key or a key that the founding key certified, with `cert_sig` over `BLAKE2b-256("kome/root" ‖ cid ‖ signer ‖ u48(cert_cap))`. The founding key certifies itself once, with `cert_cap = 2^48 − 1`, so every signer is checked the same way. Only the founding key certifies, so only the founding key adds roots. Admission depends only on the bytes and the collection's `cid` (§2, §6). |
-| D1′ | A record kind `GRANT(subject)` holds write access. Its key is `(issuer, subject)`, and it carries a *write cap*: its issuer's `cert_cap` (`2^48 − 1` for the founding key). `W(F)` is the set of `GRANT` subjects in `F`, and `wcap(F, k)` is the largest cap of the `GRANT`s of `k` in `F`. `maxceil(F)` is the largest `ceiling_t` of the rosters in `F`. A roster leaves `F` only under a roster of the same signer with a ceiling at least equal to its own; a `GRANT` leaves `F` only under a `GRANT` of the same issuer and subject with a cap at least equal to its own. The three are views of `F` (`Kome.Frontier.Max_Ceil`, `In_W`, `W_Cap`), not stored registers, and they never shrink (§3, §4). |
+| D1′ | A record kind `GRANT(subject)` holds write access. Its key is `(issuer, subject)`, and it carries a *write cap*: its issuer's `cert_cap` (`2^48 − 1` for the founding key). `W(F)` is the set of `GRANT` subjects in `F`, and `wcap(F, k)` is the largest cap of the `GRANT`s of `k` in `F`. `maxceil(F)` is the largest `ceiling_t` of the rosters in `F` and of the roster in the replica's ceiling cell, if the cell holds one (E10). A roster leaves `F` only under a roster of the same signer with a ceiling at least equal to its own; a `GRANT` leaves `F` only under a `GRANT` of the same issuer and subject with a cap at least equal to its own. The three are views of the state (`Kome.Frontier.Max_Ceil`, `In_W`, `W_Cap`; `W` and `wcap` read `F` alone), not stored registers, and they never shrink (§3, §4). |
 | D2 | Only the founding key root-voids. The store ignores `from_t` for a root-void. Nobody can revoke the founding key. When a root is root-voided, all that it issued (rosters, `REVOKE`s, `GRANT`s) no longer counts in any view. Keys that only that root granted read `void` through the effective-writer view `W_eff` (§3, §6). |
 | D3 | Canonical form is a property of `Header`. Decode produces it, and the lattice requires it. A roster dominates another roster of its signer if and only if its `gen` is *strictly* greater *and* its `ceiling_t` is not lower (a product order). `h` never decides between two rosters of one signer: at equal `gen`, both stay, and the view `contested` reports them. `ROSTER_eff` is the maximum of the roster key `(gen, h, signer, ceiling_t)` over the rosters whose signer is not root-voided (§3). |
 | D4 | Signatures are RFC 8032 Ed25519 (with SHA-512 inside the signature). They come from the `monocypher-ed25519` part of monocypher. Tests check them against RFC 8032 and Wycheproof vectors. BLAKE2b is the hash for all values that Kome derives (§2, A1). |
@@ -44,22 +44,23 @@ version order.
 | D6 | Every key derivation is keyed BLAKE2b-256 in one style, `f(key, label ‖ context)`. `wrap_key = f(X25519(eph_sk, dh_pk), "kome/wrap" ‖ box_pk ‖ dh_pk ‖ sign_pk ‖ cid ‖ u48(gen))`. The box nonce is synthetic, `f(k_g, "kome/box" ‖ dh_pk)[0:24]`; the member calculates it again from the opened key and checks it. The bundle key is `f(k_g, "kome/bundle")`, and bundle nonces are also synthetic (§6, T14). |
 | D7 | The accumulator is little-endian and recorded exactly: `acc(e)` is eight BLAKE2b-512 outputs, a 4096-bit integer. The tags are bytes (§8). |
 | D8 | The write path selects `(t, seq)` without `h`, and then it calculates the hash. The result does not depend on `h`. `seq_self` is per collection (§5). |
-| D9 | Kome persists `F` and `seq_self`, both in the log, and nothing else (§5, §7). The log is a `HEADER` (`"KOME"`, the version, `root_pk`, `salt`, `del_ttl`) and a journal of `APPLY` and `SEQ` entries. There is no expiry entry: the horizon is a function of `F`, and replay reruns `Put_Frame`. Compaction writes one `APPLY` per held record in row order (the authorization rows first) and one `SEQ(seq_self)`; the binding runs it whenever `Compact_Due` holds (more than `2·|F| + 64` entries) and no session pins the log. Replay gives the same frontier as a set (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
-| D10 | Expiry is a function of `F`: the horizon is `hz(F) = maxceil(F) − del_ttl` when `maxceil(F) ≥ del_ttl`, and there is none otherwise. `del_ttl` is fixed at founding: a u48 in the log `HEADER` and in the `cid`, in `[Del_TTL_Min, Del_TTL_Max]`. No record carries it, so no root, stolen or honest, can make tombstone life shorter or longer. `Put_Frame` expires in the same call when a record raises `maxceil`; no local clock is read (§7). |
+| D9 | Kome persists `F`, the ceiling cell and `seq_self`, all in the log, and nothing else (§5, §7). The log is a `HEADER` (`"KOME"`, the version, `root_pk`, `salt`, `del_ttl`) and a journal of `APPLY`, `SEQ` and `CEIL` entries. There is no expiry entry: the horizon is a function of `maxceil`, and replay reruns `Put_Frame` and the capture of the cell. Compaction writes the `CEIL` of the cell's roster, if the cell holds one, then one `APPLY` per held record in row order (the authorization rows first) and one `SEQ(seq_self)`; the binding runs it whenever `Compact_Due` holds (more than `2·|F| + 64` entries) and no session pins the log. Replay gives the same frontier as a set and the same cell roster (T18, §7). The log is plaintext; the host owns its integrity and confidentiality at rest (§7). |
+| D10 | Expiry is a function of the state: the horizon is `hz(F) = maxceil(F) − del_ttl` when `maxceil(F) ≥ del_ttl`, and there is none otherwise. `del_ttl` is fixed at founding: a u48 in the log `HEADER` and in the `cid`, in `[Del_TTL_Min, Del_TTL_Max]`. No record carries it, so no root, stolen or honest, can make tombstone life shorter or longer. `Put_Frame` and `Put_Ceil` expire in the same call when a record raises `maxceil`; no local clock is read (§7). |
 | D11 | The order of checks is admission, duplicate, domination, expiry on arrival, room. A dominated record never needs room. No refusal changes anything (§7). |
 | D12 | `Value_Max` = 40 960, so every frame fits in one 48 KiB message (§2, §8). |
-| D13 | No register value goes on the wire, so no assumption about register values on the wire is needed. There is no pre-gate message: the Noise XK prologue `"kome/1" ‖ ns ‖ 01` binds the collection and the protocol version. The post-gate `HELLO` carries counts, the digest and the sender's credential roster. That roster must list the sender's Noise key, and its signer must not be root-voided at the receiver. The credential is also how a recovery roster reaches a captured replica (§6). A side sends `HELLO` only to a peer that it has already admitted. The authorization range is fully reconciled before the data range (§6, §8). |
+| D13 | No register value goes on the wire, so no assumption about register values on the wire is needed. There is no pre-gate message: the Noise XK prologue `"kome/1" ‖ ns ‖ 01` binds the collection and the protocol version. The post-gate `HELLO` carries counts, the digest, the sender's credential roster and, while the sender's ceiling cell is the only reason for its `maxceil`, the frame of the cell's roster (the ceiling frame, E10). Both are signed records that the receiver verifies. The credential must list the sender's Noise key, and its signer must not be root-voided at the receiver. The credential is also how a recovery roster reaches a captured replica (§6). A side sends `HELLO` only to a peer that it has already admitted. The authorization range is fully reconciled before the data range (§6, §8). |
 | D14 | The session phases are `Gate`, `Auth`, `Data` and `Done`. Only the initiator sends `ROOT` messages: exactly two, whose bounds the phase fixes. A reply tiles the range that it answers. One ordering rule serves every batch (a reply, a bundle, an import, a compacted log): apply in element-key order, which puts the authorization records (tags 0, 1, 2) before the data records, and the `ROSTER`s before the `REVOKE`s (§8). |
 | D15 | Prefix sums carry one more entry, the total. Any sub-range costs at most 64 additions and one subtraction, with the two-accumulator scheme (§8). |
 | E1 | Data records have one capacity. Each signer has its own *slice* of authorization capacity, and the founding key's slice is reserved. The capacity of `W` is the total of the slices, so `W` never fills on its own. A data flood cannot fill another party's space, and a stolen root cannot either. Log bytes are a fourth class, shared by every record: the binding keeps `Log_Fits` (§7), so that a compacted log always has room for one more entry. The founding key keeps a *reserve* of 15 entries in its slice for root-voids (§10.3). Under these two duties, the founding key's `REVOKE` always lands (§7). |
-| E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. If a record that `F` can hold does not fit the log, the store refuses it with `LOG_FULL`, and the binding compacts and retries. The store never drops a key silently (§7). |
+| E2 | If an authorization record would exceed its signer's slice, the store refuses it with `AUTH_FULL` and changes nothing. The one exception is a `ROSTER` whose ceiling is above `maxceil`: the store does not hold it, records it in the ceiling cell and returns `CEIL_ONLY` (E10). If a record that `F` can hold does not fit the log, the store refuses it with `LOG_FULL`, and the binding compacts and retries. The store never drops a key silently (§7). |
 | E3 | There is no hash chain and no segment. Every roster generation has its own key, drawn by its issuer, so a key never derives another, and a member that a roster leaves out gets no box of that roster's key (§6; this resolves AUDIT.md A7 differently, `SIMPLIFY.md` S4). |
 | E4 | `from_t` gives protection only against a lost key, not against a key that a thief uses. For a stolen key, revoke from 0 (§6). |
 | E5 | Keys are checked at decode: `box_pk`/`dh_pk` are reduced, not low-order and not the all-zero encoding, and `box_pk` is not `X25519_Public(0^32)`; `root_pk`, `signer`, a `GRANT`'s `subject`, a `REVOKE`'s `sign_pk` and every roster member's `sign_pk` are canonical, not small-order and not the key of the all-zero seed (`Sign_Key_OK`); the signature check makes a data record's `author` canonical and not small-order; every signer's certificate verifies under `root_pk`, the founding key's own included. Each record has one encoding (§2). That every listed member can open its box is not a decode check: `Kome.Roster.Build` makes it true by construction, because it derives `box_pk` from the secret that sealed the boxes (§6). |
 | E6 | No frame carries `root_pk`, `salt` or `ns`. The verifier supplies the collection's `cid` and `root_pk` (from the store, the session or the bundle), and a record of another collection does not verify, because its `h` binds another `cid`. The effective certificate cap is the largest cap ever certified (§6). |
 | E7 | Admission does not refuse the records of a revoked key. Instead, the design bounds a revoked key's reach with the write cap (`t ≤ wcap`, §4), states assumption A7 (no replica receives, from any source, a record that a revoked subject signed after its revocation), and makes the H8 bounds depend on A7. A refusal would give a stolen root a permanent primitive for mass deletion, and it would give up T3 (§6, §9). |
 | E8 | The engine has no per-author data quota. A quota refusal is a capacity refusal, and under a flood the replicas would not agree about it. It stays an application policy (§10.5). |
-| E9 | The frontier keeps one data row and one authorization row per signer slot. Its discriminant sets the data capacity, and the slice is the constant `Slice_Max`. Each held record carries an opaque 64-bit tag that the lattice ignores and the store uses to find its frame in the log (§7). |
+| E9 | The frontier keeps one data row and one authorization row per signer slot. Its discriminant sets the data capacity, and the slice is the constant `Slice_Max`. Each held record carries an opaque 64-bit tag that the lattice ignores and the store uses to find its frame in the log (§7). The ceiling cell is beside the rows, with a tag of its own (E10). |
+| E10 | The state has one **ceiling cell** beside `F` (AUDIT.md H12). It is empty or holds one roster: the last roster that raised `maxceil` without entering a row. Only `maxceil` reads it: `maxceil` is the larger of the held rosters' ceiling and the cell's. A roster reaches the cell in two ways and in no other: `Put_Frame` refused it for room (a full slice, or a full slot table) and its ceiling is above `maxceil` (`CEIL_ONLY`); or it is the ceiling frame of a peer's `HELLO`, which `Put_Ceil` applies to the cell and never to a row. The cell is a max-register on the ceiling: a roster replaces the occupant only with a strictly higher ceiling, the occupant is not a held record, and no held record leaves `F` because of the cell. So `maxceil` after any delivery of a set of records is the larger of its value before and the largest roster ceiling of the set, whatever a slice refused (T19), and a roster in a cell changes no `ROSTER_eff`, no gate and no quarantine, at its holder or at a peer (§3, §7, §8). |
 
 ## 2. Objects
 
@@ -366,13 +367,15 @@ values. The values of a deleted entity are freed at each replica that a
 
 **Views** are pure functions of `F` (and of the collection's constant
 `root_pk`; `Kome.Views`, and `Kome.Frontier` for the three admission
-views):
+views). One of them, `maxceil`, also reads the ceiling cell (below):
 
 ```
 deleted_at(ent)     := max { d.v | d ∈ F, DEL on ent }                     -- Option
 cell(ent, f)        := the unique PUT in F on (ent, f)                      -- Option
 exists(ent)         := ∃ f. cell(ent, f) ≠ None
-maxceil(F)          := max { r.ceiling_t | r ∈ F, ROSTER }   (0 if none)    -- admission
+heldceil(F)         := max { r.ceiling_t | r ∈ F, ROSTER }   (0 if none)
+maxceil(F)          := max(heldceil(F), ceiling_t of the roster in the ceiling cell (0 if empty))
+                                                                             -- admission
 W(F)                := { g.subject | g ∈ F, GRANT }                         -- admission
 wcap(F, k)          := max { g.cap | g ∈ F, GRANT, g.subject = k }  (0 if none)  -- admission
 root_void(k)        := k ≠ root_pk ∧ ∃ x ∈ F : REVOKE, x.subject = k, x.issuer = root_pk
@@ -389,13 +392,16 @@ contested           := ∃ r ∈ F : ROSTER, ¬ root_void(r.signer), r ≠ ROSTE
 quarantined         := Roster_Max ≠ None ∧ root_void(Roster_Max.signer)     -- the gate reads it
 ```
 
-`maxceil`, `W` and `wcap` are `Kome.Frontier.Max_Ceil`, `In_W` and
-`W_Cap`; `revoked_at` is the one revocation view, and `void` and `revoked`
-are two readings of it (`SIMPLIFY.md` S13, Lean `revokeVoids`). The order
-of `ROSTER_eff` is Lean's `rkey`: `(gen, h)` decides, and `signer` and
-`ceiling_t` only make the order total (they decide only between rosters
-equal in `(gen, h)`, which A2 excludes), so `ROSTER_eff` does not depend on
-the order of the held array, even without A2.
+`maxceil`, `W` and `wcap` are `Kome.Frontier.Max_Ceil`, `In_W` and `W_Cap`,
+and `heldceil` is `Held_Ceil`. This document writes `maxceil(F)` for the
+`maxceil` of a replica whose frontier is `F`; it is the only view that
+reads something beside `F`. `revoked_at` is the one revocation view, and
+`void` and `revoked` are two readings of it (`SIMPLIFY.md` S13, Lean
+`revokeVoids`). The order of `ROSTER_eff` is Lean's `rkey`: `(gen, h)`
+decides, and `signer` and `ceiling_t` only make the order total (they
+decide only between rosters equal in `(gen, h)`, which A2 excludes), so
+`ROSTER_eff` does not depend on the order of the held array, even without
+A2.
 
 Two predicates read the local clock, so they are not functions of `F`.
 They are per-replica advisory flags, and T5 does not list them:
@@ -427,12 +433,62 @@ concurrent write to be visible (§10.4).
 only under a roster of the same signer with a ceiling at least equal to
 its own. A `GRANT` leaves `F` only under a `GRANT` of the same issuer and
 subject with a cap at least equal to its own. With T2', each dominated
-record has a dominator that is not dominated. Thus `maxceil(F(H)) =
-maxceil(H)`, `W(F(H)) = W(H)`, `wcap(F(H), k) = wcap(H, k)` and
+record has a dominator that is not dominated. Thus `heldceil(F(H)) =
+heldceil(H)` (and so `maxceil(F(H)) = maxceil(H)` for the same cell),
+`W(F(H)) = W(H)`, `wcap(F(H), k) = wcap(H, k)` and
 `W_eff(F(H)) = W_eff(H)`. The admission views of the frontier are those of
 all records ever applied, and they never shrink (T4′; in SPARK,
 `Kome.Frontier.Lemma_Views_Step` gives their new values after each
-`Apply`).
+`Apply`). The cell only rises, so `maxceil` never shrinks with it either.
+
+**The ceiling cell (E10; AUDIT.md H12).** `F` has capacity (§7): a
+signer's slice or the slot table can refuse a roster for room. A refused
+roster is not in `F`, so `heldceil` depends on the order in which a
+signer's records arrived at a replica with a full slice. The state
+therefore has a second component beside `F`, the ceiling cell. It is empty
+or holds one roster (`Kome.Frontier.Has_Ceil`, `Ceil_Held`). The state is
+the pair `(F, c)`, where `c` is the `ceiling_t` of the cell's roster, or 0
+for an empty cell, and
+
+```
+maxceil = max(heldceil(F), c)
+```
+
+The cell is a max-register on `u48`, and the signed roster is the witness
+of its value. A roster `r` takes the cell only when `r.ceiling_t >
+maxceil` (`Raises_Ceil`; `Raise_Ceil` writes it). This is the domination
+of the cell: a strict total order on ceilings. `maxceil` is at least the
+occupant's ceiling, so a new occupant always has a strictly higher ceiling
+than the roster that it replaces. The store puts a roster in the cell only
+when the roster does not enter a row: `Put_Frame` refused it for room, or
+it came as the ceiling frame of a `HELLO` (§7, §8). A cell of a frontier
+holds a canonical roster with a ceiling of at least 1
+(`Lemma_Frontier_Ceil`).
+
+The two components do not act on each other. The cell's roster is not a
+member of `F`: it dominates nothing, and nothing dominates it. `dom`, the
+antichain of `F` and T3 are stated over `F` alone, as above, and a record
+leaves `F` only by the drop rule of §7. The roster that a new occupant
+replaces was never a held record, so no held record leaves the state
+without a dominator. The warning above against a roster order with the
+ceiling first does not apply here: the ceiling order evicts only from the
+cell, and only `maxceil` reads the cell. `ROSTER_eff`, `Roster_Max`,
+`contested`, `quarantined`, the revocation views, `W` and `wcap` do not
+read it, at the replica that captured the roster and at every replica
+that the roster reaches through a `HELLO`. A root-void of the cell's
+signer changes neither the cell nor `maxceil`, as it does not lower
+`maxceil` for a held roster of a voided signer. The join of two states is
+`(F(F₁ ∪ F₂), max(c₁, c₂))`, and its `maxceil` is the larger of the two.
+
+There is no relation between the cell and the rows. The cell's roster can
+also be in `F` (it entered a row later, as an element), and a held roster
+can have a ceiling at or above the cell's. The cell is **live** when `c >
+heldceil(F)` (`Ceil_Live`): it is then the only reason for `maxceil`, and
+the replica sends the cell's frame in its `HELLO` (§8). Nothing clears the
+cell. Which roster is in the cell, whether a replica has a cell at all,
+and whether a given roster is in a row or only in a cell depend on the
+arrival order and on the path that the roster came by. `maxceil` does not
+(T19).
 
 Also, `ROSTER_eff(F(H)) = ROSTER_eff(H)`, because a roster that dominates
 another roster has the same signer and a strictly greater `gen`, so it is
@@ -448,9 +504,10 @@ Kome admits every well-formed authorization record (`ROSTER`, `REVOKE`,
 `GRANT`). Kome admits a `PUT` or `DEL` if and only if `t ≤ maxceil(F)`,
 `author ∈ W(F)` and `t ≤ wcap(F, author)`. The three admission views are
 the views of §3 (`Kome.Frontier.Max_Ceil`, `In_W`, `W_Cap`). They are
-functions of the frontier, not separate state. They only grow, because
-admission of authorization records is unconditional and their domination
-never lowers any of them (§3).
+functions of the state (the frontier and, for `maxceil`, the ceiling
+cell), not separate registers. They only grow, because admission of
+authorization records is unconditional, their domination never lowers any
+of them, and the cell only rises (§3).
 
 The write cap bounds what a revoked key can still do. Without it, any
 current member (a compromised read-only member, a relay) could carry the
@@ -488,7 +545,8 @@ reconciliation. (For exactly this reason, T4 has an exchange form.) The
 ceiling keeps the top of the version order unreachable. No admissible record
 can pin a cell above `maxceil`, and each roster refresh moves `maxceil` up.
 
-A replica's state is only `F`. Its join is `F(F₁ ∪ F₂)`, and Kome admits
+A replica's state is `F` and the ceiling cell, and nothing else. Its join
+is `F(F₁ ∪ F₂)` with the larger of the two cells (§3), and Kome admits
 the data records again under the joined authorization records. Every
 batch of records that arrive together (a reply, a bundle, an import, a
 compacted log) applies in element-key order (D14, §8). The authorization
@@ -500,7 +558,9 @@ gives this order on its own.
 
 `maxceil`, `W` and `wcap` are opaque functions over the authorization rows
 of `Kome.Frontier.State`, each with a `_Def` lemma, like the other views
-(`SIMPLIFY.md` S6). There is no register file and no cache in the proved
+(`SIMPLIFY.md` S6). `Max_Ceil` is the larger of `Held_Ceil`, which is over
+the rows, and the ceiling of the cell (`Lemma_Held_Ceil_Def`,
+`Lemma_Max_Ceil_Def`). There is no register file and no cache in the proved
 state. A binding may cache them outside the proof, as long as the cache is
 equal to the views on every state. `W` holds at most one subject per held
 `GRANT`, so it never fills on its own, and there is no "`W` full" refusal.
@@ -510,9 +570,13 @@ replicas would have to join them. Register values on the wire without
 authentication would let any peer raise `maxceil` or add a writer. Also, a
 roster dominated on arrival would raise registers that the log never
 recorded. Write access is in `GRANT` records, and the ceiling is in the
-roster's version (D1′). So nothing outside `F` needs reconciliation
-or persistence. Reconciliation of the authorization records reconciles the
-registers (§8), and replay of the log replays them (§7).
+roster's version (D1′). So nothing but signed records needs
+reconciliation or persistence. Reconciliation of the authorization records
+reconciles the registers (§8), and replay of the log replays them (§7).
+The ceiling cell keeps to this rule. It holds a signed roster, not a
+number: the roster's frame is in the log as a `CEIL` entry, and a replica
+passes it to a peer as a frame of its `HELLO`, which the peer verifies
+before it reads the ceiling (§7, §8).
 
 Root authority is a certificate, and Kome checks it on bytes (§2).
 
@@ -590,9 +654,10 @@ Clamped)` is this path in one call (`SIMPLIFY.md` S16, S17). Its outcomes:
 - `INADMISSIBLE` (the device key is not in `W`) and `SEQ_EXHAUSTED`
   (`seq_self = 2^48 − 1`, a clone alarm): the refusals of step 1.
 - `NO_SPACE` and `LOG_FULL`: the refusals of `Put_Frame` for the data row
-  and the log (§7). (`AUTH_FULL` is only for authorization records, and
-  `DOMINATED` cannot occur: an `OK` choice is above every record that can
-  dominate it, `Kome.Emit.Lemma_OK_Undominated`.)
+  and the log (§7). (`AUTH_FULL` and `CEIL_ONLY` are only for
+  authorization records, and `DOMINATED` cannot occur: an `OK` choice is
+  above every record that can dominate it,
+  `Kome.Emit.Lemma_OK_Undominated`.)
 - `MALFORMED`: the signed frame failed `Write`'s own check. `Write`
   verifies its own frame and compares the decoded header with the choice,
   because `Kome.Crypto` does not state `Verify (Sign (M))` (A1). The check
@@ -790,6 +855,9 @@ so that a replica which receives the records in issue order never reads
    instead of when wall time passes it. Every held `gen` is at most its
    roster's `ceiling_t ≤ maxceil(F)` (§2 rule 2), so `gen = maxceil(F) +
    1 ≤ ceiling_t` always beats `R`'s rosters, whatever `gen` `R` wrote.
+   `maxceil` also counts a roster that the founding device was offered
+   and could not hold (the ceiling cell, §3), so this `gen` is above the
+   `gen` of such a roster too.
 
 `Kome.Roster` (phase 8) issues the steps in this order and checks steps 2,
 3 and 5: after recovery, no `ROSTER_eff` member has a `sign_pk` with a
@@ -825,7 +893,11 @@ revocation, the stolen root can do there all that a root does:
   use, and it can lock honest members out, until a roster of a root that is
   not voided arrives at a higher `gen`.
 - It can revoke members (flag them `void`).
-- It can raise `maxceil` up to its effective cap.
+- It can raise `maxceil` up to its effective cap, at every replica that
+  one of its rosters reaches, also when its slice there is full (the
+  ceiling cell, §7). A roster that reaches a replica's cell and no row
+  does nothing else there: it changes no `ROSTER_eff`, no gate and no
+  quarantine, at that replica or at a peer.
 
 After the founding key root-voids it, none of that counts in the views of a
 replica that holds the root revocation. Under A7, nothing that
@@ -833,10 +905,11 @@ it or its grantees sign afterwards reaches that replica. The reason is that
 no roster of this root counts for the gate, and no key of its rosters is
 the bundle key. These effects stay permanently:
 
-- `maxceil`, raised up to the largest cap ever certified for it.
+- `maxceil`, raised up to the largest cap ever certified for it. The
+  replicas agree on it (T19).
 - Its records in its own capacity slice.
 - If it overflowed its slice, the replicas' disagreement about its surplus
-  records (§7).
+  records (§7), which does not include `maxceil`.
 - Without A7, the records that it or its grantees signed after the
   revocation and that a stale replica accepted. Every replica then holds
   these records, flagged `void`, and the bytes that they overwrote or
@@ -993,8 +1066,11 @@ credential, the receiver drops it and aborts the session if its `F` holds a
 founding `REVOKE` of the credential's signer (AUDIT.md G12): a root-voided
 root could otherwise fill its own slice at the receiver with one fresh
 roster per session, although it is refused every time. The receiver
-applies the credential and evaluates the gate again. So a newly added
-member can still reach a replica whose rosters are stale (§8).
+applies the credential and evaluates the gate again. (If the receiver has
+no room for the credential and its ceiling is above `maxceil`, the result
+is `CEIL_ONLY`: only its ceiling counts, and the gate is as before, §7.)
+So a newly added member can still reach a replica whose rosters are stale
+(§8).
 
 **Joining.** A new device has no `F`, so it has no `ROSTER_eff` and admits
 nobody. The join hand-off is `(root_pk, salt, del_ttl, frame of the
@@ -1089,31 +1165,42 @@ revoke it from 0. (Kome ignores `from_t` for root revocation, above.)
 
 ## 7. Storage and tombstone expiry
 
-**The log is a journal of operations on `F` (D9).** The replica of one
-collection has two parts (`Kome.Store`): the frontier `F`
-(`Kome.Frontier.State`), in which each held record carries a 64-bit
-**tag**, and a `Store`: an append-only log, the identity of the
+**The log is a journal of operations on the state (D9).** The replica of
+one collection has two parts (`Kome.Store`): the lattice state
+(`Kome.Frontier.State`), which is the frontier `F`, in which each held
+record carries a 64-bit **tag**, and the ceiling cell (§3), whose roster
+carries a tag too; and a `Store`: an append-only log, the identity of the
 collection, the device's `seq_self`, two digest states and a pin counter.
 There is no index (`SIMPLIFY.md` S14): the tag of a held record packs the
 place of its frame in the log, the offset of its `APPLY` entry (40 bits)
 and the frame's length (24 bits) (`Make_Tag`, `Tag_Off`, `Tag_Len`), and
-the store reads frames by tag (`Read_Frame`). The lattice ignores the tag:
-`Is_Frontier`, admission, domination and the views do not read it, and
-`Apply` moves it with the header. The log is plaintext, and it carries no
-authentication: no key, no checksum and no hash chain. Integrity and
-confidentiality at rest belong to the host (file permissions, disk
-encryption, a sealed container), not to Kome. A party that can write the
-file can do anything to the store; a log cut at an entry boundary is a
-stale replica, and nothing more (§8, the sync point). These are the log
-entries (all integers are big-endian):
+the store reads frames by tag (`Read_Frame`). The tag of the cell's roster
+packs the place of its `CEIL` entry in the same way (`Ceil_Tag`,
+`Lemma_Ceil_Tag`). The lattice ignores the tags: `Is_Frontier`, admission,
+domination and the views do not read them, and `Apply` moves a tag with its
+header. The log is plaintext, and it carries no authentication: no key, no
+checksum and no hash chain. Integrity and confidentiality at rest belong to
+the host (file permissions, disk encryption, a sealed container), not to
+Kome. A party that can write the file can do anything to the store; a log
+cut at an entry boundary is a stale replica, and nothing more (§8, the sync
+point). These are the log entries (all integers are big-endian):
 
 ```
 HEADER   "KOME" ‖ version:u8 (= 1) ‖ root_pk[32] ‖ salt[16] ‖ del_ttl:u48     (59 bytes)
 APPLY    01 ‖ len:u24 ‖ frame          a frame that Put_Frame applied          (4 + len bytes)
 SEQ      02 ‖ seq:u48                  seq_self, written by Compact              (7 bytes)
+CEIL     03 ‖ len:u24 ‖ frame          a ROSTER frame that Put_Frame or Put_Ceil
+                                       recorded in the ceiling cell only       (4 + len bytes)
 ```
 
-The log is `HEADER ‖ (APPLY | SEQ)*`. The `HEADER` fixes the collection:
+The log is `HEADER ‖ (APPLY | SEQ | CEIL)*`. A `CEIL` has the layout of an
+`APPLY` and holds a `ROSTER` frame, so it is at most 4 + 8 916 = 8 920
+bytes. The cell's roster has a `CEIL` entry and no `APPLY` entry, unless
+it also entered a row later; then it has both, and the row's tag points
+at the `APPLY`. The log version is 1 (`Log_Version`), and so is the
+protocol version of §8 (`Proto_Version`); no release has shipped either
+format, and the first format change after a release raises the version.
+The `HEADER` fixes the collection:
 the founding key `root_pk` (D1), the `salt`, and the tombstone lifetime
 `del_ttl` in [`Del_TTL_Min`, `Del_TTL_Max`] (D10). `Store.Open (Root_PK,
 Salt, Del_TTL, Self_PK, F, S)` writes it, and `Store.Open` and
@@ -1128,8 +1215,9 @@ or a smaller capacity than the one that wrote the log is allowed whenever
 the replay fits in it. No byte of the log is rewritten in place: the only
 writes are appends at `Log_Length` and the rename of `Compact`. Kome
 persists nothing else: `seq_self` is in the log (§5), the views are
-functions of `F` (§3, §4), and refused or dominated records changed
-nothing. `Log_Max` is 2^30 bytes, so every offset fits in a tag.
+functions of `F` and of the cell (§3, §4), which the log rebuilds, and
+refused or dominated records changed nothing. `Log_Max` is 2^30 bytes, so
+every offset fits in a tag.
 
 **Deletion is not erasure.** A `DEL` frees the bytes of its entity in `F`
 and in the next compacted log. It does not erase them: the dominated
@@ -1140,30 +1228,35 @@ member of the roster whose key sealed a bundle can open it (§6). What Kome
 guarantees is space and convergence (H7), not that a deleted value is
 unrecoverable from a device or a relay. Erasure at rest is the host's.
 
-**Compaction** writes a new log: the `HEADER`, then one `APPLY` per held
-record in row order (the authorization rows slot by slot, then the data
-row, entity-major), then one `SEQ(seq_self)`. It gives each record the tag
-of its new place (`Frontier.Set_Tag`); nothing else of `F` changes. Row
-order puts the authorization records first, so a replay of a compacted log
-admits every data record (D14). Compaction builds the new log in a buffer
-of `Log_Cap + 1` bytes that the binding supplies (the image of the new
-file), reads the old log in place, copies each frame once and copies only
-the new length back into the store, so it holds no second copy of the log
-(§10.10 (c)). It is refused with `BUSY` while a reconciliation session
-holds a snapshot of the log (`Pinned (S) > 0`; `Pin` and `Unpin`, §8,
-`SIMPLIFY.md` S21), and it keeps the digests and `seq_self`. Compaction is
-a store duty of the binding: `Put_Frame` never compacts on its own, and
-the binding calls `Compact` whenever `Compact_Due (S, F)` holds, that is,
-when the log has more than `2·|F| + Compact_Slack` entries after the
-`HEADER` (`Compact_Slack = 64`), and no session pins the log. A compacted
-log is never due (the Post of `Compact`). So, under this duty, the log
-holds at most `2·|F| + 64` entries before every operation (apart from the
-entries a pinned session lets accumulate), which bounds the dominated
-bytes that a deleted value leaves behind and bounds the cost of the next
-open. The Post of `Compact` (`Retagged`, `Compact_Layout`) states that
-`F` changed only in its tags, that the `HEADER` bytes are kept, that
-every record's `APPLY` ends before the final `SEQ`, which carries
-`seq_self`, and that the log has `|F| + 1` entries; that the `APPLY`s are
+**Compaction** writes a new log: the `HEADER`, then the `CEIL` of the
+cell's roster if the cell holds one, then one `APPLY` per held record in
+row order (the authorization rows slot by slot, then the data row,
+entity-major), then one `SEQ(seq_self)`. It gives each record the tag of
+its new place (`Frontier.Set_Tag`, and `Set_Ceil_Tag` for the cell's
+roster); nothing else of the state changes. The `CEIL` is first, so a
+replay has the cell before the rows (Replay, below). A cell that is no
+longer live is kept: nothing clears the cell. Row order puts the
+authorization records first, so a replay of a compacted log admits every
+data record (D14). Compaction builds the new log in a buffer of `Log_Cap +
+1` bytes that the binding supplies (the image of the new file), reads the
+old log in place, copies each frame once and copies only the new length
+back into the store, so it holds no second copy of the log (§10.10 (c)). It
+is refused with `BUSY` while a reconciliation session holds a snapshot of
+the log (`Pinned (S) > 0`; `Pin` and `Unpin`, §8, `SIMPLIFY.md` S21), and
+it keeps the digests and `seq_self`. Compaction is a store duty of the
+binding: `Put_Frame` never compacts on its own, and the binding calls
+`Compact` whenever `Compact_Due (S, F)` holds, that is, when the log has
+more than `2·|F| + Compact_Slack` entries after the `HEADER`
+(`Compact_Slack = 64`), and no session pins the log. A compacted log is
+never due (the Post of `Compact`). So, under this duty, the log holds at
+most `2·|F| + 64` entries before every operation (apart from the entries a
+pinned session lets accumulate), which bounds the dominated bytes that a
+deleted value leaves behind and bounds the cost of the next open. The Post
+of `Compact` (`Retagged`, `Compact_Layout`) states that the state changed
+only in its tags, that the `HEADER` bytes are kept, that the cell's `CEIL`,
+if there is one, starts right after the `HEADER`, that every record's
+`APPLY` ends before the final `SEQ`, which carries `seq_self`, and that the
+log has `|F| + 1` entries, or `|F| + 2` with a cell; that the `APPLY`s are
 contiguous and in row order is tested, not stated (§10.10 (b)).
 
 **Replay** (when a store opens, `Open_From_Log (Input, Self_PK, F, S,
@@ -1186,9 +1279,17 @@ Valid_Length, Result)`) does these steps:
    change (a duplicate, an expired `DEL` that drops nothing) replays as
    `OK` and stays in the log. A frame that does not parse, is not a record
    frame or has a header that is not canonical, and an `APPLY` that
-   `Put_Frame` would refuse (`INADMISSIBLE`, `DOMINATED`, `AUTH_FULL`),
-   give `MALFORMED`; an `APPLY` that does not fit the data row of this
-   open gives `NO_SPACE`. A `SEQ` raises `seq_self`.
+   `Put_Frame` would refuse (`INADMISSIBLE`, `DOMINATED`, `AUTH_FULL`) or
+   record in the cell (`CEIL_ONLY`: a store writes a `CEIL` for such a
+   frame and never an `APPLY`), give `MALFORMED`; an `APPLY` that does not
+   fit the data row of this open gives `NO_SPACE`. A `SEQ` raises
+   `seq_self`. A `CEIL` has the framing checks of an `APPLY`, and its
+   frame must be a `ROSTER`. It reruns the capture of `Put_Ceil` (below):
+   the rows are not tried, and the roster's ceiling must be above
+   `maxceil` at that point of the replay. A `CEIL` that repeats the roster
+   that the cell holds replays as `OK` with no change and stays in the
+   log, wherever it stands (a duplicated entry). Any other `CEIL` gives
+   `MALFORMED`.
 
 Replay costs one parse and one BLAKE2b per entry and no signature check,
 so an open costs `O(entries)` hashes: under the compaction duty above, at
@@ -1218,11 +1319,20 @@ no change (step 3), and the binding still writes each append at the
 returns that offset as `Off` whether or not it appended), so a retry
 after a write error overwrites the same bytes and never appends twice.
 
-Each operation is a deterministic function of the held set. After
-compaction, Kome admits each authorization record and each data record. The
-reason is that the authorization part is complete before the first data
-record, and `F` is an antichain under `dom`. T18 states the result: the
-same held set and the same `seq_self` (array order and tags can be
+Each operation is a deterministic function of the state. A log that was
+not compacted replays entry by entry to the states that wrote it: the
+store wrote an `APPLY` only for a frame that it held or applied for its
+effect, and a `CEIL` only for a roster above `maxceil`. After compaction,
+the `CEIL` is the first entry, and the empty state captures it, because a
+cell's ceiling is at least 1. Then Kome admits each authorization record
+and each data record. The reason is that the cell and the authorization
+part are complete before the first data record, and `F` is an antichain
+under `dom` within its capacities, so no row record is refused for room
+and none goes to the cell. The `CEIL` must be first: after the rows, a
+cell that is not live would not be above `maxceil`; and as an `APPLY`, the
+cell's roster would enter a row that has room, and `ROSTER_eff` of the
+reopened store could differ. T18 states the result: the same held set, the
+same cell roster and the same `seq_self` (array order and tags can be
 different after compaction).
 
 **Order of operations and room (D11, E1, E2).** Before the store sees a
@@ -1243,21 +1353,23 @@ anything (the Post `Put_Done` states each outcome as an iff):
    its `APPLY` (the `DEL` needs log room, and no frontier room), and Kome
    does not hold it. The status is `OK`.
 5. Room. The refusals are:
-   - Not sufficient log bytes for the `APPLY`: `LOG_FULL`. The binding
-     compacts and retries. Log bytes are a capacity class of their own,
+   - Not sufficient log bytes for the `APPLY` (or for the `CEIL` of a
+     capture, which has the same size): `LOG_FULL`. The binding compacts
+     and retries. Log bytes are a capacity class of their own,
      shared by every record, so a store whose log is too small for its
      rows can refuse the founding `REVOKE` after a flood of large values,
      and compaction would free nothing. The binding therefore keeps
      **`Log_Fits`**: `log_cap ≥ 59 + 7 + (data_cap + Signers_Max ·
-     Slice_Max + 1) · Entry_Max`, with `Entry_Max = 4 + 41 120 = 41 124`
+     Slice_Max + 2) · Entry_Max`, with `Entry_Max = 4 + 41 120 = 41 124`
      (the `APPLY` prefix plus the largest frame). Under `Log_Fits`, a
-     compacted log has room for one more entry of any kind, so `LOG_FULL`
-     only ever means "compact first". It is a bound on `data_cap` for a
-     given `log_cap`: with a 1 GiB log, at most about 17 900 data records
-     beside 16 full slices. `Kome.Store.Log_Fits` is the test, and `Open`
-     and `Open_From_Log` do not require it (small logs are legitimate for
-     tests and for tiny stores); a binding that opens a store without it
-     accepts that `LOG_FULL` can be permanent.
+     compacted log (the `HEADER`, at most one `CEIL`, one `APPLY` per held
+     record and one `SEQ`) has room for one more entry of any kind, so
+     `LOG_FULL` only ever means "compact first". It is a bound on
+     `data_cap` for a given `log_cap`: with a 1 GiB log, at most 17 915
+     data records beside 16 full slices. `Kome.Store.Log_Fits` is the
+     test, and `Open` and `Open_From_Log` do not require it (small logs
+     are legitimate for tests and for tiny stores); a binding that opens a
+     store without it accepts that `LOG_FULL` can be permanent.
    - Data records share one **data capacity** (`data_cap`, the
      discriminant of `F`). A data record whose capacity is full and that
      frees nothing: `NO_SPACE` (the caller compacts, deletes, or stops).
@@ -1272,7 +1384,10 @@ anything (the Post `Put_Done` states each outcome as an iff):
      signer.) A record that dominates a held record frees the slot of that
      record, which is always in its own row (§3). An authorization record
      whose signer's slice is full and that frees nothing, or whose signer
-     is new when all 16 slots are in use: `AUTH_FULL`.
+     is new when all 16 slots are in use: `AUTH_FULL`. The one exception
+     is a `ROSTER` whose `ceiling_t` is above `maxceil(F)`: Kome does not
+     hold it, records it in the ceiling cell (the capture, below) and
+     returns `CEIL_ONLY`.
 
    The tags live in the frontier's slots, so nothing else needs room. `W`
    (at most one subject per held `GRANT`) always has room.
@@ -1283,6 +1398,52 @@ anything (the Post `Put_Done` states each outcome as an iff):
    below the horizon. This is Lean's `applyH delTtl S r = expireHz delTtl
    (applyD S r)` (`Kome.Store.Applied_H`).
 
+**The capture and `Put_Ceil` (E10; AUDIT.md H12).** A *capture* records a
+roster frame in the ceiling cell (§3). It appends the frame as a `CEIL`
+entry, puts the roster in the cell with the tag of that entry
+(`Frontier.Raise_Ceil`), and expires at the new horizon. Nothing else
+changes: the rows, the two digests and `seq_self` are as before, apart
+from the `DEL`s that the expiry removes (and the data digest with them;
+`Kome.Store.Captured`). The roster that the cell held before is no longer
+in the state, and its `CEIL` entry stays in the log until compaction.
+There are two captures, and a roster reaches the cell in no other way:
+
+- **`Put_Frame`, step 5**: a `ROSTER` that the rows refuse for room and
+  whose ceiling is above `maxceil(F)` (`Ceil_Rule`). The status is
+  `CEIL_ONLY`. A roster that the rows refuse for room and whose ceiling is
+  not above `maxceil(F)` gets `AUTH_FULL` and changes nothing. This covers
+  an equal ceiling, and the cell's own roster offered again while its
+  slice is still full.
+- **`Store.Put_Ceil (S, F, Frame, H, Off, Result)`**, the entry point for
+  the ceiling frame of a peer's `HELLO` (§8). The caller decodes and
+  verifies the frame as a `ROSTER`. If its ceiling is above `maxceil(F)`,
+  `Put_Ceil` captures it (`CEIL_ONLY`; or `LOG_FULL`, with no change, when
+  the log has no room). If not, nothing changes (`OK`). `Put_Ceil` never
+  calls `Frontier.Apply`. So the roster never enters a row here, whatever
+  room its signer's slice has, and `ROSTER_eff`, the gate and the
+  quarantine of this replica do not change (the Post `Ceil_Done`).
+
+`CEIL_ONLY` is not a refusal: the state changed, though the roster is not
+held. `Frontier.Apply` never writes the cell, and a roster that enters a
+row leaves the cell as it is, also when its ceiling is above the cell's.
+When the cell's roster is offered to `Put_Frame` and its slice has room,
+it enters the row like any roster (`OK`, an `APPLY` entry); the cell keeps
+its copy and is no longer live. Equal ceilings never move the cell.
+`REVOKE`s and `GRANT`s never touch it.
+
+Each `Put_Frame` and each `Put_Ceil` that does not return `LOG_FULL` gives
+
+```
+maxceil(after) = max(maxceil(before), ceiling_t of the record)     -- 0 for a record that is not a roster
+```
+
+(`Kome.Store.Ceil_Step`, in the Post of both). A fold of `max` does not
+depend on order. So after any delivery of a set of records, in any order,
+with any repetition and through either entry point, `maxceil` is the
+larger of its start value and the largest roster ceiling of the set,
+whatever a slice or the slot table refused (T19). A roster refused with
+`LOG_FULL` does not count until it is offered again.
+
 **What `AUTH_FULL` means.** Kome never drops a key silently, and a refused
 record changes nothing. But then the set of an over-quota signer's records
 that a replica holds depends on arrival order. So replicas can disagree
@@ -1290,16 +1451,18 @@ permanently about these items:
 
 - that signer's surplus records;
 - the data records that only its surplus `GRANT`s admitted;
-- the records that those data records dominate;
-- that signer's contribution to `maxceil`, when the refused record is a
-  roster. `maxceil` is a maximum over *held* rosters, and a refused roster
-  does not count. A stolen root with a long cap can fill its slice with
-  `REVOKE`s at one replica and send its roster first at another: the
-  second replica then admits data up to that roster's ceiling, and the
-  first discards the same data for good. A root-void does not lower
-  `maxceil`, so the disagreement is permanent, and it ends only when every
-  honest root's ceiling passes the stolen one's. (A reserved ceiling cell
-  per slot would close this, AUDIT.md H12; it is deferred.)
+- the records that those data records dominate.
+
+They do not disagree about `maxceil`. A roster that is refused for room
+still counts for it, through the ceiling cell. A stolen root with a long
+cap can fill its slice with `REVOKE`s at one replica and send its roster
+first at another: the first captures the roster, the second holds it, and
+both have its ceiling, the same `t ≤ maxceil` clause of admission and the
+same horizon (T19). What this costs: every replica that the roster reaches
+follows a stolen root's ceiling up to its cap, with the earlier tombstone
+expiry and the higher write lower bound that go with it, also a replica
+whose full slice held no roster of that root. A replica that holds the
+roster always did.
 
 Honest roots never reach their slice (the honest-issuer rules, §10.3), and
 the founding key certifies at most 15 distinct signer keys (A1). The
@@ -1321,7 +1484,8 @@ dom(x, F)                                                  -- deterministic, mem
 ∨ (x is DEL ∧ x.t ≤ hz(F))                                 -- tombstone expiry
 ```
 
-**Expiry is a function of `F` (D10, `SIMPLIFY.md` S7).** The horizon is
+**Expiry is a function of the state (D10, `SIMPLIFY.md` S7).** The
+horizon is
 
 ```
 hz(F) := maxceil(F) − del_ttl     if maxceil(F) ≥ del_ttl, and none otherwise   (Kome.Store.Hz, Lean hz)
@@ -1329,22 +1493,22 @@ hz(F) := maxceil(F) − del_ttl     if maxceil(F) ≥ del_ttl, and none otherwis
 
 and a `DEL` `d` is expired when `d.t ≤ hz(F)` (Lean `isExpiredAt`: `d.t +
 del_ttl ≤ maxceil(F)`). The subtraction is taken only when `maxceil(F) ≥
-del_ttl`, so it never wraps, and there is no reserved "no horizon" code.
-No local clock is read: the roots' ceilings set the limit on expiry, not
-one device's clock, so a clock set far ahead (spoofed time, or the user)
-cannot expire any tombstone. Expiry is automatic: `Put_Frame` of a record
-that raises `maxceil` (a roster with a higher ceiling) expires in the same
-call, and so does the apply of a `DEL` that arrives expired (step 6).
-`maxceil` never falls, so the horizon never goes back (Lean `hz_mono`).
-A `DEL` that expiry removed stays removed; if it arrives again, it is
-expired on arrival (step 4). Replay reruns `Put_Frame`, so a reopened store
-reaches the same `F`, with no expiry entry, no replay clamp and no
-in-memory-only raise. A3 gates expiry as well as writing: once the root
-devices stop refreshing, `maxceil` stops, and so does the horizon, so no
-tombstone expires until a fresh roster arrives. `skew = now − maxceil`
-(`Kome.Views.Skew`) is the advisory status that the C ABI shows for this
-(§10.6). A device with no real-time clock expires exactly what every
-replica with its `maxceil` expires.
+del_ttl`, so it never wraps, and there is no reserved "no horizon" code. No
+local clock is read: the roots' ceilings set the limit on expiry, not one
+device's clock, so a clock set far ahead (spoofed time, or the user) cannot
+expire any tombstone. Expiry is automatic: `Put_Frame` or `Put_Ceil` of a
+record that raises `maxceil` (a roster with a higher ceiling, held or
+captured) expires in the same call, and so does the apply of a `DEL` that
+arrives expired (step 6). `maxceil` never falls, so the horizon never goes
+back (Lean `hz_mono`). A `DEL` that expiry removed stays removed; if it
+arrives again, it is expired on arrival (step 4). Replay reruns `Put_Frame`
+and the capture, so a reopened store reaches the same state, with no expiry
+entry, no replay clamp and no in-memory-only raise. A3 gates expiry as well
+as writing: once the root devices stop refreshing, `maxceil` stops, and so
+does the horizon, so no tombstone expires until a fresh roster arrives.
+`skew = now − maxceil` (`Kome.Views.Skew`) is the advisory status that the
+C ABI shows for this (§10.6). A device with no real-time clock expires
+exactly what every replica with its `maxceil` expires.
 
 The horizon protects tombstones only as far as the ceiling leads the wall
 clock. A ceiling issued `δ` ahead of the wall clock expires `DEL`s `δ`
@@ -1423,7 +1587,9 @@ that they are the states of the held hashes (`Lemma_Digests`;
 run or slot before the apply and adds its sum after, and never scans `F`
 for an apply. An expiry can remove `DEL`s of many runs, so after an expiry
 that removes a record the data digest is summed again over the data row.
-The session's `HELLO` is sent from these two states (§8).
+The cell's roster is not an element (§8): the digests do not count it, and
+a capture leaves `Digest_Auth` as it is. The session's `HELLO` is sent
+from these two states (§8).
 
 **Bounds.** After each `Put_Frame`, `|F| ≤ live cells + DELs above hz(F)
 + authorization records`. `data_cap` sets the limit on the data part.
@@ -1432,13 +1598,17 @@ authorization part (each signer's rosters, `GRANT`s and `REVOKE`s, within
 its slice). Thus `|W| ≤ 8 192`. This bounds *storage*: the keys that can
 hold records. The devices that can sync are bounded by the gate, at most
 `Members_Max` = 64 per collection, the members of one roster (§6). The
-state is `F` with its tags, the log (with `seq_self` in it), the two
-digest states and the pin counter; every per-session value lives in the
-session and is gone when it ends.
+state is `F` with its tags, the ceiling cell (one roster header and its
+tag), the log (with `seq_self` in it), the two digest states and the pin
+counter; every per-session value lives in the session and is gone when it
+ends. The cell takes no slot and no slice position, and costs one `CEIL`
+entry of at most 8 920 bytes in a compacted log.
 
 ## 8. Reconciliation and digest
 
-Elements are the records of `F`. An element's key is 82 bytes, compared
+Elements are the records of `F`. The roster of the ceiling cell is not an
+element (§3): it is in no snapshot, no fingerprint and no digest, and it
+travels in the `HELLO` (below). An element's key is 82 bytes, compared
 bytewise (`SIMPLIFY.md` S18; `Kome.Reconcile.Key_Of`):
 
 ```
@@ -1514,7 +1684,8 @@ this reason, the sum is 4096 bits.
 **Messages** (`SIMPLIFY.md` S11, S19). All integers are big-endian.
 
 ```
-HELLO     01 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ cred[cred_len]     43 + cred_len, at most 8 959
+HELLO     01 ‖ n_auth:u32 ‖ n_data:u32 ‖ digest[32] ‖ cred_len:u16 ‖ ceil_len:u16
+             ‖ cred[cred_len] ‖ ceil[ceil_len]                                           45 + cred_len + ceil_len, at most 17 877
 RANGE     02 ‖ k:u8 (1..16) ‖ bounds[k + 1] × key[82] ‖ k × (count:u48 ‖ fp[32])       2 + 82·(k + 1) + 38·k, 2 004 at k = 16
 ELEMENTS  03 ‖ lo[82] ‖ hi[82] ‖ n:u16 (≤ 4) ‖ n × (flen:u16 ‖ frame)                  167 + items
 HAVE      04 ‖ lo[82] ‖ hi[82] ‖ n:u16 (≤ 4) ‖ n × (flen:u16 ‖ frame)                  167 + items
@@ -1545,8 +1716,24 @@ no snapshot is built for it.
 `cred` is the sender's credential. It is the frame of a roster in the
 sender's `F`. The members of this roster include the sender's Noise static
 key as a `dh_pk` (usually this roster is `ROSTER_eff`). It is at most
-8 916 bytes, so a `HELLO` is at most 8 959 bytes. `HELLO` carries
-**no register values**.
+8 916 bytes.
+
+`ceil` is the **ceiling frame** (E10). It is the frame of the roster in
+the sender's ceiling cell when the cell is live (`Ceil_Live`: its ceiling
+is above the ceiling of every held roster, so it is the only reason for
+the sender's `maxceil`), and it is empty otherwise. The sender reads it
+from the log by the cell's tag (`Kome.Store.Lemma_Ceil_Tag`). It is at
+most 8 916 bytes too, so a `HELLO` is at most 17 877 bytes. The frame is
+part of the design, not an optimization: the cell's roster is not an
+element, so without it two replicas with equal rows and different cells
+would end a session at the `HELLO`s with different `maxceil`, and a roster
+that a thief delivered only to replicas with a full slice would never
+reach another replica. When a held roster has the cell's ceiling or more,
+that roster is an element and travels as one, and the sender sends no
+ceiling frame. `HELLO` carries **no register values**: both frames are
+signed records, and the receiver verifies each one before it reads
+anything from it. `Kome.Reconcile` checks only the two lengths
+(`Hello_Wire_OK`); the caller checks the content of both frames.
 
 A side sends its `HELLO` only when it has admitted the peer, so a
 non-member learns no membership list. The receiver refuses a credential
@@ -1559,6 +1746,47 @@ the gate then admits the peer and the receiver has not sent its own
 stale replica, and how a recovery roster reaches a quarantined one, §6.
 The stale side admits the newcomer when it sees the newcomer's
 credential.) If no side can admit the other, the session times out.
+
+The two frames of an accepted `HELLO` go to two different operations.
+The caller applies the credential as an authorization record
+(`Kome.Write.Receive`, that is, `Put_Frame`): it can enter a row, and it
+can return `CEIL_ONLY`. The caller decodes and verifies the ceiling frame
+as a `ROSTER` (a frame that fails is a protocol violation, and the session
+ends), and applies it with `Kome.Store.Put_Ceil` and with nothing else. So
+the ceiling frame reaches the receiver's cell and never a row. A roster
+enters a row of a replica only as a credential or as an element of a peer
+that holds it. A replica that keeps a thief's roster in its cell, because
+its own rows refused it, therefore cannot make that roster `ROSTER_eff` or
+a quarantine at a peer: the peer's gate after the `HELLO` is the gate
+before it. (If the receiver applied the frame with `Put_Frame`, an honest
+replica with a full slice would hand a roster with a high `gen` to every
+peer with room, in the first message of every session.) A refused `HELLO`
+returns neither frame (`Peer = Empty_Hello`).
+
+Both applies can change the digests: a held roster changes the
+authorization digest, and a capture can expire a `DEL`. The snapshot of a
+session must be the one that our `HELLO` described (below). So the order
+is fixed by whether our `HELLO` was out when the peer's `HELLO` was
+accepted:
+
+- **Our `HELLO` was out.** If the session is now in `Auth`: pin, fill the
+  frame table, build the snapshot and seal it. Then apply the credential.
+  Then apply the ceiling frame.
+- **Our `HELLO` was not out.** Apply the credential, and evaluate the
+  gate. If it is closed, apply nothing more; the ceiling frame waits, and
+  it is dropped if the session ends without `Admit`. When the gate is
+  open: `Admit`, which builds our `HELLO` from the digest states and from
+  `Ceil_Live (F)` as they are now. If the session is now in `Auth`: the
+  snapshot, as above. Then apply the ceiling frame.
+
+In both orders the caller applies nothing else between `Admit` and the
+seal, and it applies the ceiling frame before the next `Receive` or
+`Next_Phase`, that is, before any record of the session. `Admit` requires
+the gate, so a side applies the ceiling frame only of a peer that its gate
+admitted. These are duties of the session caller, like the duty to apply
+the delivered frames. They are not proved; the reference caller in
+`spark/tests/test_reconcile.adb` runs sessions between real stores with
+them.
 
 A peer can lie, so Kome trusts nothing in a `HELLO`. A false count or
 digest only costs rounds within the session budgets, and the frames are
@@ -1589,7 +1817,8 @@ authorization records into key order (§10.11).
 - `Start` takes the role, the `cid` and the peer's Noise static key. The
   phase is `Gate`, and nothing goes out.
 - `Admit`, called when the gate admits the peer (its precondition), emits
-  our `HELLO` from the two digest states. `Receive` of the peer's `HELLO`
+  our `HELLO` from the two digest states, our credential and our ceiling
+  frame. `Receive` of the peer's `HELLO`
   (in `Gate`, before or after `Admit`) runs the credential check above.
 - When the two `HELLO`s have passed, equal digests end the session
   (`Done`, no more messages). Otherwise the phase is `Auth`, and the
@@ -1617,15 +1846,36 @@ batch the caller applies in key order, so `ROSTER`s before `REVOKE`s
 (S10).
 
 After the authorization phase, the two sides hold the same authorization
-records, unless one side refused one with `AUTH_FULL` (§7). In that case
-they can differ in `maxceil` as well as in the refused record, because a
-refused roster does not count: the §7 "What `AUTH_FULL` means" list names
-this case, and it needs a stolen root. In every other case they have the
-same `maxceil` and `W`, and each data record that a peer sends in the data
-phase is admissible on arrival. This makes the exchange clause of T4 true
-without registers in the `HELLO`. Expiry needs no step between the
-phases: a roster of the authorization phase that raises `maxceil` expires
-in its own `Put_Frame` (§7). The initiator is the Noise initiator.
+records, unless one side refused one for room (§7). They have the same
+`maxceil` in every case. A side's `maxceil` at its `Admit` is the ceiling
+of its live cell or the ceiling of a held roster. The peer applied the
+first with `Put_Ceil`. The second is an element, which the peer holds or
+receives in this phase and applies with `Put_Frame`. Each of these
+applies takes the maximum with that ceiling (`Ceil_Step`, §7), also when
+it returns `CEIL_ONLY` and not a hold. Every frame that either side
+applied carries a ceiling that one of the two sides already had, so both
+end at the larger of the two (apart from what other sessions and writes
+raise meanwhile). This rests on the delivery of the snapshot difference
+(T7) and on no `LOG_FULL`, like the rest of this paragraph. The two sides
+can still differ in `W` and `wcap`, when one side refused a `GRANT` with
+`AUTH_FULL`: the §7 "What `AUTH_FULL` means" list names this case, and it
+needs a stolen root. In every other case they have the same `W` and
+`wcap` too, and each data record that a peer sends in the data phase is
+admissible on arrival. This makes the exchange clause of T4 true without
+registers in the `HELLO`. Expiry needs no step between the phases: a
+roster of the authorization phase that raises `maxceil`, held or captured,
+expires in its own `Put_Frame` (§7). The initiator is the Noise initiator.
+
+The element sets are the rows, so the re-offers through fingerprints are
+those of any refused record. A roster that one side holds and the other
+keeps only in its cell is offered as an element in every session and
+refused with `AUTH_FULL`, with no change and no log entry, until the slice
+has room; then it enters the row. The ceiling frame adds at most 8 916
+bytes, one roster verification and one `Put_Ceil` (which then returns
+`OK`) per session and direction, and only while the sender's cell is
+live. That ends when a held roster of the sender reaches the cell's
+ceiling: an honest refresh does that once wall time passes the stolen
+cap.
 
 **Replies tile (`SIMPLIFY.md` S19).** A `ROOT`, a `RANGE` part or an
 `ELEMENTS` obliges its receiver to answer; a `HAVE` obliges nothing. Let
@@ -1753,10 +2003,16 @@ transport's routing key.
 
 **Bundles are closed under admission.** A bundle carries, ahead of its
 data records, every `GRANT` of each data author that the sender holds and
-the sender's roster with the largest ceiling (or an authorization-only
-bundle goes first). So a `DEL` in a bundle is admitted wherever the bundle
-is opened, and never discarded for a stale `maxceil` or a missing `GRANT`
-and then forgotten (`auth_first_closed` in Lean). A `DEL` that a session
+the sender's ceiling (or an authorization-only bundle goes first). The
+ceiling is carried in one of two ways. When the sender's cell is live, the
+bundle carries the frame of the cell's roster in a field of its own, and
+the opener applies it with `Put_Ceil` before the bundle's records, never
+with `Put_Frame`. Otherwise the bundle carries, among its records, a held
+roster with `ceiling_t = maxceil(F)`. So a `DEL` in a bundle is admitted
+wherever the bundle is opened, also when the opener's slice for that
+roster's signer is full, and never discarded for a stale `maxceil` or a
+missing `GRANT` and then forgotten (`auth_first_closed` in Lean). A bundle
+cannot put a cell roster in the opener's rows either. A `DEL` that a session
 discards as `INADMISSIBLE` is offered again by the next session (§4), but
 a bundle has no next session. The quarantine (§6) suspends bundles.
 
@@ -1768,13 +2024,29 @@ reports the flag `SUSPECT_RELAY` for that peer. Admission does not change.
 The owner decides whether to remove the relay. This is how a failure of A7
 (§9) becomes attributable instead of silent.
 
+The ceiling frame of a `HELLO` has its own rule. The transport reports
+the peer exactly when `Put_Ceil` returned `CEIL_ONLY` (the frame raised
+this replica's `maxceil`) and the frame's signer was root-voided in this
+replica's view before the call (`Kome.Views.Root_Void`). A frame that
+changes nothing is not an arrival and flags nobody. There are two reasons.
+An honest replica must send its live cell in every `HELLO`, also after the
+cell's signer is root-voided, so a flag on every such `HELLO` would mark
+honest replicas for good. With this rule an honest carrier is flagged at
+most once per peer and per ceiling value, because after the capture the
+same frame never raises that peer's `maxceil` again; that is the exposure
+an honest replica already has for a held record of a voided author that
+its peer lacks. And no flag at all would give a compromised member that
+holds a voided root's key an unattributed way to raise `maxceil`; with
+this rule every such raise names the member that delivered it.
+
 **Durability before acknowledgement.** The log is an append-only buffer;
 the store binding writes it to its device. The binding makes the log
 durable up to its current `Log_Length` (the sync point) before the
 transport counts a session as `Complete`, before it sends a frame that
 this device wrote, before it acknowledges a bundle or deletes it from a
 mailbox, before it relays an applied record to another peer, and before it
-continues after applying an authorization record. Otherwise a crash can
+continues after applying an authorization record (a `CEIL_ONLY` result,
+from `Put_Frame` or from `Put_Ceil`, counts as one). Otherwise a crash can
 undo an applied `DEL` while every other replica expires it (A4, §7), drop
 a `REVOKE` that this replica already told a peer it holds, or lose an own
 frame that a peer already holds (§5). A log cut at an entry boundary by a
@@ -1827,23 +2099,29 @@ T14.
 
   (a) and (b) hold for runs with no capacity refusal (`NO_SPACE`,
   `AUTH_FULL`). Kome offers a `NO_SPACE` record again later, and `AUTH_FULL`
-  is the stated residual of §7.
+  is the stated residual of §7. `maxceil` alone does not depend on the
+  order with capacity refusals either (T19).
 - **T4' ✓ Monotone admission.** If each authorization record of `H` is in
   `H'`, then `adm(r, H) ⇒ adm(r, H')`. Also, `maxceil(F(H)) = maxceil(H)`,
   `W(F(H)) = W(H)` and `wcap(F(H), k) = wcap(H, k)`. So no admission view
   shrinks along any history, and this includes rosters of lower generation
   or ceiling and grants of lower cap. Admission never reads `REVOKE`,
   `root_void` or `W_eff`. In SPARK the three views are opaque functions of
-  `F` (`Kome.Frontier.Max_Ceil`, `In_W`, `W_Cap`, each with a `_Def`
-  lemma), and `Lemma_Views_Step` gives their values after each `Apply`:
-  `maxceil` becomes `max(old, ceiling of R)`, and `W` and `wcap` grow
-  exactly by `R` (`Lemma_Same_Auth_Views` for an `Apply` that keeps the
-  authorization rows). In Lean `maxceil` and `wcap` are instances of one
-  family `maxP` (`maxP_cover`, `maxP_mono_auth`).
+  the state (`Kome.Frontier.Max_Ceil`, `In_W`, `W_Cap`, each with a `_Def`
+  lemma; `Max_Ceil` is the larger of `Held_Ceil`, over the rows, and the
+  ceiling cell), and `Lemma_Views_Step` gives their values after each
+  `Apply`: `Held_Ceil` becomes `max(old, ceiling of R)`, and so does
+  `Max_Ceil`, because `Apply` keeps the cell (`Ceil_Same`); `W` and `wcap`
+  grow exactly by `R` (`Lemma_Same_Auth_Views` for an `Apply` that keeps
+  the authorization rows). `Raise_Ceil` only raises `Max_Ceil`. In Lean
+  `maxceil` and `wcap` are instances of one family `maxP` (`maxP_cover`,
+  `maxP_mono_auth`), and the equations above are over the held list.
 - **T5 ✓ View determinism.** `deleted_at`, `cell`, `exists`, `maxceil`, `W`,
   `wcap`, `root_void`, `W_eff`, `revoked_at`, `void`, `ROSTER_eff`,
   `Roster_Max`, `contested` and `quarantined` are functions of `F` as a set
-  alone (and of the constant `root_pk`). `ROSTER_eff` and `Roster_Max` use
+  alone (and of the constant `root_pk`), with one exception: `maxceil` is
+  a function of `F` and of the ceiling cell (§3). No other view of this
+  list reads the cell. `ROSTER_eff` and `Roster_Max` use
   the whole roster key `(gen, h, signer, ceiling_t)` to break a tie, so they
   do not depend on list order, even without A2. Also, `W_eff`, `root_void`,
   the least `from_t` of each revoked key (`isMinFrom_F`) and `ROSTER_eff`
@@ -1879,9 +2157,11 @@ T14.
   the emission does not depend on `h` (§5).
 - **T9 ✓ Bounded pin.** No admitted data record has `t > maxceil` or `t >
   wcap(author)` (Lean: `adm_put_le`, `adm_put_le_wcap`). After Kome
-  applies a roster with a higher ceiling, no honest write to any cell is
-  shadowed (this second clause follows from T8 and is not a separate Lean
-  statement).
+  applies a roster with a higher ceiling, held or captured in the ceiling
+  cell, no honest write to any cell is shadowed (this second clause
+  follows from T8 and is not a separate Lean statement; in SPARK,
+  `Kome.Emit.Lemma_Roster_Unpins` needs only a higher `maxceil` and no new
+  data record).
 - **T10 ✓ Equivocation.** All replicas put two different records with equal
   `(author, seq)` in the same order, because `v` is a strict total order
   (`StrictTotal Version`, T1). Arrival order has no effect on `F`
@@ -1889,11 +2169,12 @@ T14.
   `NoLateDom`, as in T4 (b)).
 - **T11 Tombstone expiry.** (a) and (b) are proved; (c) is a liveness
   argument under A4, not a theorem.
-  - (a) ✓ After every `Put_Frame`, `F` holds no `DEL` with `t ≤ hz(F)`
-    (`Kome.Store.Lemma_No_Expired`; Lean `expireHz_none`), and `|F|` meets
-    the §7 bound. Expiry of a frontier gives a frontier with the same
-    admission views (`Frontier.Expire` keeps `Max_Ceil` and the
-    authorization rows; Lean `maxCeil_expireHz`, `expireHz_frontier`).
+  - (a) ✓ After every `Put_Frame` and every `Put_Ceil`, `F` holds no
+    `DEL` with `t ≤ hz(F)` (`Kome.Store.Lemma_No_Expired`; Lean
+    `expireHz_none`), and `|F|` meets the §7 bound. Expiry of a frontier
+    gives a frontier with the same admission views (`Frontier.Expire`
+    keeps `Max_Ceil`, the authorization rows and the ceiling cell; Lean
+    `maxCeil_expireHz`, `expireHz_frontier`).
   - (b) ✓ Apply-then-expire: take two replicas whose held sets are
     different only because one holds a `DEL` `d` with `d.t ≤ h` and the
     other does not. After the same further records, a re-sent `d` and an
@@ -1913,7 +2194,9 @@ T14.
   un-void, and a `REVOKE` can only void.)
 - **T13 ✓ Bounds.** Each emitted record agrees with the §2 layout. `seq`,
   `t` and `gen` never wrap. At a bound, emission fails with no
-  side effect. No refused apply changes the state. Every held roster has
+  side effect. No refused apply changes the state (`CEIL_ONLY` is not a
+  refusal: it writes the ceiling cell and can expire `DEL`s; `AUTH_FULL`
+  changes nothing). Every held roster has
   `gen ≤ ceiling_t` (§2 rule 2), so a certified root's `gen` is at most
   its cap, and an honest root never emits `gen > 2^47` (§10.3).
 - **T14 ✗ Key secrecy.** Let `r` be a roster of gen `g` with key `k_g`.
@@ -1939,17 +2222,46 @@ T14.
 - **T18 ✓ Replay.** Take each store that the implementation writes. Replay
   its log from the empty state, with the logged founding key and
   `del_ttl` and with a data capacity that the replayed `F` fits in. The
-  result has the same held set (and so the same views, the same horizon
-  `hz(F)` and the same digests) and the same `seq_self`. Replay reruns
-  `Put_Frame`, so its expiry is the live expiry. After compaction, each
-  replayed `APPLY` succeeds. In SPARK, `Open_From_Log` proves T18-prefix
+  result has the same held set and the same ceiling cell roster (and so
+  the same views, the same horizon `hz(F)` and the same digests) and the
+  same `seq_self`. Replay reruns `Put_Frame` and, for a `CEIL` entry, the
+  capture of `Put_Ceil`, so its expiry is the live expiry. After
+  compaction, the `CEIL` (the first entry, if there is a cell) and each
+  replayed `APPLY` succeed. In SPARK, `Open_From_Log` proves T18-prefix
   (when `Valid_Length > 0`, the result is the `Valid` replay of exactly
   that prefix, `Replayed_Prefix`); that replay accepts every log that a
-  store writes and gives back its frontier is tested there, not proved,
-  and so is the claim that a compacted log never gets `LOG_FULL`.
-  `Compact`'s Post (`Retagged`, `Compact_Layout`) states the layout up to
-  the order and contiguity of the copied `APPLY`s, which are tested.
-  (T15–T17 are reserved for typed fields, C10, and are not stated.)
+  store writes and gives back its frontier and its cell is tested there,
+  not proved, and so is the claim that a compacted log never gets
+  `LOG_FULL`. `Compact`'s Post (`Retagged`, `Compact_Layout`) states the
+  layout up to the order and contiguity of the copied `APPLY`s, which are
+  tested. (T15–T17 are reserved for typed fields, C10, and are not
+  stated.)
+- **T19 ✓ The ceiling does not depend on the arrival order** (AUDIT.md
+  H12). Take two `Valid` pairs `(S, F)` and `(S', F')` of one collection
+  with the same `maxceil` (for instance two stores after `Open`), and a
+  set `X` of verified frames. Apply to each pair any finite sequence of
+  calls, each one a `Put_Frame` of a frame of `X` or a `Put_Ceil` of a
+  `ROSTER` frame of `X`, in any order and with any repetition, in which
+  every `ROSTER` of `X` has at least one call that does not return
+  `LOG_FULL`. Then both pairs end with
+
+  ```
+  maxceil = max(maxceil at the start, largest ceiling_t of the rosters of X)
+  ```
+
+  and so with the same horizon and the same `t ≤ maxceil` clause of
+  admission. The statement has no condition on the slices, the slot
+  table, the data capacity or A1. SPARK proves the step for both entry
+  points: unless the result is `LOG_FULL`, `maxceil` after the call is
+  `max(maxceil before, ceiling of the record)` (`Kome.Store.Ceil_Step`,
+  in `Put_Done` and `Ceil_Done`; `Frontier.Raise_Ceil`,
+  `Lemma_Ceil_Bound`). Lean proves the fold, over a model with a cell and
+  an arbitrary refusal rule (`maxCeil_stepAllHC`,
+  `maxCeil_order_indep_H`). Not claimed: `W` and `wcap` still depend on
+  which `GRANT`s a full slice refused (§7); which roster is in the cell,
+  and whether a roster is in a row or only in a cell, depend on the order
+  and on the path; and a store opened without `Log_Fits` can return
+  `LOG_FULL` for good.
 
 **Assumptions.** The assumption IDs are fixed: a restated assumption keeps
 its ID, and a new one takes the next free number.
@@ -1966,7 +2278,8 @@ its ID, and a new one takes the next free number.
   afterwards reaches that replica. Its permanent residue is as follows:
   `maxceil` raised up to the largest cap ever certified for it; its records
   in its own slice; and, if it overflowed its slice, the disagreement about
-  its surplus (§7). Honest roots stay within the authorization bounds
+  its surplus (§7), which does not include `maxceil` (T19). Honest roots
+  stay within the authorization bounds
   (§7: `Signers_Max`, `Slice_Max`).
   Beyond these bounds, the owner must re-found the collection.
 - **A2** BLAKE2b is collision-resistant. The 4096-bit sum is k-sum hard.
@@ -2003,7 +2316,7 @@ its ID, and a new one takes the next free number.
 **There is no clock assumption for convergence.** Two replicas that
 applied the same records hold the same `F` before any expiry, and two
 that also expired at the same horizon hold the same `F` after it. The
-horizon `hz(F)` reads no clock: it is a function of each replica's `F`
+horizon `hz(F)` reads no clock: it is a function of each replica's state
 (§7), so expiry, and only expiry, depends on the roots' ceilings, which
 follow their clocks, and A3 and A4 are the assumptions that bound it.
 
@@ -2048,6 +2361,13 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
      `expire_admitted`, `expire_reapply`). T11 (c) is argued under A4, not
      proved.
    - T12, T13 (`emitT_le`), T18 (`auth_first`, over sets): whole.
+   - T19: the fold (`maxCeil_stepAllHC`, `maxCeil_order_indep_H`), over
+     the model's two store steps with a cell and an arbitrary refusal
+     rule (`applyC`, `ceilC`, `expireC`, `stepHC`; the steps
+     `maxCeil_applyC`, `maxCeil_ceilC`, `maxCeil_expireC`,
+     `maxCeil_stepHC`). The step of the real store is SPARK
+     (`Kome.Store.Ceil_Step`), and that the model's step is the store's
+     step is the correspondence that §7 states, not a theorem.
    - T7 is open. T14 has a paper argument only. T15–T17 are reserved for
      typed fields (C10) and are not stated.
 
@@ -2061,7 +2381,9 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
    it reaches (`applyH delTtl = expireHz delTtl ∘ applyD`), with `delTtl`
    a constant of the model and `hz` its horizon, expiry, the roster key
    `rkey = (gen, h, signer, ceiling)`, and the views `rootVoid`, `wEff`,
-   `revokeVoids`, `voided` and `rosterEff`.
+   `revokeVoids`, `voided` and `rosterEff`. For T19 only, it has a state
+   with a ceiling cell (`CState`: the held list and the cell's ceiling)
+   and the two store steps under a refusal rule.
 
    This list is the **only divergence register**: what the implementation
    has and the model does not. Where a SPARK contract is intentionally
@@ -2070,7 +2392,19 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
    - No signer certificates and no well-formedness: the model assumes
      well-formed records.
    - No `cid`: the model is one collection.
-   - No capacity: no `NO_SPACE`, `AUTH_FULL` or `LOG_FULL`.
+   - No capacity rule: no `NO_SPACE`, `AUTH_FULL` or `LOG_FULL`. Every
+     theorem except T19 is about a store that refuses nothing for room.
+     T19's section takes an arbitrary function `refuse`, which covers the
+     store's rules (`Data_Full`, `Auth_Rule`) and more; it has no
+     `LOG_FULL`.
+   - The ceiling cell: the store keeps it as state (`Frontier.Has_Ceil`,
+     `Raise_Ceil`). `stepHC` models the two store steps (`Put_Frame`,
+     `Put_Ceil`) for an arbitrary refusal rule, and with no refusal and
+     an empty cell `applyHC` is `applyH` (`applyHC_no_refusal`). The
+     model's cell is a number; the store keeps the signed roster and its
+     tag. The model's `ceilC` accepts any record, where `Put_Ceil` takes
+     rosters only (a record that is not a roster has ceiling 0 and
+     changes nothing).
    - No `Cap_Lead`: the model's horizon is `hz delTtl`, the same function
      as the store's `Hz`, and the model has no write lower bound.
    - `Nat` for `u48`: the model has no bound on `t`, `seq` or `gen`.
@@ -2163,6 +2497,9 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
      bound, so that a device can see a ceiling that runs ahead.
    - A recovery roster (§6 step 5), and any founding roster issued while
      `maxceil(F) > now`, has `ceiling_t = max(intended, maxceil(F) + 1)`.
+     `maxceil` is `Kome.Frontier.Max_Ceil`, which reads the ceiling cell:
+     the rule counts a roster that the issuer was offered and could not
+     hold, and the new roster ends a live cell at the issuer.
    - After `ROSTER_eff` changes, a replica sends, for a set period, an
      authorization-only bundle under the previous key with the new roster
      and the `REVOKE`s before it (§6), so that store-and-forward replicas
@@ -2198,13 +2535,16 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
 6. **The C ABI.** It is not designed yet. The packages give its shape:
    `set/get/exists/scan` over records, `delete(ent)` (the only
    removal, entity-grained, §2), `GRANT`, `REVOKE` and roster operations,
-   `session_*` over Kome.Reconcile, and a digest whose value is equal to
-   the sync fingerprint. There is no field-level delete; an item that must
+   `session_*` over Kome.Reconcile (with `Put_Ceil` for the ceiling
+   frame of a `HELLO`, §8), and a digest whose value is equal to the sync
+   fingerprint. There is no field-level delete; an item that must
    be removable on its own is its own entity. Statuses are Kome's
-   `Status`, including `AUTH_FULL`, `LOG_FULL`, `BUSY` (`Compact` while a
-   session pins the log, §7) and, from the storage binding, `DEGRADED`
-   (§7). `CLAMPED` is the out flag next to a write's status, and
-   `CLONE_SUSPECTED` comes from `Clone_View` and from `Receive` (§5).
+   `Status`, including `AUTH_FULL`, `CEIL_ONLY` (a change of state that
+   needs the sync-point flush, not a refusal, §7), `LOG_FULL`, `BUSY`
+   (`Compact` while a session pins the log, §7) and, from the storage
+   binding, `DEGRADED` (§7). `CLAMPED` is the out flag next to a write's
+   status, and `CLONE_SUSPECTED` comes from `Clone_View` and from
+   `Receive` (§5).
    `skew` past a bound, `contested` and `quarantined` are replica
    statuses (§3, §6), as is a `NO_SPACE` refusal of a peer-offered record.
    The key API generates keys and never imports or exports one (§10.3).
@@ -2262,10 +2602,13 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
       rewritten in place: the only writes are appends and the rename of
       `Compact`.
     - (b) Compaction: the Post of `Compact` states the layout up to order
-      (`Compact_Layout`: the `HEADER` bytes, every record's `APPLY` before
-      the final `SEQ(seq_self)`, `|F| + 1` entries; `Retagged`: `F`
-      changed only in its tags), and `Valid` states that every tag points
-      at an `APPLY` whose frame has that record as its header. That the
+      (`Compact_Layout`: the `HEADER` bytes, the `CEIL` of the cell's
+      roster right after the `HEADER` if there is a cell, every record's
+      `APPLY` before the final `SEQ(seq_self)`, `|F| + 1` entries and one
+      more with a cell; `Retagged`: the state changed only in its tags),
+      and `Valid` states that every tag points at an `APPLY` whose frame
+      has that record as its header, and the cell's tag at such a `CEIL`.
+      That the
       copied `APPLY`s are contiguous and in row order (`Ord`), and that a
       compacted log never gets `LOG_FULL` (the held frames are disjoint
       parts of the old log), are tested, not proved; the check makes the
@@ -2298,5 +2641,3 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
       not the recovery roster: with no pre-gate message (`SIMPLIFY.md`
       S11), only a member that holds the recovery roster releases it, as
       its `HELLO` credential (§6).
-    - A reserved ceiling cell per slot for the `AUTH_FULL` arrival-order
-      case of `maxceil` (AUDIT.md H12): deferred (§7).
