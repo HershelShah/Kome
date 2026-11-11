@@ -28,10 +28,10 @@ built.
 | 2 | `Kome.Keys` (key and id encoding), `Kome.Crypto` (monocypher binding; `Verify` is the cofactored RFC 8032 predicate of DESIGN.md §2 as a SPARK expression over a private `Raw_Ed25519_Check`, and it refuses small-order public keys; `Hedge`; `Blake2b_512`), `Kome.Records` (canonical encoding, self-certified founding key and signer certificates over the `cid`, hashing, signing, well-formedness; every kind's `h`, `Well_Formed`, `Decode_Verified`, `To_Header`, `Sign` and `Make_*` take the collection context `cid = Cid_Of (root_pk, salt, del_ttl)` first, S1; `Put_Target`/`Del_Target` constructors) | §2 | T13 | done. Keys: 32 tests, 800 checks, 0 unproved. Crypto: 72 tests, 51 checks, 0 unproved (spec only; the bodies are `SPARK_Mode Off`). Records: 190 tests, 2,137 checks, 0 unproved |
 | 3 | `Kome.Store` (`Store (Log_Cap)`; the log HEADER, then APPLY, SEQ and CEIL entries, S15; tags `(Off, Len)` in the frontier slots and `Read_Frame`, no index, S14; `Put_Frame` with automatic expiry at `hz(F)` (`Put_Done`, `Applied_H`, Lean `applyH`); the capture of a roster in the ceiling cell, by `Put_Frame` (`Ceil_Only`) and by `Put_Ceil` (`Ceil_Done`, `Captured`), with the step `Ceil_Step` of T19, AUDIT.md H12; `Seq_Self` from the log, S16; `Digest_Auth`/`Digest_Data` kept by run and slot diffs, S21; `Compact` with the cell's CEIL first, then row order, with retagging, `SEQ (seq_self)` and `Busy` while `Pinned`; `Pin`/`Unpin`; `Open_From_Log` in trusted mode with `Valid_Length` and `Replayed_Prefix`; `Compact_Due`, `Log_Fits`), `Kome.Frames` (the opaque predicate `Frame_Is (Frame, Cid, X)`, so that the store's tag lemmas do not unfold the record parsers) | §7 | T11, T18, T19 (the step) | done. Store: 50 tests, 3,049 checks, 0 unproved. Frames: 9 tests, 13 checks, 0 unproved |
 | 4 | `Kome.Emit` (`Choose` without h, chase, the one lower bound `maxceil − Cap_Lead`, `seq_self` per collection, SHADOWED, SEQ_EXHAUSTED, CLAMPED) | §5 | T8, T9, T13 | done. 90 tests, 380 checks, 0 unproved |
-| 4 | `Kome.Write` (the write path: `Write` = Choose, Make, Sign under `Cid (S)` and `Store.Put_Frame` in one call, S16, with the S17 outcomes; `Receive` with the apply-side CLONE_SUSPECTED, which can return `Ceil_Only`; `Clone_View`, AUDIT.md H18) | §5, §7 | T8 (through `Kome.Emit`) | done. 25 tests, 108 checks, 0 unproved |
+| 4 | `Kome.Write` (the write path: `Write` = Choose, Make, Sign under `Cid (S)` and `Store.Put_Frame` in one call, S16, with the S17 outcomes; `Receive` with the apply-side CLONE_SUSPECTED, which can return `Ceil_Only`; `Clone_View`, AUDIT.md H18; `Receive_Ceil`, the receiver side of the ceiling frame of a HELLO, AUDIT.md H12) | §5, §7 | T8 (through `Kome.Emit`) | done. 25 tests, 108 checks, 0 unproved |
 | 5 | `Kome.Views` (`cell`, `exists`, `deleted_at`, `root_void`, `W_eff`, `revoked_at`, `void`, `revoked`, `far`, `ROSTER_eff` and `Roster_Max` by the roster key `(gen, h, signer, ceiling_t)`, `contested`, `quarantined`, `skew`) | §3, §6 | T5, T12 | done. 160 tests, 1,207 checks, 0 unproved |
 | 6 | `Kome.Accumulator` (4096-bit homomorphic sum), `Kome.Digest` (fingerprint with eight BLAKE2b-512 chunks per element, S20; D15 prefix sums) | §8 | T6 | done. Accumulator: 30 tests, 736 checks, 0 unproved. Digest: 134 tests, 959 checks, 0 unproved |
-| 7 | `Kome.Reconcile` (no OPEN, S11: `Start (Sess, As, Cid, Peer_DH)` and the `Prologue`; HELLO with the credential and the ceiling frame (`Hello_Ceil_Of`, AUDIT.md H12) and the credential check in `Receive`; `Admit` takes the two digest states, the credential and the ceiling frame, and has `Gate_Open` as `Pre`; `Receive` and `Next_Phase` evaluate the gate on every call, S9; entity-major element keys, S18; RANGE with `k + 1` bounds, ELEMENTS/HAVE with `lo`, `hi` and frame-only items, ROOT, tiling replies, S19; `Snapshot_Of (F, T, S)` by source index over one frame table, built only when the digests differ, with Post `Frontier_Digest`; `Seal` builds the D15 `Prefix` table, and `Fingerprint_Of` reads a range from it; the obligation FIFO) | §8 | T7 (open) | done. 63 tests, 3,504 checks, 0 unproved |
+| 7 | `Kome.Reconcile` (no OPEN, S11: `Start (Sess, As, Cid, Peer_DH)` and the `Prologue`; HELLO with the credential and the ceiling frame (`Hello_Ceil_Of`, AUDIT.md H12) and the credential check in `Receive`; `Admit` takes the two digest states, the credential and the ceiling frame, and has `Gate_Open` and the sender duty `Ceil_Frame_OK` as `Pre`; `Receive` and `Next_Phase` evaluate the gate on every call, S9; entity-major element keys, S18; RANGE with `k + 1` bounds, ELEMENTS/HAVE with `lo`, `hi` and frame-only items, ROOT, tiling replies, S19; `Snapshot_Of (F, T, S)` by source index over one frame table, built only when the digests differ, with Post `Frontier_Digest`; `Seal` builds the D15 `Prefix` table, and `Fingerprint_Of` reads a range from it; the obligation FIFO) | §8 | T7 (open) | done. 63 tests, 3,504 checks, 0 unproved |
 | 8 | `Kome.Epochs` (the hedged per-gen key `Key_For_Gen`, `Eph_SK_Of`, `Box_PK_Of`, `Box_Nonce`, synthetic-nonce boxes `Box_Key`/`Unbox_Key`, `Bundle_Key_Of`; S4), `Kome.Guard` (the REVOKE-aware gate, `Admits = Gate ∧ ¬ Quarantined`, no state), `Kome.Roster` (`Build` by construction, certification, recovery, honest-issuer rules) | §6 | T14 (paper) | Epochs done: 56 tests, 152 checks, 0 unproved. Guard done: 15 tests, 63 checks, 0 unproved. `Kome.Roster` not started |
 | 9 | Transports (Noise XK with per-collection static keys, sealed bundles), the storage binding, C ABI | §7, §8, §10.6 | — | not started |
 | 10 | Typed fields (C10) | §4, §10.7 | T15–T17 (not stated) | when an application needs them |
@@ -173,18 +173,21 @@ far as its formats and checks go.
     quarantined replica takes the recovery roster (S11).
   - The ceiling frame (AUDIT.md H12; DESIGN.md §8). Sender: at `Admit`,
     pass `Read_Frame (S, Tag_Off (Ceil_Tag (F)))` as `Ceil` when
-    `Kome.Frontier.Ceil_Live (F)`, else an empty array. Receiver: decode
-    and verify `Peer.Ceil` as a ROSTER (end the session if it fails) and
-    apply it with `Kome.Store.Put_Ceil` and with nothing else, never with
-    `Put_Frame` or `Write.Receive`. Order: if our HELLO was out when the
+    `Kome.Frontier.Ceil_Live (F)`, else an empty array (the precondition
+    `Ceil_Frame_OK` of `Admit`). Receiver: give `Peer.Ceil`, when
+    `Ceil_Len > 0`, to `Kome.Write.Receive_Ceil` and to nothing else,
+    never to `Put_Frame` or `Write.Receive`. It checks that the frame is
+    a verified ROSTER (`Malformed`: end the session) and applies it with
+    `Kome.Store.Put_Ceil`. Order: if our HELLO was out when the
     peer's was accepted, seal the snapshot first, then apply the
     credential, then the ceiling frame; if not, apply the credential,
     evaluate the gate, `Admit`, seal the snapshot, then apply the ceiling
     frame (drop it if the gate stays closed). Apply nothing else between
     `Admit` and the seal. Report `SUSPECT_RELAY` for the peer exactly when
     `Put_Ceil` returned `Ceil_Only` and the frame's signer was root-voided
-    before the call. A `Ceil_Only` result (from the credential or from
-    `Put_Ceil`) counts as an applied authorization record for the sync
+    before the call (the flag `Suspect_Relay` of `Receive_Ceil`). A
+    `Ceil_Only` result (from the credential or from
+    the ceiling frame) counts as an applied authorization record for the sync
     point, and the transport reports it as a replica status, as it
     reports `AUTH_FULL`: the roster is not held. The reference caller is
     `Store_Sessions` in `test_reconcile.adb`.
@@ -266,7 +269,7 @@ far as its formats and checks go.
     (A5, A21). Apply every frame from a peer with `Kome.Write.Receive`
     and show `CLONE_SUSPECTED` when its flag or `Kome.Write.Clone_View`
     holds (AUDIT.md H18). The one exception is the ceiling frame of a
-    HELLO, which goes to `Kome.Store.Put_Ceil` (above).
+    HELLO, which goes to `Kome.Write.Receive_Ceil` (above).
 - **`Kome.Roster` (phase 8):**
   - `Build (k_g, cid, signer, gen, members)` computes `eph_sk` and
     `box_pk` and seals the boxes from one secret, then wipes it;

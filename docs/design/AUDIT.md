@@ -194,14 +194,21 @@ Final counts: see IMPLEMENTATION_PLAN.md.
      has the `CEIL` rules and refuses an `APPLY` that `Put_Frame` would
      capture; `Compact` writes the cell's `CEIL` first (`Retagged`,
      `Compact_Layout`).
-   - Write: `Receive` can return `Ceil_Only`; no wrapper for `Put_Ceil`.
+   - Write: `Receive` can return `Ceil_Only`. `Receive_Ceil` is the
+     receiver side of the ceiling frame: it checks that the frame is a
+     verified ROSTER (`Malformed` if not), applies it with `Put_Ceil`
+     only, and gives the `SUSPECT_RELAY` flag of the frame.
    - Reconcile: the HELLO carries a second roster frame, `ceil`
      (`Hello_O_KLen`, `Hello_Fixed` = 45, `Hello_Max_Len` = 17 877,
      `Hello.Ceil`, `Hello_Ceil_Of`, `Lemma_Ceil_Zero`; `Encode_Hello` and
-     `Admit` take it). The caller duties (the sender sends its live cell;
-     the receiver applies the frame with `Put_Ceil` only, in a fixed
-     order against the snapshot; the `SUSPECT_RELAY` rule of the frame)
-     are in the package header and are not proved.
+     `Admit` take it). The sender duty is the precondition
+     `Ceil_Frame_OK` of `Admit`: with a live cell, `Ceil` is a roster
+     frame whose header is the cell's record, and with no live cell it is
+     empty. What the receiver does with the frame is the Post of
+     `Kome.Write.Receive_Ceil`. That the receiver calls it for every
+     accepted HELLO with a ceiling frame, and its order against the
+     snapshot, are caller duties: they are in the package header and are
+     not proved.
    - Lean: the section "The ceiling cell" (`CState`, `maxCeilC`, `admC`,
      `applyC`, `ceilC`, `expireC`, `applyHC`, `stepHC`), with
      `maxCeil_stepAllHC`, `maxCeil_order_indep_H` (T19) and
@@ -226,7 +233,7 @@ Final counts: see IMPLEMENTATION_PLAN.md.
      not an element, which is why the HELLO frame is part of the fix.
    - Tested, not proved: replay and `Compact` with a cell give back the
      state (T18); SPARK proves the step of T19 and Lean the fold over a
-     model; the caller duties above. Under `-gnata` the store and session
+     model; the receiver's caller duties above. Under `-gnata` the store and session
      tests run the scenario with a full slot table; the full-slice form
      (512 REVOKEs) runs in the release mode only
      (IMPLEMENTATION_PLAN.md, Missing tests).

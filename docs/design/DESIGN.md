@@ -1416,7 +1416,8 @@ There are two captures, and a roster reaches the cell in no other way:
   slice is still full.
 - **`Store.Put_Ceil (S, F, Frame, H, Off, Result)`**, the entry point for
   the ceiling frame of a peer's `HELLO` (§8). The caller decodes and
-  verifies the frame as a `ROSTER`. If its ceiling is above `maxceil(F)`,
+  verifies the frame as a `ROSTER` (`Kome.Write.Receive_Ceil` does both
+  and then calls `Put_Ceil`). If its ceiling is above `maxceil(F)`,
   `Put_Ceil` captures it (`CEIL_ONLY`; or `LOG_FULL`, with no change, when
   the log has no room). If not, nothing changes (`OK`). `Put_Ceil` never
   calls `Frontier.Apply`. So the roster never enters a row here, whatever
@@ -1722,7 +1723,10 @@ key as a `dh_pk` (usually this roster is `ROSTER_eff`). It is at most
 the sender's ceiling cell when the cell is live (`Ceil_Live`: its ceiling
 is above the ceiling of every held roster, so it is the only reason for
 the sender's `maxceil`), and it is empty otherwise. The sender reads it
-from the log by the cell's tag (`Kome.Store.Lemma_Ceil_Tag`). It is at
+from the log by the cell's tag (`Kome.Store.Lemma_Ceil_Tag`). `Admit` has
+this as a precondition (`Ceil_Frame_OK`: with a live cell, `Ceil` is a
+roster frame whose header is the cell's record; with no live cell, it is
+empty), so a caller cannot leave the frame out. It is at
 most 8 916 bytes too, so a `HELLO` is at most 17 877 bytes. The frame is
 part of the design, not an optimization: the cell's roster is not an
 element, so without it two replicas with equal rows and different cells
@@ -1732,7 +1736,7 @@ reach another replica. When a held roster has the cell's ceiling or more,
 that roster is an element and travels as one, and the sender sends no
 ceiling frame. `HELLO` carries **no register values**: both frames are
 signed records, and the receiver verifies each one before it reads
-anything from it. `Kome.Reconcile` checks only the two lengths
+anything from it. On receipt `Kome.Reconcile` checks only the two lengths
 (`Hello_Wire_OK`); the caller checks the content of both frames.
 
 A side sends its `HELLO` only when it has admitted the peer, so a
@@ -1750,9 +1754,11 @@ credential.) If no side can admit the other, the session times out.
 The two frames of an accepted `HELLO` go to two different operations.
 The caller applies the credential as an authorization record
 (`Kome.Write.Receive`, that is, `Put_Frame`): it can enter a row, and it
-can return `CEIL_ONLY`. The caller decodes and verifies the ceiling frame
-as a `ROSTER` (a frame that fails is a protocol violation, and the session
-ends), and applies it with `Kome.Store.Put_Ceil` and with nothing else. So
+can return `CEIL_ONLY`. The caller gives the ceiling frame to
+`Kome.Write.Receive_Ceil` and to nothing else. `Receive_Ceil` checks that
+the frame is a verified `ROSTER` (`MALFORMED` if it is not: a protocol
+violation, and the session ends) and applies it with
+`Kome.Store.Put_Ceil` only (its Post is `Ceil_Done`). So
 the ceiling frame reaches the receiver's cell and never a row. A roster
 enters a row of a replica only as a credential or as an element of a peer
 that holds it. A replica that keeps a thief's roster in its cell, because
@@ -1783,8 +1789,12 @@ In both orders the caller applies nothing else between `Admit` and the
 seal, and it applies the ceiling frame before the next `Receive` or
 `Next_Phase`, that is, before any record of the session. `Admit` requires
 the gate, so a side applies the ceiling frame only of a peer that its gate
-admitted. These are duties of the session caller, like the duty to apply
-the delivered frames. They are not proved; the reference caller in
+admitted. The sender duty is a contract (the precondition of `Admit`), and
+so is what the receiver does with the frame (the Post of
+`Kome.Write.Receive_Ceil`). That the receiver calls `Receive_Ceil` for
+every accepted `HELLO` with a ceiling frame, and the order above, are
+duties of the session caller, like the duty to apply the delivered frames.
+They are not proved; the reference caller in
 `spark/tests/test_reconcile.adb` runs sessions between real stores with
 them.
 
@@ -2027,7 +2037,8 @@ The owner decides whether to remove the relay. This is how a failure of A7
 The ceiling frame of a `HELLO` has its own rule. The transport reports
 the peer exactly when `Put_Ceil` returned `CEIL_ONLY` (the frame raised
 this replica's `maxceil`) and the frame's signer was root-voided in this
-replica's view before the call (`Kome.Views.Root_Void`). A frame that
+replica's view before the call (`Kome.Views.Root_Void`). This is the flag
+`Suspect_Relay` of `Kome.Write.Receive_Ceil`. A frame that
 changes nothing is not an arrival and flags nobody. There are two reasons.
 An honest replica must send its live cell in every `HELLO`, also after the
 cell's signer is root-voided, so a flag on every such `HELLO` would mark
@@ -2535,7 +2546,8 @@ follow their clocks, and A3 and A4 are the assumptions that bound it.
 6. **The C ABI.** It is not designed yet. The packages give its shape:
    `set/get/exists/scan` over records, `delete(ent)` (the only
    removal, entity-grained, §2), `GRANT`, `REVOKE` and roster operations,
-   `session_*` over Kome.Reconcile (with `Put_Ceil` for the ceiling
+   `session_*` over Kome.Reconcile (with `Kome.Write.Receive_Ceil`, that
+   is, `Put_Ceil`, for the ceiling
    frame of a `HELLO`, §8), and a digest whose value is equal to the sync
    fingerprint. There is no field-level delete; an item that must
    be removable on its own is its own entity. Statuses are Kome's

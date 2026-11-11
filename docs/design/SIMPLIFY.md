@@ -78,7 +78,7 @@ Messages (S11, S19): `HELLO` as today without OPEN before it; `ROOT count:u48 fp
 - `Kome.Records`: `Cid_Of (Root_PK, Salt, Del_TTL)`; every `Hash`, `To_Header`, `Well_Formed`, `Decode_Verified`, `Sign`, `Make_*` takes `Cid` first; `Cert_OK (Cid, Root_PK, Signer, Cap, Sig)`.
 - `Kome.Store` (as built): `Store (Log_Cap)`; `Open (Root_PK, Salt, Del_TTL, Self_PK, F, S)`; `Put_Frame (S, F, Frame, H, Off, Result)` with automatic expiry (Post `Put_Done`); `Compact (S, F, Buf, Result)` with `Busy` while pinned; `Open_From_Log (Input, Self_PK, F, S, Valid_Length, Result)`; `Cid (S)`, `Del_TTL (S)`, `Seq_Self (S)`, `Digest_Auth (S)`, `Digest_Data (S)`, `Pinned (S)`, `Pin`, `Unpin`; `Valid (S, F)` relates log, payload tags and F.
 - `Kome.Frames` (new, as built): the opaque predicate `Frame_Is (Frame, Cid, X)`, completed in its body, so that the store's tag lemmas do not unfold the record parsers.
-- `Kome.Write`: `Write`, `Receive`, `Clone_View`.
+- `Kome.Write`: `Write`, `Receive`, `Receive_Ceil` (AUDIT.md H12), `Clone_View`.
 - `Kome.Reconcile` (as built): `Start (Sess, As, Cid, Peer_DH)`, `Admit (Sess, F, Eff, Auth, Data, Cred, Buf, Len, Root)` with the two digest states, `Receive`, `Next_Phase`; snapshot by source index over one frame table; no `Select_Voids`, `Gate_Holds`, `Group_Size`.
 - `Kome.Epochs`: `Key_For_Gen` (hedged), `Box_Key`, `Unbox_Key`, `Eph_SK_Of`, `Bundle_Key_Of`.
 - `Kome.Registers`: deleted.
@@ -147,9 +147,11 @@ DESIGN.md and the code win.
 - S11, S21 and §2 (Messages): the `HELLO` is `01 n_auth:u32 n_data:u32
   digest[32] cred_len:u16 ceil_len:u16 cred ceil`, at most 17 877 bytes.
   `ceil` is the frame of the sender's cell roster while the cell is
-  live, and `Reconcile.Admit` takes it.
+  live, and `Reconcile.Admit` takes it (its precondition
+  `Ceil_Frame_OK`).
 - S17 and §5: `Put_Frame` and `Kome.Write.Receive` can also return
   `CEIL_ONLY`. The outcomes of `Kome.Write.Write` are as listed.
 - §3 (package shapes): `Kome.Frontier` gains `Held_Ceil`, `Has_Ceil`,
   `Ceil_Held`, `Ceil_Tag`, `Ceil_Live`, `Raise_Ceil` and `Set_Ceil_Tag`;
-  `Kome.Store` gains `Put_Ceil`; `Kome.Status` gains `Ceil_Only`.
+  `Kome.Store` gains `Put_Ceil`; `Kome.Write` gains `Receive_Ceil`;
+  `Kome.Status` gains `Ceil_Only`.
