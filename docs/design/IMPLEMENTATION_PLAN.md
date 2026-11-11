@@ -125,7 +125,8 @@ No package has an unproved check. In this section, a gap is one of these:
     `Loop_Invariant` in
     `Lemma_Off_Mono`, `Find_Held`, `Max_Ceil_Impl`, `W_Cap_Impl`,
     `Lemma_Rows_Agree_Data` and `Lemma_Retag_Flat`.
-  - `kome-store.adb`: `Loop_Invariant` in `Lemma_Tags_Kept`,
+  - `kome-store.adb`: `Loop_Invariant` in `Lemma_Tags_End`,
+    `Lemma_Tags_Kept`,
     `Lemma_Tags_Same`, `Lemma_Tags_Apply`, `Lemma_Tags_Expire`,
     `Lemma_Self_Tags`, `Lemma_Copied_Kept`, `Copy_Frames`,
     `Lemma_Rest_Same`, `Lemma_Seq_Same`, `Lemma_Hashes_Same`,

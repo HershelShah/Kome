@@ -44,7 +44,8 @@
 --      the SUSPECT_RELAY rule of the ceiling frame. R2 to R9: the audit
 --      scenario by sync in both roles (both sides end with the same
 --      maxceil); the second session (re-offers, no log growth); equal
---      digests with different ceilings; a replica with room (the roster
+--      digests with different ceilings; a refused HELLO (nothing of it
+--      is applied); a replica with room (the roster
 --      reaches its cell, never a row); a credential that returns
 --      Ceil_Only in both orders; an exclusive roster in the carrier's
 --      cell; the same after the root-void of its signer.
@@ -53,7 +54,9 @@
 --      the check mode runs, with every contract of the store and of the
 --      session executing), or through the slice (512 REVOKEs of one root,
 --      the audit's own case; under -gnata 512 held records do not end in
---      reasonable time, so this form runs in the release mode only).
+--      reasonable time, so this form runs in the release mode only). The
+--      release mode also runs R4, R8 and R9 with either side as the
+--      initiator; the check mode runs them with A as the initiator.
 --  Under -gnata, every Pre, Post and lemma executes on these data.
 pragma Ada_2022;
 with Ada.Text_IO;      use Ada.Text_IO;
@@ -430,8 +433,10 @@ procedure Test_Reconcile with SPARK_Mode => Off is
    --  session delivers one authorization record and not N (the check mode:
    --  each Put_Frame is slow under -gnata). Otherwise they are the small
    --  replicas {r0, g, ..}, and B is built in the order r0, g, r2, x1 ..
-   --  x(N-1).
-   procedure Store_Sessions (Kind : Fill_Kind; Near : Boolean) is
+   --  x(N-1). Roles is 2 when R4, R8 and R9 run with each side as the
+   --  initiator, and 1 when they run with A as the initiator only (the
+   --  check mode, for its run time; R2 and R7 always run both ways).
+   procedure Store_Sessions (Kind : Fill_Kind; Near : Boolean; Roles : Positive) is
       Name : constant String :=
         (if Kind = By_Slice then "H12 (full slice) " else "H12 (full slot table) ");
       N    : constant Positive := (if Kind = By_Slice then Slice_Max else Signers_Max - 1);
@@ -619,7 +624,8 @@ procedure Test_Reconcile with SPARK_Mode => Off is
             KS.Pin (X.S, X.F);
             Clear_Table (SX.T);
             for K in 1 .. Kome.Frontier.Count (X.F) loop
-               KS.Lemma_Tag (X.S, X.F, K);
+               --  (Kome.Store.Lemma_Tag: the tag of record K reads back its
+               --  frame. The Pre of Read_Frame checks the entry here.)
                Add_Frame (SX.T, KS.Read_Frame (X.S, KS.Tag_Off (Tag (X.F, K))), SS);
                if SS /= Snap_OK then
                   raise Program_Error with "add_frame " & SS'Image;
@@ -1056,7 +1062,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          --  R4. Equal digests, different ceilings: A (cell r2) and D, whose
          --  rows are A's and which was never offered r2.
          ---------------------------------------------------------------
-         for Role in 1 .. 2 loop
+         for Role in 1 .. Roles loop
             AX := A2;
             DN := A0;
             DN.DH := DHB;
@@ -1078,6 +1084,24 @@ procedure Test_Reconcile with SPARK_Mode => Off is
                  and then Has_Ceil (DN.F) and then Ceil_Held (DN.F) = Hdr (R2)
                  and then not Holds (DN.F, Hdr (R2)));
          end loop;
+
+         ---------------------------------------------------------------
+         --  R6. A HELLO whose credential is refused: nothing of it is
+         --  applied, the ceiling frame included. A (cell r2, live) sends
+         --  r3 as its credential, which does not list A's key.
+         ---------------------------------------------------------------
+         AX := A2;
+         DN := A0;
+         DN.DH := DHB;
+         LB := KS.Log_Length (DN.S);
+         Run_Store_Session (DN, AX, True, True, RD, RA, Cred_R => R3);
+         Chk ("R6: a refused credential aborts at D; D applies nothing, the ceiling frame"
+              & " included",
+              RD.Hello_Res = S_Aborted and then not RD.Done_OK
+              and then not RD.Cred_Applied and then not RD.Ceil_Applied
+              and then RD.Ceil_Got = 0 and then RA.Ceil_Sent = R2'Length
+              and then Max_Ceil (DN.F) = C0 and then not Has_Ceil (DN.F)
+              and then KS.Log_Length (DN.S) = LB);
 
          ---------------------------------------------------------------
          --  R5. A replica with room: r2 reaches its cell, never a row.
@@ -1136,7 +1160,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          Chk ("R8: setup: r3 is captured at A; ROSTER_eff of A is still r0",
               St = Ceil_Only and then Ceil_Held (A8.F) = Hdr (R3)
               and then Roster_Eff (A8.F) = (Present => True, Hdr => Hdr (R0)));
-         for Role in 1 .. 2 loop
+         for Role in 1 .. Roles loop
             AX := A8;
             C := (if Near then PX else P0);
             C.DH := DHB;
@@ -1165,7 +1189,7 @@ procedure Test_Reconcile with SPARK_Mode => Off is
          --  R9. After the root-void: D holds the founding REVOKE of R and a
          --  recovery roster.
          ---------------------------------------------------------------
-         for Role in 1 .. 2 loop
+         for Role in 1 .. Roles loop
             AX := A8;
             DN := (if Near then PX else P0);
             DN.DH := DHB;
@@ -2305,14 +2329,15 @@ procedure Test_Reconcile with SPARK_Mode => Off is
       --  (i) Sessions between real stores (AUDIT.md H12)
       ------------------------------------------------------------------
       if Contracts_On then
-         Store_Sessions (By_Slots, Near => True);
-         Put_Line ("SKIP H12 (full slice): the 512-record form of the store sessions (check"
-                   & " mode: under -gnata the digest contracts of 512 held records do not"
-                   & " end in reasonable time; it runs with MODE=release)");
+         Store_Sessions (By_Slots, Near => True, Roles => 1);
+         Put_Line ("SKIP H12 (full slice): the 512-record form of the store sessions, and"
+                   & " R4, R8 and R9 with the other side as the initiator (check mode: under"
+                   & " -gnata the digest contracts of the store make them slow; they run"
+                   & " with MODE=release)");
       else
-         Store_Sessions (By_Slots, Near => True);
-         Store_Sessions (By_Slots, Near => False);
-         Store_Sessions (By_Slice, Near => False);
+         Store_Sessions (By_Slots, Near => True, Roles => 2);
+         Store_Sessions (By_Slots, Near => False, Roles => 2);
+         Store_Sessions (By_Slice, Near => False, Roles => 2);
       end if;
       if Failed then
          Set_Exit_Status (Failure);

@@ -1999,6 +1999,18 @@ package body Kome.Reconcile with SPARK_Mode is
       pragma Assert (Buf (Hello_Fixed .. Hello_Fixed + L - 1) = Cred);
       pragma Assert (Buf (Hello_Fixed + L .. Hello_Fixed + L + K - 1) = Ceil);
       Len := Hello_Fixed + L + K;
+      declare
+         B : constant Byte_Array := Buf (0 .. Len - 1);
+      begin
+         pragma Assert (for all Y in B'Range => B (Y) = Buf (Y));
+         pragma Assert (B (B'First) = Tag_Hello);
+         pragma Assert (Wire_U16 (B, Hello_O_CLen) = Wire_U16 (Buf, Hello_O_CLen));
+         pragma Assert (Wire_U16 (B, Hello_O_KLen) = Wire_U16 (Buf, Hello_O_KLen));
+         pragma Assert (Wire_U16 (B, B'First + Hello_O_CLen) = L);
+         pragma Assert (Wire_U16 (B, B'First + Hello_O_KLen) = K);
+         pragma Assert (B'Last - B'First = Hello_Fixed - 1 + L + K);
+         pragma Assert (Hello_Wire_OK (B));
+      end;
       pragma Assert (Hello_Wire_OK (Buf (0 .. Len - 1)));
    end Encode_Hello;
 
@@ -2034,12 +2046,16 @@ package body Kome.Reconcile with SPARK_Mode is
             H.Cred (0 .. CL - 1) := Input (F + Hello_Fixed .. F + (Hello_Fixed - 1) + CL);
             pragma Assert (H.Cred (0 .. CL - 1) = Cred_Of (Input));
          end if;
+         pragma Assert (for all I in CL .. Cred_Max - 1 => H.Cred (I) = 0);
          H.Ceil_Len := KL;
          if KL > 0 then
             H.Ceil (0 .. KL - 1) := Input (Input'Last - (KL - 1) .. Input'Last);
             pragma Assert (H.Ceil (0 .. KL - 1) = Hello_Ceil_Of (Input));
          end if;
+         pragma Assert (for all I in KL .. Cred_Max - 1 => H.Ceil (I) = 0);
+         pragma Assert (for all I in CL .. Cred_Max - 1 => H.Cred (I) = 0);
          pragma Assert (if CL > 0 then H.Cred (0 .. CL - 1) = Cred_Of (Input));
+         pragma Assert (Cred_Canonical (H));
          OK := True;
       end;
    end Decode_Hello;
